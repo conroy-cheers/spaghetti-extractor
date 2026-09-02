@@ -28,12 +28,6 @@ from spaghetti_extractor.artifacts.io import (
     open_artifact_reader_v3,
     write_artifact_bundle_v3,
 )
-from spaghetti_extractor.artifacts.scheduling import (
-    DependencyNodePlanV3,
-    DependencySchedulingManifestV3,
-    StructuralSchedulingManifestV3,
-    StructuralUnitPlanV3,
-)
 
 
 BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", "a" * 64)
@@ -371,58 +365,6 @@ class ArtifactSetV3Tests(unittest.TestCase):
         second = [identity_bucket_v3(f"unit:{index}") for index in range(4096)]
         self.assertEqual(first, second)
         self.assertEqual(set(first), set(range(IDENTITY_BUCKETS)))
-
-    def test_structural_plan_rejects_independent_inventory_omission(self) -> None:
-        plan = StructuralSchedulingManifestV3.create(
-            "c" * 64,
-            (
-                StructuralUnitPlanV3.create("unit:a", 0x1000, 0x1010),
-                StructuralUnitPlanV3.create(
-                    "unit:b", 0x1010, 0x1020, dependencies=("unit:a",)
-                ),
-            ),
-        )
-        parsed = StructuralSchedulingManifestV3.parse_bytes(plan.to_bytes())
-        parsed.validate(
-            {
-                "unit:a": (0x1000, 0x1010, ()),
-                "unit:b": (0x1010, 0x1020, ("unit:a",)),
-            }
-        )
-        with self.assertRaisesRegex(ArtifactV3Error, "planner_omission"):
-            parsed.validate(
-                {
-                    "unit:a": (0x1000, 0x1010, ()),
-                    "unit:b": (0x1010, 0x1020, ("unit:a",)),
-                    "unit:c": (0x1020, 0x1030, ()),
-                }
-            )
-
-    def test_dependency_plan_checks_exact_sccs_and_record_inventory(self) -> None:
-        records = {
-            "node:a": (RecordDependencyV3("units", "unit:a"),),
-            "node:b": (RecordDependencyV3("units", "unit:b"),),
-            "node:c": (RecordDependencyV3("units", "unit:c"),),
-        }
-        edges = {
-            "node:a": ("node:b",),
-            "node:b": ("node:a",),
-            "node:c": ("node:b",),
-        }
-        plan = DependencySchedulingManifestV3.create(
-            "d" * 64,
-            (
-                DependencyNodePlanV3.create(
-                    node, dependencies=edges[node], records=records[node]
-                )
-                for node in edges
-            ),
-        )
-        parsed = DependencySchedulingManifestV3.parse_bytes(plan.to_bytes())
-        parsed.validate(edges, expected_records=records)
-        self.assertEqual(sorted(len(row.members) for row in parsed.sccs), [1, 2])
-        with self.assertRaisesRegex(ArtifactV3Error, "planner_omission"):
-            parsed.validate({"node:a": ("node:b",), "node:b": ("node:a",)})
 
 
 if __name__ == "__main__":

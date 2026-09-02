@@ -27,7 +27,7 @@ from ..build_support.nix_invocation import select_builder_policy
 Run = Callable[[Sequence[str], Path], int]
 
 _SOURCE_EXCLUDED_NAMES = frozenset(
-    {".git", ".mypy_cache", ".pytest_cache", "__pycache__", "build", "private", "result", "targets"}
+    {".git", ".mypy_cache", ".pytest_cache", "__pycache__", "build", "private", "result"}
 )
 _DERIVATION_PATH = re.compile(r"/nix/store/[0-9a-z]{32}-[^\x00\n]+[.]drv")
 _EVALUATION_RECEIPT_FORMAT = "spaghetti-extractor-nix-evaluation-receipt-v1"
@@ -457,7 +457,7 @@ def _source_expression(repository: Path) -> str:
       name = "spaghetti-extractor-worktree";
       filter = path: type:
         let name = builtins.baseNameOf path;
-        in !(builtins.elem name [ ".git" ".mypy_cache" ".pytest_cache" "__pycache__" "build" "private" "result" "targets" ])
+        in !(builtins.elem name [ ".git" ".mypy_cache" ".pytest_cache" "__pycache__" "build" "private" "result" ])
            && !(builtins.match ".*\\\\.py[co]" name != null);
     }}'''
 

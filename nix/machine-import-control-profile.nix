@@ -13,7 +13,7 @@ let
   closure = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    modules = [ "spaghetti_extractor.authority_inputs.control_disposition" ];
+    modules = [ "spaghetti_extractor.external.control_disposition" ];
     name = "${name}-python-closure";
   };
 in
@@ -29,7 +29,7 @@ pkgs.runCommand name {
   export PYTHONDONTWRITEBYTECODE=1
   export LC_ALL=C.UTF-8
   export SOURCE_DATE_EPOCH=1
-  export PYTHONPATH=${closure}/src
+  export PYTHONPATH=${closure.pythonPath}
   mkdir -p "$out"
   ${python} - \
     ${lib.escapeShellArg profilePathsJson} \
@@ -38,7 +38,7 @@ pkgs.runCommand name {
   import pathlib
   import sys
 
-  from spaghetti_extractor.authority_inputs.control_disposition import (
+  from spaghetti_extractor.external.control_disposition import (
       build_control_disposition_profile,
   )
   from spaghetti_extractor.util import write_json

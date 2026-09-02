@@ -9,7 +9,6 @@ semantic violation at the injected mutation.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +55,6 @@ def _semantic_difference(original: SemanticProgram, candidate: SemanticProgram) 
 
 
 def _run_case(case: CaseManifest, root: Path) -> dict[str, Any]:
-    started = time.monotonic()
     artifacts = case.verify_artifacts(root)
     original = SemanticProgram.parse(_load_object(artifacts["semantic_program"]))
     candidate = SemanticProgram.parse(_load_object(artifacts["candidate_semantic_program"]))
@@ -96,7 +94,6 @@ def _run_case(case: CaseManifest, root: Path) -> dict[str, Any]:
         "expected_disposition": case.expectation.disposition.value,
         "actual_disposition": actual.value,
         "expectation_matched": actual is case.expectation.disposition,
-        "duration_seconds": round(time.monotonic() - started, 6),
         "inventories": {
             "original_regions": original_inventory["counts"]["regions"],
             "candidate_regions": candidate_inventory["counts"]["regions"],

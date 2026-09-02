@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
+from .machine_ir_bindings import build_machine_ir_authority_bindings
 from ..machine_ir.memory_actions import (
     MemoryActionError,
     build_memory_action_graph,

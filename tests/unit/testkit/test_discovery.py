@@ -306,6 +306,30 @@ list(PROFILES.glob(\"*.json\"))
                 ("src/spaghetti_extractor/data/model.txt",),
             )
 
+    def test_json_semantic_strings_are_not_treated_as_oversized_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            resource = "src/spaghetti_extractor/data/forms.json"
+            _write(
+                root,
+                resource,
+                json.dumps({"semantic_form": "semantic\n" + "x" * 512}),
+            )
+            _write(
+                root,
+                "src/spaghetti_extractor/model.py",
+                f'PYTHON_RESOURCES = ("{resource}",)\n',
+            )
+            _write(
+                root,
+                "tests/unit/model/test_model.py",
+                "import spaghetti_extractor.model\n",
+            )
+
+            row = build_impact_index(root).tests[0]
+
+            self.assertEqual(row.resources, (resource,))
+
 
 if __name__ == "__main__":
     unittest.main()

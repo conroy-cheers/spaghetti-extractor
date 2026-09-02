@@ -5,19 +5,17 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from spaghetti_extractor.artifacts.artifact_set import ArtifactSetWriterV3
+from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.artifacts.formats import (
-    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
     LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT,
 )
-from spaghetti_extractor.authority.target_certificate_records import (
-    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
-)
+from spaghetti_extractor.external.resolved import bind_launch_policy_v1
 from spaghetti_extractor.libraries.abi_catalog import (
     LIBRARY_ABI_CATALOG_CODEC_V3,
     build_catalog_search_index,
 )
 from spaghetti_extractor.libraries.v4_activation import check_library_island_v1
+from spaghetti_extractor.semantic_link.module_v2 import LinkedSemanticModuleV2
 from spaghetti_extractor.libraries.v4_adoption_records import (
     LibraryAdoptionIntentV1,
     LibraryOperationSourceMappingV1,
@@ -33,6 +31,7 @@ from spaghetti_extractor.libraries.v4_record_support import (
     canonical_sha256,
 )
 from spaghetti_extractor.util import sha256_file, write_json
+from spaghetti_extractor.transfer.plan import write_executable_transfer_plan
 
 from .library_fixture_support import (
     abi_profile,
@@ -46,15 +45,12 @@ from .library_fixture_support import (
 @dataclass(frozen=True)
 class _Fixture:
     root: Path
-    machine: Path
     release_root: Path
-    release: LibraryReleaseHypothesesV4
     island: LibraryIslandHypothesisV4
     implementation: ReusableLibraryImplementationV1
     intent: LibraryAdoptionIntentV1
     catalog_index: object
-    external_sites: Path
-    target_certificates: Path
+    linked_semantic_module: LinkedSemanticModuleV2
 
 
 def _implementation(*, recipe_id: str, operation_id: str) -> ReusableLibraryImplementationV1:
@@ -105,9 +101,46 @@ def _write_release_set(root: Path, release: LibraryReleaseHypothesesV4) -> Path:
     return output
 
 
-def _empty_authority(root: Path, name: str, kind: str) -> Path:
-    output = root / name
-    ArtifactSetWriterV3(artifact_kind=kind, bindings=()).write(output, ())
+def _resolved_environment(root: Path, pe_sha256: str) -> Path:
+    launch = {
+        "assumptions": {
+            name: {"contract": f"fixture-{name}"}
+            for name in (
+                "argv", "environment", "fs", "iat", "initial_stack",
+                "relocations",
+            )
+        },
+        "feature_inventory": {
+            "direct_syscalls": [], "executable_writes": [], "threads": [],
+            "unknown_async_callbacks": [], "unmodelled_seh": [],
+        },
+        "format": "spaghetti-extractor-pe32-launch-assumption-template-v1",
+        "schema_version": 1,
+    }
+    payload = {
+        "format": "spaghetti-extractor-resolved-external-environment-v1",
+        "status": "complete",
+        "bindings": {
+            "module_interface_sha256": "1" * 64,
+            "module_pe_sha256": pe_sha256,
+            "environment_intent_sha256": "3" * 64,
+            "runtime_profile_pack_sha256s": [],
+            "interface_profile_pack_sha256s": [],
+        },
+        "target": {"abi": "pe32-i686-mingw32", "data_layout": "pe32-ilp32-v1"},
+        "launch_policy": bind_launch_policy_v1(
+            launch, source_sha256="4" * 64, filename="fixture-launch.json"
+        ),
+        "canonical_boundaries": [], "interface_method_catalogs": [],
+        "machine_import_contracts": [], "original_semantic_imports": [],
+        "generated_runtime_support_imports": [],
+        "loader_service_contracts": [], "static_authority_bindings": [],
+        "checked_exception_protocols": [], "blockers": [],
+        "authority": "checked_static_environment",
+    }
+    payload["resolved_environment_sha256"] = canonical_sha256_v3(payload)
+    output = root / "resolved-environment.json"
+    write_json(output, payload)
     return output
 
 
@@ -122,10 +155,28 @@ def _fixture(
     events = (
         (
             {
+                "family": "external",
                 "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "target_rva": 0,
+                "return_rva": 0x1004,
                 "dll": "KERNEL32.dll",
                 "symbol": "WriteFile",
+                "ordinal": None,
                 "abi_profile_id": "x86-cdecl",
+                "register_inputs": {
+                    name: {"op": "reg", "name": name, "width": 32}
+                    for name in (
+                        "eax", "ebx", "ecx", "edx",
+                        "esi", "edi", "ebp", "esp",
+                    )
+                },
+                "flag_inputs": {
+                    name: {"op": "flag", "name": name}
+                    for name in ("cf", "zf", "sf", "of", "pf", "df")
+                },
+                "arguments": [],
+                "stack_inputs": [],
             },
         )
         if external_event
@@ -150,7 +201,20 @@ def _fixture(
             else None
         ),
     )
+    if events:
+        unit["semantics"]["ordered_events"] = list(events)
+    if indirect_exit:
+        unit["semantics"]["outcome"] = {
+            "kind": "indirect_jump",
+            "target": {"op": "reg", "name": "eax", "width": 32},
+        }
     machine = write_machine(root, [unit])
+    transfer_root = root / "transfer"
+    write_executable_transfer_plan(
+        machine_ir=machine / "machine-ir.jsonl",
+        machine_ir_manifest=machine / "machine-ir-manifest.json",
+        out=transfer_root,
+    )
     function = function_signature(
         function_id=operation_id,
         release="1.0",
@@ -203,24 +267,25 @@ def _fixture(
         implementation_id=implementation.implementation_id,
         mode="adopt",
     )
+    resolved_environment = _resolved_environment(
+        root, sha256_file(root / "fixture.exe")
+    )
     return _Fixture(
         root=root,
-        machine=machine,
         release_root=release_root,
-        release=release,
         island=island,
         implementation=implementation,
         intent=intent,
         catalog_index=catalog_index,
-        external_sites=_empty_authority(
-            root,
-            "canonical-external-sites",
-            CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
-        ),
-        target_certificates=_empty_authority(
-            root,
-            "target-certificates",
-            INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+        linked_semantic_module=LinkedSemanticModuleV2(
+            payload={
+                "format": "spaghetti-extractor-linked-semantic-module-v2",
+            },
+            package_root=root,
+            package_members={
+                "transfer_plan": transfer_root / "executable-transfer-plan.json",
+                "resolved_external_environment": resolved_environment,
+            },
         ),
     )
 
@@ -234,14 +299,12 @@ def _check(
 ):
     return check_library_island_v1(
         target_id="fixture-target",
-        machine_ir=fixture.machine,
+        linked_semantic_module=fixture.linked_semantic_module,
         release_hypotheses=fixture.release_root,
         island_id=fixture.island.island_id,
         adoption_intent=intent or fixture.intent,
         implementation=implementation or fixture.implementation,
         catalog_search_index=fixture.catalog_index,
-        canonical_external_sites=fixture.external_sites,
-        target_certificates=fixture.target_certificates,
         out=fixture.root / f"{name}.json",
     )
 
@@ -254,16 +317,20 @@ class V4LibraryActivationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_small_no_crossing_island_with_qualified_implementation_completes(self) -> None:
+    def test_island_waits_for_semantic_module_physical_abi_authority(self) -> None:
         fixture = _fixture(self.root)
 
-        receipt = _check(fixture, name="complete")
+        receipt = _check(fixture, name="abi-unresolved")
 
-        self.assertEqual(receipt.status, "complete")
+        self.assertEqual(receipt.status, "incomplete")
         self.assertEqual(receipt.identity_status, "complete")
-        self.assertEqual(receipt.boundary_status, "complete")
+        self.assertEqual(receipt.boundary_status, "incomplete")
         self.assertEqual(receipt.implementation_status, "complete")
         self.assertEqual(receipt.checked_boundary_edge_ids, ())
+        self.assertIn(
+            "target_operation_physical_abi_unresolved",
+            {issue.code for issue in receipt.issues},
+        )
 
     def test_stale_intent_and_wrong_implementation_are_violated(self) -> None:
         fixture = _fixture(self.root)
@@ -299,27 +366,28 @@ class V4LibraryActivationTests(unittest.TestCase):
 
         self.assertEqual(receipt.status, "incomplete")
         self.assertIn(
-            "catalog_operation_abi_missing", {issue.code for issue in receipt.issues}
+            "target_operation_physical_abi_unresolved",
+            {issue.code for issue in receipt.issues},
         )
 
-    def test_missing_canonical_external_authority_fails_closed(self) -> None:
+    def test_missing_resolved_external_contract_fails_closed(self) -> None:
         fixture = _fixture(self.root, external_event=True)
 
         receipt = _check(fixture, name="missing-external")
 
         self.assertEqual(receipt.status, "incomplete")
         self.assertIn(
-            "canonical_external_site_missing", {issue.code for issue in receipt.issues}
+            "resolved_external_contract_missing", {issue.code for issue in receipt.issues}
         )
 
-    def test_missing_canonical_indirect_authority_fails_closed(self) -> None:
+    def test_missing_finite_indirect_route_fails_closed(self) -> None:
         fixture = _fixture(self.root, indirect_exit=True)
 
         receipt = _check(fixture, name="missing-indirect")
 
         self.assertEqual(receipt.status, "incomplete")
         self.assertIn(
-            "indirect_target_certificate_missing",
+            "finite_control_route_missing",
             {issue.code for issue in receipt.issues},
         )
 

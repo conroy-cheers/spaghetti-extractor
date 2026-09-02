@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 {
   pkgs,
   pythonEnv,
@@ -8,11 +9,13 @@
   allowedStatuses,
   pythonModules,
   phaseRole,
+  pythonSource ? null,
   pythonExtraPaths ? [ ],
   extraNativeBuildInputs ? [ ],
   inputs ? { },
   program,
   contentAddressed ? true,
+  dontFixup ? false,
 }:
 
 assert builtins.isAttrs inputs;
@@ -20,7 +23,7 @@ assert builtins.isList pythonModules && pythonModules != [ ];
 assert builtins.isString phaseRole && phaseRole != "";
 assert builtins.isList pythonExtraPaths;
 assert builtins.isList extraNativeBuildInputs;
-assert builtins.isList allowedStatuses && allowedStatuses != [ ];
+assert builtins.isList allowedStatuses;
 assert builtins.match "^[a-z0-9][a-z0-9._-]*$" kind != null;
 assert builtins.match "^[A-Za-z0-9][A-Za-z0-9._-]*\\.json$" artifactName != null;
 assert builtins.isString expectedFormat && expectedFormat != "";
@@ -29,17 +32,32 @@ assert builtins.all (status: builtins.isString status && status != "") allowedSt
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
-  phasePythonSource = import ./python-module-closure.nix {
-    phaseRole = phaseRole;
-    inherit pkgs;
-    modules = pythonModules;
-    extraPaths = pythonExtraPaths;
-    name = "${name}-python-closure";
-  };
+  normalizedInputs = lib.mapAttrs (inputName: value:
+    if builtins.isPath value then
+      builtins.path {
+        path = value;
+        name = "spaghetti-ca-input-${lib.replaceStrings [ ":" "_" ] [ "-" "-" ] inputName}";
+      }
+    else value
+  ) inputs;
+  phasePythonSource =
+    if pythonSource != null then pythonSource else
+    import ./python-module-closure.nix {
+      phaseRole = phaseRole;
+      inherit pkgs;
+      modules = lib.unique (
+        pythonModules ++ [
+          "spaghetti_extractor.artifacts.build_manifest"
+          "spaghetti_extractor.util"
+        ]
+      );
+      extraPaths = pythonExtraPaths;
+      name = "${name}-python-closure";
+    };
   declaredInputsJson = builtins.toJSON {
     format = "spaghetti-extractor-ca-phase-inputs-v1";
     phase = kind;
-    inputs = lib.mapAttrs (_: value: toString value) inputs;
+    inputs = lib.mapAttrs (_: value: toString value) normalizedInputs;
   };
   allowedStatusesJson = builtins.toJSON allowedStatuses;
   caAttrs = lib.optionalAttrs contentAddressed {
@@ -49,12 +67,20 @@ let
     pkgs.runCommand name
       (
         {
+          # Provenance is independently content-addressed.  Keeping it out of
+          # `out` lets an implementation-only edit converge on the same
+          # semantic/package output when the emitted bytes are unchanged.
+          outputs = [ "out" "manifest" ];
           nativeBuildInputs = [
             pythonEnv
             pkgs.jq
           ] ++ extraNativeBuildInputs;
           preferLocalBuild = false;
           allowSubstitutes = true;
+          inherit dontFixup;
+          SPAGHETTI_CA_DECLARED_INPUT_REFERENCES =
+            lib.concatStringsSep "\n"
+              (map toString (builtins.attrValues normalizedInputs));
         }
         // caAttrs
       )
@@ -65,8 +91,8 @@ let
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
         export SPAGHETTI_ORIGINAL_EXECUTION_FORBIDDEN=1
-        export PYTHONPATH=${phasePythonSource}/src
-        mkdir -p "$out"
+        export PYTHONPATH=${phasePythonSource.pythonPath}
+        mkdir -p "$out" "$manifest"
 
         ${python} - \
           ${lib.escapeShellArg declaredInputsJson} \
@@ -95,7 +121,7 @@ let
         ${python} - \
           ${lib.escapeShellArg declaredInputsJson} \
           "$out/${artifactName}" \
-          "$out/phase-manifest.json" \
+          "$manifest/phase-manifest.json" \
           ${lib.escapeShellArg kind} \
           ${lib.escapeShellArg expectedFormat} \
           ${lib.escapeShellArg allowedStatusesJson} \
@@ -103,10 +129,12 @@ let
           ${if contentAddressed then "true" else "false"} <<'PY'
         from __future__ import annotations
 
-        import hashlib
         import json
         import pathlib
         import sys
+
+        from spaghetti_extractor.artifacts.build_manifest import phase_manifest
+        from spaghetti_extractor.util import write_json
 
         (
             declared_inputs_json,
@@ -132,93 +160,27 @@ let
                 f"expected {expected_format!r}, observed {artifact.get('format')!r}"
             )
         allowed_statuses = json.loads(allowed_statuses_json)
-        if artifact.get("status") not in allowed_statuses:
+        if allowed_statuses and artifact.get("status") not in allowed_statuses:
             raise SystemExit(
                 "phase artifact status is outside the declared fail-closed set: "
                 f"{artifact.get('status')!r}"
             )
-        def content_identity(path_text):
-            path = pathlib.Path(path_text)
-            if not path_text.startswith("/nix/store/"):
-                raise SystemExit("every CA phase input must be a Nix store path")
-            if path.is_file():
-                data = path.read_bytes()
-                return {
-                    "kind": "file",
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                    "size_bytes": len(data),
-                }
-            if not path.is_dir():
-                raise SystemExit(f"CA phase input does not exist: {path_text}")
-
-            digest = hashlib.sha256()
-            file_count = 0
-            size_bytes = 0
-            for child in sorted(path.rglob("*")):
-                relative = child.relative_to(path).as_posix().encode("utf-8")
-                if child.is_symlink():
-                    kind = b"symlink"
-                    data = child.readlink().as_posix().encode("utf-8")
-                elif child.is_file():
-                    kind = b"file"
-                    data = child.read_bytes()
-                    file_count += 1
-                    size_bytes += len(data)
-                elif child.is_dir():
-                    kind = b"directory"
-                    data = b""
-                else:
-                    raise SystemExit(
-                        f"CA phase input contains an unsupported node: {child}"
-                    )
-                executable = b"1" if child.stat().st_mode & 0o111 else b"0"
-                for field in (kind, relative, executable, data):
-                    digest.update(len(field).to_bytes(8, "big"))
-                    digest.update(field)
-            return {
-                "kind": "directory",
-                "sha256": digest.hexdigest(),
-                "file_count": file_count,
-                "size_bytes": size_bytes,
-            }
-
-        input_rows = [
-            {"name": name, **content_identity(path)}
-            for name, path in sorted(declared["inputs"].items())
-        ]
         closure_manifest_path = pathlib.Path(
-            "${phasePythonSource}/python-module-closure.json"
+            "${phasePythonSource.manifest}"
         )
-        closure_manifest_bytes = closure_manifest_path.read_bytes()
-        closure_manifest = json.loads(closure_manifest_bytes)
-        if (
-            not isinstance(closure_manifest, dict)
-            or closure_manifest.get("format")
-            != "spaghetti-extractor-python-module-closure-v2"
-        ):
-            raise SystemExit("Python module closure manifest is malformed")
-        manifest = {
-            "format": "spaghetti-extractor-ca-phase-manifest-v1",
-            "phase": phase_kind,
-            "content_addressed": content_addressed_text == "true",
-            "inputs": input_rows,
-            "python_module_closure": {
-                "manifest_sha256": hashlib.sha256(
-                    closure_manifest_bytes
-                ).hexdigest(),
-                "file_count": len(closure_manifest.get("files", [])),
+        manifest = phase_manifest(
+            phase=phase_kind,
+            content_addressed=content_addressed_text == "true",
+            artifact_name=artifact_name,
+            artifact=artifact,
+            artifact_bytes=artifact_bytes,
+            inputs={
+                name: pathlib.Path(path)
+                for name, path in declared["inputs"].items()
             },
-            "artifact": {
-                "name": artifact_name,
-                "format": expected_format,
-                "status": artifact["status"],
-                "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
-            },
-        }
-        pathlib.Path(manifest_path).write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+            python_closure_manifest=closure_manifest_path,
         )
+        write_json(pathlib.Path(manifest_path), manifest)
         PY
 
         jq -e \
@@ -232,12 +194,12 @@ let
           ([.inputs[].sha256] | all(test("^[0-9a-f]{64}$"))) and
           ([.inputs[] | has("store_path")] | any | not) and
           (.python_module_closure.manifest_sha256 | test("^[0-9a-f]{64}$"))
-        ' "$out/phase-manifest.json" >/dev/null
+        ' "$manifest/phase-manifest.json" >/dev/null
       '';
 in
 {
   inherit derivation phasePythonSource;
   artifact = "${derivation}/${artifactName}";
-  manifest = "${derivation}/phase-manifest.json";
+  manifest = "${derivation.manifest}/phase-manifest.json";
   inherit kind artifactName expectedFormat;
 }

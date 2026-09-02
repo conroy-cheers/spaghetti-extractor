@@ -1,0 +1,1 @@
+"""Semantic-provider contract tests."""

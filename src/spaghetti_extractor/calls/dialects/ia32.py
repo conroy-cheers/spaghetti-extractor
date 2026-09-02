@@ -18,9 +18,7 @@ from ..frame import CallSubjectV1, PhysicalCallFrameV2, PhysicalCallFrameV3
 from ..evidence import MachineCallEvidenceV1
 from ..boundary_adapter import reconcile_machine_call_evidence_v1
 from ..types import PortableTypeGraphV1, PortableTypeNodeV1, TargetLayoutSetV1, TypeLayoutV1
-
-
-IA32_DIALECTS = frozenset({"pe32-i386-gnu-v1", "pe32-i386-ms-v1"})
+from .ia32_profile import IA32_DIALECT_CALLING_CONVENTIONS, IA32_DIALECTS
 
 
 @dataclass(frozen=True)
@@ -120,6 +118,11 @@ class IA32DialectCheckerV1:
             raise CallProtocolError("IA-32 call lowering requires a function type")
         convention = str(function.body["calling_convention"])
         variadic = bool(function.body["variadic"])
+        if convention not in IA32_DIALECT_CALLING_CONVENTIONS[self.abi_dialect]:
+            raise CallProtocolError(
+                f"IA-32 dialect {self.abi_dialect!r} does not define "
+                f"calling convention {convention!r}"
+            )
         if variadic and convention != "cdecl":
             raise CallProtocolError("IA-32 non-cdecl variadic calls are unsupported by the selected dialect")
         parameters = [type_graph.index[str(item)] for item in function.body["parameter_type_ids"]]
@@ -217,6 +220,11 @@ class IA32DialectCheckerV1:
         function = schema.type_index[signature.function_type_id]
         convention = str(function.body["calling_convention"])
         variadic = bool(function.body["variadic"])
+        if convention not in IA32_DIALECT_CALLING_CONVENTIONS[self.abi_dialect]:
+            raise CallProtocolError(
+                f"IA-32 dialect {self.abi_dialect!r} does not define "
+                f"calling convention {convention!r}"
+            )
         if variadic and convention != "cdecl":
             raise CallProtocolError(
                 "IA-32 non-cdecl variadic calls are unsupported by the selected dialect"
@@ -456,4 +464,7 @@ def _result_slot(node: PortableTypeNodeV1, layout: TypeLayoutV1, *, indirect: bo
     return {"id": "result0", "role": "result", "storage_bits": layout.size_bits, "value_bits": layout.value_bits, "pass_mode": "split" if len(fragments) > 1 else "direct", "logical_path": [], "fragments": fragments}
 
 
-__all__ = ["IA32DialectCheckerV1", "IA32DialectReceiptV1", "IA32_DIALECTS"]
+__all__ = [
+    "IA32DialectCheckerV1", "IA32DialectReceiptV1",
+    "IA32_DIALECT_CALLING_CONVENTIONS", "IA32_DIALECTS",
+]

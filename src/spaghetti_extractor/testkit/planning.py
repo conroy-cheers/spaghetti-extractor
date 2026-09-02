@@ -26,25 +26,14 @@ CAPABILITY_RESOURCE_CLASS = {
     "wine": "oracle",
 }
 NIX_TEST_CHECKS = {
-    "nix/tests/authority-machine-ir-input.nix": "authority-machine-ir-input",
-    "nix/tests/artifact-seed-v3.nix": "artifact-seed-v3",
     "nix/tests/machine-import-control-profile.nix": "machine-import-control-profile",
 }
-NIX_TEST_DIRECTORY_CHECKS = {
-    "tests/unit/nix_v3/": "authority-graph-v3",
-}
-
-
 def _owned_nix_checks(changed_paths: tuple[str, ...]) -> tuple[str, ...]:
-    checks: set[str] = set()
-    for changed in changed_paths:
-        direct = NIX_TEST_CHECKS.get(changed)
-        if direct is not None:
-            checks.add(direct)
-        for prefix, check in NIX_TEST_DIRECTORY_CHECKS.items():
-            if changed.startswith(prefix):
-                checks.add(check)
-    return tuple(sorted(checks))
+    return tuple(sorted({
+        NIX_TEST_CHECKS[changed]
+        for changed in changed_paths
+        if changed in NIX_TEST_CHECKS
+    }))
 
 
 def _resource_class(tests: Iterable[TestRecord]) -> str:

@@ -37,7 +37,7 @@ pkgs.runCommand profileName {
   set -euo pipefail
   export PYTHONHASHSEED=0
   export LC_ALL=C.UTF-8
-  export PYTHONPATH=${phasePythonSource}/src
+  export PYTHONPATH=${phasePythonSource.pythonPath}
   mkdir -p "$out"
 
   cat > translation.c <<'EOF'

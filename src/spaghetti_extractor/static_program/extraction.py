@@ -272,8 +272,9 @@ def spx_export_static_program(
                     "rva_end": int(row["rva"]) + int(row["size"]),
                     "size": int(row["size"]),
                 },
-                "classification": "verified_padding",
+                "classification": str(row["classification"]),
                 "reason": str(row["reason"]),
+                "source": dict(row["source"]),
             }
             for row in parsed_inventory["padding_waivers"]
         ]

@@ -71,6 +71,107 @@ terminal(statuses)
         self.assertEqual(first.qualification, ReportQualification.VETOED)
         self.assertFalse(first.trust.proof_authority)
 
+    def test_new_x87_zero_slot_is_reported_with_full_architectural_tag(self):
+        expected_x87 = _x87()
+        expected_x87.update(
+            status_word=7 << 11,
+            tag_word=0x7FFF,
+            last_opcode=0x36C,
+            instruction_pointer=0x00401000,
+            data_pointer=0x00008E30,
+        )
+        case = _bochs_case(
+            "fld-zero-extended",
+            [0xDB, 0x6C, 0x24, 0x30],
+            memory=[{
+                "address": 0x00008E30,
+                "bytes": [0] * 10,
+                "permissions": "r",
+            }],
+            expected_x87=expected_x87,
+            defined_x87=_x87(mask=True),
+            profile_features=("x87",),
+        )
+        corpus = parse_isa_conformance_corpus({
+            "format": "spaghetti-extractor-isa-conformance-corpus-v1",
+            "id": "bochs-x87-full-tag-normalization-v1",
+            "cases": [case],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = _write_runner(
+                Path(temporary),
+                _RUNNER_PREAMBLE
+                + """
+case = corpus["cases"][0]
+final_state = json.loads(json.dumps(case["expected"]["final_state"]))
+final_state["x87"]["tag_word"] = 0x3fff
+emit({
+    "format": MACHINE_FORMAT,
+    "sequence": 0,
+    "case_id": case["id"],
+    "status": "complete",
+    "final_state": final_state,
+    "memory": case["expected"]["memory"],
+    "actual": {"control": "fallthrough", "fault": "none"},
+    "detail": "",
+})
+terminal(["complete"])
+""",
+            )
+
+            report = run_bochs_corpus(corpus, runner=runner)
+
+        observation = report.observations[0]
+        self.assertEqual(observation.status, ObservationStatus.MATCH)
+        self.assertEqual(observation.final_state.x87.tag_word, 0x7FFF)
+
+    def test_existing_x87_zero_slot_is_reported_with_full_architectural_tag(self):
+        expected_x87 = _x87()
+        expected_x87.update(
+            tag_word=0xFFFD,
+            registers=[[0] * 10] + [[0] * 10 for _ in range(7)],
+        )
+        case = _bochs_case(
+            "fchs-existing-zero",
+            [0xD9, 0xE0],
+            expected_x87=expected_x87,
+            defined_x87=_x87(mask=True),
+            profile_features=("x87",),
+        )
+        case["initial_state"]["x87"].update(expected_x87)
+        corpus = parse_isa_conformance_corpus({
+            "format": "spaghetti-extractor-isa-conformance-corpus-v1",
+            "id": "bochs-x87-existing-full-tag-normalization-v1",
+            "cases": [case],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = _write_runner(
+                Path(temporary),
+                _RUNNER_PREAMBLE
+                + """
+case = corpus["cases"][0]
+final_state = json.loads(json.dumps(case["expected"]["final_state"]))
+final_state["x87"]["tag_word"] = 0xfffc
+emit({
+    "format": MACHINE_FORMAT,
+    "sequence": 0,
+    "case_id": case["id"],
+    "status": "complete",
+    "final_state": final_state,
+    "memory": case["expected"]["memory"],
+    "actual": {"control": "fallthrough", "fault": "none"},
+    "detail": "",
+})
+terminal(["complete"])
+""",
+            )
+
+            report = run_bochs_corpus(corpus, runner=runner)
+
+        observation = report.observations[0]
+        self.assertEqual(observation.status, ObservationStatus.MATCH)
+        self.assertEqual(observation.final_state.x87.tag_word, 0xFFFD)
+
     @unittest.skipUnless(
         _SOURCE_BOCHS_RUNNER.is_file(),
         "requires the source-tree private protocol runner",

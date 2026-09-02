@@ -23,6 +23,55 @@
     "HWND",
     "IUnknown"
   ],
+  "method_local_cells": [
+    {
+      "interface_id": "IDirectDraw",
+      "method": "CreateSurface",
+      "argument_index": 1,
+      "extent_words": 27,
+      "variants": [
+        {
+          "id": "backbuffer",
+          "discriminants": [
+            {"word_index": 1, "mask": 4294967295, "value": 7}
+          ],
+          "input_word_indices": [0, 1, 2, 3, 26],
+          "output_word_indices": [],
+          "output_condition": "always",
+          "failure_preserved_word_indices": [],
+          "failure_observed_word_indices": []
+        },
+        {
+          "id": "primary",
+          "discriminants": [
+            {"word_index": 1, "mask": 4294967295, "value": 1}
+          ],
+          "input_word_indices": [0, 1, 26],
+          "output_word_indices": [],
+          "output_condition": "always",
+          "failure_preserved_word_indices": [],
+          "failure_observed_word_indices": []
+        }
+      ]
+    },
+    {
+      "interface_id": "IDirectDraw",
+      "method": "GetCaps",
+      "argument_index": 1,
+      "extent_words": 95,
+      "variants": [
+        {
+          "id": "driver_caps",
+          "discriminants": [],
+          "input_word_indices": [0],
+          "output_word_indices": [1],
+          "output_condition": "hresult_succeeded_eax",
+          "failure_preserved_word_indices": [],
+          "failure_observed_word_indices": [1]
+        }
+      ]
+    }
+  ],
   "method_callbacks": [
     {"interface_id": "IDirectDraw", "method": "EnumDisplayModes", "argument_index": 4, "lifetime": "during_call", "nullable": false},
     {"interface_id": "IDirectDraw", "method": "EnumSurfaces", "argument_index": 4, "lifetime": "during_call", "nullable": false, "argument_origins": [{"argument_index": 0, "kind": "interface_object", "interface_id": "IDirectDrawSurface"}]},

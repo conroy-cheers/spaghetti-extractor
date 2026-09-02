@@ -15,6 +15,7 @@ from ..external.machine_abi import (
     resolve_machine_call_abi,
 )
 from ..external.machine_import_profiles import load_machine_import_profile_set
+from ..external.interface_ast import validate_external_interface_extraction_spec
 
 
 PROFILE_CATALOG_FORMAT = "spaghetti-extractor-profile-catalog-v1"
@@ -300,44 +301,7 @@ def _validate_machine_import(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_interface_extraction(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "spaghetti-extractor-external-interface-extraction-spec-v1")
-    _exact_fields(
-        payload,
-        frozenset(
-            {
-                "format",
-                "id",
-                "model",
-                "effect_model",
-                "headers",
-                "interface_prefixes",
-                "opaque_resource_types",
-                "method_callbacks",
-                "factories",
-            }
-        ),
-        "external interface extraction spec",
-    )
-    _nonempty_string(payload.get("id"), "interface extraction spec.id")
-    if payload.get("model") != "x86-pe32":
-        raise ProfileRegistryError("interface extraction spec.model must be x86-pe32")
-    _nonempty_string(
-        payload.get("effect_model"), "interface extraction spec.effect_model"
-    )
-    _validate_headers(payload.get("headers"), "interface extraction spec.headers")
-    if not _string_array(
-        payload.get("interface_prefixes"), "interface prefixes", nonempty=True
-    ):
-        raise ProfileRegistryError("interface prefixes must not be empty")
-    _string_array(
-        payload.get("opaque_resource_types"), "opaque resource types", nonempty=True
-    )
-    callbacks = _array(payload.get("method_callbacks"), "method callbacks")
-    factories = _array(payload.get("factories"), "factories")
-    if any(not isinstance(item, Mapping) for item in (*callbacks, *factories)):
-        raise ProfileRegistryError(
-            "interface callback and factory rows must be objects"
-        )
+    validate_external_interface_extraction_spec(payload)
 
 
 def _validate_function_extraction(path: Path, payload: Mapping[str, Any]) -> None:

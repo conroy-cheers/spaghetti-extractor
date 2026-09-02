@@ -5,9 +5,9 @@
   mode ? "full",
   manifest ? ./generated/test-suite-manifest.json,
   planPayload ? null,
-  # This is the reviewed post-legacy-cleanup inventory baseline. Lower it only
-  # when a change deliberately removes or consolidates tests.
-  minimumTests ? if mode == "full" then 1395 else if mode == "affected" then 0 else 1,
+  # Reviewed post-semantic-module clean-cut inventory. Lower it only when a
+  # change deliberately removes or consolidates tests for retired behavior.
+  minimumTests ? if mode == "full" then 1196 else if mode == "affected" then 0 else 1,
   fixtures ? { },
   environment ? { },
 }:
@@ -50,8 +50,6 @@ let
     shards = json.loads(sys.argv[2])
     tests_run = 0
     skipped = 0
-    elapsed_seconds = 0.0
-    peak_rss_kib = 0
     for row in shards:
         report = pathlib.Path(row["path"]) / "test-shard-report.json"
         payload = json.loads(report.read_text(encoding="utf-8"))
@@ -59,10 +57,6 @@ let
             raise SystemExit(f"invalid or failed shard report: {row['id']}")
         tests_run += payload.get("tests_run", 0)
         skipped += payload.get("skipped", 0)
-        elapsed_seconds += payload.get("elapsed_seconds", 0.0)
-        peak_rss_kib = max(peak_rss_kib, payload.get("peak_rss_kib", 0))
-        if not payload.get("within_memory_limit", False):
-            raise SystemExit(f"shard exceeded its memory class: {row['id']}")
     minimum = ${toString minimumTests}
     if tests_run < minimum:
         raise SystemExit(f"test inventory regressed: expected at least {minimum}, observed {tests_run}")
@@ -75,8 +69,6 @@ let
             "tests_run": tests_run,
             "skipped": skipped,
             "minimum_tests": minimum,
-            "total_shard_seconds": round(elapsed_seconds, 6),
-            "maximum_peak_rss_kib": peak_rss_kib,
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )

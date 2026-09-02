@@ -11,7 +11,6 @@
   xedCatalog ? null,
   contentAddressed ? true,
   pythonEnv ? pkgs.python3,
-  pythonSource,
   leanShardCount ? 1,
 }:
 
@@ -41,6 +40,13 @@ let
     inherit pkgs;
     modules = [ "spaghetti_extractor.isa.cli" ];
     name = "${name}-isa-cli-python-closure";
+  };
+  conformanceWorkerPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
+    inherit pkgs;
+    modules = [ "spaghetti_extractor.isa.conformance_worker" ];
+    extraPaths = [ "spaghetti_extractor/lean/SpaghettiExtractor/ISA" ];
+    name = "${name}-conformance-worker-python-closure";
   };
   layeredArtifactSchemaPredicate = ''
     (
@@ -183,11 +189,11 @@ let
       inherit
         pkgs
         pythonEnv
-        pythonSource
         kernelCache
         bochsRunner
         contentAddressed
         ;
+      workerPythonSource = conformanceWorkerPythonSource;
       corpus = corpusInput;
       name = "${name}-${suffix}";
       inherit backend;
@@ -203,7 +209,7 @@ let
       set -euo pipefail
       export PYTHONHASHSEED=0
       export PYTHONDONTWRITEBYTECODE=1
-      export PYTHONPATH=${shardPythonSource}/src
+      export PYTHONPATH=${shardPythonSource.pythonPath}
       mkdir -p "$out"
       ${pythonEnv}/bin/python3 - \
           ${corpus} "$out/corpus.json" \
@@ -266,7 +272,7 @@ let
     set -euo pipefail
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
-    export PYTHONPATH=${shardPythonSource}/src
+    export PYTHONPATH=${shardPythonSource.pythonPath}
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
         ${corpus} "$out/report.json" "$out/forms.json" \
@@ -361,7 +367,7 @@ let
       mkdir -p "$out"
       export PYTHONHASHSEED=0
       export PYTHONDONTWRITEBYTECODE=1
-      export PYTHONPATH=${qualificationPythonSource}/src
+      export PYTHONPATH=${qualificationPythonSource.pythonPath}
       ${pythonEnv}/bin/python3 - \
         ${corpus} \
         ${lean}/forms.json \
@@ -372,6 +378,7 @@ let
         "$out/qualification.json" \
         "$out/lean-form-crosswalk.json" \
         ${if generatedCorpus == null then "-" else generatedCorpus} \
+        "$out/qualification-certificate.json" \
         > "$out/result.json" <<'PY'
       import json
       import pathlib
@@ -392,6 +399,7 @@ let
           out=pathlib.Path(sys.argv[7]),
           crosswalk_out=pathlib.Path(sys.argv[8]),
           generated_corpus=generated,
+          certificate_out=pathlib.Path(sys.argv[10]),
       )
       print(json.dumps(result, indent=2, sort_keys=True))
       PY
@@ -401,6 +409,13 @@ let
       ' "$out/result.json" > /dev/null
       jq -e '${qualificationArtifactSchemaPredicate}' \
         "$out/qualification.json" > /dev/null
+      jq -e '
+        .format == "spaghetti-extractor-isa-kernel-qualification-certificate-v1"
+        and .status == "complete"
+        and .authority == false
+        and .target_independent == true
+        and (.certificate_sha256 | test("^[0-9a-f]{64}$"))
+      ' "$out/qualification-certificate.json" > /dev/null
     '';
   qualificationCheck = pkgs.runCommand "${name}-qualified"
     (
@@ -435,7 +450,7 @@ let
       )
       ''
         mkdir -p "$out"
-        export PYTHONPATH=${isaCliPythonSource}/src
+        export PYTHONPATH=${isaCliPythonSource.pythonPath}
         ${pythonEnv}/bin/python3 - \
           ${requirements} \
           ${qualification}/qualification.json \
@@ -572,7 +587,7 @@ let
         )
         ''
           mkdir -p "$out"
-          export PYTHONPATH=${isaCliPythonSource}/src
+          export PYTHONPATH=${isaCliPythonSource.pythonPath}
           ${pythonEnv}/bin/python3 - \
             ${xedCatalog} \
             ${qualification}/qualification.json \
@@ -650,7 +665,6 @@ let
     '';
 in
 assert builtins.isInt leanShardCount && leanShardCount > 0;
-assert leanShardCount == 1 || pythonSource != null;
 {
   inherit
     lean

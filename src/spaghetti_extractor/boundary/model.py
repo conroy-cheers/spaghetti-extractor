@@ -124,6 +124,14 @@ class BoundaryValueV1:
             raise BoundaryModelError(f"{context} non-resource carries resource metadata")
         if interpretation == "value" and (access != "none" or extent_kind != "none"):
             raise BoundaryModelError(f"{context} plain value carries memory-view metadata")
+        if interpretation == "resource" and access not in {
+            "none", "write", "read_write"
+        }:
+            raise BoundaryModelError(
+                f"{context} resource access must be none, write, or read_write"
+            )
+        if interpretation == "resource" and extent_kind != "none":
+            raise BoundaryModelError(f"{context} resource carries an extent")
         return cls(
             identifier(row["id"], f"{context} id"),
             identifier(row["type_id"], f"{context} type"),
@@ -231,9 +239,11 @@ class BoundarySchemaV1:
                         raise BoundaryModelError(
                             f"boundary callback {item.identity!r} does not point to a function"
                         )
-                if item.access != "none" and item.interpretation not in {"reference", "view"}:
+                if item.access != "none" and item.interpretation not in {
+                    "reference", "view", "resource"
+                }:
                     raise BoundaryModelError(
-                        f"boundary value {item.identity!r} access requires a reference or view"
+                        f"boundary value {item.identity!r} access is inapplicable"
                     )
             value_ids = {item.identity for item in signature.parameters}
             for item in signature.parameters:

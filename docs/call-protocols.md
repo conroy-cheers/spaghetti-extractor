@@ -49,11 +49,9 @@ view.
 The PE32 IA-32 dialect checker derives an expected frame independently from
 compiler output. Partial decoded observations are reconciled field by field;
 no individual source must pretend to observe the complete frame. A pinned
-compiler proposal cannot authorize an observation obligation. The current
-migration bridge can translate a complete
-legacy callback-authority record into exact machine call evidence, but only
-when its entry state, convention, word transport, result location, and cleanup
-fully prove the selected frame.
+compiler proposal cannot authorize an observation obligation. Callback machine
+evidence is derived directly from transfer-v2 plus the resolved runtime profile;
+the callback-authority adapter and its binary side input are absent.
 
 This division is intentional:
 
@@ -61,9 +59,7 @@ This division is intentional:
   regions and call sites, including compatibility with retained profiles;
 - `calls/` is the checked boundary model consumed by lifting, callbacks, and
   source rendering;
-- compatibility adapters may feed checked evidence across the migration
-  boundary, but legacy word counts and source prototypes are not protocol
-  authority.
+- legacy word counts and source prototypes are not protocol authority.
 
 New consumers should depend on checked call protocols. Existing ABI/profile
 consumers can migrate incrementally as their evidence becomes strong enough to
@@ -77,19 +73,27 @@ projections. Generated digests, frames, and receipts are rejected from intent.
 
 The public workflow is:
 
-1. `call propose` captures a pinned compiler proposal for review.
-2. `call inspect` presents the target's checked artifact and repair frontier.
-3. `call adopt` writes reviewed intent without adopting generated authority.
-4. `call check` builds the target-SDK protocol derivation.
-5. `call status` aggregates completion by stable subject identity.
+1. `boundary propose` captures a pinned compiler proposal for review.
+2. `boundary inspect` presents the target's checked artifact and repair frontier.
+3. `boundary adopt` writes reviewed intent without adopting generated authority.
+4. `boundary check` builds the target-SDK protocol derivation.
+5. `boundary status` aggregates non-authorizing work state by stable `kind:id`
+   subject identity across calls, callbacks, exports, component operations, and
+   services.
 
 The expert `call-protocol-check` leaf is the low-level reproducible checker used
-by `nix/call-protocol-workflow.nix`. Its output includes the full artifact
-family and a faithful C header.
+internally by `nix/call-protocol-workflow.nix`. Its output includes the full
+artifact family and a faithful C header. Target declarations do not pass the
+binary, machine IR, callback-authority artifact, callback protocol identity, or
+a second copy of boundary intent into that phase. The target SDK owns those
+facts and injects the validated executable transfer plan plus the remaining
+workflow and external-environment bindings. The checker obtains the exact
+machine-IR digest from that canonical plan; a protocol boundary declares only
+its stable subject and layout intent.
 
-GNU Hello currently exercises this path with its Win32 unhandled-exception
+The real CLI vertical exercises this path with its Win32 unhandled-exception
 filter callback. The checked result is a `stdcall` function taking an
-`EXCEPTION_POINTERS *`, backed by exact callback-authority and binary evidence.
+`EXCEPTION_POINTERS *`, backed by exact transfer/environment evidence.
 Additional jq and DX-Ball boundaries should be added as ordinary protocol
 instances; broadening the dialect checker is engine work only when their
 transport cannot be represented by the existing graph, layout, frame,

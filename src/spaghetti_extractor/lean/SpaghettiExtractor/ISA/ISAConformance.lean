@@ -394,6 +394,7 @@ private def x87StoreFormat : X87StoreFormat -> Option SpaghettiExtractor.ISA.X87
 
 private def x87UnaryOperation : X87UnaryOperation -> SpaghettiExtractor.ISA.X87.UnaryOperation
   | .negate => .negate
+  | .absolute => .absolute
   | .sine => .sine
   | .cosine => .cosine
 

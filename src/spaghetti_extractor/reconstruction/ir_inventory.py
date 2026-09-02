@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping, Sequence
 
-from ..authority_inputs.bindings import indirect_exit_id_v2
+from .bindings import indirect_exit_id_v2
 from ..pe32.model import ParsedPEImage
 from ..util import sha256_bytes
 from .control_reachability import (
@@ -118,6 +118,7 @@ def _coverage_inventory(
         )
         for unit in units
     ]
+    merged_code_ranges = _merge_ranges(code_ranges)
     issues: list[ExportIssue] = []
     for unit, span in zip(units, code_ranges, strict=True):
         if sum(section.start <= span.start and span.end <= section.end for section in executable) != 1:
@@ -133,9 +134,10 @@ def _coverage_inventory(
     effective_noncode = [
         remainder
         for span in noncode_ranges
-        for remainder in _subtract_ranges(span, _merge_ranges(code_ranges))
+        for remainder in _subtract_ranges(span, merged_code_ranges)
     ]
-    classified = _merge_ranges([*code_ranges, *effective_noncode])
+    merged_effective_noncode = _merge_ranges(effective_noncode)
+    classified = _merge_ranges([*merged_code_ranges, *merged_effective_noncode])
     gaps = [gap for section in executable for gap in _subtract_ranges(section, classified)]
     for gap in gaps:
         issues.append(
@@ -154,19 +156,21 @@ def _coverage_inventory(
     covered_code = sum(
         overlap.size
         for section in executable
-        for overlap in _intersections(section, _merge_ranges(code_ranges))
+        for overlap in _intersections(section, merged_code_ranges)
     )
     covered_noncode = sum(
         overlap.size
         for section in executable
-        for overlap in _intersections(section, _merge_ranges(effective_noncode))
+        for overlap in _intersections(section, merged_effective_noncode)
     )
     return (
         {
             "status": "qualified" if not gaps and not any(i.status == "violated" for i in issues) else "incomplete",
             "executable_sections": [span.payload() for span in executable],
-            "semantic_code_ranges": [span.payload() for span in _merge_ranges(code_ranges)],
-            "checked_noncode_ranges": [span.payload() for span in _merge_ranges(effective_noncode)],
+            "semantic_code_ranges": [span.payload() for span in merged_code_ranges],
+            "checked_noncode_ranges": [
+                span.payload() for span in merged_effective_noncode
+            ],
             "unknown_ranges": [span.payload() for span in gaps],
             "counts": {
                 "executable_bytes": executable_bytes,

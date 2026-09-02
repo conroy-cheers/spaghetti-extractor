@@ -32,7 +32,7 @@ let
     __contentAddressed = true;
   };
   corpus = pkgs.runCommand "${name}-corpus" common ''
-    export PYTHONPATH=${generatorPythonSource}/src
+    export PYTHONPATH=${generatorPythonSource.pythonPath}
     ${python} - "$out" ${toString seed} ${toString count} <<'PY'
     import pathlib
     import sys
@@ -46,7 +46,7 @@ let
   qualification = pkgs.runCommand "${name}-qualification" (common // {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
   }) ''
-    export PYTHONPATH=${runnerPythonSource}/src
+    export PYTHONPATH=${runnerPythonSource.pythonPath}
     mkdir -p "$out"
     ${python} - ${corpus}/corpus.json "$out" <<'PY'
     import pathlib
@@ -61,6 +61,15 @@ let
       and .counts.cases == ${toString count}
       and .counts.expectations_matched == ${toString count}
     ' "$out/result.json" >/dev/null
+    mkdir -p "$TMPDIR/replay"
+    ${python} - ${corpus}/corpus.json "$TMPDIR/replay" <<'PY'
+    import pathlib
+    import sys
+    from spaghetti_extractor.roundtrip_fuzz.runner import run_roundtrip_corpus
+
+    run_roundtrip_corpus(corpus=pathlib.Path(sys.argv[1]), out=pathlib.Path(sys.argv[2]))
+    PY
+    diff -ru "$out" "$TMPDIR/replay"
   '';
 in
 {

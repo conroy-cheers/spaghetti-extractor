@@ -13,7 +13,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "diagnostic";
     inherit pkgs;
-    modules = [ "spaghetti_extractor.candidate.interpreter" ];
+    modules = [ "spaghetti_extractor.transfer.capability_analysis" ];
     name = "${namePrefix}-fallback-capability-python-closure";
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
@@ -31,7 +31,7 @@ pkgs.runCommand "${namePrefix}-fallback-capability-analysis-v1" (
   export PYTHONDONTWRITEBYTECODE=1
   export LC_ALL=C.UTF-8
   export SOURCE_DATE_EPOCH=1
-  export PYTHONPATH=${phasePythonSource}/src
+  export PYTHONPATH=${phasePythonSource.pythonPath}
 
   mkdir -p "$out"
   ${pythonEnv}/bin/python3 - \
@@ -39,11 +39,11 @@ pkgs.runCommand "${namePrefix}-fallback-capability-analysis-v1" (
     "$out/fallback-capability-analysis.json" <<'PY'
   import pathlib
   import sys
-  from spaghetti_extractor.candidate.interpreter import (
-      write_fallback_capability_analysis,
+  from spaghetti_extractor.transfer.capability_analysis import (
+      write_transfer_capability_analysis,
   )
 
-  write_fallback_capability_analysis(
+  write_transfer_capability_analysis(
       machine_ir=pathlib.Path(sys.argv[1]),
       out=pathlib.Path(sys.argv[2]),
   )

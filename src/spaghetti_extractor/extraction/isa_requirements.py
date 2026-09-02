@@ -28,7 +28,7 @@ from .schema import ISA_FORM_EXTRACTION_MODULES
 
 ISA_REQUIREMENT_INVENTORY_FORMAT = "spaghetti-extractor-isa-requirement-inventory-v1"
 LEAN_ISA_FORM_INVENTORY_FORMAT = "spaghetti-extractor-lean-isa-form-inventory-v1"
-_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "region-byte-slice-inventory-v5"
+_LEAN_FORM_EXTRACTION_DRIVER_VERSION = "runtime-request-table-v6"
 
 _SIDES = ("original", "candidate")
 
@@ -343,15 +343,10 @@ def _lean_form_source_hashes() -> dict[str, str]:
     }
 
 
-def _lean_side_form_extraction_source(
-    side: str,
+def _lean_form_requests(
     regions: list[Mapping[str, Any]],
-    *,
-    allow_decode_gaps: bool = False,
-) -> str:
-    if side not in _SIDES:
-        raise ToolkitInputError(f"unsupported ISA extraction side {side!r}")
-    requests: list[str] = []
+) -> list[dict[str, int]]:
+    requests: list[dict[str, int]] = []
     data_offset = 0
     for node_id, region in enumerate(regions):
         span = region.get("span")
@@ -360,20 +355,25 @@ def _lean_side_form_extraction_source(
                 f"ISA extraction request region {node_id} has no span"
             )
         size = int(span["size"])
-        requests.append(
-            f"{{ nodeId := {node_id}, dataOffset := {data_offset}, span := "
-            + f"{{ start := {int(span['rva_start'])}, size := {size} }} }}"
-        )
+        requests.append({
+            "nodeId": node_id,
+            "dataOffset": data_offset,
+            "start": int(span["rva_start"]),
+            "size": size,
+        })
         data_offset += size
-    request_chunk_size = 128
-    request_chunks = [
-        requests[offset : offset + request_chunk_size]
-        for offset in range(0, len(requests), request_chunk_size)
-    ]
-    request_chunks_literal = ",\n  ".join(
-        "[\n    " + ",\n    ".join(chunk) + "\n  ]"
-        for chunk in request_chunks
-    )
+    return requests
+
+
+def _lean_side_form_extraction_source(
+    side: str,
+    regions: list[Mapping[str, Any]],
+    *,
+    allow_decode_gaps: bool = False,
+) -> str:
+    if side not in _SIDES:
+        raise ToolkitInputError(f"unsupported ISA extraction side {side!r}")
+    _lean_form_requests(regions)
     decode_failure = (
         "IO.println <| Json.compress <| Json.mkObj [\n"
         "          (\"side\", toJson " + json.dumps(side) + "),\n"
@@ -397,31 +397,42 @@ set_option maxHeartbeats 0
 structure Request where
   nodeId : Nat
   dataOffset : Nat
-  span : ISAInventory.Span
-
-def requestChunks : List (List Request) := [
-  """ + request_chunks_literal + """
-]
+  start : Nat
+  size : Nat
+deriving FromJson
 
 def run : IO Unit := do
+  let requestText <- IO.FS.readFile "artifacts/requests.json"
+  let requestJson <- match Json.parse requestText with
+    | Except.ok value => pure value
+    | Except.error message =>
+      throw (IO.userError s!"request table is malformed JSON: {message}")
+  let requests : List Request <- match
+      (fromJson? requestJson : Except String (List Request)) with
+    | Except.ok value => pure value
+    | Except.error message =>
+      throw (IO.userError s!"request table has an invalid schema: {message}")
   let data <- IO.FS.readBinFile "artifacts/regions.bin"
-  for chunk in requestChunks do
-    for request in chunk do
-      let dataStop := request.dataOffset + request.span.size
-      if data.size < dataStop then
-        throw (IO.userError s!"region {request.nodeId} bytes are truncated")
-      let bytes : ISAInventory.Bytes :=
-        (data.extract request.dataOffset dataStop).toList.map
-          (fun byte => byte.toNat)
-      match decodeInstructionFormsBytes request.span.start bytes with
-      | none =>
-        """ + decode_failure + """
-      | some occurrences =>
-        IO.println <| Json.compress <| Json.mkObj [
-          ("side", toJson """ + json.dumps(side) + """),
-          ("node_id", toJson request.nodeId),
-          ("occurrences", instructionFormInventoryJson occurrences)
-        ]
+  for request in requests do
+    let span : ISAInventory.Span := {
+      start := request.start
+      size := request.size
+    }
+    let dataStop := request.dataOffset + span.size
+    if data.size < dataStop then
+      throw (IO.userError s!"region {request.nodeId} bytes are truncated")
+    let bytes : ISAInventory.Bytes :=
+      (data.extract request.dataOffset dataStop).toList.map
+        (fun byte => byte.toNat)
+    match decodeInstructionFormsBytes span.start bytes with
+    | none =>
+      """ + decode_failure + """
+    | some occurrences =>
+      IO.println <| Json.compress <| Json.mkObj [
+        ("side", toJson """ + json.dumps(side) + """),
+        ("node_id", toJson request.nodeId),
+        ("occurrences", instructionFormInventoryJson occurrences)
+      ]
 
 end SpaghettiExtractor.ISA.GeneratedSideISARequirementInventory
 
@@ -723,6 +734,7 @@ def extract_lean_instruction_forms_side(
                 )
             region_bytes.extend(encoded)
         (artifacts / "regions.bin").write_bytes(region_bytes)
+        write_json(artifacts / "requests.json", _lean_form_requests(regions))
         bundle = f"GeneratedISARequirementInventory{str(side).title()}"
         (isa_modules / f"{bundle}.lean").write_text(
             _lean_side_form_extraction_source(

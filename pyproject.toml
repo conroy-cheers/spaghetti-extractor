@@ -30,7 +30,6 @@ Repository = "https://github.com/conroy-cheers/spaghetti-extractor"
 "spaghetti_extractor.__main__" = "operator"
 "spaghetti_extractor.abi.ingestion" = "operator"
 "spaghetti_extractor.candidate.callbacks" = "operator"
-"spaghetti_extractor.components.boundary_evaluator" = "operator"
 "spaghetti_extractor.components.interface_v5" = "operator"
 "spaghetti_extractor.testkit.__main__" = "developer"
 

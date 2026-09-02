@@ -17,7 +17,6 @@ from spaghetti_extractor.testkit import (
     apply_scaffold_plan,
     build_suite_plan,
     explain_plan_rebuild,
-    plan_phase_scaffold,
     plan_target_scaffold,
     plan_test_scaffold,
 )
@@ -124,12 +123,9 @@ class TestDeveloperServices(unittest.TestCase):
 
     def test_scaffolds_render_valid_convention_paths_and_next_commands(self) -> None:
         test = plan_test_scaffold(subsystem="memory", name="alias_kill")
-        phase = plan_phase_scaffold(phase_kind="map-sccs", name="alias_summary")
 
         self.assertEqual(test.files[0].path, "tests/unit/memory/test_alias_kill.py")
         self.assertIn("nix run .#test -- affected", test.next_commands[0])
-        self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/authority/alias_summary.py")
-        self.assertIn("artifacts.phases", phase.files[0].content)
 
         target = plan_target_scaffold(target_id="sample-app")
         self.assertEqual(
@@ -140,6 +136,9 @@ class TestDeveloperServices(unittest.TestCase):
             'throw "configure the sample-app original PE derivation"',
             target.files[1].content,
         )
+        self.assertIn("sdk.environment.pe32", target.files[1].content)
+        self.assertIn('kind = "behavioral-c"', target.files[1].content)
+        self.assertNotIn("externalProfile =", target.files[1].content)
         self.assertNotIn("candidateTests", target.files[1].content)
 
     def test_scaffold_apply_creates_files_and_refuses_overwrite(self) -> None:

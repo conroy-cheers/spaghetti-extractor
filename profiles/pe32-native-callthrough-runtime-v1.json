@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-native-callthrough-runtime-v1",
-  "default_callback_effect": "none",
   "machine_import_signatures": [
     {
       "id": "kernel32.dll!CreateFileA",
@@ -45,8 +44,7 @@
           "opaque interface resources are disjoint from caller image and stack memory"
         ]
       },
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!CreateFileMappingA",
@@ -65,8 +63,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!CreateSemaphoreA",
@@ -85,8 +82,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!FlushFileBuffers",
@@ -105,8 +101,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!GetVersionExA",
@@ -125,8 +120,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!GlobalAlloc",
@@ -145,8 +139,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!GlobalLock",
@@ -165,8 +158,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!GlobalHandle",
@@ -185,8 +177,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!LocalAlloc",
@@ -205,8 +196,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "kernel32.dll!MapViewOfFile",
@@ -225,8 +215,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!CreateWindowExA",
@@ -245,8 +234,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!DefWindowProcA",
@@ -265,8 +253,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!DestroyWindow",
@@ -285,8 +272,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!ShowWindow",
@@ -305,8 +291,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!MessageBoxA",
@@ -325,8 +310,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!PostMessageA",
@@ -345,8 +329,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!ReleaseCapture",
@@ -365,8 +348,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!SetCapture",
@@ -385,8 +367,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!SetFocus",
@@ -405,8 +386,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "user32.dll!UpdateWindow",
@@ -425,8 +405,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     }
   ]
 }

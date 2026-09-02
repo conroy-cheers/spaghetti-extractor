@@ -56,8 +56,9 @@ spaghetti-extractor candidate status gnu-hello
 spaghetti-extractor project check gnu-hello
 ```
 
-A newly registered target does not need component intent up front. Its analysis
-and authority graph can run first; `component list <target>` then displays
+A newly registered target does not need component intent up front. Its
+transfer-v2, semantic object, and linked-module status can run first;
+`component list <target>` then displays
 the compact selector index from a bounded v2 proposal package. Rich proposal
 diagnostics are stored in stable hash buckets. A checked preparation resolves
 reviewed selectors once, then re-interns only each selected proposal's exact

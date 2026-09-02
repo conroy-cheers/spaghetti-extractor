@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import copy
 from dataclasses import replace
 import hashlib
 from typing import Any
@@ -63,6 +64,53 @@ from .kernel_qualification import (
     _validate_qualification_layers,
     canonical_json_bytes,
 )
+
+
+_UNICORN_PARTIAL_X87_STATUS_BACKEND_V1 = "unicorn-x86-32-batch-v2"
+_X87_EXCEPTION_STATUS_BITS_V1 = 0x003F
+
+
+def _pairwise_capability_projection_v1(
+    reference: ISAOracleObservation,
+    observed: ISAOracleObservation,
+) -> tuple[ISAOracleObservation, ISAOracleObservation]:
+    """Project two results to fields claimed by both concrete backends.
+
+    Unicorn's v2 x87 engine does not reliably implement the six accrued
+    exception-status flags.  Its backend identity therefore claims every
+    normalized output except those bits.  This affects only the independent
+    Bochs/Unicorn agreement check: the subsequent Bochs/Lean comparison keeps
+    the full architecturally defined status word, so no ISA behavior is waived.
+    """
+
+    unicorn_rows = tuple(
+        row for row in (reference, observed)
+        if row.backend.role is BackendRole.UNICORN
+    )
+    if (
+        len(unicorn_rows) != 1
+        or unicorn_rows[0].backend.id
+        != _UNICORN_PARTIAL_X87_STATUS_BACKEND_V1
+    ):
+        return reference, observed
+
+    def projected(row: ISAOracleObservation) -> ISAOracleObservation:
+        if row.result is None:
+            return row
+        result = copy.deepcopy(dict(row.result))
+        final_state = result.get("final_state")
+        x87 = (
+            final_state.get("x87")
+            if isinstance(final_state, Mapping) else None
+        )
+        status = x87.get("status_word") if isinstance(x87, Mapping) else None
+        if not isinstance(status, int) or isinstance(status, bool):
+            return row
+        x87["status_word"] = status & ~_X87_EXCEPTION_STATUS_BITS_V1
+        digest = hashlib.sha256(canonical_json_bytes(result)).hexdigest()
+        return replace(row, result=result, result_sha256=digest)
+
+    return projected(reference), projected(observed)
 
 def build_oracle_observation(
     *,
@@ -319,15 +367,18 @@ def build_oracle_consensus(
         bochs = by_role[BackendRole.BOCHS]
         unicorn = by_role[BackendRole.UNICORN]
         lean = by_role[BackendRole.LEAN]
-        if bochs.result_sha256 != unicorn.result_sha256:
+        external_bochs, external_unicorn = (
+            _pairwise_capability_projection_v1(bochs, unicorn)
+        )
+        if external_bochs.result_sha256 != external_unicorn.result_sha256:
             status = QualificationStatus.DISPUTED
             diagnostics.extend(
                 _comparison_diagnostics(
                     code="external_oracle_disagreement",
                     form_id=form_id,
                     case_id=case_id,
-                    reference=bochs,
-                    observed=unicorn,
+                    reference=external_bochs,
+                    observed=external_unicorn,
                     message=(
                         "Bochs and Unicorn disagree on an architecturally "
                         "defined output"

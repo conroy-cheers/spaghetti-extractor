@@ -8,15 +8,12 @@ from spaghetti_extractor.abi.declarations import (
     PhysicalAbiDeclarationSetV1,
     PhysicalAbiDeclarationV1,
 )
-from spaghetti_extractor.abi.extraction import AbiExtractionResultV1
 from spaghetti_extractor.abi.ingestion import (
     AbiDeclarationIngestionV1,
     CatalogMemberAbiDeclarationV1,
     CatalogMemberIdentityV1,
     ingest_abi_declarations,
 )
-from spaghetti_extractor.abi.model import AbiEvidenceV1, AbiFactV1, StackCleanupV1
-
 from ._support import physical_profile
 
 
@@ -55,39 +52,6 @@ def _binding(
     )
 
 
-def _extraction(
-    *, subject_id: str = "target-function:run", value: str = "cdecl"
-) -> AbiExtractionResultV1:
-    evidence = AbiEvidenceV1.create(
-        kind="checked_call_boundary",
-        producer="fixture-extractor-v1",
-        subject_kind="library_member" if subject_id.startswith("library-") else "function",
-        subject_id=subject_id,
-        dependencies=("checked-summary-v1",),
-        payload={"field": "calling_convention"},
-    )
-    fact = AbiFactV1.create(
-        subject_id=subject_id,
-        field="calling_convention",
-        status="exact",
-        values=(value,),
-        evidence_ids=(evidence.evidence_id,),
-        dependency_ids=("checked-summary-v1",),
-    )
-    return AbiExtractionResultV1(
-        "complete",
-        {
-            subject_id: (
-                "library_member" if subject_id.startswith("library-") else "function"
-            )
-        },
-        (evidence,),
-        (fact,),
-        (),
-        (),
-    )
-
-
 class AbiDeclarationIngestionTests(unittest.TestCase):
     def test_exact_member_carries_the_full_content_bound_declaration(self) -> None:
         binding = _binding()
@@ -110,36 +74,6 @@ class AbiDeclarationIngestionTests(unittest.TestCase):
         )
         self.assertEqual(len(result.facts), 9)
         self.assertEqual(len(result.evidence), 1)
-
-    def test_existing_extraction_results_are_canonical_typed_records(self) -> None:
-        extraction = _extraction()
-        result = ingest_abi_declarations(extraction_results=(extraction,))
-
-        self.assertEqual(result.status, "complete")
-        self.assertEqual(result.subjects[0].subject_id, "target-function:run")
-        self.assertEqual(result.evidence, extraction.evidence)
-        self.assertEqual(result.facts, extraction.facts)
-
-    def test_fact_conflicts_are_returned_as_contradictions(self) -> None:
-        binding = _binding(
-            declaration_profile=physical_profile(
-                calling_convention="stdcall",
-                stack_cleanup=StackCleanupV1("callee", 4),
-            )
-        )
-        extraction = _extraction(subject_id="library-function:run", value="cdecl")
-
-        result = ingest_abi_declarations(
-            member_declarations=(binding,), extraction_results=(extraction,)
-        )
-
-        self.assertEqual(result.status, "contradiction")
-        self.assertTrue(result.has_contradictions)
-        self.assertIn(
-            "abi_constraint_contradiction",
-            {issue.code for issue in result.issues},
-        )
-        self.assertNotIn("violated", str(result.to_payload()))
 
     def test_snapshot_and_symbol_disagreement_fail_closed(self) -> None:
         result = ingest_abi_declarations(

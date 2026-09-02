@@ -15,12 +15,6 @@ from spaghetti_extractor.artifacts.formats import (
     LIBRARY_ARTIFACT_INPUTS_V2_FORMAT,
     LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT,
 )
-from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
-from spaghetti_extractor.authority.parametric_summary_records import (
-    ParametricSccSummaryV3,
-    ReturnBehaviorV3,
-    parametric_scc_id_v3,
-)
 from spaghetti_extractor.libraries.catalog import (
     bind_library_artifact_inputs,
     index_library_artifacts,
@@ -37,54 +31,6 @@ from tests.unit.libraries._support import archive, coff_object
 
 
 _FUNCTION = bytes.fromhex("5589e5b801000000c3")
-
-
-def parametric_summary(
-    unit_ids: tuple[str, ...],
-    *,
-    status: str,
-    cleanup_bytes: int | None = None,
-) -> ParametricSccSummaryV3:
-    scc_id = parametric_scc_id_v3(unit_ids, ())
-    complete = status == "complete"
-    returning_unit = unit_ids[-1]
-    return ParametricSccSummaryV3(
-        record_id=scc_id,
-        scc_id=scc_id,
-        status=status,
-        authorizing=complete,
-        proposal_id="fixture-proposal" if complete else None,
-        member_unit_ids=unit_ids,
-        recursive=False,
-        checked_base_path_unit_ids=(),
-        value_facts=(),
-        register_relations=(),
-        stack_accesses=(),
-        stack_cleanup_bytes=cleanup_bytes if complete else None,
-        return_address_preserved=complete and cleanup_bytes is not None,
-        memory_effects=(),
-        call_effects=(),
-        returns=(
-            (
-                ReturnBehaviorV3(
-                    returning_unit,
-                    True,
-                    False,
-                    cleanup_bytes,
-                    True,
-                ),
-            )
-            if complete and cleanup_bytes is not None
-            else ()
-        ),
-        indirect_exits=(),
-        primary_blocker=(
-            None
-            if complete
-            else PrimaryBlockerV3("incomplete", "machine_summary_incomplete")
-        ),
-        dependencies=(),
-    )
 
 
 def write_library_index(
@@ -255,7 +201,6 @@ def write_release_set(
 
 
 __all__ = [
-    "parametric_summary",
     "write_declaration_set",
     "write_declared_catalog",
     "write_library_index",

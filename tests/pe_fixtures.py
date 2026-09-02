@@ -374,12 +374,103 @@ def pe32_tls_image(callback_rvas: tuple[int, ...]) -> bytes:
     return headers + bytes(code) + bytes(rdata)
 
 
+def pe32_load_config_image() -> bytes:
+    """Build a PE32 image with exact SafeSEH, CFG, and continuation tables."""
+
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x400000
+    text_rva = 0x1000
+    rdata_rva = 0x2000
+    text_raw_size = 0x200
+    rdata_raw_size = 0x400
+    load_config_size = 196
+    size_of_image = 0x3000
+
+    code = bytearray(text_raw_size)
+    for offset in (0, 0x10, 0x20):
+        code[offset] = 0xC3
+
+    rdata = bytearray(rdata_raw_size)
+    safe_seh_table_rva = rdata_rva + 0x200
+    cfg_table_rva = rdata_rva + 0x204
+    long_jump_table_rva = rdata_rva + 0x208
+    continuation_table_rva = rdata_rva + 0x20C
+    security_cookie_rva = rdata_rva + 0x300
+    cfg_check_pointer_rva = rdata_rva + 0x304
+    cfg_dispatch_pointer_rva = rdata_rva + 0x308
+
+    struct.pack_into("<I", rdata, 0, load_config_size)
+    struct.pack_into("<I", rdata, 60, image_base + security_cookie_rva)
+    struct.pack_into(
+        "<II", rdata, 64, image_base + safe_seh_table_rva, 1
+    )
+    struct.pack_into(
+        "<IIIII",
+        rdata,
+        72,
+        image_base + cfg_check_pointer_rva,
+        image_base + cfg_dispatch_pointer_rva,
+        image_base + cfg_table_rva,
+        1,
+        0,
+    )
+    struct.pack_into(
+        "<II", rdata, 112, image_base + long_jump_table_rva, 1
+    )
+    struct.pack_into(
+        "<I", rdata, 128, image_base + text_rva + 0x10
+    )
+    struct.pack_into(
+        "<II", rdata, 164, image_base + continuation_table_rva, 1
+    )
+    struct.pack_into("<I", rdata, 0x200, text_rva)
+    struct.pack_into("<I", rdata, 0x204, text_rva)
+    struct.pack_into("<I", rdata, 0x208, text_rva + 0x10)
+    struct.pack_into("<I", rdata, 0x20C, text_rva + 0x20)
+    struct.pack_into("<I", rdata, 0x300, 0xA5A55A5A)
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, rdata_raw_size, 0, text_rva,
+        text_rva, rdata_rva, image_base, section_alignment, file_alignment,
+        4, 0, 0, 0, 4, 0, 0, size_of_image, headers_size, 0, 3, 0,
+        0x100000, 0x1000, 0x100000, 0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into(
+        "<II", directories, 10 * 8, rdata_rva, load_config_size
+    )
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", 0x21, text_rva,
+            text_raw_size, headers_size, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".rdata\0\0", rdata_raw_size, rdata_rva,
+            rdata_raw_size, headers_size + text_raw_size,
+            0, 0, 0, 0, 0x40000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix
+        + bytes(directories) + sections
+    ).ljust(headers_size, b"\0")
+    return headers + bytes(code) + bytes(rdata)
+
+
 def pe32_image_with_writable_data(
     code: bytes,
     *,
     relocation_offsets: list[int],
     relocation_page_rva: int = 0x1000,
     data_size: int = 4,
+    data: bytes | None = None,
 ) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000
@@ -416,10 +507,74 @@ def pe32_image_with_writable_data(
     headers = (
         bytes(dos) + b"PE\0\0" + coff + optional_prefix + bytes(directories) + sections
     ).ljust(headers_size, b"\0")
+    if data is None:
+        data = bytes(data_size)
+    if len(data) != data_size:
+        raise ValueError("writable-data fixture bytes must match data_size")
     return (
-        headers + code.ljust(0x200, b"\0") + bytes(data_size).ljust(0x200, b"\0")
+        headers + code.ljust(0x200, b"\0") + data.ljust(0x200, b"\0")
         + relocations.ljust(0x200, b"\0")
     )
+
+
+def pe32_resource_image(content: bytes = b"semantic-resource\0") -> bytes:
+    """Build a PE32 image with one named-type/ID/name/language resource."""
+
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    text_rva = 0x1000
+    resource_rva = 0x2000
+    text_raw_size = 0x200
+    resource_raw_size = 0x200
+    image_base = 0x400000
+    size_of_image = 0x3000
+    resource = bytearray(resource_raw_size)
+    # Root -> named type "CUSTOM" -> numeric name 7 -> language 1033 -> data.
+    struct.pack_into("<IIHHHH", resource, 0x00, 1, 2, 3, 4, 1, 0)
+    struct.pack_into("<II", resource, 0x10, 0x80000060, 0x80000018)
+    struct.pack_into("<IIHHHH", resource, 0x18, 5, 6, 7, 8, 0, 1)
+    struct.pack_into("<II", resource, 0x28, 7, 0x80000030)
+    struct.pack_into("<IIHHHH", resource, 0x30, 9, 10, 11, 12, 0, 1)
+    struct.pack_into("<II", resource, 0x40, 1033, 0x48)
+    struct.pack_into(
+        "<IIII", resource, 0x48, resource_rva + 0x80,
+        len(content), 1200, 0,
+    )
+    encoded_name = "CUSTOM".encode("utf-16-le")
+    struct.pack_into("<H", resource, 0x60, 6)
+    resource[0x62 : 0x62 + len(encoded_name)] = encoded_name
+    resource[0x80 : 0x80 + len(content)] = content
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, resource_raw_size, 0, text_rva,
+        text_rva, resource_rva, image_base, section_alignment, file_alignment,
+        4, 0, 0, 0, 4, 0, 0, size_of_image, headers_size, 0, 3, 0,
+        0x100000, 0x1000, 0x100000, 0x1000, 0, 16,
+    )
+    directories = bytearray(16 * 8)
+    struct.pack_into("<II", directories, 2 * 8, resource_rva, 0x80 + len(content))
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", 1, text_rva,
+            text_raw_size, headers_size, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".rsrc\0\0\0", resource_raw_size,
+            resource_rva, resource_raw_size, headers_size + text_raw_size,
+            0, 0, 0, 0, 0x40000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional_prefix
+        + bytes(directories) + sections
+    ).ljust(headers_size, b"\0")
+    return headers + b"\xc3".ljust(text_raw_size, b"\0") + bytes(resource)
 
 
 def align(value: int, alignment: int) -> int:

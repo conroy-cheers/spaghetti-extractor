@@ -3,7 +3,7 @@
   pkgs,
   name,
   pythonEnv,
-  pythonSource,
+  workerPythonSource ? null,
   kernelCache ? null,
   corpus,
   backend,
@@ -13,17 +13,21 @@
 }:
 
 let
-  workerSource = import ./python-module-closure.nix {
-    phaseRole = "authority";
-    inherit pkgs;
-    modules = [ "spaghetti_extractor.isa.conformance_worker" ];
-    extraPaths = [ "spaghetti_extractor/lean/SpaghettiExtractor/ISA" ];
-    name = "${name}-python-closure";
-  };
+  workerSource =
+    if workerPythonSource != null then
+      workerPythonSource
+    else
+      import ./python-module-closure.nix {
+        phaseRole = "authority";
+        inherit pkgs;
+        modules = [ "spaghetti_extractor.isa.conformance_worker" ];
+        extraPaths = [ "spaghetti_extractor/lean/SpaghettiExtractor/ISA" ];
+        name = "${name}-python-closure";
+      };
   workerCommand = ''
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
-    export PYTHONPATH=${workerSource}/src
+    export PYTHONPATH=${workerSource.pythonPath}
     ${pythonEnv}/bin/python3 - \
         ${corpus} ${pkgs.lib.escapeShellArg backend} \
         "$out/report.json" \

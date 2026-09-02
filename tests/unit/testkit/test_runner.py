@@ -147,28 +147,6 @@ class TestNixFirstRunner(unittest.TestCase):
             self.assertIn("--builders", command)
             self.assertIn(f"@{machines.resolve()}", command)
 
-    def test_affected_nix_test_builds_only_owned_check(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "src/spaghetti_extractor").mkdir(parents=True)
-            (root / "src/spaghetti_extractor/__init__.py").write_text("")
-            (root / "tests/smoke").mkdir(parents=True)
-            (root / "tests/smoke/test_smoke.py").write_text("VALUE = 1\n")
-
-            rendered = build_commands(
-                root,
-                mode="affected",
-                changed=("nix/tests/authority-machine-ir-input.nix",),
-            )
-
-            self.assertEqual(len(rendered), 2)
-            self.assertIn(
-                'flake.checks.x86_64-linux."authority-machine-ir-input"',
-                rendered[1][4],
-            )
-            self.assertIn('import (source + "/nix/test-suite.nix")', rendered[1][4])
-            self.assertNotIn("legacyPackages.x86_64-linux.test-shards", rendered[1][4])
-
     def test_evaluation_fingerprint_ignores_only_declared_source_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

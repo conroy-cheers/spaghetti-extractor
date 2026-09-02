@@ -21,7 +21,7 @@ pkgs.runCommand "spaghetti-extractor-profile-registry-check" {
   __contentAddressed = true;
 } ''
   set -euo pipefail
-  export PYTHONPATH=${phaseSource}/src
+  export PYTHONPATH=${phaseSource.pythonPath}
   python - ${profiles} "$out" <<'PY'
   import json
   import pathlib

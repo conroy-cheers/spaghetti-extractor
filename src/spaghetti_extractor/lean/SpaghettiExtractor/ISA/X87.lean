@@ -43,6 +43,7 @@ def StoreFormat.byteWidth : StoreFormat -> Nat
 
 inductive UnaryOperation where
   | negate
+  | absolute
   | sine
   | cosine
 deriving Repr, DecidableEq
@@ -211,32 +212,42 @@ private def propagatedNaN : Number -> Option Number
   | _ => none
 
 private def exactAdd (left right : Number) (subtract : Bool) : Number × Bool :=
-  let right := if subtract then negateNumber right else right
   match left, right with
   | .nan sign significand, _ => (.nan sign (quietNaNSignificand significand), false)
   | _, .nan sign significand => (.nan sign (quietNaNSignificand significand), false)
-  | .infinity leftSign, .infinity rightSign =>
-      if leftSign == rightSign then (.infinity leftSign, false)
-      else (.nan true canonicalNaNSignificand, true)
-  | .infinity sign, .finite _ _ _ _ | .finite _ _ _ _, .infinity sign =>
-      (.infinity sign, false)
-  | .finite leftSign leftNumerator leftDenominator leftExponent,
-      .finite rightSign rightNumerator rightDenominator rightExponent =>
-    let commonExponent := min leftExponent rightExponent
-    let leftShift := (leftExponent - commonExponent).toNat
-    let rightShift := (rightExponent - commonExponent).toNat
-    let leftMagnitude := leftNumerator * rightDenominator * pow2 leftShift
-    let rightMagnitude := rightNumerator * leftDenominator * pow2 rightShift
-    let denominator := leftDenominator * rightDenominator
-    if leftSign == rightSign then
-      (.finite leftSign (leftMagnitude + rightMagnitude) denominator commonExponent,
-        false)
-    else if leftMagnitude < rightMagnitude then
-      (.finite rightSign (rightMagnitude - leftMagnitude) denominator commonExponent,
-        false)
-    else
-      (.finite leftSign (leftMagnitude - rightMagnitude) denominator commonExponent,
-        false)
+  | left, right =>
+    -- Subtraction changes the arithmetic sign of a numeric right operand, but
+    -- it does not negate a NaN payload.  Match and quiet NaNs before applying
+    -- the subtraction transform so FSUB/FSUBR preserve the selected source
+    -- NaN's sign and payload.
+    let right := if subtract then negateNumber right else right
+    match left, right with
+    | .infinity leftSign, .infinity rightSign =>
+        if leftSign == rightSign then (.infinity leftSign, false)
+        else (.nan true canonicalNaNSignificand, true)
+    | .infinity sign, .finite _ _ _ _ | .finite _ _ _ _, .infinity sign =>
+        (.infinity sign, false)
+    | .finite leftSign leftNumerator leftDenominator leftExponent,
+        .finite rightSign rightNumerator rightDenominator rightExponent =>
+      let commonExponent := min leftExponent rightExponent
+      let leftShift := (leftExponent - commonExponent).toNat
+      let rightShift := (rightExponent - commonExponent).toNat
+      let leftMagnitude := leftNumerator * rightDenominator * pow2 leftShift
+      let rightMagnitude := rightNumerator * leftDenominator * pow2 rightShift
+      let denominator := leftDenominator * rightDenominator
+      if leftSign == rightSign then
+        (.finite leftSign (leftMagnitude + rightMagnitude) denominator commonExponent,
+          false)
+      else if leftMagnitude < rightMagnitude then
+        (.finite rightSign (rightMagnitude - leftMagnitude) denominator commonExponent,
+          false)
+      else
+        (.finite leftSign (leftMagnitude - rightMagnitude) denominator commonExponent,
+          false)
+    | .nan sign significand, _ =>
+        (.nan sign (quietNaNSignificand significand), false)
+    | _, .nan sign significand =>
+        (.nan sign (quietNaNSignificand significand), false)
 
 private def exactMultiply (left right : Number) : Number × Bool :=
   match left, right with
@@ -338,6 +349,58 @@ private def encodeFinite (sign : Bool) (numerator denominator : Nat)
       { bits := signBits + exponentField * pow2 fractionBits +
           (storageSignificand - pow2 fractionBits), inexact := rounded.inexact }
 
+/- IA-32 extended precision is not an IEEE format with an implicit leading
+   significand bit.  Its sign is bit 79, its exponent occupies bits 78..64,
+   and bit 63 is the explicit integer bit.  Reusing `encodeFinite` with 63
+   fraction bits used to place the sign one bit too low and subtract the
+   integer bit from every finite normal result.  That produced pseudo-denormal
+   encodings (for example, 1.0 ended in exponent byte 0x1f instead of 0x3f)
+   even though the exact rational arithmetic was correct. -/
+private def encodeFiniteX87 (sign : Bool) (numerator denominator : Nat)
+    (exponent : Int) (precision rounding : Nat) : BinaryEncoding :=
+  let signBits := if sign then pow2 79 else 0
+  if numerator == 0 then { bits := signBits } else
+  let minimumExponent : Int := -16382
+  let maximumExponent : Int := 16383
+  let exactExponent := ratioFloorLog2 numerator denominator + exponent
+  let roundedAt := fun (targetExponent : Int) =>
+    let shift := exponent - targetExponent + Int.ofNat (precision - 1)
+    let scaled := scaleRatio numerator denominator shift
+    roundRatio sign rounding scaled.1 scaled.2
+  if exactExponent > maximumExponent then
+    if overflowToInfinity sign rounding then
+      { bits := signBits + 0x7fff * pow2 64 + pow2 63,
+        overflow := true, inexact := true }
+    else
+      { bits := signBits + 0x7ffe * pow2 64 + (pow2 64 - 1),
+        overflow := true, inexact := true }
+  else if exactExponent < minimumExponent then
+    let rounded := roundedAt minimumExponent
+    let stored := rounded.quotient * pow2 (64 - precision)
+    if stored >= pow2 63 then
+      { bits := signBits + pow2 64 + pow2 63,
+        underflow := rounded.inexact, inexact := rounded.inexact }
+    else
+      { bits := signBits + stored,
+        underflow := rounded.inexact, inexact := rounded.inexact }
+  else
+    let rounded := roundedAt exactExponent
+    let carry := rounded.quotient >= pow2 precision
+    let adjustedExponent := if carry then exactExponent + 1 else exactExponent
+    let adjustedQuotient := if carry then rounded.quotient / 2 else rounded.quotient
+    if adjustedExponent > maximumExponent then
+      if overflowToInfinity sign rounding then
+        { bits := signBits + 0x7fff * pow2 64 + pow2 63,
+          overflow := true, inexact := true }
+      else
+        { bits := signBits + 0x7ffe * pow2 64 + (pow2 64 - 1),
+          overflow := true, inexact := true }
+    else
+      let exponentField := (adjustedExponent + 16383).toNat
+      let storageSignificand := adjustedQuotient * pow2 (64 - precision)
+      { bits := signBits + exponentField * pow2 64 + storageSignificand,
+        inexact := rounded.inexact }
+
 private def encodeX87 (number : Number) (control : BitVec 16) : NumericResult :=
   match number with
   | .nan sign significand =>
@@ -348,8 +411,8 @@ private def encodeX87 (number : Number) (control : BitVec 16) : NumericResult :=
       { value := BitVec.ofNat 80
           ((if sign then pow2 79 else 0) + 0x7fff * pow2 64 + pow2 63) }
   | .finite sign numerator denominator exponent =>
-      let encoded := encodeFinite sign numerator denominator exponent
-        (precisionBits control) 15 63 16383 (roundingControl control)
+      let encoded := encodeFiniteX87 sign numerator denominator exponent
+        (precisionBits control) (roundingControl control)
       { value := BitVec.ofNat 80 encoded.bits, overflow := encoded.overflow,
         underflow := encoded.underflow, inexact := encoded.inexact }
 
@@ -361,6 +424,9 @@ def concreteUnary (operation : UnaryOperation) (value : Word)
     (control : BitVec 16) : Option NumericResult :=
   match operation with
   | .negate => some (encodeX87 (negateNumber (decodeWord value)) control)
+  | .absolute => some {
+      value := value &&& BitVec.ofNat 80 (pow2 79 - 1)
+    }
   | .sine | .cosine => none
 
 def concreteBinary (operation : BinaryOperation) (left right : Word)

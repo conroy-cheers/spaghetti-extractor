@@ -1,296 +1,440 @@
 {
-  "format": "spaghetti-extractor-component-catalog-intent-v2",
-  "program_id": "gnu-hello-pe32-reference-v1",
-  "permitted_activation_profiles": [
-    "bounded-equivalence-v1",
-    "portable-component-v2"
-  ],
   "components": [
     {
       "id": "startup-compare-route",
       "label": "Startup comparison route",
-      "selector": {
-        "entry_rva": 4152,
-        "end_rva": 4160,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/startup-compare-route.json",
-      "machine_binding": "bindings/startup-compare-route.json",
       "source": {
         "files": [
-          "source/components/startup-compare-route.c"
+          "components/startup-compare-route.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "compare": "gnu_hello_startup_compare_route"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "startup-sleep-service",
       "label": "Startup delay service call",
-      "selector": {
-        "entry_rva": 4160,
-        "end_rva": 4173,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/startup-sleep-service.json",
-      "machine_binding": "bindings/startup-sleep-service.json",
       "source": {
         "files": [
-          "source/components/startup-sleep-service.c"
+          "components/startup-sleep-service.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "delay": "gnu_hello_startup_sleep_service"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "static-word-initialization",
-      "label": "Static-word initialization with helper",
-      "selector": {
-        "entry_rva": 4609,
-        "end_rva": 41619,
-        "proposal_kind": "direct_call_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Static-word initialization with helper"
     },
     {
       "id": "short-option-classifier",
       "label": "Short-option classifier",
-      "selector": {
-        "entry_rva": 4524,
-        "end_rva": 4531,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/short-option-classifier.json",
-      "machine_binding": "bindings/short-option-classifier.json",
       "source": {
         "files": [
-          "source/components/short-option-classifier.c"
+          "components/short-option-classifier.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "classify": "gnu_hello_short_option_classifier"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "rotate-pending-words",
-      "label": "Rotate pending option words",
-      "selector": {
-        "entry_rva": 7072,
-        "end_rva": 7291,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Rotate pending option words"
     },
     {
       "id": "windows-error-message-lookup",
-      "label": "Windows error message lookup",
-      "selector": {
-        "entry_rva": 22652,
-        "end_rva": 23061,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Windows error message lookup"
     },
     {
       "id": "bounded-string-length",
+      "induction_intent": "induction/bounded-string-length.json",
       "label": "Bounded byte-string length",
-      "selector": {
-        "entry_rva": 81104,
-        "end_rva": 81160,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/bounded-string-length.json",
-      "machine_binding": "bindings/bounded-string-length.json",
-      "induction": "induction/bounded-string-length.json",
       "source": {
         "files": [
-          "source/components/bounded-string-length.c"
+          "components/bounded-string-length.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "length": "gnu_hello_bounded_string_length"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "startup-atomic-compare-exchange",
       "label": "Atomic startup update",
-      "selector": {
-        "entry_rva": 4176,
-        "end_rva": 4188,
-        "proposal_kind": "reconstruction_cluster_baseline"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/startup-atomic-compare-exchange.json",
-      "machine_binding": "bindings/startup-atomic-compare-exchange.json",
       "source": {
         "files": [
-          "source/components/startup-atomic-compare-exchange.c"
+          "components/startup-atomic-compare-exchange.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "compare_exchange": "gnu_hello_startup_atomic_compare_exchange"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "startup-callback-registration",
       "label": "Unhandled-exception callback registration",
-      "selector": {
-        "entry_rva": 4407,
-        "end_rva": 4420,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/startup-callback-registration.json",
-      "machine_binding": "bindings/startup-callback-registration.json",
       "source": {
         "files": [
-          "source/components/startup-callback-registration.c"
+          "components/startup-callback-registration.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "install": "gnu_hello_startup_callback_registration"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "finite-selector-dispatch",
       "label": "Finite selector dispatch",
-      "selector": {
-        "entry_rva": 14383,
-        "end_rva": 14393,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/finite-selector-dispatch.json",
-      "machine_binding": "bindings/finite-selector-dispatch.json",
       "source": {
         "files": [
-          "source/components/finite-selector-dispatch.c"
+          "components/finite-selector-dispatch.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "select": "gnu_hello_finite_selector_dispatch"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "alias-sensitive-word-update",
-      "label": "Alias-sensitive typed memory update",
-      "selector": {
-        "entry_rva": 53481,
-        "end_rva": 53517,
-        "proposal_kind": "reconstruction_cluster_baseline"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Alias-sensitive typed memory update"
     },
     {
       "id": "ascii-to-lower",
       "label": "ASCII case conversion helper",
-      "selector": {
-        "entry_rva": 37693,
-        "end_rva": 37714,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/ascii-to-lower.json",
-      "machine_binding": "bindings/ascii-to-lower.json",
       "source": {
         "files": [
-          "source/components/ascii-to-lower.c"
+          "components/ascii-to-lower.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "convert": "gnu_hello_ascii_to_lower"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "ascii-string-compare",
+      "induction_intent": "induction/ascii-string-compare.json",
       "label": "ASCII case-insensitive string comparison",
-      "selector": {
-        "entry_rva": 26560,
-        "end_rva": 26639,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/ascii-string-compare.json",
-      "machine_binding": "bindings/ascii-string-compare.json",
-      "induction": "induction/ascii-string-compare.json",
       "source": {
         "files": [
-          "source/components/ascii-string-compare.c"
+          "components/ascii-string-compare.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "compare": "gnu_hello_ascii_string_compare"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "last-path-component",
+      "induction_intent": "induction/last-path-component.json",
       "label": "Final path component scan",
-      "selector": {
-        "entry_rva": 26240,
-        "end_rva": 26426,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/last-path-component.json",
-      "machine_binding": "bindings/last-path-component.json",
-      "induction": "induction/last-path-component.json",
       "source": {
         "files": [
-          "source/components/last-path-component.c"
+          "components/last-path-component.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "find": "gnu_hello_last_path_component"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "memory-regions-equal",
       "label": "Imported memory comparison predicate",
-      "selector": {
-        "entry_rva": 36192,
-        "end_rva": 36232,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/memory-regions-equal.json",
-      "machine_binding": "bindings/memory-regions-equal.json",
       "source": {
         "files": [
-          "source/components/memory-regions-equal.c"
+          "components/memory-regions-equal.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "compare": "gnu_hello_memory_regions_equal"
-        }
+        },
+        "shared_inputs": []
       }
     },
     {
       "id": "program-name-selection",
       "label": "Program basename and wrapper-prefix selection",
-      "selector": {
-        "entry_rva": 11092,
-        "end_rva": 11238,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "portable-component-v2",
-      "interface_review": "reviews/program-name-selection.json",
-      "machine_binding": "bindings/program-name-selection.json",
-      "relation": "relations/program-name-selection.json",
+      "relation_intent": "relations/program-name-selection.json",
       "source": {
         "files": [
-          "source/components/program-name-selection.c"
+          "components/program-name-selection.c"
         ],
-        "operations": {
+        "operation_symbols": {
           "select": "gnu_hello_program_name_selection"
-        }
+        },
+        "shared_inputs": []
       }
     }
   ],
+  "configurations": [
+    {
+      "id": "leaves",
+      "label": "Independent leaf components",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "startup-compare-route",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-sleep-service",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "static-word-initialization",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "short-option-classifier",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "rotate-pending-words",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "windows-error-message-lookup",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "bounded-string-length",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-atomic-compare-exchange",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-callback-registration",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "finite-selector-dispatch",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "alias-sensitive-word-update",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "ascii-string-compare",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "last-path-component",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "memory-regions-equal",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "program-name-selection",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "operator-whole",
+      "label": "One operator-defined aggregate",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "operator-whole",
+          "kind": "group"
+        }
+      ]
+    },
+    {
+      "id": "ascii-to-lower-enabled",
+      "label": "Verified ASCII case conversion with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "ascii-and-bounded-enabled",
+      "label": "Verified scalar and object-view lifts with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "bounded-string-length",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "scalar-object-and-control-enabled",
+      "label": "Verified scalar, object-view, and control lifts with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "bounded-string-length",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "short-option-classifier",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "multi-input-control-enabled",
+      "label": "Verified scalar, object-view, and multi-input control lifts with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "bounded-string-length",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "short-option-classifier",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "startup-compare-route",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "string-pointer-enabled",
+      "label": "Verified scalar, object-view, control, and string-pointer lifts with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "ascii-to-lower",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "bounded-string-length",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "short-option-classifier",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "startup-compare-route",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "startup-sleep-service",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "finite-selector-dispatch",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "last-path-component",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "memory-regions-equal",
+          "kind": "component"
+        },
+        {
+          "activation": "enabled",
+          "id": "ascii-string-compare",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "startup-atomic-enabled",
+      "label": "Verified atomic startup update with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "startup-atomic-compare-exchange",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "startup-callback-enabled",
+      "label": "Verified unhandled-exception callback registration with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "startup-callback-registration",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "program-name-selection-enabled",
+      "label": "Verified program-name selection and checked service relation with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "program-name-selection",
+          "kind": "component"
+        }
+      ]
+    }
+  ],
+  "format": "spaghetti-extractor-component-lifting-intent-v1",
   "groups": [
     {
       "id": "operator-whole",
@@ -312,255 +456,14 @@
         "last-path-component",
         "memory-regions-equal",
         "program-name-selection"
-      ],
-      "evidence_profile": "structural-draft-v1",
-      "interface_review": "reviews/operator-whole.json"
+      ]
     }
   ],
-  "configurations": [
-    {
-      "id": "leaves",
-      "label": "Independent leaf components",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "startup-compare-route",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "startup-sleep-service",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "static-word-initialization",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "short-option-classifier",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "rotate-pending-words",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "windows-error-message-lookup",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "startup-atomic-compare-exchange",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "startup-callback-registration",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "finite-selector-dispatch",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "alias-sensitive-word-update",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "ascii-string-compare",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "last-path-component",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "memory-regions-equal",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "program-name-selection",
-          "activation": "draft"
-        }
-      ]
-    },
-    {
-      "id": "operator-whole",
-      "label": "One operator-defined aggregate",
-      "selections": [
-        {
-          "kind": "group",
-          "id": "operator-whole",
-          "activation": "draft"
-        }
-      ]
-    },
-    {
-      "id": "ascii-to-lower-enabled",
-      "label": "Verified ASCII case conversion with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "ascii-and-bounded-enabled",
-      "label": "Verified scalar and object-view lifts with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "scalar-object-and-control-enabled",
-      "label": "Verified scalar, object-view, and control lifts with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "short-option-classifier",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "multi-input-control-enabled",
-      "label": "Verified scalar, object-view, and multi-input control lifts with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "short-option-classifier",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "startup-compare-route",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "string-pointer-enabled",
-      "label": "Verified scalar, object-view, control, and string-pointer lifts with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "ascii-to-lower",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "short-option-classifier",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "startup-compare-route",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "startup-sleep-service",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "finite-selector-dispatch",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "last-path-component",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "memory-regions-equal",
-          "activation": "enabled"
-        },
-        {
-          "kind": "component",
-          "id": "ascii-string-compare",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "startup-atomic-enabled",
-      "label": "Verified atomic startup update with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "startup-atomic-compare-exchange",
-          "activation": "enabled"
-        }
-      ]
-    },
-    {
-      "id": "startup-callback-enabled",
-      "label": "Verified unhandled-exception callback registration with machine fallback",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "startup-callback-registration",
-          "activation": "enabled"
-        }
-      ]
-    }
-  ]
+  "intent_sha256": "f9346d896a58106340b46226f612aea45ae6f710b94fd30a1bcc9b188e0a383b",
+  "policy": {
+    "machine_authority_from_v5_bindings_only": true,
+    "operation_symbols_only": true,
+    "tests_authorize": false
+  },
+  "program_id": "gnu-hello-pe32-reference-v1"
 }

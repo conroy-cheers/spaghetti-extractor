@@ -7,26 +7,22 @@ import struct
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifacts.formats import (
-    NATIVE_INGRESS_PLAN_FORMAT,
-    PE32_MODULE_DEPLOYMENT_FORMAT,
+from ..artifacts.artifact_set import canonical_sha256_v3
+from ..pe32.formats import (
     PE32_MODULE_INTERFACE_FORMAT,
     PE32_LOAD_OBSERVATION_FORMAT,
     PE32_OBSERVED_LOAD_GRAPH_FORMAT,
     PE32_PROJECT_COMPLETION_FORMAT,
-    PE32_PROJECT_INTENT_FORMAT,
     PE32_PROJECT_LOAD_PLAN_FORMAT,
 )
-from ..artifacts.artifact_set import canonical_sha256_v3
 from ..errors import ToolkitInputError
 from ..pe32.image import parse_pe_image
+from ..pe32.resources import extract_resource_surface_v1
+from ..native_realization.receipt_v2 import NativeRealizationV2
 from ..roundtrip_fuzz.image_io import load_spx_load_image_contract
 from ..util import sha256_file, write_json
 from .imports import NativeImportSlot
-
-
-_OWNERSHIP = frozenset({"target", "runtime"})
-_IMPLEMENTATIONS = frozenset({"behavioral_c", "native_host"})
+from .project_load_plan import write_pe32_project_load_plan
 
 
 def write_pe32_module_interface(
@@ -95,6 +91,13 @@ def write_pe32_module_interface(
             }
             for section in contract.sections
         ]
+        resources, resource_blockers = extract_resource_surface_v1(
+            pe=parsed.pe,
+            image_size=parsed.size_of_image,
+            header_size=parsed.size_of_headers,
+            sections=section_rows,
+        )
+        blockers.extend(resource_blockers)
         payload = {
             "format": PE32_MODULE_INTERFACE_FORMAT,
             "status": "complete" if not blockers else "incomplete",
@@ -130,7 +133,12 @@ def write_pe32_module_interface(
             "delay_imports": delay_imports,
             "export_directory": export_surface,
             "tls": tls,
+            "runtime_headers": contract.runtime_headers.to_payload(),
             "sections": section_rows,
+            "resources": resources,
+            "base_relocations": [
+                block.to_payload() for block in contract.relocations
+            ],
             "load_config": load_config,
             "directories": directories,
             "blockers": blockers,
@@ -146,6 +154,32 @@ def write_pe32_module_interface(
                     row["kind"] == "data" for row in export_surface["slots"]
                 ),
                 "tls_callbacks": len(parsed.tls_callback_rvas or ()),
+                "relocation_blocks": len(contract.relocations),
+                "relocation_slots": sum(
+                    block.slot_count for block in contract.relocations
+                ),
+                "base_relocations": sum(
+                    relocation.type != 0
+                    for block in contract.relocations
+                    for relocation in block.relocations
+                ),
+                "runtime_header_bytes": len(contract.runtime_headers.data),
+                "resource_directories": (
+                    0 if resources is None else len(resources["directories"])
+                ),
+                "resource_entries": (
+                    0 if resources is None else sum(
+                        len(row["entries"]) for row in resources["directories"]
+                    )
+                ),
+                "resource_data_entries": (
+                    0 if resources is None else len(resources["data_entries"])
+                ),
+                "resource_bytes": (
+                    0 if resources is None else sum(
+                        row["size"] for row in resources["data_entries"]
+                    )
+                ),
                 "blockers": len(blockers),
             },
             "policy": {
@@ -429,7 +463,8 @@ def _load_config_surface_v2(parsed: Any) -> tuple[dict[str, Any] | None, list[di
         return {
             "directory_rva": rva, "directory_size": declared_size,
             "structure_size": structure_size, "fields": {},
-            "safe_seh": None, "cfg": None,
+            "safe_seh": None, "cfg": None, "pointer_fields": [],
+            "typed_tables": [],
         }, blockers
     if structure_size not in known_sizes:
         blockers.append({
@@ -613,6 +648,25 @@ def _directory_surface_v2(parsed: Any, load_config: Mapping[str, Any] | None) ->
         "debug", "architecture", "global_pointer", "tls", "load_config",
         "bound_import", "iat", "delay_import", "clr_runtime", "reserved",
     )
+    codecs = {
+        0: "pe32-export-directory-v2",
+        1: "pe32-import-directory-v1",
+        2: "pe32-resource-directory-v1",
+        3: "unsupported-fail-closed",
+        4: "pe32-security-overlay-v1",
+        5: "pe32-base-relocation-directory-v1",
+        6: "unsupported-fail-closed",
+        7: "unsupported-fail-closed",
+        8: "unsupported-fail-closed",
+        9: "pe32-tls-directory-v1",
+        10: "pe32-load-config-directory-v2",
+        11: "pe32-bound-import-directory-v1",
+        12: "pe32-iat-directory-v1",
+        13: "pe32-delay-import-directory-v2",
+        14: "unsupported-fail-closed",
+        15: "unsupported-fail-closed",
+    }
+    pointer_bearing = {0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
     unsupported = {3, 6, 7, 8, 14, 15}
     rows: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
@@ -620,6 +674,8 @@ def _directory_surface_v2(parsed: Any, load_config: Mapping[str, Any] | None) ->
         rva, size = int(directory.VirtualAddress), int(directory.Size)
         rows.append({
             "index": index, "name": names[index], "rva": rva, "size": size,
+            "pointer_bearing": index in pointer_bearing,
+            "codec": codecs[index],
             "realization_policy": policies[index],
         })
         if (rva or size) and index in unsupported:
@@ -630,284 +686,10 @@ def _directory_surface_v2(parsed: Any, load_config: Mapping[str, Any] | None) ->
     if any(row["name"] == "load_config" and (row["rva"] or row["size"]) for row in rows) and load_config is None:
         blockers.append({"category": "load_config_typed_codec_missing"})
     return rows, blockers
-
-
-def write_pe32_project_load_plan(
-    *,
-    intent: Path,
-    module_interfaces: Mapping[str, Path],
-    native_ingress_plans: Mapping[str, Path] | None = None,
-    edge_authorities: Mapping[str, Mapping[str, Any]] | None = None,
-    out: Path,
-) -> dict[str, Any]:
-    """Resolve declared target edges and leave environment edges to the host."""
-
-    raw_intent = _object(Path(intent), "project intent")
-    project = _parse_project_intent(raw_intent)
-    modules = {
-        image_id: _module_interface(path, expected_image_id=image_id)
-        for image_id, path in module_interfaces.items()
-    }
-    ingress_paths = {} if native_ingress_plans is None else dict(native_ingress_plans)
-    ingress_plans = {
-        image_id: _load_format(path, NATIVE_INGRESS_PLAN_FORMAT, f"{image_id} native ingress plan")
-        for image_id, path in ingress_paths.items()
-    }
-    if ingress_plans and set(ingress_plans) != set(modules):
-        raise ToolkitInputError("native ingress plan IDs differ from module-interface IDs")
-    for image_id, ingress in ingress_plans.items():
-        if (
-            ingress.get("status") != "complete"
-            or ingress.get("module", {}).get("image_id") != image_id
-            or ingress.get("module", {}).get("module_interface_sha256")
-            != sha256_file(module_interfaces[image_id])
-        ):
-            raise ToolkitInputError(f"native ingress plan {image_id!r} is stale or incomplete")
-    edge_authority = {} if edge_authorities is None else dict(edge_authorities)
-    declared_ids = {
-        row["image_id"]
-        for row in project["images"]
-        if row["ownership"] == "target"
-    }
-    if set(modules) != declared_ids:
-        raise ToolkitInputError(
-            "module-interface IDs differ from target-owned project images: "
-            f"missing={sorted(declared_ids - set(modules))!r}, "
-            f"extra={sorted(set(modules) - declared_ids)!r}"
-        )
-    aliases: dict[str, str] = {}
-    specifications = {row["image_id"]: row for row in project["images"]}
-    blockers: list[dict[str, Any]] = []
-    for row in project["images"]:
-        for alias in (row["filename"], *row["aliases"]):
-            normalized = alias.lower()
-            prior = aliases.get(normalized)
-            if prior is not None and prior != row["image_id"]:
-                blockers.append({
-                    "category": "module_alias_ambiguous",
-                    "alias": normalized,
-                    "images": sorted({prior, row["image_id"]}),
-                })
-            else:
-                aliases[normalized] = row["image_id"]
-
-    edges: list[dict[str, Any]] = []
-    for importer_id in sorted(modules):
-        interface = modules[importer_id]
-        for slot in interface["imports"]:
-            request = {
-                "dll": str(slot["dll"]).lower(),
-                "symbol": slot["symbol"],
-                "ordinal": slot["ordinal"],
-            }
-            provider_id = aliases.get(request["dll"])
-            if provider_id is None:
-                resolution = {
-                    "kind": "host_loader",
-                    "requested_dll": request["dll"],
-                }
-            elif specifications[provider_id]["ownership"] == "runtime":
-                resolution = {
-                    "kind": "host_loader",
-                    "requested_dll": request["dll"],
-                    "declared_runtime_image_id": provider_id,
-                }
-            else:
-                exported = _resolve_export(modules[provider_id], request)
-                if exported is None:
-                    blockers.append({
-                        "category": "target_export_missing",
-                        "slot_id": slot["slot_id"],
-                        "provider_image_id": provider_id,
-                        "request": request,
-                    })
-                    resolution = {"kind": "unresolved"}
-                elif exported["kind"] == "forwarder":
-                    resolution = {
-                        "kind": "target_forwarder",
-                        "provider_image_id": provider_id,
-                        "export": exported,
-                    }
-                else:
-                    compatibility = None
-                    if ingress_plans:
-                        authority = edge_authority.get(slot["slot_id"])
-                        if authority is None:
-                            blockers.append({
-                                "category": "cross_image_edge_authority_missing",
-                                "slot_id": slot["slot_id"],
-                            })
-                        elif exported["kind"] == "code":
-                            providers = [
-                                row for row in ingress_plans[provider_id].get("ingresses", [])
-                                if row.get("role") == "export"
-                                and any(
-                                    alias.get("ordinal") == exported["ordinal"]
-                                    and (
-                                        request["symbol"] is None
-                                        or alias.get("name") == request["symbol"]
-                                    )
-                                    for alias in row.get("exports", [])
-                                )
-                            ]
-                            expected_fields = {
-                                "slot_id", "kind", "importer_use",
-                                "importer_physical_frame_id",
-                            }
-                            if (
-                                set(authority) != expected_fields
-                                or authority.get("kind") != "code"
-                                or authority.get("importer_use") != "code"
-                                or len(providers) != 1
-                            ):
-                                blockers.append({
-                                    "category": (
-                                        "cross_image_iat_use_ambiguous"
-                                        if authority.get("importer_use") == "ambiguous"
-                                        else "cross_image_code_authority_invalid"
-                                    ),
-                                    "slot_id": slot["slot_id"],
-                                })
-                            else:
-                                provider_frame = providers[0]["physical_frame_id"]
-                                importer_frame = authority["importer_physical_frame_id"]
-                                compatibility = {
-                                    "kind": "code",
-                                    "importer_physical_frame_id": importer_frame,
-                                    "provider_physical_frame_id": provider_frame,
-                                    "compatible": importer_frame == provider_frame,
-                                }
-                                if not compatibility["compatible"]:
-                                    blockers.append({"category": "cross_image_code_protocol_mismatch", "slot_id": slot["slot_id"]})
-                        elif exported["kind"] == "data":
-                            anchors = [
-                                row for row in ingress_plans[provider_id].get("data_export_anchors", [])
-                                if any(
-                                    alias.get("ordinal") == exported["ordinal"]
-                                    and (request["symbol"] is None or alias.get("name") == request["symbol"])
-                                    for alias in row.get("aliases", [])
-                                )
-                            ]
-                            expected_fields = {
-                                "slot_id", "kind", "importer_use",
-                                "required_permissions", "minimum_extent",
-                            }
-                            if (
-                                set(authority) != expected_fields
-                                or authority.get("kind") != "data"
-                                or authority.get("importer_use") != "data"
-                                or len(anchors) != 1
-                            ):
-                                blockers.append({
-                                    "category": (
-                                        "cross_image_iat_use_ambiguous"
-                                        if authority.get("importer_use") == "ambiguous"
-                                        else "cross_image_data_authority_invalid"
-                                    ),
-                                    "slot_id": slot["slot_id"],
-                                })
-                            else:
-                                required = authority["required_permissions"]
-                                minimum = authority["minimum_extent"]
-                                anchor = anchors[0]
-                                compatible = (
-                                    isinstance(required, int) and not isinstance(required, bool) and required > 0
-                                    and isinstance(minimum, int) and not isinstance(minimum, bool) and minimum > 0
-                                    and anchor["object_permissions"] & required == required
-                                    and anchor["available_extent"] >= minimum
-                                )
-                                compatibility = {
-                                    "kind": "data", "required_permissions": required,
-                                    "minimum_extent": minimum, "provider_anchor_id": anchor["id"],
-                                    "compatible": compatible,
-                                }
-                                if not compatible:
-                                    blockers.append({"category": "cross_image_data_protocol_mismatch", "slot_id": slot["slot_id"]})
-                    resolution = {
-                        "kind": "target_image",
-                        "provider_image_id": provider_id,
-                        "export": exported,
-                        "compatibility": compatibility,
-                    }
-            edges.append({
-                "slot_id": slot["slot_id"],
-                "importer_image_id": importer_id,
-                "iat_rva": slot["iat_rva"],
-                "request": request,
-                "resolution": resolution,
-            })
-
-    known_slots = {row["slot_id"] for row in edges}
-    extra_edge_authorities = sorted(set(edge_authority) - known_slots)
-    if extra_edge_authorities:
-        blockers.append({
-            "category": "cross_image_edge_authority_unreachable",
-            "slot_ids": extra_edge_authorities,
-        })
-
-    payload = {
-        "format": PE32_PROJECT_LOAD_PLAN_FORMAT,
-        "status": "complete" if not blockers else "incomplete",
-        "project_id": project["project_id"],
-        "root_image_id": project["root_image_id"],
-        "intent": {
-            "path": Path(intent).name,
-            "sha256": sha256_file(intent),
-        },
-        "images": [
-            {
-                **specifications[image_id],
-                "interface_sha256": (
-                    sha256_file(module_interfaces[image_id])
-                    if image_id in module_interfaces else None
-                ),
-                "native_ingress_plan_sha256": (
-                    sha256_file(ingress_paths[image_id])
-                    if image_id in ingress_paths else None
-                ),
-                "pe_sha256": (
-                    modules[image_id]["identity"]["pe_sha256"]
-                    if image_id in modules else None
-                ),
-            }
-            for image_id in sorted(specifications)
-        ],
-        "target_distribution_roots": project["target_distribution_roots"],
-        "host_environment": project["host_environment"],
-        "edges": edges,
-        "blockers": blockers,
-        "counts": {
-            "images": len(specifications),
-            "target_images": sum(
-                row["ownership"] == "target" for row in project["images"]
-            ),
-            "import_slots": len(edges),
-            "target_edges": sum(
-                row["resolution"]["kind"].startswith("target_") for row in edges
-            ),
-            "host_edges": sum(
-                row["resolution"]["kind"] == "host_loader" for row in edges
-            ),
-            "blockers": len(blockers),
-        },
-        "policy": {
-            "host_loader_resolution": True,
-            "duplicate_logical_import_slots": "preserved",
-            "unknown_target_local_module": "fail_until_classified",
-            "layout_compatibility": "not_promised",
-        },
-    }
-    payload["plan_sha256"] = canonical_sha256_v3(payload)
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    write_json(out / "project-load-plan.json", payload)
-    return payload
-
-
 def write_pe32_project_completion(
     *,
     load_plan: Path,
-    module_deployments: Mapping[str, Path],
+    native_realizations: Mapping[str, Path],
     observed_load_graph: Path | None,
     out: Path,
 ) -> dict[str, Any]:
@@ -917,7 +699,8 @@ def write_pe32_project_completion(
     declared = {row["image_id"]: row for row in plan["images"]}
     blockers = list(plan.get("blockers") or [])
     completion_rows: list[dict[str, Any]] = []
-    deployments_by_image: dict[str, dict[str, Any]] = {}
+    realization_paths = dict(native_realizations)
+    candidate_records_by_image: dict[str, dict[str, Any]] = {}
     for image_id, specification in sorted(declared.items()):
         if specification["ownership"] != "target":
             completion_rows.append({
@@ -927,7 +710,7 @@ def write_pe32_project_completion(
                 "status": "qualified_environment_dependency",
             })
             continue
-        path = module_deployments.get(image_id)
+        realization_path = realization_paths.get(image_id)
         if specification["implementation"] != "behavioral_c":
             blockers.append({
                 "category": "target_image_not_lifted",
@@ -940,48 +723,45 @@ def write_pe32_project_completion(
                 "status": "incomplete",
             })
             continue
-        if path is None:
+        if realization_path is None:
             blockers.append({
-                "category": "target_module_deployment_missing",
+                "category": "target_native_realization_missing",
                 "image_id": image_id,
             })
-            status = "incomplete"
-            digest = None
-            candidate_sha256 = None
-        else:
-            deployment = _load_format(
-                path, PE32_MODULE_DEPLOYMENT_FORMAT,
-                f"{image_id} module deployment",
+            completion_rows.append({
+                "image_id": image_id,
+                "ownership": "target",
+                "implementation": "behavioral_c",
+                "status": "incomplete",
+            })
+            continue
+        realization = NativeRealizationV2.load(realization_path)
+        candidate = realization.payload["candidate"]
+        if candidate.get("filename") != specification["filename"]:
+            raise ToolkitInputError(
+                f"native realization {image_id!r} binds another filename"
             )
-            _validate_closed_payload(
-                deployment, f"{image_id} module deployment", "deployment_sha256"
-            )
-            _validate_module_deployment(
-                deployment, f"{image_id} module deployment"
-            )
-            if deployment.get("image_id") != image_id:
-                raise ToolkitInputError(
-                    f"module deployment {image_id!r} binds another image"
-                )
-            status = str(deployment.get("status"))
-            digest = sha256_file(path)
-            candidate = deployment.get("candidate")
-            candidate_sha256 = (
-                candidate.get("sha256") if isinstance(candidate, Mapping) else None
-            )
-            deployments_by_image[image_id] = deployment
-            if status != "complete":
-                blockers.append({
-                    "category": "target_module_deployment_incomplete",
-                    "image_id": image_id,
-                    "observed": status,
-                })
+        status = str(realization.payload["status"])
+        digest = sha256_file(realization_path)
+        candidate_sha256 = candidate["sha256"]
+        candidate_records_by_image[image_id] = {
+            "candidate_sha256": candidate_sha256,
+            "pinned_code_layout_requirements": realization.payload[
+                "pinned_code_layout_requirements"
+            ],
+        }
+        if status != "complete":
+            blockers.append({
+                "category": "target_native_realization_incomplete",
+                "image_id": image_id,
+                "observed": status,
+            })
         completion_rows.append({
             "image_id": image_id,
             "ownership": "target",
             "implementation": "behavioral_c",
             "status": status,
-            "deployment_sha256": digest,
+            "native_realization_sha256": digest,
             "candidate_sha256": candidate_sha256,
         })
 
@@ -1022,9 +802,9 @@ def write_pe32_project_completion(
                 and row.get("origin") == "target_distribution"
                 and isinstance(row.get("image_id"), str)
             }
-            for image_id, deployment in sorted(deployments_by_image.items()):
+            for image_id, record in sorted(candidate_records_by_image.items()):
                 observed_row = observed_target.get(image_id)
-                expected_hash = deployment.get("candidate", {}).get("sha256")
+                expected_hash = record["candidate_sha256"]
                 if observed_row is None:
                     blockers.append({
                         "category": "deployed_candidate_not_observed",
@@ -1037,6 +817,34 @@ def write_pe32_project_completion(
                         "expected": expected_hash,
                         "observed": observed_row.get("sha256"),
                     })
+                if observed_row is None:
+                    continue
+                for requirement in record["pinned_code_layout_requirements"]:
+                    authority_id = requirement["authority_id"]
+                    if (
+                        requirement[
+                            "resolved_external_environment_sha256"
+                        ]
+                        != observed.get("environment_sha256")
+                    ):
+                        blockers.append({
+                            "category": (
+                                "observed_pinned_layout_environment_mismatch"
+                            ),
+                            "image_id": image_id,
+                            "authority_id": authority_id,
+                        })
+                    if (
+                        observed_row.get("loaded_base")
+                        != requirement["required_image_base"]
+                    ):
+                        blockers.append({
+                            "category": "observed_pinned_layout_base_mismatch",
+                            "image_id": image_id,
+                            "authority_id": authority_id,
+                            "required": requirement["required_image_base"],
+                            "observed": observed_row.get("loaded_base"),
+                        })
         observed_slots = observed.get("slots")
         if not isinstance(observed_slots, list):
             blockers.append({"category": "observed_import_slots_missing"})
@@ -1125,7 +933,7 @@ def write_pe32_project_completion(
             "blockers": len(blockers),
         },
         "definition_of_complete": (
-            "all target-owned candidate module deployments close and their exact "
+            "all target-owned native realizations close and their exact "
             "hashes appear in a qualified candidate-observed load graph"
         ),
     }
@@ -1181,7 +989,8 @@ def write_pe32_observed_load_graph(
     unknown_local: list[str] = []
     for index, raw in enumerate(raw_modules):
         if not isinstance(raw, Mapping) or set(raw) != {
-            "loader_name", "resolved_path", "sha256", "origin", "image_id"
+            "loader_name", "resolved_path", "sha256", "origin", "image_id",
+            "loaded_base",
         }:
             raise ToolkitInputError(f"observed module {index} has invalid fields")
         loader_name = _basename(raw.get("loader_name"), "observed module loader name")
@@ -1189,6 +998,15 @@ def write_pe32_observed_load_graph(
         digest = _sha256(raw.get("sha256"), "observed module SHA-256")
         origin = raw.get("origin")
         image_id = raw.get("image_id")
+        loaded_base = raw.get("loaded_base")
+        if (
+            not isinstance(loaded_base, int)
+            or isinstance(loaded_base, bool)
+            or not 0 <= loaded_base <= 0xFFFFFFFF
+        ):
+            raise ToolkitInputError(
+                f"observed module {index} has an invalid loaded base"
+            )
         if origin not in {"target_distribution", "host_environment"}:
             raise ToolkitInputError(f"observed module {index} has invalid origin")
         if image_id is not None and not isinstance(image_id, str):
@@ -1217,6 +1035,7 @@ def write_pe32_observed_load_graph(
             "sha256": digest,
             "origin": origin,
             "image_id": image_id,
+            "loaded_base": loaded_base,
         })
 
     raw_slots = observed.get("slots")
@@ -1394,98 +1213,6 @@ def write_pe32_observed_load_graph(
     out.mkdir(parents=True, exist_ok=True)
     write_json(out / "observed-load-graph.json", payload)
     return payload
-
-
-def _parse_project_intent(raw: Mapping[str, Any]) -> dict[str, Any]:
-    expected = {
-        "format", "project_id", "root_image_id", "images",
-        "target_distribution_roots", "host_environment",
-    }
-    if set(raw) != expected or raw.get("format") != PE32_PROJECT_INTENT_FORMAT:
-        raise ToolkitInputError("project intent has unsupported format or fields")
-    project_id = _text(raw.get("project_id"), "project ID")
-    root = _text(raw.get("root_image_id"), "root image ID")
-    images_raw = raw.get("images")
-    if not isinstance(images_raw, list) or not images_raw:
-        raise ToolkitInputError("project intent images must be a nonempty list")
-    images: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, value in enumerate(images_raw):
-        if not isinstance(value, Mapping) or set(value) != {
-            "image_id", "filename", "aliases", "ownership", "implementation"
-        }:
-            raise ToolkitInputError(f"project image {index} has invalid fields")
-        image_id = _text(value.get("image_id"), f"project image {index} ID")
-        if image_id in seen:
-            raise ToolkitInputError(f"duplicate project image ID {image_id!r}")
-        seen.add(image_id)
-        filename = _basename(value.get("filename"), f"project image {index} filename")
-        raw_aliases = value.get("aliases")
-        if not isinstance(raw_aliases, list):
-            raise ToolkitInputError(f"project image {index} aliases must be a list")
-        aliases = sorted({_basename(item, "module alias") for item in raw_aliases})
-        ownership = value.get("ownership")
-        implementation = value.get("implementation")
-        if ownership not in _OWNERSHIP or implementation not in _IMPLEMENTATIONS:
-            raise ToolkitInputError(f"project image {index} policy is invalid")
-        if ownership == "runtime" and implementation != "native_host":
-            raise ToolkitInputError("runtime-owned images must use native_host")
-        images.append({
-            "image_id": image_id,
-            "filename": filename,
-            "aliases": aliases,
-            "ownership": ownership,
-            "implementation": implementation,
-        })
-    if root not in seen:
-        raise ToolkitInputError("project root image is not declared")
-    roots = raw.get("target_distribution_roots")
-    if not isinstance(roots, list) or any(not isinstance(item, str) for item in roots):
-        raise ToolkitInputError("target distribution roots must be strings")
-    environment = raw.get("host_environment")
-    if not isinstance(environment, Mapping) or set(environment) != {"id", "sha256"}:
-        raise ToolkitInputError("host environment binding is malformed")
-    return {
-        "format": PE32_PROJECT_INTENT_FORMAT,
-        "project_id": project_id,
-        "root_image_id": root,
-        "images": images,
-        "target_distribution_roots": list(roots),
-        "host_environment": {
-            "id": _text(environment.get("id"), "host environment ID"),
-            "sha256": _sha256(environment.get("sha256"), "host environment SHA-256"),
-        },
-    }
-
-
-def _resolve_export(interface: Mapping[str, Any], request: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    export_directory = interface.get("export_directory")
-    if not isinstance(export_directory, Mapping) or not isinstance(export_directory.get("slots"), list):
-        raise ToolkitInputError("module interface has no exact EAT geometry")
-    matches = []
-    for row in export_directory["slots"]:
-        if not isinstance(row, Mapping) or row.get("kind") == "hole":
-            continue
-        if request["symbol"] is not None and request["symbol"] in row.get("names", []):
-            matches.append(row)
-        elif request["ordinal"] is not None and row.get("ordinal") == request["ordinal"]:
-            matches.append(row)
-    if len(matches) > 1:
-        raise ToolkitInputError("module export identity is ambiguous")
-    return matches[0] if matches else None
-
-
-def _module_interface(path: Path, *, expected_image_id: str) -> dict[str, Any]:
-    payload = _load_format(path, PE32_MODULE_INTERFACE_FORMAT, "module interface")
-    declared_hash = payload.get("interface_sha256")
-    core = {key: value for key, value in payload.items() if key != "interface_sha256"}
-    if declared_hash != canonical_sha256_v3(core):
-        raise ToolkitInputError("module interface self hash is stale")
-    if payload.get("status") != "complete" or payload.get("image_id") != expected_image_id:
-        raise ToolkitInputError("module interface identity or status is invalid")
-    return payload
-
-
 def _load_format(path: Path, expected: str, label: str) -> dict[str, Any]:
     payload = _object(Path(path), label)
     if payload.get("format") != expected:
@@ -1508,64 +1235,6 @@ def _validate_closed_payload(
     core = {key: value for key, value in payload.items() if key != digest_field}
     if observed != canonical_sha256_v3(core):
         raise ToolkitInputError(f"{label} self hash is stale")
-
-
-def _validate_module_deployment(
-    payload: Mapping[str, Any], label: str
-) -> None:
-    expected_fields = {
-        "format", "status", "image_id", "module_kind", "candidate",
-        "bindings", "original_identity", "decoded_loader_surface",
-        "blockers", "definition_of_complete", "deployment_sha256",
-    }
-    if set(payload) != expected_fields:
-        raise ToolkitInputError(f"{label} has an incomplete deployment surface")
-    if payload.get("status") not in {"complete", "incomplete"}:
-        raise ToolkitInputError(f"{label} status is invalid")
-    if payload.get("module_kind") not in {"exe", "dll"}:
-        raise ToolkitInputError(f"{label} module kind is invalid")
-    candidate = payload.get("candidate")
-    if not isinstance(candidate, Mapping) or set(candidate) != {
-        "filename", "sha256", "decoded_loader_surface_sha256"
-    }:
-        raise ToolkitInputError(f"{label} candidate binding is malformed")
-    _basename(candidate.get("filename"), f"{label} candidate filename")
-    _sha256(candidate.get("sha256"), f"{label} candidate SHA-256")
-    _sha256(
-        candidate.get("decoded_loader_surface_sha256"),
-        f"{label} decoded loader surface SHA-256",
-    )
-    bindings = payload.get("bindings")
-    required_bindings = {
-        "original_interface", "behavioral_c_completion", "ingress_plan",
-        "link_receipt", "exact_runtime_qualification", "loader_surface",
-        "static_assurance", "candidate_interface",
-    }
-    if not isinstance(bindings, Mapping) or set(bindings) != required_bindings:
-        raise ToolkitInputError(f"{label} dependency bindings are incomplete")
-    for identity, binding in bindings.items():
-        if not isinstance(binding, Mapping) or set(binding) != {"filename", "sha256"}:
-            raise ToolkitInputError(
-                f"{label} dependency binding {identity!r} is malformed"
-            )
-        _text(binding.get("filename"), f"{label} dependency filename")
-        _sha256(binding.get("sha256"), f"{label} dependency SHA-256")
-    if not isinstance(payload.get("original_identity"), Mapping):
-        raise ToolkitInputError(f"{label} original identity is malformed")
-    surface = payload.get("decoded_loader_surface")
-    if not isinstance(surface, Mapping) or set(surface) != {
-        "kind", "loader", "export_directory", "tls", "imports", "load_config"
-    }:
-        raise ToolkitInputError(f"{label} decoded loader surface is malformed")
-    blockers = payload.get("blockers")
-    if not isinstance(blockers, list) or (
-        payload.get("status") == "complete" and blockers
-    ):
-        raise ToolkitInputError(f"{label} blocker inventory contradicts status")
-    _text(
-        payload.get("definition_of_complete"),
-        f"{label} definition of complete",
-    )
 
 
 def _object(path: Path, label: str) -> Mapping[str, Any]:

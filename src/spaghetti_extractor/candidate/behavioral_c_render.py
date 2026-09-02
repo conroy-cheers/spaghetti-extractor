@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from .behavioral_c_model import BehavioralCFunction, BehavioralCPlan
-from .c_backend import _runtime_helpers
-from .interpreter_model import (
-    CandidateInterpreterError,
+from .runtime_helpers import runtime_helpers
+from ..transfer.model import (
+    TransferPlanError,
     _AF_FLAG_INDEX,
     _Action,
     _Call,
@@ -22,7 +22,15 @@ from .interpreter_model import (
     _REGISTERS,
     _Transfer,
 )
-from .interpreter_values import _c_string
+from ..transfer.values import _c_string
+from ..transfer.interpretation import (
+    DomainOperationCoverageV2,
+    total_domain_coverage_v2,
+)
+
+
+def behavioral_c_operation_coverage_v2() -> DomainOperationCoverageV2:
+    return total_domain_coverage_v2("behavioral_c")
 
 
 def behavioral_c_header(plan: BehavioralCPlan) -> str:
@@ -38,8 +46,24 @@ def behavioral_c_header(plan: BehavioralCPlan) -> str:
             "",
             '#include "state-machine-runtime.h"',
             "",
+            *_SHARED_HELPER_DECLARATIONS.splitlines(),
+            "",
+            "typedef spx_step_result (*spx_region_override_fn)(",
+            "    spx_runtime *, spx_machine_state *);",
+            "typedef struct spx_region_override {",
+            "  uint32_t entry_rva;",
+            "  spx_region_override_fn function;",
+            "  uint32_t fallback_on_unimplemented;",
+            "  const char *replacement_id;",
+            "  const char *cluster_id;",
+            "} spx_region_override;",
+            "",
             *declarations,
             "",
+            "extern const uint32_t spx_behavioral_transfer_count;",
+            "uint32_t spx_behavioral_has_unit(uint32_t source_rva);",
+            "uint32_t spx_behavioral_function_owner(",
+            "    uint32_t source_rva, uint32_t *owner_rva);",
             "spx_step_result spx_behavioral_step(",
             "    spx_runtime *runtime, spx_machine_state *state, uint32_t source_rva);",
             "spx_call_status spx_behavioral_run(",
@@ -59,7 +83,7 @@ def behavioral_c_source(
     lines = [
         '#include "behavioral-c.h"',
         "",
-        *_runtime_helpers().splitlines(),
+        *runtime_helpers().splitlines(),
         "",
         *_DIRECT_HELPERS.splitlines(),
     ]
@@ -77,6 +101,71 @@ def behavioral_c_source(
         )
     lines.extend(["", *_dispatch_source(plan).splitlines()])
     return "\n".join(lines).rstrip() + "\n", spans
+
+
+def behavioral_c_translation_units(
+    transfers: Iterable[_Transfer], plan: BehavioralCPlan
+) -> tuple[dict[str, str], dict[int, dict[str, object]]]:
+    """Emit one stable translation unit per derived function plus dispatch."""
+
+    by_rva = {row.rva_start: row for row in transfers}
+    files: dict[str, str] = {}
+    source_map: dict[int, dict[str, object]] = {}
+    for function in plan.functions:
+        primary = min(function.unit_rvas)
+        filename = f"behavioral-fn-{primary:08x}.c"
+        lines = [
+            '#include "behavioral-c.h"',
+        ]
+        for rva in function.unit_rvas:
+            lines.extend(_typed_x87_definitions(by_rva[rva]))
+        lines.append("")
+        rendered, spans = _FunctionRenderer(
+            function=function, by_rva=by_rva
+        ).render()
+        offset = len(lines)
+        lines.extend(rendered)
+        files[filename] = "\n".join(lines).rstrip() + "\n"
+        for rva, (start, end) in spans.items():
+            transfer = by_rva[rva]
+            source_map[rva] = {
+                "unit_id": transfer.identity,
+                "rva": rva,
+                "function_id": function.identity,
+                "symbol": function.symbol,
+                "file": filename,
+                "line_start": start + offset,
+                "line_end": end + offset,
+            }
+    files["behavioral-dispatch.c"] = (
+        '#include "behavioral-c.h"\n\n' + _dispatch_source(plan).rstrip() + "\n"
+    )
+    files["behavioral-support.c"] = behavioral_c_support_source()
+    if set(source_map) != set(by_rva):
+        raise TransferPlanError(
+            "behavioral-C translation-unit source map is not total",
+            code="behavioral_c_source_map_incomplete",
+        )
+    return dict(sorted(files.items())), source_map
+
+
+def behavioral_c_support_source() -> str:
+    """Emit common semantic helpers once for the whole generated module."""
+
+    direct = _DIRECT_HELPERS.replace(
+        "#if defined(__GNUC__) || defined(__clang__)\n"
+        "#define SPX_DIRECT_HELPER static __attribute__((unused))\n"
+        "#else\n#define SPX_DIRECT_HELPER static\n#endif\n\n",
+        "",
+    ).replace("SPX_DIRECT_HELPER ", "").replace("\n\n#undef SPX_DIRECT_HELPER", "")
+    return "\n".join((
+        '#include "behavioral-c.h"',
+        "",
+        runtime_helpers(external_linkage=True).rstrip(),
+        "",
+        direct.rstrip(),
+        "",
+    ))
 
 
 @dataclass
@@ -101,7 +190,7 @@ class _FunctionRenderer:
         for rva in self.function.unit_rvas:
             transfer = self.by_rva[rva]
             if transfer.x87_nodes:
-                raise CandidateInterpreterError(
+                raise TransferPlanError(
                     f"{transfer.identity}: legacy symbolic x87 nodes cannot be emitted as faithful C",
                     code="behavioral_c_legacy_x87_unavailable",
                     next_action="use typed exact x87 operations and an exact support runtime",
@@ -116,7 +205,7 @@ class _FunctionRenderer:
         )
         # The public step API may enter any checked unit.  Function entries in
         # the plan remain the semantic roots; this one selector also supports
-        # diagnostics and external resumptions without a PC interpreter loop.
+        # diagnostics and external resumptions without a program-counter loop.
         for entry in self.function.unit_rvas:
             self.lines.append(f"    case 0x{entry:08x}U: goto {_label(entry)};")
         self.lines.extend(
@@ -137,6 +226,8 @@ class _FunctionRenderer:
                     "  call_output = input;",
                     "  memory_fault = 0U;",
                     "  semantic_fault = 0U;",
+                    "  (void)memory_fault;",
+                    "  (void)semantic_fault;",
                     f"  state->original_rva = 0x{rva:08x}U;",
                 ]
             )
@@ -153,7 +244,7 @@ class _FunctionRenderer:
 
     def _word(self, index: int) -> str:
         if not 0 <= index < len(self.transfer.nodes):
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"{self.transfer.identity}: word node reference {index} is out of range",
                 code="behavioral_c_node_reference_invalid",
             )
@@ -298,12 +389,12 @@ class _FunctionRenderer:
             return "0U"
         if op == "fpu_tag":
             if not 0 <= node.aux < 8:
-                raise CandidateInterpreterError(f"{self.transfer.identity}: x87 tag index is invalid")
+                raise TransferPlanError(f"{self.transfer.identity}: x87 tag index is invalid")
             return f"{current}x87_stack[{node.aux}].tag"
         if op in {"fpu_control_load", "fpu_control_word", "fpu_status_word"}:
             _arity(self.transfer, node, args, 1)
             return f"(({args[0]}) & 0xffffU)"
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{self.transfer.identity}: behavioral-C renderer lacks word op {op!r}",
             code="behavioral_c_word_op_unavailable",
             next_action="add direct faithful lowering for the checked canonical word operation",
@@ -328,6 +419,18 @@ class _FunctionRenderer:
             self.lines.append(
                 f"  if ({condition}) return (spx_step_result){{ SPX_DIVIDE_ERROR, 0U, 0U }};"
             )
+        elif op == "access_violation_if":
+            condition, operation, address = (
+                self._word(index) for index in action.args
+            )
+            self.lines.extend([
+                f"  if ({condition}) {{",
+                "    if (rt == 0 || rt->record_access_violation == 0 ||",
+                f"        rt->record_access_violation(rt->context, {operation}, {address}) == 0U)",
+                "      return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+                "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+                "  }",
+            ])
         elif op == "call":
             self._call(self.transfer.calls[action.args[0]], action.args[0])
         elif op in {"rep_movsd", "rep_movs", "rep_stosd", "rep_stos", "rep_scas"}:
@@ -338,8 +441,14 @@ class _FunctionRenderer:
             self.lines.append(f"  state->{name} = {value};")
         elif op == "set_flag":
             value = self._word(action.args[0])
-            name = _index(_FLAGS, action.aux, "flag", self.transfer)
-            self.lines.append(f"  state->{name} = ({value}) & 1U;")
+            if action.aux == _AF_FLAG_INDEX:
+                self.lines.append(
+                    "  state->eflags = (state->eflags & ~(1U << 4U)) | "
+                    f"((({value}) & 1U) << 4U);"
+                )
+            else:
+                name = _index(_FLAGS, action.aux, "flag", self.transfer)
+                self.lines.append(f"  state->{name} = ({value}) & 1U;")
         elif op == "sync_eflags":
             self.lines.append("  spx_sync_eflags(state);")
         elif op == "typed_x87":
@@ -349,7 +458,7 @@ class _FunctionRenderer:
         elif op.startswith("outcome_"):
             self._outcome(action)
         else:
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"{self.transfer.identity}: behavioral-C renderer lacks action {op!r}",
                 code="behavioral_c_action_unavailable",
                 next_action="add direct faithful lowering for the checked canonical action",
@@ -378,6 +487,12 @@ class _FunctionRenderer:
             [
                 "  {",
                 "    spx_machine_state call_input = *state;",
+                *(
+                    [
+                        f"    call_input.original_rva = 0x{call.instruction_rva:08x}U;"
+                    ]
+                    if call.native_exception_operations else []
+                ),
             ]
         )
         for index, name in enumerate(_REGISTERS):
@@ -394,7 +509,7 @@ class _FunctionRenderer:
             )
         self.lines.extend(
             [
-                f"    const spx_call_event event = {{ {kind}, 0x{call.instruction_rva:08x}U,",
+                f"    const spx_call_event event = {{ {kind}, 0x{self.transfer.rva_start:08x}U, 0x{call.instruction_rva:08x}U,",
                 f"      {call.call_index}U, {target}, 0x{call.return_rva:08x}U,",
                 f"      {_c_string(call.dll)}, {_c_string(call.symbol)}, {call.ordinal or 0}U, {1 if call.ordinal is not None else 0}U,",
                 f"      {'call_arguments_' + suffix if call.argument_nodes else '0'}, {len(call.argument_nodes)}U,",
@@ -407,6 +522,7 @@ class _FunctionRenderer:
                 "      return spx_call_status_result(status, state->original_rva);",
                 "    }",
                 "    *state = call_output;",
+                f"    state->original_rva = 0x{self.transfer.rva_start:08x}U;",
                 "  }",
             ]
         )
@@ -417,7 +533,7 @@ class _FunctionRenderer:
         observed_index = action.args[-1]
         done = self.materialized[self.transfer.rva_start]
         if observed_index in done:
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"{self.transfer.identity}: atomic observation was materialized before its RMW",
                 code="behavioral_c_atomic_order_violation",
             )
@@ -448,7 +564,7 @@ class _FunctionRenderer:
     def _typed_x87(self, action: _Action) -> None:
         index = action.args[0]
         if not 0 <= index < len(self.transfer.x87_operations):
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"{self.transfer.identity}: typed x87 action index is invalid",
                 code="behavioral_c_typed_x87_invalid",
             )
@@ -503,10 +619,17 @@ class _FunctionRenderer:
         elif action.op == "outcome_indirect":
             value = self._word(action.args[0])
             self.lines.append(f"  return (spx_step_result){{ SPX_INDIRECT_JUMP, 0U, {value} }};")
+        elif action.op == "outcome_nonlocal":
+            target = self._word(action.args[0])
+            value = self._word(action.args[1])
+            self.lines.append(
+                "  return (spx_step_result){ SPX_NONLOCAL, "
+                f"{target}, {value} }};"
+            )
         elif action.op == "outcome_external":
             self.lines.append("  return (spx_step_result){ SPX_EXTERNAL_JUMP, 0U, 0U };")
         else:
-            raise CandidateInterpreterError(f"{self.transfer.identity}: invalid outcome action")
+            raise TransferPlanError(f"{self.transfer.identity}: invalid outcome action")
 
     @staticmethod
     def _fault_checks() -> list[str]:
@@ -547,8 +670,70 @@ def _dispatch_source(plan: BehavioralCPlan) -> str:
             cases.append(f"    case 0x{rva:08x}U: return {function.symbol}(rt, state, source_rva);")
     return "\n".join(
         [
+            "extern const spx_region_override *spx_region_override_lookup(",
+            "    uint32_t entry_rva) __attribute__((weak));",
+            "extern uint32_t spx_native_machine_fallback_allowed(",
+            "    uint32_t source_rva) __attribute__((weak));",
+            "",
+            f"const uint32_t spx_behavioral_transfer_count = {sum(len(function.unit_rvas) for function in plan.functions)}U;",
+            "",
+            "static uint32_t spx_behavioral_override_result_valid(spx_step_result result) {",
+            "  if (result.kind > SPX_NONLOCAL) return 0U;",
+            "  if (result.kind <= SPX_BRANCH)",
+            "    return result.target_rva != 0U && result.value == 0U;",
+            "  if (result.kind == SPX_RETURN) return result.target_rva == 0U;",
+            "  if (result.kind == SPX_INDIRECT_JUMP)",
+            "    return result.target_rva == 0U && result.value != 0U;",
+            "  if (result.kind == SPX_NONLOCAL)",
+            "    return result.target_rva != 0U;",
+            "  if (result.kind == SPX_UNIMPLEMENTED) return result.value == 0U;",
+            "  return result.target_rva == 0U && result.value == 0U;",
+            "}",
+            "",
+            "uint32_t spx_behavioral_has_unit(uint32_t source_rva) {",
+            "  switch (source_rva) {",
+            *(f"    case 0x{rva:08x}U: return 1U;" for function in plan.functions for rva in function.unit_rvas),
+            "    default: return 0U;",
+            "  }",
+            "}",
+            "",
+            "uint32_t spx_behavioral_function_owner(",
+            "    uint32_t source_rva, uint32_t *owner_rva) {",
+            "  if (owner_rva == 0) return 0U;",
+            "  switch (source_rva) {",
+            *(
+                f"    case 0x{rva:08x}U: *owner_rva = "
+                f"0x{min(function.unit_rvas):08x}U; return 1U;"
+                for function in plan.functions
+                for rva in function.unit_rvas
+            ),
+            "    default: return 0U;",
+            "  }",
+            "}",
+            "",
             "spx_step_result spx_behavioral_step(",
             "    spx_runtime *rt, spx_machine_state *state, uint32_t source_rva) {",
+            "  if (state == 0)",
+            "    return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
+            "  const spx_region_override *override =",
+            "      spx_region_override_lookup == 0 ? 0 : spx_region_override_lookup(source_rva);",
+            "  if (override != 0) {",
+            "    spx_machine_state overridden = *state;",
+            "    spx_step_result result;",
+            "    if (override->entry_rva != source_rva || override->function == 0)",
+            "      return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
+            "    result = override->function(rt, &overridden);",
+            "    if (!spx_behavioral_override_result_valid(result))",
+            "      return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
+            "    if (!(result.kind == SPX_UNIMPLEMENTED &&",
+            "          override->fallback_on_unimplemented != 0U)) {",
+            "      *state = overridden;",
+            "      return result;",
+            "    }",
+            "  }",
+            "  if (spx_native_machine_fallback_allowed != 0 &&",
+            "      !spx_native_machine_fallback_allowed(source_rva))",
+            "    return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
             "  switch (source_rva) {",
             *cases,
             "    default: return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
@@ -563,31 +748,105 @@ def _dispatch_source(plan: BehavioralCPlan) -> str:
             "  if (input == 0 || output == 0) return SPX_CALL_UNIMPLEMENTED;",
             "  state = *input;",
             "  for (;;) {",
+            # A rendered function may execute several transfer units through
+            # local C gotos before returning one step result.  Seed the
+            # metadata with the requested unit, then preserve the exact last
+            # unit written by the generated transfer body.  Using the outer
+            # dispatch RVA here loses the semantic site identity for an
+            # indirect/nonlocal terminator reached later in the same function.
+            "    state.original_rva = rva;",
             "    spx_step_result result = spx_behavioral_step(rt, &state, rva);",
+            "    const uint32_t source_rva =",
+            "        result.kind == SPX_NONLOCAL && result.target_rva == 0U",
+            "        ? rva : state.original_rva;",
             "    if (result.kind <= SPX_BRANCH) { rva = result.target_rva; continue; }",
             "    if (result.kind == SPX_INDIRECT_JUMP) {",
             "      uint32_t next_rva;",
             "      if (rt != 0 && rt->resolve_code_target != 0 &&",
-            "          rt->resolve_code_target(rt, result.value, &next_rva) == 0U) {",
+            "          rt->resolve_code_target(",
+            "              rt, SPX_CODE_SITE_INDIRECT_JUMP, source_rva, source_rva, 0U,",
+            "              result.value, &next_rva) == 0U) {",
             "        rva = next_rva;",
             "        continue;",
             "      }",
             "      if (rt != 0 && rt->invoke_callable_external_jump != 0) {",
             "        spx_machine_state external_output = state;",
             "        spx_call_status status = rt->invoke_callable_external_jump(",
-            "            rt, rva, result.value, &state, &external_output);",
+            "            rt, source_rva, result.value, &state, &external_output);",
             "        if (status == SPX_CALL_OK) { *output = external_output; return status; }",
-            "        *output = state; output->original_rva = rva; return status;",
+            "        *output = state; output->original_rva = source_rva; return status;",
             "      }",
             "    }",
+            "    if (result.kind == SPX_NONLOCAL) {",
+            "      uint32_t resume_rva = 0U, route = 2U;",
+            "      if (rt != 0 && rt->route_nonlocal != 0)",
+            "        route = rt->route_nonlocal(",
+            "            rt, source_rva, result.target_rva, result.value,",
+            "            entry_rva, &state, &resume_rva);",
+            "      if (route == 0U) { rva = resume_rva; continue; }",
+            "      *output = state; output->original_rva = source_rva;",
+            "      return route == 1U ? SPX_CALL_NONLOCAL : SPX_CALL_UNIMPLEMENTED;",
+            "    }",
             "    *output = state;",
-            "    output->original_rva = result.target_rva != 0U ? result.target_rva : rva;",
-            "    if (result.kind == SPX_RETURN || result.kind == SPX_EXTERNAL_JUMP) return SPX_CALL_OK;",
+            "    output->original_rva =",
+            "        result.target_rva != 0U ? result.target_rva : source_rva;",
+            "    if (result.kind == SPX_RETURN) {",
+            # The transfer's state effects already materialize EAX.  The
+            # outcome value is control metadata and may intentionally refer
+            # to the pre-effect input, so copying it back would undo a checked
+            # register write at the return transfer.
+            "      return SPX_CALL_OK;",
+            "    }",
+            "    if (result.kind == SPX_EXTERNAL_JUMP) return SPX_CALL_OK;",
             "    if (result.kind == SPX_DIVIDE_ERROR) return SPX_CALL_DIVIDE_ERROR;",
             "    if (result.kind == SPX_MEMORY_FAULT) return SPX_CALL_MEMORY_FAULT;",
             "    if (result.kind == SPX_EXTERNAL_FAULT) return SPX_CALL_EXTERNAL_FAULT;",
             "    return SPX_CALL_UNIMPLEMENTED;",
             "  }",
+            "}",
+            "",
+            "spx_call_status spx_invoke_call(",
+            "    spx_runtime *rt, const spx_call_event *event,",
+            "    const spx_machine_state *input, spx_machine_state *output) {",
+            "  uint32_t target_rva;",
+            "  spx_machine_state call_input;",
+            "  spx_call_status status;",
+            "  uint32_t return_address, fault = 0U;",
+            "  if (event == 0 || input == 0 || output == 0)",
+            "    return SPX_CALL_UNIMPLEMENTED;",
+            "  if (event->kind == SPX_CALL_INTERNAL_DIRECT ||",
+            "      (event->kind == SPX_CALL_INDIRECT && rt != 0 &&",
+            "       rt->resolve_code_target != 0 &&",
+            "       rt->resolve_code_target(",
+            "           rt, SPX_CODE_SITE_INDIRECT_CALL, event->source_rva,",
+            "           event->instruction_rva, event->call_index,",
+            "           event->target_rva, &target_rva) == 0U)) {",
+            "    if (rt == 0 || rt->write == 0 || input->esp < 4U ||",
+            "        event->return_rva == 0U ||",
+            "        rt->image_base > 0xffffffffU - event->return_rva) {",
+            "      *output = *input;",
+            "      return SPX_CALL_UNIMPLEMENTED;",
+            "    }",
+            "    return_address = rt->image_base + event->return_rva;",
+            "    call_input = *input;",
+            "    call_input.esp -= 4U;",
+            "    rt->write(rt->context, call_input.esp, 4U, return_address, &fault);",
+            "    if (fault != 0U) {",
+            "      *output = call_input;",
+            "      return SPX_CALL_MEMORY_FAULT;",
+            "    }",
+            "    status = spx_behavioral_run(rt,",
+            "        event->kind == SPX_CALL_INTERNAL_DIRECT",
+            "            ? event->target_rva : target_rva,",
+            "        &call_input, output);",
+            "    if (status == SPX_CALL_NONLOCAL)",
+            "      output->esp = input->esp;",
+            "    return status;",
+            "  }",
+            "  if (event->kind == SPX_CALL_EXTERNAL_IMPORT ||",
+            "      event->kind == SPX_CALL_INDIRECT)",
+            "    return spx_dispatch_external_call(rt, event, input, output);",
+            "  return SPX_CALL_UNIMPLEMENTED;",
             "}",
         ]
     )
@@ -660,7 +919,7 @@ def _edge_statement(target: int, internal: set[int], kind: str) -> str:
 
 def _index(values: tuple[str, ...], index: int, kind: str, transfer: _Transfer) -> str:
     if not 0 <= index < len(values):
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{transfer.identity}: invalid {kind} index {index}",
             code="behavioral_c_node_reference_invalid",
         )
@@ -669,7 +928,7 @@ def _index(values: tuple[str, ...], index: int, kind: str, transfer: _Transfer) 
 
 def _arity(transfer: _Transfer, value: _Node | _Action, args: list[object], expected: int) -> None:
     if len(args) != expected:
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{transfer.identity}: {value.op} requires {expected} arguments, got {len(args)}",
             code="behavioral_c_ir_shape_invalid",
         )
@@ -701,6 +960,8 @@ SPX_DIRECT_HELPER spx_step_result spx_call_status_result(
     return (spx_step_result){ SPX_MEMORY_FAULT, source_rva, 0U };
   if (status == SPX_CALL_EXTERNAL_FAULT)
     return (spx_step_result){ SPX_EXTERNAL_FAULT, source_rva, 0U };
+  if (status == SPX_CALL_NONLOCAL)
+    return (spx_step_result){ SPX_NONLOCAL, 0U, 0U };
   return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };
 }
 
@@ -744,4 +1005,56 @@ SPX_DIRECT_HELPER uint32_t spx_adc_overflow_checked(
 #undef SPX_DIRECT_HELPER'''
 
 
-__all__ = ["behavioral_c_header", "behavioral_c_source"]
+_SHARED_HELPER_DECLARATIONS = r'''uint32_t spx_mask(uint32_t width);
+uint32_t spx_read(
+    spx_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault);
+void spx_write(
+    spx_runtime *rt, uint32_t address, uint32_t width, uint32_t value,
+    uint32_t *fault);
+uint32_t spx_undefined(
+    spx_runtime *rt, uint32_t slot, const spx_machine_state *input,
+    uint32_t defined_value);
+void spx_sync_eflags(spx_machine_state *state);
+uint32_t spx_sign_extend(uint32_t width, uint32_t value);
+uint32_t spx_sar(uint32_t width, uint32_t value, uint32_t amount);
+uint32_t spx_msb(uint32_t width, uint32_t value);
+uint32_t spx_parity(uint32_t value);
+uint32_t spx_add_overflow(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t result);
+uint32_t spx_sub_overflow(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t result);
+uint32_t spx_imul_high(uint32_t left, uint32_t right);
+uint32_t spx_mul_high(uint32_t left, uint32_t right);
+uint32_t spx_udiv_quot(uint32_t high, uint32_t low, uint32_t divisor);
+uint32_t spx_udiv_rem(uint32_t high, uint32_t low, uint32_t divisor);
+uint32_t spx_udiv_valid(uint32_t high, uint32_t low, uint32_t divisor);
+uint32_t spx_bsr(uint32_t value);
+uint32_t spx_tzcnt(uint32_t value);
+uint32_t spx_shift_cf(
+    uint32_t kind, uint32_t width, uint32_t value, uint32_t count);
+uint32_t spx_shift_of(
+    uint32_t kind, uint32_t width, uint32_t value, uint32_t count,
+    uint32_t result);
+uint32_t spx_sbb_borrow(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t carry,
+    uint32_t result);
+uint32_t spx_sbb_overflow(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t carry,
+    uint32_t result);
+spx_step_result spx_call_status_result(
+    spx_call_status status, uint32_t source_rva);
+uint32_t spx_adc_carry_checked(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t carry,
+    uint32_t result, uint32_t *semantic_fault);
+uint32_t spx_adc_overflow_checked(
+    uint32_t width, uint32_t left, uint32_t right, uint32_t carry,
+    uint32_t result, uint32_t *semantic_fault);'''
+
+
+__all__ = [
+    "behavioral_c_header",
+    "behavioral_c_operation_coverage_v2",
+    "behavioral_c_source",
+    "behavioral_c_support_source",
+    "behavioral_c_translation_units",
+]

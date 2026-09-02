@@ -34,23 +34,24 @@ or ignored `build/`; private inputs stay in ignored `private/` paths.
 
 ## Standard Outputs
 
-Targets return `sdk.target.pe32Bundle { ... }`. The constructor always publishes
-the standard `analysis` and `authority` families. Once component intent exists,
-it also publishes `components` and `candidate` families for every declared
-configuration. Targets supply only input acquisition, profiles, the workflow,
-target-specific artifacts, and additional checks; they do not manually
-duplicate the toolkit artifact graph.
+Targets return `sdk.target.pe32Bundle { ... }`. The constructor publishes the
+standard `analysis`, `environment`, `platform`, `components`, and `candidate`
+families that exist for the workflow. Targets supply only input acquisition,
+profiles, the workflow, target-specific artifacts, and additional checks; they
+do not manually duplicate the toolkit artifact graph.
 
-The authority family includes the final gate, diagnostics, graph metadata, and
-all phase derivations under `authority.phases`.
+The retired authority-v3 graph is not a public target family. Linked semantic
+module blockers, evidence, and root provenance are the operator-facing semantic
+authority. Temporary authority-v3 producers may remain behind individual
+component or library migration adapters, but bundling a graph-wide final gate,
+metadata object, or every phase would turn one target check back into the old
+fan-out and is forbidden.
 
-Component runtimes are available under `components.runtimes.<configuration>`.
-Static candidate packages are indexed under `candidate.static.<configuration>`.
-Runtime frontiers are a separate pure JSON package projected from checked
-authority diagnostics. They contain no generated source, object code, PE,
-runtime package, or Wine runner. Candidate attributes remain lazy, and the
-strict candidate constructor cannot evaluate successfully before final
-authority closes.
+Native realization packages are indexed under
+`candidate.native-realizations.<configuration>`. Candidate attributes remain
+lazy. A realization may materialize an incomplete diagnostic receipt and PE,
+but the checked candidate build, acceptance path, and Wine suites fail closed
+unless that exact receipt is complete and its candidate hash matches.
 
 Regression and acceptance are deliberately separate:
 
@@ -61,9 +62,10 @@ spaghetti-extractor project check gnu-hello --acceptance
 
 Regression validates the target input, extraction/component contracts, and
 other incomplete-capable repair artifacts. It must remain useful while whole
-program closure is incomplete. Acceptance additionally builds the final
-authority gate, static candidate, and every candidate-only suite declared by
-the target; it is expected to fail closed until all authority families are
+program closure is incomplete. Acceptance additionally builds total semantic
+provider selection, native realization, candidate observation, and every
+candidate-only suite declared by the target; it is expected to fail closed
+until every linked-module, selection, realization, and observation blocker is
 complete.
 
 The operator-facing readiness views are non-authorizing checked artifacts:
@@ -75,12 +77,14 @@ spaghetti-extractor candidate status gnu-hello \
   --configuration ascii-to-lower-enabled
 ```
 
-`project status` consumes only final-authority diagnostics and remains usable
+`project status` consumes only `linked-semantic-module-v1` and remains usable
 when component intent is absent, broken, or expensive to realize. `component
 status` reports one independently selected leaf, group, or configuration.
-`candidate status` combines project authority with one exact component
-configuration and only that configuration's declared candidate-only suites.
-All three reports are diagnostic and cannot open an authority or runtime gate.
+`candidate status` reads that same linked module plus one exact
+`implementation-selection-v1` and reports separate module and configuration
+subjects in `operator-work-status-v1`. It does not read activation, structural,
+runtime, realization, or candidate-test products. All three reports are
+diagnostic and cannot open an authority or runtime gate.
 
 Public realization commands resolve builders in this order: explicit CLI
 arguments, `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest ignored

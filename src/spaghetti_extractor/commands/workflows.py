@@ -11,11 +11,23 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs
 
+from ..boundary.work_status import parse_component_work_package_inspection_v1
 from ..build_support.nix_invocation import builder_arguments, nix_command
+from ..components.formats import (
+    COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT,
+    COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT,
+)
+from ..components.proposal_package import load_component_proposal_package_v2
+from ..components.work_package_v6 import ComponentAdoptionIntentV1
+from ..operator.formats import OPERATOR_WORK_STATUS_FORMAT
 from .common import Handler
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_BOUNDARY_SUBJECT = re.compile(
+    r"(?:call|callback|export|component|component-seed|component_operation|service):"
+    r"[a-z0-9][a-z0-9._-]*"
+)
 
 
 def _identifier(value: str) -> str:
@@ -32,6 +44,14 @@ def _opaque_identity(value: str) -> str:
     ):
         raise argparse.ArgumentTypeError(
             "identity must be nonempty, bounded, and contain no whitespace"
+        )
+    return value
+
+
+def _boundary_subject_identity(value: str) -> str:
+    if _BOUNDARY_SUBJECT.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "boundary subject must be a stable kind:id identity"
         )
     return value
 
@@ -157,6 +177,18 @@ def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False) -> i
 
 
 def _realize_json(args: argparse.Namespace, suffix: str, filename: str) -> dict[str, Any]:
+    root = _realize_path(args, suffix)
+    path = root / filename
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read checked status artifact: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("checked status artifact must be an object")
+    return payload
+
+
+def _realize_path(args: argparse.Namespace, suffix: str) -> Path:
     output = _capture(
         [
             *nix_command(
@@ -178,14 +210,7 @@ def _realize_json(args: argparse.Namespace, suffix: str, filename: str) -> dict[
     paths = [Path(line) for line in output.splitlines() if line.strip()]
     if len(paths) != 1:
         raise ValueError("status realization did not produce exactly one store path")
-    path = paths[0] / filename
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read checked status artifact: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("checked status artifact must be an object")
-    return payload
+    return paths[0]
 
 
 def _project_analyze(args: argparse.Namespace) -> int:
@@ -194,61 +219,55 @@ def _project_analyze(args: argparse.Namespace) -> int:
 
 def _project_status(args: argparse.Namespace) -> int:
     payload = _realize_json(args, "project.status", "project-status.json")
-    frontiers = _filtered_frontiers(args, payload)
+    if payload.get("format") != OPERATOR_WORK_STATUS_FORMAT:
+        raise ValueError("project status is not an operator-work-status-v1 view")
+    raw_subjects = payload.get("subjects")
+    if not isinstance(raw_subjects, list) or len(raw_subjects) != 1 or not isinstance(
+        raw_subjects[0], Mapping
+    ):
+        raise ValueError("project status must contain exactly one module subject")
+    subject = dict(raw_subjects[0])
+    if subject.get("subject") != f"module:{args.target}":
+        raise ValueError("project status binds another target module")
+    raw_blockers = subject.get("blockers")
+    if not isinstance(raw_blockers, list) or any(
+        not isinstance(row, Mapping) for row in raw_blockers
+    ):
+        raise ValueError("project status blocker inventory is malformed")
+    blockers = [dict(row) for row in raw_blockers]
+    if args.family:
+        blockers = [row for row in blockers if row.get("family") == args.family]
+    if args.status and subject.get("state") != args.status:
+        blockers = []
+    if not args.all:
+        blockers = blockers[: args.limit]
     if args.json:
-        _print_filtered_json(payload, frontiers)
+        print(json.dumps({
+            **payload,
+            "subjects": [{**subject, "blockers": blockers}],
+        }, indent=2, sort_keys=True))
         return 0
     counts = payload.get("counts", {})
-    authority = payload.get("authority", {})
     print(
         f"{args.target}: status={payload.get('status')} "
-        f"authority-ready={str(payload.get('authority_ready')).lower()} "
-        f"authority={authority.get('status')} "
-        f"frontiers={counts.get('primary_frontiers', 0)} "
-        f"dependent={counts.get('dependent_occurrences', 0)}"
+        f"semantic={subject.get('state')} "
+        f"semantic-authority={str(subject.get('authority')).lower()} "
+        f"blockers={counts.get('blockers', 0)}"
     )
-    _print_frontiers(payload, frontiers)
+    for blocker in blockers:
+        code = blocker.get("code", "unknown_semantic_blocker")
+        identity = next((
+            blocker.get(field)
+            for field in (
+                "symbol_id", "relocation_id", "hole_id", "root_id", "unit_id"
+            )
+            if blocker.get(field) is not None
+        ), None)
+        suffix = f" [{identity}]" if identity is not None else ""
+        print(f"incomplete: semantic-link:{code}{suffix}")
+    if not blockers and subject.get("ranked_next_action"):
+        print(f"next: {subject.get('ranked_next_action')}")
     return 0
-
-
-def _filtered_frontiers(
-    args: argparse.Namespace, payload: Mapping[str, Any]
-) -> list[Mapping[str, Any]]:
-    frontiers = list(payload.get("primary_frontiers", []))
-    if args.family:
-        frontiers = [row for row in frontiers if row.get("family") == args.family]
-    if args.status:
-        frontiers = [row for row in frontiers if row.get("status") == args.status]
-    if not args.all:
-        frontiers = frontiers[: args.limit]
-    return frontiers
-
-
-def _print_filtered_json(
-    payload: Mapping[str, Any], frontiers: list[Mapping[str, Any]]
-) -> None:
-    print(
-        json.dumps(
-            {**payload, "primary_frontiers": frontiers}, indent=2, sort_keys=True
-        )
-    )
-
-
-def _print_frontiers(
-    payload: Mapping[str, Any], frontiers: list[Mapping[str, Any]]
-) -> None:
-    for row in frontiers:
-        location = row.get("source_location") or {}
-        rva = location.get("rva_start")
-        where = f" rva=0x{rva:x}" if isinstance(rva, int) else ""
-        print(
-            f"{row.get('status')}: {row.get('family')}:"
-            f"{row.get('code')} [{row.get('record_id')}]"
-            f" dependents={row.get('dependent_occurrences', 0)}{where}"
-        )
-        print(f"  next: {row.get('next_action')}")
-    if not frontiers and payload.get("next_action"):
-        print(f"next: {payload.get('next_action')}")
 
 
 def _project_check(args: argparse.Namespace) -> int:
@@ -499,35 +518,181 @@ def _relation_declaration(relation: Mapping[str, Any]) -> dict[str, object]:
     }
 
 
-def _call_index(args: argparse.Namespace) -> Mapping[str, Any]:
-    calls = _operator_index(args).get("calls")
-    if not isinstance(calls, Mapping) or calls.get("configured") is not True:
+def _boundary_index(args: argparse.Namespace) -> Mapping[str, Any]:
+    boundaries = _operator_index(args).get("boundaries")
+    if not isinstance(boundaries, Mapping) or boundaries.get("configured") is not True:
         raise ValueError(
-            "target has no typed call-protocol workflow; run project analyze after "
-            "configuring call declarations"
+            "target has no checked boundary workflow; run project analyze after "
+            "configuring boundary intents"
         )
-    return calls
+    return boundaries
 
 
-def _call_subject(args: argparse.Namespace) -> Mapping[str, Any]:
-    calls = _call_index(args)
-    subjects = calls.get("subjects")
+def _boundary_subject(args: argparse.Namespace) -> Mapping[str, Any]:
+    boundaries = _boundary_index(args)
+    subjects = boundaries.get("subjects")
     row = subjects.get(args.subject) if isinstance(subjects, Mapping) else None
     if not isinstance(row, Mapping):
+        if args.subject.startswith("component-seed:"):
+            return {
+                "kind": "component_seed_proposal",
+                "dynamic": True,
+            }
         available = ", ".join(sorted(subjects)) if isinstance(subjects, Mapping) else "none"
-        raise ValueError(f"unknown call subject {args.subject!r}; available: {available}")
+        raise ValueError(
+            f"unknown boundary subject {args.subject!r}; available: {available}"
+        )
     return row
 
 
-def _call_status(args: argparse.Namespace) -> int:
-    _call_index(args)
-    payload = _realize_json(args, "calls.status", "call-status.json")
+def _component_seed_rva(subject: str) -> int:
+    raw = subject.removeprefix("component-seed:")
+    try:
+        value = int(raw, 0)
+    except ValueError as exc:
+        raise ValueError("component seed must contain a numeric RVA") from exc
+    if value < 0 or value > 0xFFFFFFFF:
+        raise ValueError("component seed RVA is outside PE32")
+    return value
+
+
+def _component_seed_proposal(
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any]]:
+    rva = _component_seed_rva(args.subject)
+    package = load_component_proposal_package_v2(
+        _realize_path(args, "components.proposals")
+    )
+    candidates = []
+    for raw in package.index["proposals"]:
+        if not isinstance(raw, Mapping):
+            continue
+        membership = raw.get("membership")
+        if not isinstance(membership, Mapping):
+            continue
+        start = membership.get("rva_start")
+        end = membership.get("rva_end")
+        if (
+            isinstance(start, int) and isinstance(end, int)
+            and start <= rva < end
+        ):
+            candidates.append(dict(raw))
+    if not candidates:
+        raise ValueError(f"component seed RVA 0x{rva:08x} has no proposal")
+    candidates.sort(key=lambda row: (
+        int(row.get("score", {}).get("front", 1 << 30)),
+        int(row.get("score", {}).get("rank", 1 << 30)),
+        int(row.get("blockers", {}).get("count", 1 << 30)),
+        -int(row.get("membership", {}).get("unit_count", 0)),
+        str(row.get("id")),
+    ))
+    return rva, package.get_proposal(str(candidates[0]["id"]))
+
+
+def _component_seed_inspection(
+    subject: str, rva: int, proposal: Mapping[str, Any],
+) -> dict[str, Any]:
+    blockers = proposal.get("blockers", [])
+    return {
+        "format": COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT,
+        "status": "complete" if not blockers else "incomplete",
+        "authority": False,
+        "subject": subject,
+        "seed_rva": rva,
+        "proposal": dict(proposal),
+        "ranked_next_action": (
+            "adopt the proposed component boundary and refine its interface"
+            if not blockers else "repair the first proposal blocker"
+        ),
+    }
+
+
+def _component_seed_adoption_intent(
+    rva: int, proposal: Mapping[str, Any],
+) -> dict[str, Any]:
+    return dict(ComponentAdoptionIntentV1.for_seed(
+        rva, proposal.get("proposal_kinds", [])
+    ).payload)
+
+
+def _write_component_seed_editable_package(
+    *, output: Path, subject: str, rva: int, proposal: Mapping[str, Any],
+) -> None:
+    if output.exists():
+        if not output.is_dir() or any(output.iterdir()):
+            raise ValueError("boundary proposal output must be a new or empty directory")
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "include").mkdir()
+    (output / "src").mkdir()
+    intent = _component_seed_adoption_intent(rva, proposal)
+    inspection = _component_seed_inspection(subject, rva, proposal)
+    interface = proposal.get("interface_hint", {})
+    parameters = interface.get("parameters", []) if isinstance(interface, Mapping) else []
+    objects = interface.get("objects", []) if isinstance(interface, Mapping) else []
+    services = interface.get("services", []) if isinstance(interface, Mapping) else []
+    symbol = str(intent["operations"][0]["symbol"])
+    parameter_names = []
+    for index, parameter in enumerate(parameters):
+        register = parameter.get("register") if isinstance(parameter, Mapping) else None
+        suffix = str(register) if isinstance(register, str) else str(index)
+        parameter_names.append(f"uint32_t machine_value_{suffix}")
+    for index, _object in enumerate(objects):
+        parameter_names.append(f"void *object_view_{index}")
+    signature = ", ".join(parameter_names) or "void"
+    header = "\n".join([
+        "#ifndef SPX_COMPONENT_SEED_H",
+        "#define SPX_COMPONENT_SEED_H",
+        "",
+        "#include <stdint.h>",
+        "",
+        "/* Draft only: refine these proposed machine-facing types before proof. */",
+        f"uint32_t {symbol}({signature});",
+        "",
+        "#endif /* SPX_COMPONENT_SEED_H */",
+        "",
+    ])
+    source = "\n".join([
+        '#include "component.h"',
+        "",
+        '#error "refine the proposal interface, then implement this component"',
+        "",
+        f"/* Seed RVA: 0x{rva:08x}. */",
+        f"/* Proposed services: {len(services)}; object views: {len(objects)}. */",
+        f"/* Implement: uint32_t {symbol}({signature}); */",
+        "",
+    ])
+    readme = "\n".join([
+        f"# Component seed 0x{rva:08x}",
+        "",
+        "This is a non-authorizing, machine-derived editing package.",
+        "Refine the draft types and boundary intent, keep authored C separate",
+        "from faithful generated C, then run contextual refinement.",
+        "",
+        f"Proposal forms: {', '.join(str(item) for item in proposal.get('proposal_kinds', []))}",
+        f"Candidate units: {proposal.get('membership', {}).get('unit_count')}",
+        f"Expected proof cost: {proposal.get('score', {}).get('vector', {}).get('expected_proof_cost')}",
+        "",
+    ])
+    (output / "component-adoption-intent.json").write_text(
+        json.dumps(intent, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "component-proposal-inspection.json").write_text(
+        json.dumps(inspection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "include/component.h").write_text(header, encoding="utf-8")
+    (output / "src/component.c").write_text(source, encoding="utf-8")
+    (output / "README.md").write_text(readme, encoding="utf-8")
+
+
+def _boundary_status(args: argparse.Namespace) -> int:
+    _boundary_index(args)
+    payload = _realize_json(args, "boundaries.status", "boundary-status.json")
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     counts = payload.get("counts", {})
     print(
-        f"{args.target}: calls={counts.get('subjects', 0)} "
+        f"{args.target}: boundaries={counts.get('subjects', 0)} "
         f"complete={counts.get('complete', 0)} "
         f"incomplete={counts.get('incomplete', 0)} "
         f"violated={counts.get('violated', 0)}"
@@ -535,26 +700,64 @@ def _call_status(args: argparse.Namespace) -> int:
     for row in payload.get("subjects", []):
         if not isinstance(row, Mapping):
             continue
-        layers = row.get("layers", {})
         print(
-            f"{row.get('status'):10} {row.get('id')} "
-            f"transport={layers.get('transport')} types={layers.get('types')} "
-            f"lifecycle={layers.get('lifecycle')} idiom={layers.get('idiomatic_view')}"
+            f"{str(row.get('state')):10} {row.get('subject')} "
+            f"authority={'yes' if row.get('authority') is True else 'no'}"
         )
-        if row.get("next_action"):
-            print(f"  next: {row.get('next_action')}")
+        for blocker in row.get("blockers", []):
+            print(f"  blocker: {blocker}")
+        if row.get("ranked_next_action"):
+            print(f"  next: {row.get('ranked_next_action')}")
     return 0
 
 
-def _call_inspect(args: argparse.Namespace) -> int:
-    _call_subject(args)
-    payload = _realize_json(
-        args,
-        f"calls.subjects.{_attr_segment(args.subject)}.inspection",
-        "call-inspection.json",
-    )
+def _boundary_inspect(args: argparse.Namespace) -> int:
+    subject = _boundary_subject(args)
+    if subject.get("dynamic") is True:
+        rva, proposal = _component_seed_proposal(args)
+        payload = _component_seed_inspection(args.subject, rva, proposal)
+    else:
+        payload = _realize_json(
+            args,
+            f"boundaries.subjects.{_attr_segment(args.subject)}.inspection",
+            str(subject.get("inspectionArtifact", "call-inspection.json")),
+        )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if payload.get("format") == COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT:
+        proposal = payload.get("proposal", {})
+        membership = proposal.get("membership", {})
+        score = proposal.get("score", {}).get("vector", {})
+        print(
+            f"{args.subject}: status={payload.get('status')} authority=no "
+            f"span=0x{int(membership.get('rva_start', 0)):08x}-"
+            f"0x{int(membership.get('rva_end', 0)):08x} "
+            f"units={membership.get('unit_count')} "
+            f"proof-cost={score.get('expected_proof_cost')}"
+        )
+        print(
+            "  forms: "
+            + ", ".join(str(item) for item in proposal.get("proposal_kinds", []))
+        )
+        for blocker in proposal.get("blockers", []):
+            print(f"  blocker: {blocker}")
+        print(f"  next: {payload.get('ranked_next_action')}")
+        return 0
+    if payload.get("format") == COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT:
+        payload = parse_component_work_package_inspection_v1(payload)
+        print(
+            f"{args.subject}: status={payload.get('status')} authority=no "
+            f"component={payload.get('component_id')} "
+            f"mode={payload.get('proof_classification')}"
+        )
+        for operation in payload.get("operations", []):
+            print(
+                f"  operation: {operation.get('operation_id')} "
+                f"symbol={operation.get('symbol')}"
+            )
+        for issue in payload.get("issues", []):
+            print(f"  blocker: {issue}")
         return 0
     print(
         f"{args.subject}: status={payload.get('status')} "
@@ -572,42 +775,66 @@ def _call_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _call_propose(args: argparse.Namespace) -> int:
-    _call_subject(args)
+def _boundary_propose(args: argparse.Namespace) -> int:
+    subject = _boundary_subject(args)
+    if subject.get("dynamic") is True:
+        rva, proposal = _component_seed_proposal(args)
+        if args.output is None:
+            return _build(args, "components.proposals", no_link=True)
+        _write_component_seed_editable_package(
+            output=args.output.resolve(), subject=args.subject,
+            rva=rva, proposal=proposal,
+        )
+        print(f"wrote component seed work package: {args.output.resolve()}")
+        return 0
+    if args.output is not None:
+        raise ValueError("--output is currently supported for component seeds")
     return _build(
         args,
-        f"calls.subjects.{_attr_segment(args.subject)}.proposal",
+        f"boundaries.subjects.{_attr_segment(args.subject)}.proposal",
         no_link=True,
     )
 
 
-def _call_adopt(args: argparse.Namespace) -> int:
-    _call_subject(args)
+def _boundary_adopt(args: argparse.Namespace) -> int:
+    subject = _boundary_subject(args)
     if args.output is None:
-        raise ValueError("call adopt requires --output FILE")
-    payload = _realize_json(
-        args,
-        f"calls.subjects.{_attr_segment(args.subject)}.intentTemplate",
-        "call-intent.json",
-    )
+        raise ValueError("boundary adopt requires --output FILE")
+    if subject.get("dynamic") is True:
+        rva, proposal = _component_seed_proposal(args)
+        payload = _component_seed_adoption_intent(rva, proposal)
+    else:
+        payload = _realize_json(
+            args,
+            f"boundaries.subjects.{_attr_segment(args.subject)}.intentTemplate",
+            str(subject.get("intentArtifact", "call-intent.json")),
+        )
     forbidden = {"status", "proposal_id", "evidence_ids"}
     forbidden.update(key for key in payload if key.endswith("_sha256"))
     if set(payload) & forbidden:
-        raise ValueError("generated call intent contains authority or digest fields")
+        raise ValueError(
+            "generated boundary intent contains authority or digest fields"
+        )
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(output)
-    print(f"adopted call intent: {output}")
+    print(f"adopted boundary intent: {output}")
     return 0
 
 
-def _call_check(args: argparse.Namespace) -> int:
-    _call_subject(args)
+def _boundary_check(args: argparse.Namespace) -> int:
+    subject = _boundary_subject(args)
+    if subject.get("dynamic") is True:
+        _component_seed_proposal(args)
+        raise ValueError(
+            "component seed is a non-authorizing proposal; adopt it, author "
+            "a checked interface, and check the resulting component"
+        )
     return _build(
         args,
-        f"calls.subjects.{_attr_segment(args.subject)}.check",
+        f"boundaries.subjects.{_attr_segment(args.subject)}.check",
         no_link=True,
     )
 
@@ -931,42 +1158,82 @@ def _candidate_list(args: argparse.Namespace) -> int:
 
 
 def _candidate_status(args: argparse.Namespace) -> int:
-    index = _operator_index(args)
-    candidate = index.get("candidate")
-    configurations = (
-        candidate.get("configurations", []) if isinstance(candidate, Mapping) else []
+    configuration = args.configuration
+    suffix = (
+        f"candidate.statuses.{_attr_segment(configuration)}"
+        if configuration is not None
+        else "candidate.materializedStatus"
     )
-    configuration = args.configuration or index.get("defaultConfiguration")
-    if not configurations:
-        raise ValueError(
-            "target has no candidate configurations; use project status while "
-            "component intent is not configured"
-        )
-    if configuration not in configurations:
-        raise ValueError(
-            f"unknown candidate configuration {configuration!r}; "
-            f"available: {', '.join(configurations)}"
-        )
     payload = _realize_json(
         args,
-        f"candidate.statuses.{_attr_segment(configuration)}",
-        "candidate-status.json",
+        suffix,
+        "project-status.json",
     )
-    frontiers = _filtered_frontiers(args, payload)
+    if payload.get("format") != OPERATOR_WORK_STATUS_FORMAT:
+        raise ValueError("candidate status is not an operator-work-status-v1 view")
+    raw_subjects = payload.get("subjects")
+    if not isinstance(raw_subjects, list):
+        raise ValueError("candidate status subject inventory is malformed")
+    candidates = [
+        dict(row) for row in raw_subjects
+        if isinstance(row, Mapping)
+        and str(row.get("subject", "")).startswith(
+            f"configuration:{args.target}:"
+        )
+    ]
+    if len(candidates) != 1:
+        raise ValueError(
+            "target has no unique candidate configuration status; use project "
+            "status while component intent is not configured"
+        )
+    subject = candidates[0]
+    observed_configuration = str(subject["subject"]).rsplit(":", 1)[-1]
+    if configuration is not None and observed_configuration != configuration:
+        raise ValueError("candidate status binds another configuration")
+    configuration = observed_configuration
+    raw_blockers = subject.get("blockers")
+    if not isinstance(raw_blockers, list) or any(
+        not isinstance(row, Mapping) for row in raw_blockers
+    ):
+        raise ValueError("candidate status blocker inventory is malformed")
+    blockers = [dict(row) for row in raw_blockers]
+    if args.family and args.family != "provider-selection":
+        blockers = []
+    if args.status and args.status != subject.get("state"):
+        blockers = []
+    if not args.all:
+        blockers = blockers[: args.limit]
     if args.json:
-        _print_filtered_json(payload, frontiers)
+        print(json.dumps({
+            **payload,
+            "subjects": [
+                {**row, "blockers": blockers}
+                if row.get("subject") == subject["subject"] else row
+                for row in raw_subjects
+            ],
+        }, indent=2, sort_keys=True))
         return 0
-    counts = payload.get("counts", {})
+    raw_bindings = subject.get("bindings")
+    if not isinstance(raw_bindings, list) or any(
+        not isinstance(row, Mapping) for row in raw_bindings
+    ):
+        raise ValueError("candidate status binding inventory is malformed")
+    binding = next(iter(raw_bindings), {})
+    ready = binding.get("ready_for_realization") is True
     print(
         f"{args.target}: status={payload.get('status')} "
-        f"configuration={payload.get('configuration_id')} "
-        f"structural-ready={str(payload.get('structural_ready')).lower()} "
-        f"configuration-ready={str(payload.get('configuration_ready')).lower()} "
-        f"build-ready={str(payload.get('build_ready')).lower()} "
-        f"frontiers={counts.get('primary_frontiers', 0)} "
-        f"dependent={counts.get('dependent_occurrences', 0)}"
+        f"configuration={configuration} "
+        f"selection={subject.get('state')} "
+        f"realization-ready={str(ready).lower()} "
+        f"blockers={len(raw_blockers)}"
     )
-    _print_frontiers(payload, frontiers)
+    for blocker in blockers:
+        code = blocker.get("code", "unknown_provider_selection_blocker")
+        identity = blocker.get("symbol_id") or blocker.get("provider_id")
+        suffix = f" [{identity}]" if identity is not None else ""
+        print(f"incomplete: provider-selection:{code}{suffix}")
+    if not blockers and subject.get("ranked_next_action"):
+        print(f"next: {subject.get('ranked_next_action')}")
     return 0
 
 
@@ -1044,20 +1311,26 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
         parser.add_argument("--json", action="store_true")
         parser.add_argument("--output", type=Path, metavar="FILE")
         return _component_relation
-    if name == "call status":
+    if name == "boundary status":
         parser.add_argument("--json", action="store_true")
-        return _call_status
-    if name in {"call inspect", "call propose", "call adopt", "call check"}:
-        parser.add_argument("subject", type=_opaque_identity)
-        if name == "call inspect":
+        return _boundary_status
+    if name in {
+        "boundary inspect",
+        "boundary propose",
+        "boundary adopt",
+        "boundary check",
+    }:
+        parser.add_argument("subject", type=_boundary_subject_identity)
+        if name == "boundary inspect":
             parser.add_argument("--json", action="store_true")
-            return _call_inspect
-        if name == "call propose":
-            return _call_propose
-        if name == "call adopt":
+            return _boundary_inspect
+        if name == "boundary propose":
+            parser.add_argument("--output", type=Path, metavar="DIR")
+            return _boundary_propose
+        if name == "boundary adopt":
             parser.add_argument("--output", type=Path, metavar="FILE")
-            return _call_adopt
-        return _call_check
+            return _boundary_adopt
+        return _boundary_check
     if name == "library status":
         parser.add_argument("--json", action="store_true")
         return _library_status

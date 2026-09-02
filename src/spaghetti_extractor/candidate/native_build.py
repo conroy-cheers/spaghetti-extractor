@@ -1,4 +1,4 @@
-"""Deterministic freestanding PE32 construction for candidate reconstruction semantic engines.
+"""Deterministic PE32 toolchain and linked-skeleton qualification helpers.
 
 This module only constructs candidate binaries. Its manifests are build and
 provenance evidence; none of them can qualify a candidate.
@@ -18,41 +18,34 @@ from typing import Any, Mapping, Sequence
 
 import pefile
 
-from ..artifacts.formats import (
-    NATIVE_ENGINE_PACKAGE_FORMAT as _NATIVE_FORMAT,
-)
 from ..roundtrip_fuzz.image_model import (
     LoadImageContract,
 )
-from .engine_layout import (
-    EngineLayout,
-    EngineLayoutFeature,
-    SPX_ENGINE_LAYOUT_MAGIC_BYTES,
-    parse_spx_engine_layout_payload,
+from .module_runtime_layout import (
+    RuntimeStateLayout,
+    RuntimeStateLayoutFeature,
+    SPX_RUNTIME_STATE_LAYOUT_MAGIC_BYTES,
+    parse_spx_runtime_state_layout_payload,
 )
-from .pe import PayloadRelocation, PayloadRelocationInventory
+from .linked_skeleton_model import PayloadRelocation, PayloadRelocationInventory
 from ..util import sha256_bytes, sha256_file
 
 
 PAYLOAD_FILENAME = "payload.exe"
 PAYLOAD_MAP_FILENAME = "payload.map"
-ENGINE_LAYOUT_FILENAME = "engine-layout.bin"
+RUNTIME_STATE_LAYOUT_FILENAME = "runtime-state-layout.bin"
 PAYLOAD_RELOCATION_INVENTORY_FILENAME = "payload-relocations.json"
 
-_SEMANTIC_MANIFEST = "state-machine-implementation.json"
-_NATIVE_MANIFEST = "native-engine-package.json"
-_SEMANTIC_FORMAT = "spaghetti-extractor-semantic-c-implementation-v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PLACEHOLDER_INT3 = re.compile(
     r"(?im)^\s*(?:int3|int\s+\$?3)\s*(?:[#;/].*)?$|"
     r"^\s*\.byte\s+0xcc\s*(?:[#;/].*)?$"
 )
 _EXPECTED_LAYOUT_FEATURES = (
-    EngineLayoutFeature.SPLIT_FLAGS
-    | EngineLayoutFeature.PACKED_EFLAGS
-    | EngineLayoutFeature.FS_BASE
-    | EngineLayoutFeature.ORIGINAL_RVA
+    RuntimeStateLayoutFeature.SPLIT_FLAGS
+    | RuntimeStateLayoutFeature.PACKED_EFLAGS
+    | RuntimeStateLayoutFeature.FS_BASE
+    | RuntimeStateLayoutFeature.ORIGINAL_RVA
 )
 _EXPECTED_X87_SLOTS = 8
 _IMAGE_FILE_RELOCS_STRIPPED = 0x0001
@@ -68,23 +61,6 @@ _DIRECTORY_DELAY_IMPORT = 13
 
 class CandidateNativeBuildError(ValueError):
     """A candidate-generation input or output failed closed validation."""
-
-
-@dataclass(frozen=True)
-class _Artifact:
-    owner: str
-    key: str
-    relative_path: str
-    sha256: str
-    path: Path
-
-    def payload(self) -> dict[str, Any]:
-        return {
-            "owner": self.owner,
-            "key": self.key,
-            "path": self.relative_path,
-            "sha256": self.sha256,
-        }
 
 
 @dataclass(frozen=True)
@@ -115,187 +91,6 @@ class _Toolchain:
             "nm_sha256": self.nm_sha256,
             "target": self.target,
         }
-
-
-def _semantic_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artifact, ...]:
-    if manifest.get("format") != _SEMANTIC_FORMAT:
-        raise CandidateNativeBuildError("unsupported semantic-C package format")
-    artifacts = _mapping(manifest.get("artifacts"), "semantic-C artifacts")
-    required = {
-        "runtime_header",
-        "transfers_header",
-        "generated_source",
-        "repair_source",
-        "dispatch_header",
-        "dispatch_source",
-        "engine_header",
-        "engine_source",
-        "api_adapters_header",
-        "api_adapters_source",
-        "api_adapters_report",
-        "source_map",
-        "runtime_obligations",
-    }
-    missing = required - set(artifacts)
-    if missing:
-        raise CandidateNativeBuildError(
-            "semantic-C package omits artifacts: " + ", ".join(sorted(missing))
-        )
-    return tuple(
-        _parse_artifact(root, "semantic", key, value)
-        for key, value in sorted(artifacts.items())
-    )
-
-
-def _native_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artifact, ...]:
-    if manifest.get("format") != _NATIVE_FORMAT:
-        raise CandidateNativeBuildError("unsupported native-engine package format")
-    result = [_parse_artifact(root, "native", "plan", manifest.get("plan"))]
-    sources = manifest.get("sources")
-    if not isinstance(sources, list) or not sources:
-        raise CandidateNativeBuildError("native-engine package has no source inventory")
-    seen: set[str] = set()
-    for index, value in enumerate(sources):
-        artifact = _parse_artifact(root, "native", f"source_{index:03d}", value)
-        if artifact.relative_path in seen:
-            raise CandidateNativeBuildError("native-engine source inventory has duplicates")
-        seen.add(artifact.relative_path)
-        result.append(artifact)
-    return tuple(result)
-
-
-def _parse_artifact(root: Path, owner: str, key: str, value: Any) -> _Artifact:
-    record = _mapping(value, f"{owner} artifact {key}")
-    relative = _relative_path(record.get("path"), f"{owner} artifact {key} path")
-    expected = _digest(record.get("sha256"), f"{owner} artifact {key} SHA-256")
-    path = root / relative
-    if not path.is_file():
-        raise CandidateNativeBuildError(f"{owner} artifact {key} is missing: {relative}")
-    observed = sha256_file(path)
-    if observed != expected:
-        raise CandidateNativeBuildError(f"{owner} artifact {key} has a stale SHA-256")
-    return _Artifact(owner, key, relative.as_posix(), expected, path)
-
-
-def _package_blockers(
-    *,
-    semantic: Mapping[str, Any],
-    native: Mapping[str, Any],
-    native_artifacts: Sequence[_Artifact],
-    runtime_binding: Mapping[str, Any],
-    entry_symbol: str,
-) -> list[str]:
-    blockers: list[str] = []
-    inventory = semantic.get("transfer_inventory")
-    if not isinstance(inventory, list) or not inventory:
-        blockers.append("semantic transfer inventory is empty")
-    elif any(
-        not isinstance(row, Mapping) or row.get("implementation") == "repair_stub"
-        for row in inventory
-    ):
-        blockers.append("semantic package contains repair stubs")
-    strict = _mapping(semantic.get("strict_candidate"), "semantic strict-candidate state")
-    raw_strict_blockers = strict.get("blockers")
-    if not isinstance(raw_strict_blockers, list) or any(
-        not isinstance(item, str) for item in raw_strict_blockers
-    ):
-        blockers.append("semantic strict-candidate blocker inventory is malformed")
-    else:
-        residual = set(raw_strict_blockers) - {"runtime_call_adapters_unbound"}
-        if residual:
-            blockers.append("semantic package is incomplete: " + ", ".join(sorted(residual)))
-    if native.get("status") != "ready" or native.get("blockers") != []:
-        blockers.append("native-engine package is not ready")
-    if runtime_binding.get("status") != "ready":
-        blockers.append("native runtime obligations are not exactly bound")
-
-    source_texts: list[str] = []
-    for artifact in native_artifacts:
-        if artifact.path.suffix.lower() not in {".c", ".s", ".asm"}:
-            continue
-        try:
-            text = artifact.path.read_text(encoding="ascii")
-        except (OSError, UnicodeError):
-            blockers.append(f"native source is not readable ASCII: {artifact.relative_path}")
-            continue
-        source_texts.append(text)
-        if _PLACEHOLDER_INT3.search(text):
-            blockers.append(f"placeholder INT3 bridge source: {artifact.relative_path}")
-    escaped = re.escape(entry_symbol)
-    has_entry = any(
-        re.search(rf"(?m)^\s*_?{escaped}\s*:", text)
-        or re.search(rf"\b{escaped}\s*\([^;{{}}]*\)\s*\{{", text)
-        for text in source_texts
-    )
-    if not has_entry:
-        blockers.append(f"native package does not define payload entry {entry_symbol}")
-    return sorted(set(blockers))
-
-
-def _compile_units(
-    semantic: Sequence[_Artifact], native: Sequence[_Artifact]
-) -> tuple[_Artifact, ...]:
-    semantic_keys = {
-        "generated_source", "repair_source", "dispatch_source", "engine_source"
-    }
-    selected = [item for item in semantic if item.key in semantic_keys]
-    selected.extend(
-        item
-        for item in native
-        if item.key != "plan" and item.path.suffix.lower() in {".c", ".s"}
-    )
-    if not selected:
-        raise CandidateNativeBuildError("native build has no compilation units")
-
-    def order(item: _Artifact) -> tuple[int, str, str]:
-        if item.owner == "native" and item.path.suffix.lower() == ".s":
-            return (0, item.relative_path, item.key)
-        if item.owner == "native":
-            return (1, item.relative_path, item.key)
-        return (2, item.relative_path, item.key)
-
-    return tuple(sorted(selected, key=order))
-
-
-def _prepared_compile_units(
-    prepared: Mapping[str, Any], semantic_root: Path, native_root: Path
-) -> tuple[_Artifact, ...]:
-    rows = prepared.get("compile_units")
-    if not isinstance(rows, list) or not rows:
-        raise CandidateNativeBuildError("prepare manifest has no compile units")
-    result: list[_Artifact] = []
-    for index, value in enumerate(rows):
-        row = _mapping(value, f"compile unit {index}")
-        owner = row.get("owner")
-        if owner not in {"semantic", "native"}:
-            raise CandidateNativeBuildError(f"compile unit {index} owner is malformed")
-        root = semantic_root if owner == "semantic" else native_root
-        result.append(_parse_artifact(root, owner, _string(row.get("key"), "compile key"), row))
-    return tuple(result)
-
-
-def _revalidate_prepared_packages(
-    prepared: Mapping[str, Any], semantic_root: Path, native_root: Path
-) -> None:
-    inputs = _mapping(prepared.get("inputs"), "prepare inputs")
-    for owner, root, manifest_name in (
-        ("semantic_c_package", semantic_root, _SEMANTIC_MANIFEST),
-        ("native_engine_package", native_root, _NATIVE_MANIFEST),
-    ):
-        binding = _mapping(inputs.get(owner), f"prepare {owner}")
-        manifest = root / manifest_name
-        if not manifest.is_file() or sha256_file(manifest) != binding.get("manifest_sha256"):
-            raise CandidateNativeBuildError(f"{owner} manifest changed after preparation")
-        rows = binding.get("artifacts")
-        if not isinstance(rows, list):
-            raise CandidateNativeBuildError(f"{owner} artifact binding is malformed")
-        for index, row in enumerate(rows):
-            parsed = _mapping(row, f"{owner} artifact binding {index}")
-            artifact = root / _relative_path(parsed.get("path"), f"{owner} artifact path")
-            if not artifact.is_file() or sha256_file(artifact) != parsed.get("sha256"):
-                raise CandidateNativeBuildError(
-                    f"{owner} artifact changed after preparation: {parsed.get('path')}"
-                )
 
 
 def _select_toolchain(compiler: Path | str) -> _Toolchain:
@@ -389,17 +184,6 @@ def _common_compile_flags(source_sha256: str) -> list[str]:
         "-fno-exceptions",
         f"-frandom-seed={source_sha256}",
     ]
-
-
-def _relocation_anchor_source(entry_symbol: str) -> str:
-    entry = entry_symbol if entry_symbol.startswith("_") else "_" + entry_symbol
-    return (
-        ".section .stgbrel,\"dr\"\n"
-        ".balign 4\n"
-        ".globl _spx_payload_relocation_anchor\n"
-        "_spx_payload_relocation_anchor:\n"
-        f"  .long {entry}\n"
-    )
 
 
 def _link_flags(
@@ -661,10 +445,10 @@ def _read_payload_rva(
     return result
 
 
-def _extract_engine_layout(
+def _extract_runtime_state_layout(
     pe: pefile.PE, image: bytes
-) -> tuple[bytes, EngineLayout, tuple[int, str]]:
-    matches: list[tuple[bytes, EngineLayout, int, str]] = []
+) -> tuple[bytes, RuntimeStateLayout, tuple[int, str]]:
+    matches: list[tuple[bytes, RuntimeStateLayout, int, str]] = []
     for section in pe.sections:
         characteristics = int(section.Characteristics)
         if characteristics & (_IMAGE_SCN_MEM_EXECUTE | _IMAGE_SCN_MEM_WRITE):
@@ -674,7 +458,7 @@ def _extract_engine_layout(
         data = image[raw_offset : raw_offset + raw_size]
         cursor = 0
         while True:
-            found = data.find(SPX_ENGINE_LAYOUT_MAGIC_BYTES, cursor)
+            found = data.find(SPX_RUNTIME_STATE_LAYOUT_MAGIC_BYTES, cursor)
             if found < 0:
                 break
             cursor = found + 1
@@ -687,7 +471,7 @@ def _extract_engine_layout(
                 continue
             payload = data[found : found + byte_count]
             try:
-                layout = parse_spx_engine_layout_payload(
+                layout = parse_spx_runtime_state_layout_payload(
                     payload,
                     expected_features=_EXPECTED_LAYOUT_FEATURES,
                     expected_x87_slot_count=_EXPECTED_X87_SLOTS,
@@ -698,7 +482,7 @@ def _extract_engine_layout(
             matches.append((payload, layout, rva, name))
     if len(matches) != 1:
         raise CandidateNativeBuildError(
-            f"payload has {len(matches)} qualified compiler-materialized engine-layout tables"
+            f"payload has {len(matches)} qualified compiler-materialized runtime-state-layout tables"
         )
     payload, layout, rva, section_name = matches[0]
     return payload, layout, (rva, section_name)
@@ -781,25 +565,6 @@ def _require_pe32_contract(contract: LoadImageContract) -> None:
         raise CandidateNativeBuildError("load-image contract is not i386 PE32")
     if not contract.completeness.complete:
         raise CandidateNativeBuildError("load-image contract is incomplete")
-
-
-def _state_machine_sha256(manifest: Mapping[str, Any]) -> str:
-    binding = _mapping(manifest.get("state_machine"), "semantic state-machine binding")
-    return _digest(binding.get("sha256"), "semantic state-machine SHA-256")
-
-
-def _load_closed_manifest(path: Path, expected_format: str, label: str) -> dict[str, Any]:
-    payload = _read_json_object(path, label)
-    if payload.get("format") != expected_format:
-        raise CandidateNativeBuildError(f"unsupported {label} format")
-    hashes = _mapping(payload.get("hashes"), f"{label} hashes")
-    if hashes.get("algorithm") != "sha256":
-        raise CandidateNativeBuildError(f"{label} hash algorithm is unsupported")
-    expected = _digest(hashes.get("manifest_core_sha256"), f"{label} core SHA-256")
-    core = {key: value for key, value in payload.items() if key != "hashes"}
-    if _canonical_sha256(core) != expected:
-        raise CandidateNativeBuildError(f"{label} deterministic hash does not close")
-    return payload
 
 
 def _close_manifest(core: Mapping[str, Any]) -> dict[str, Any]:
@@ -925,7 +690,7 @@ def _align_up(value: int, alignment: int) -> int:
 
 
 __all__ = [
-    "ENGINE_LAYOUT_FILENAME",
+    "RUNTIME_STATE_LAYOUT_FILENAME",
     "PAYLOAD_FILENAME",
     "PAYLOAD_MAP_FILENAME",
     "PAYLOAD_RELOCATION_INVENTORY_FILENAME",

@@ -12,7 +12,7 @@
       "kind": "expected-exit",
       "args": [],
       "expected_returncode": 0,
-      "expected_stdout": "Hello, world!\n",
+      "expected_stdout": "Hello, world!\r\n",
       "expected_stderr": ""
     }
   ]

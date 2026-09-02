@@ -22,7 +22,7 @@ from .v4_adoption_records import (
     REUSABLE_LIBRARY_IMPLEMENTATION_CODEC_V1,
     ReusableLibraryImplementationV1,
 )
-from .v4_behavior_manifest import read_library_behavior_pack_declaration_v1
+from .v4_behavior_manifest import read_library_behavior_pack_declaration
 from .v4_identity_records import (
     LIBRARY_RELEASE_HYPOTHESES_CODEC_V4,
     LibraryFunctionMatchV4,
@@ -69,7 +69,7 @@ def _load_implementations(
                 value
                 if isinstance(value, ReusableLibraryImplementationV1)
                 else (
-                    read_library_behavior_pack_declaration_v1(value).implementation
+                    read_library_behavior_pack_declaration(value).implementation
                     if Path(value).is_dir()
                     else REUSABLE_LIBRARY_IMPLEMENTATION_CODEC_V1.read(value)
                 )

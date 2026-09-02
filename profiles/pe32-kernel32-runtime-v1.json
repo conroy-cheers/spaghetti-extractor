@@ -3,6 +3,16 @@
   "id": "pe32-kernel32-runtime-v1",
   "machine_import_signatures": [
     {
+      "import": {"dll": "kernel32.dll", "symbol": "AreFileApisANSI"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "CloseHandle"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 1},
@@ -42,6 +52,18 @@
       "result_register_relations": [{"register": "eax", "relation": "related_word"}],
       "memory_effect": "none",
       "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "GetConsoleMode"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {"access": "write", "base_argument": 1, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": false}
+      ],
       "world_effect": "opaqueResources"
     },
     {
@@ -157,6 +179,36 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "TlsAlloc"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 0},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "TlsFree"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "kernel32.dll", "symbol": "TlsSetValue"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
     },
     {
       "import": {"dll": "kernel32.dll", "symbol": "GlobalFree"},
@@ -318,6 +370,16 @@
       "world_effect": "opaqueResources"
     },
     {
+      "import": {"dll": "kernel32.dll", "symbol": "SetConsoleMode"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "SetFilePointer"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 4},
@@ -386,6 +448,49 @@
       }
     },
     {
+      "import": {"dll": "kernel32.dll", "symbol": "RaiseException"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 4},
+      "disposition": "returns",
+      "result_register_relations": [],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 3, "offset": 0, "size": {"kind": "argument", "argument": 2, "scale": 4}, "nullable": true}
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "id": "kernel32.dll!RtlUnwind",
+      "import": {"dll": "kernel32.dll", "symbol": "RtlUnwind"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 4},
+      "disposition": "nonlocal",
+      "result_register_relations": [],
+      "memory_effect": "checkedExternalService",
+      "memory_footprints": [],
+      "world_effect": "checkedExternalService",
+      "external_service_protocol": {
+        "format": "spaghetti-extractor-checked-external-service-protocol-v1",
+        "id": "win32-rtl-unwind-v1",
+        "kind": "nonlocal_unwind",
+        "arguments": {
+          "target_frame": 0,
+          "target_instruction": 1,
+          "exception_record": 2,
+          "return_value": 3
+        },
+        "behavior": {
+          "frame_selection": "registered_seh_ancestor",
+          "target_selection": "checked_guest_code_capability",
+          "exception_record": "nullable_checked_exception_record",
+          "return_value": "eax_word",
+          "unwind": "x86_seh_unwind",
+          "abandoned_lifetimes": "invalidate",
+          "outcome": "nonlocal"
+        }
+      }
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "SetStdHandle"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 2},
@@ -415,6 +520,57 @@
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
       "world_effect_argument": 0
+    },
+    {
+      "id": "kernel32.dll!UnhandledExceptionFilter",
+      "import": {
+        "dll": "kernel32.dll",
+        "symbol": "UnhandledExceptionFilter"
+      },
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "checkedExternalService",
+      "memory_footprints": [
+        {
+          "access": "read",
+          "base_argument": 0,
+          "offset": 0,
+          "size": {"kind": "fixed", "bytes": 8},
+          "nullable": false
+        }
+      ],
+      "world_effect": "checkedExternalService",
+      "external_service_protocol": {
+        "format": "spaghetti-extractor-checked-external-service-protocol-v1",
+        "id": "win32-unhandled-exception-filter-v1",
+        "kind": "unhandled_exception_filter",
+        "arguments": {"exception_pointers": 0},
+        "behavior": {
+          "active_filter": "invoke_once_on_same_thread",
+          "fallback": "loader_owned_unhandled_exception_policy",
+          "outcome": "normal"
+        },
+        "object_view": {
+          "kind": "win32_exception_pointers_v1",
+          "size_bytes": 8,
+          "exception_record_pointer_offset": 0,
+          "context_pointer_offset": 4,
+          "exception_record_view": "checked_exception_record_v1",
+          "context_view": "x86_context_v1",
+          "root_access": "read",
+          "referent_access": "read_write",
+          "lifetime": "during_call"
+        },
+        "registered_filter": {
+          "protocol_id": "win32-unhandled-exception-filter",
+          "absence": "host_fallback",
+          "result_register": "eax"
+        }
+      }
     },
     {
       "import": {"dll": "kernel32.dll", "symbol": "WriteFile"},

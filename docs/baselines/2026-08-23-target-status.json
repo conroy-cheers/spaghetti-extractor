@@ -1,0 +1,91 @@
+{
+  "command": "nix develop --command spaghetti-extractor project status <target> --json --all --local",
+  "snapshot_kind": "pre-unified-behavioral-c-migration-target-status",
+  "source_revision": "51322bb86a3014cbe6a4a85dd4541d37145c60fe",
+  "targets": {
+    "dxball": {
+      "authority": {
+        "authorizing": false,
+        "counts": {
+          "dependent_occurrences": 1857,
+          "families": 18,
+          "incomplete_frontiers": 935,
+          "primary_frontiers": 935,
+          "violated_frontiers": 0
+        },
+        "status": "incomplete"
+      },
+      "authority_ready": false,
+      "first_primary_frontier": {
+        "code": "external_profile_machine_contract_incomplete",
+        "dependent_occurrences": 22,
+        "family": "external:external_profiles",
+        "record_id": "external-profile-issue-v3:0d2165b35c4b5f8e79d212b3fbeb43a55533a28cf006906395ca890900d498ed",
+        "status": "incomplete"
+      },
+      "policy": {
+        "candidate_gate_bypassed": false,
+        "diagnostic_only": true,
+        "original_binary_executed": false
+      },
+      "project_status_sha256": "4d5e37da3e31a2269c3e8021dd4182c9b57b352363a2859f066afa28460a4159",
+      "status": "incomplete"
+    },
+    "gnu-hello": {
+      "authority": {
+        "authorizing": false,
+        "counts": {
+          "dependent_occurrences": 1495,
+          "families": 18,
+          "incomplete_frontiers": 595,
+          "primary_frontiers": 595,
+          "violated_frontiers": 0
+        },
+        "status": "incomplete"
+      },
+      "authority_ready": false,
+      "first_primary_frontier": {
+        "code": "external_profile_machine_contract_incomplete",
+        "dependent_occurrences": 40,
+        "family": "external:external_profiles",
+        "record_id": "external-profile-issue-v3:b3c2ea3f4a93987cdbf929f89d480dbd9c5164e6e7f7abd62f65ceb6f164e903",
+        "status": "incomplete"
+      },
+      "policy": {
+        "candidate_gate_bypassed": false,
+        "diagnostic_only": true,
+        "original_binary_executed": false
+      },
+      "project_status_sha256": "ecf6c3043974746ae2c5b85eab94884e7ac7ac798d4f892b4a099950d1fc50c8",
+      "status": "incomplete"
+    },
+    "jq": {
+      "authority": {
+        "authorizing": false,
+        "counts": {
+          "dependent_occurrences": 2139,
+          "families": 18,
+          "incomplete_frontiers": 1070,
+          "primary_frontiers": 1070,
+          "violated_frontiers": 0
+        },
+        "status": "incomplete"
+      },
+      "authority_ready": false,
+      "first_primary_frontier": {
+        "code": "external_profile_machine_contract_incomplete",
+        "dependent_occurrences": 30,
+        "family": "external:external_profiles",
+        "record_id": "external-profile-issue-v3:b3c2ea3f4a93987cdbf929f89d480dbd9c5164e6e7f7abd62f65ceb6f164e903",
+        "status": "incomplete"
+      },
+      "policy": {
+        "candidate_gate_bypassed": false,
+        "diagnostic_only": true,
+        "original_binary_executed": false
+      },
+      "project_status_sha256": "25469e7efd162c3929228b63d5db8af53469c6e8b2bfd17e1ddb7cfb176ded21",
+      "status": "incomplete"
+    }
+  }
+}

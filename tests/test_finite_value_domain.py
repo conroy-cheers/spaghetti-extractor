@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.authority_inputs import finite_values as finite_value_domain
-from spaghetti_extractor.authority_inputs.finite_values import FiniteU32Dataflow
+from spaghetti_extractor.reconstruction import finite_values as finite_value_domain
+from spaghetti_extractor.reconstruction.finite_values import FiniteU32Dataflow
 
 
 def _unit(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Mapping, Sequence
 
-from ..authority_inputs.bindings import indirect_exit_id_v2
+from .bindings import indirect_exit_id_v2
 from ..static_program.semantics.transfer import semantic_transfer
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..pe32.recovered_executable_data import recover_executable_data_ranges
@@ -71,6 +71,12 @@ def _materialize_recovered_target_cutpoints(
     list[ExportIssue],
     list[dict[str, Any]] | None,
     Sequence[Any] | None,
+    tuple[
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[ExportIssue],
+        list[dict[str, Any]],
+    ] | None,
 ]:
     """Regenerate the rooted finite-control closure from exact PE bytes."""
 
@@ -105,19 +111,39 @@ def _materialize_recovered_target_cutpoints(
         known_code_unit_rvas=set(starts),
     )
     data_spans = [RvaSpan(item.rva_start, item.rva_end) for item in data_ranges]
-    augmented = [copy.deepcopy(dict(unit)) for unit in units]
+    # Existing prepared units are immutable below; cutpoint materialization
+    # mutates only the containing list and newly constructed unit records.
+    # Preserve nested checked semantics by reference instead of cloning the
+    # entire machine-IR expression forest before discovering whether any
+    # target needs materialization.
+    augmented = [dict(unit) for unit in units]
     input_unit_ids = {str(unit["id"]) for unit in units}
     materialized_rows: list[dict[str, Any]] = []
     superseded_rows: list[dict[str, Any]] = []
     iteration_rows: list[dict[str, Any]] = []
+    recovery_refresh_rows: list[dict[str, Any]] = []
+    stable_classification: tuple[
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[ExportIssue],
+        list[dict[str, Any]],
+    ] | None = None
     final_plan: dict[str, Any] | None = None
     converged_cutpoints = False
-    max_cutpoint_rounds = 16
+    max_cutpoint_rounds = 32
     recovery_ids = {str(row.get("id")) for row in recoveries}
+    planning_excluded_ids: set[str] = set()
+    recovery_analysis_sha256 = _cutpoint_recovery_analysis_sha256(
+        recoveries=recoveries,
+        data_ranges=data_spans,
+        excluded_unit_ids=planning_excluded_ids,
+    )
+    all_static_recoveries_converged = converged
     for iteration in range(1, max_cutpoint_rounds + 1):
         active_units = [
             unit
             for unit in augmented
+            if str(unit["id"]) not in planning_excluded_ids
             if not any(
                 _unit_original_span(unit).start < data.end
                 and data.start < _unit_original_span(unit).end
@@ -177,9 +203,8 @@ def _materialize_recovered_target_cutpoints(
                     f"{edge.get('kind')}:{edge.get('source_unit_id')}"
                 )
         planner_recoveries: list[dict[str, Any]] = []
+        recovered_target_owner_ids: set[str] = set()
         for recovery in rebound_recoveries:
-            if recovery.get("source_unit_id") not in reached_ids:
-                continue
             missing_targets = [
                 int(target)
                 for target in recovery.get("target_rvas", [])
@@ -191,6 +216,13 @@ def _materialize_recovered_target_cutpoints(
                 if isinstance(target, int)
             )
             if missing_targets:
+                for unit in active_units:
+                    if any(
+                        isinstance(instruction, Mapping)
+                        and instruction.get("rva_start") in missing_targets
+                        for instruction in unit.get("instructions", [])
+                    ):
+                        recovered_target_owner_ids.add(str(unit["id"]))
                 planner_recoveries.append({
                     **copy.deepcopy(dict(recovery)),
                     "target_rvas": missing_targets,
@@ -199,7 +231,7 @@ def _materialize_recovered_target_cutpoints(
             str(active_starts[rva]["id"])
             for rva in independently_targeted_rvas
             if rva in active_starts
-        }
+        } | recovered_target_owner_ids
         plan = plan_recovered_target_cutpoints_v2(
             binary=binary,
             units=active_units,
@@ -231,9 +263,75 @@ def _materialize_recovered_target_cutpoints(
             "targets": plan["counts"]["targets"],
             "materialized_units": added,
         })
-        if added == 0:
+        if added != 0:
+            continue
+
+        # Executable-data and overlapping-decode classification can expose
+        # additional rooted selector domains.  In particular, an optimized
+        # CRT routine may contain tables and speculative linear decodes in the
+        # same executable section.  Freezing the first recovery result made
+        # those newly exact finite routes visible to the final control pass but
+        # too late for their target instruction boundaries to be materialized.
+        #
+        # Refresh only after the current cutpoint closure stalls.  The refresh
+        # is the existing classification and finite-dataflow implementation,
+        # not a second semantic analysis.  Its exclusions are planning-local;
+        # the public classification phase below rederives and reports them.
+        (
+            classified_units,
+            classification,
+            classification_issues,
+            refreshed_recoveries,
+        ) = _classify_executable_data_before_control(
+            binary=binary,
+            units=augmented,
+            static_program=static_program,
+            finite_dataflow_factory=finite_dataflow_factory,
+        )
+        refreshed_excluded_ids = {
+            str(unit["id"]) for unit in augmented
+        } - {str(unit["id"]) for unit in classified_units}
+        refreshed_data_spans = [
+            RvaSpan(int(row["rva_start"]), int(row["rva_end"]))
+            for row in classification["immutable_data_ranges"]
+        ]
+        refreshed_sha256 = _cutpoint_recovery_analysis_sha256(
+            recoveries=refreshed_recoveries,
+            data_ranges=refreshed_data_spans,
+            excluded_unit_ids=refreshed_excluded_ids,
+        )
+        recovery_refresh_rows.append({
+            "iteration": iteration,
+            "prior_analysis_sha256": recovery_analysis_sha256,
+            "refreshed_analysis_sha256": refreshed_sha256,
+            "changed": refreshed_sha256 != recovery_analysis_sha256,
+            "classification_status": classification["status"],
+            "excluded_units": len(refreshed_excluded_ids),
+            "static_recovery_rounds": classification["analysis"][
+                "static_jump_table_rounds"
+            ],
+            "static_recovery_converged": classification["analysis"][
+                "static_jump_table_converged"
+            ],
+        })
+        all_static_recoveries_converged = (
+            all_static_recoveries_converged
+            and bool(classification["analysis"]["static_jump_table_converged"])
+        )
+        if refreshed_sha256 == recovery_analysis_sha256:
+            stable_classification = (
+                classified_units,
+                classification,
+                classification_issues,
+                refreshed_recoveries,
+            )
             converged_cutpoints = True
             break
+        recoveries = refreshed_recoveries
+        recovery_ids = {str(row.get("id")) for row in recoveries}
+        data_spans = refreshed_data_spans
+        planning_excluded_ids = refreshed_excluded_ids
+        recovery_analysis_sha256 = refreshed_sha256
 
     augmented.sort(
         key=lambda item: (
@@ -291,7 +389,8 @@ def _materialize_recovered_target_cutpoints(
     report = {
         **copy.deepcopy(final_plan),
         "static_recovery_rounds": rounds,
-        "static_recovery_converged": converged,
+        "static_recovery_converged": all_static_recoveries_converged,
+        "static_recovery_refreshes": recovery_refresh_rows,
         "cutpoint_closure_iterations": iteration_rows,
         "cutpoint_closure_converged": converged_cutpoints,
         "static_recovery_reused_after_materialization": (
@@ -331,7 +430,7 @@ def _materialize_recovered_target_cutpoints(
                 ),
             )
         )
-    if not converged:
+    if not all_static_recoveries_converged:
         report["status"] = "incomplete"
         issues.append(
             ExportIssue(
@@ -354,7 +453,40 @@ def _materialize_recovered_target_cutpoints(
                 ),
             )
         )
-    return augmented, report, issues, replay_recoveries, replay_data_ranges
+    return (
+        augmented,
+        report,
+        issues,
+        replay_recoveries,
+        replay_data_ranges,
+        stable_classification,
+    )
+
+
+def _cutpoint_recovery_analysis_sha256(
+    *,
+    recoveries: Sequence[Mapping[str, Any]],
+    data_ranges: Sequence[Any],
+    excluded_unit_ids: set[str],
+) -> str:
+    """Identify exactly the recovery/classification facts used by a pass."""
+
+    ranges = [
+        {
+            "rva_start": int(
+                row["rva_start"] if isinstance(row, Mapping) else row.start
+            ),
+            "rva_end": int(
+                row["rva_end"] if isinstance(row, Mapping) else row.end
+            ),
+        }
+        for row in data_ranges
+    ]
+    return sha256_bytes(_canonical_json({
+        "recoveries": [copy.deepcopy(dict(row)) for row in recoveries],
+        "immutable_data_ranges": ranges,
+        "excluded_unit_ids": sorted(excluded_unit_ids),
+    }))
 
 
 def _materialize_target_cutpoint_plan(

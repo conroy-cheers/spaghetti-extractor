@@ -15,7 +15,7 @@ pkgs.runCommand "${namePrefix}-observed-load-graph-v1" {
 } ''
   set -euo pipefail
   export PYTHONHASHSEED=0
-  export PYTHONPATH=${pythonSource}/src
+  export PYTHONPATH=${pythonSource.pythonPath}
   ${pythonEnv}/bin/python3 - \
     ${loadPlan}/project-load-plan.json \
     ${observation} "$out" <<'PY'

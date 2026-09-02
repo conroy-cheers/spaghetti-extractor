@@ -20,7 +20,6 @@ from .rebuild import explain_index_rebuild, explain_plan_rebuild
 from .scaffold import (
     apply_scaffold_plan,
     plan_fixture_scaffold,
-    plan_phase_scaffold,
     plan_target_scaffold,
     plan_test_scaffold,
 )
@@ -81,8 +80,8 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--artifact")
 
     scaffold = subcommands.add_parser("scaffold", help="create convention-correct files")
-    scaffold.add_argument("kind", choices=("test", "phase", "fixture", "target"))
-    scaffold.add_argument("first", help="subsystem, phase kind, fixture kind, or target id")
+    scaffold.add_argument("kind", choices=("test", "fixture", "target"))
+    scaffold.add_argument("first", help="subsystem, fixture kind, or target id")
     scaffold.add_argument("second", nargs="?", help="new item name")
     scaffold.add_argument("--tier", default="unit")
     scaffold.add_argument("--capability")
@@ -157,8 +156,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{args.kind} scaffolds require a kind and item name")
         elif args.kind == "test":
             scaffold_plan = plan_test_scaffold(subsystem=args.first, name=args.second, tier=args.tier, capability=args.capability)
-        elif args.kind == "phase":
-            scaffold_plan = plan_phase_scaffold(phase_kind=args.first, name=args.second)
         else:
             scaffold_plan = plan_fixture_scaffold(fixture_kind=args.first, name=args.second)
         if args.json:

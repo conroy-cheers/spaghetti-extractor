@@ -7,10 +7,9 @@
   namePrefix,
   releaseHypotheses,
   catalogSearchIndex ? null,
-  abiMatchResolution ? null,
   adoptionIntents ? { },
   checkedIslands ? { },
-  generatedComponents ? { },
+  providerQualifications ? { },
   implementations ? { },
 }:
 
@@ -35,16 +34,15 @@ let
     set -euo pipefail
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
-    export PYTHONPATH=${phasePythonSource}/src
+    export PYTHONPATH=${phasePythonSource.pythonPath}
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
       ${lib.escapeShellArg targetId} \
       ${releaseHypotheses} \
       ${lib.escapeShellArg (if catalogSearchIndex == null then "" else "${catalogSearchIndex}/catalog-search-index.json")} \
-      ${lib.escapeShellArg (if abiMatchResolution == null then "" else "${abiMatchResolution}/abi-match-resolution.json")} \
       ${lib.escapeShellArg (builtins.toJSON adoptionIntents)} \
       ${lib.escapeShellArg (builtins.toJSON nonNullReceiptPaths)} \
-      ${lib.escapeShellArg (builtins.toJSON generatedComponents)} \
+      ${lib.escapeShellArg (builtins.toJSON providerQualifications)} \
       ${lib.escapeShellArg (builtins.toJSON implementations)} \
       "$out/library-status.json" <<'PY'
     import json
@@ -56,12 +54,13 @@ let
         target_id=sys.argv[1],
         release_hypotheses=pathlib.Path(sys.argv[2]),
         catalog_search_index=(pathlib.Path(sys.argv[3]) if sys.argv[3] else None),
-        abi_match_resolution=(pathlib.Path(sys.argv[4]) if sys.argv[4] else None),
-        adoption_intents=[pathlib.Path(value) for value in json.loads(sys.argv[5]).values()],
-        checked_islands=[pathlib.Path(value) for value in json.loads(sys.argv[6]).values()],
-        generated_components=[pathlib.Path(value) for value in json.loads(sys.argv[7]).values()],
-        implementations=[pathlib.Path(value) for value in json.loads(sys.argv[8]).values()],
-        out=pathlib.Path(sys.argv[9]),
+        adoption_intents=[pathlib.Path(value) for value in json.loads(sys.argv[4]).values()],
+        checked_islands=[pathlib.Path(value) for value in json.loads(sys.argv[5]).values()],
+        provider_qualifications=[
+            pathlib.Path(value) for value in json.loads(sys.argv[6]).values()
+        ],
+        implementations=[pathlib.Path(value) for value in json.loads(sys.argv[7]).values()],
+        out=pathlib.Path(sys.argv[8]),
     )
     PY
     jq -e '

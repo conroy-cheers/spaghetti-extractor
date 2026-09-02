@@ -80,8 +80,8 @@
     ]
   },
   "frames": [
-    {"id": "wndproc", "subject": {"kind": "callback", "id": "win32-window-procedure", "image_selector": "main-image"}, "signature_id": "wndproc-callback", "transfer_kind": "callback"},
-    {"id": "register-class", "subject": {"kind": "import", "id": "user32.RegisterClassA", "image_selector": "main-image"}, "signature_id": "register-class", "transfer_kind": "import"}
+    {"id": "wndproc", "subject": {"kind": "callback", "id": "win32-window-procedure-ansi", "image_selector": "main-image"}, "signature_id": "wndproc-callback", "transfer_kind": "callback"},
+    {"id": "register-class", "subject": {"kind": "import", "id": "user32.dll.RegisterClassA", "image_selector": "main-image"}, "signature_id": "register-class", "transfer_kind": "import"}
   ],
   "source_names": {
     "types": {"i8": "spx_i8", "u16": "ATOM", "i32": "LONG", "u32": "DWORD", "hwnd-object": "HWND_object", "instance-object": "HINSTANCE_object", "icon-object": "HICON_object", "cursor-object": "HCURSOR_object", "brush-object": "HBRUSH_object", "p-i8": "LPCSTR", "hwnd": "HWND", "hinstance": "HINSTANCE", "hicon": "HICON", "hcursor": "HCURSOR", "hbrush": "HBRUSH", "wndproc-fn": "spx_WNDPROC_fn", "wndproc": "WNDPROC", "wndclassa": "WNDCLASSA", "p-wndclassa": "WNDCLASSA_ptr", "register-class-fn": "spx_RegisterClassA_fn"},

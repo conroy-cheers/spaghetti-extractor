@@ -7,9 +7,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..artifacts.formats import (
+from ..transfer.exception_projection import (
+    exception_record_projection_paths_v1,
+)
+from .formats import (
     CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT,
     CHECKED_SEH_PROTOCOL_FORMAT,
+    PINNED_CODE_LAYOUT_AUTHORITY_FORMAT,
 )
 from ..errors import ToolkitInputError
 
@@ -18,10 +22,143 @@ _OUTCOMES = frozenset({"normal", "no_return", "exceptional", "nonlocal"})
 _PROJECTION_FIELDS = frozenset(
     {"registers", "flags", "x87", "stack", "exception_record", "context"}
 )
+def pinned_continuation_portal_symbol_v1(resumption_rva: int) -> str:
+    """Return the one stable native address anchor for a pinned guest continuation."""
+
+    return f"spx_exception_continuation_{_u32(resumption_rva, 'resumption RVA'):08x}"
+
+
+def pinned_continuation_portal_for_protocol_v1(
+    protocol: Mapping[str, object],
+) -> str | None:
+    """Derive a continuation anchor exactly when a protocol observes pinned EIP."""
+
+    projections = protocol.get("projections")
+    if protocol.get("address_policy") != "pinned_original_layout":
+        return None
+    if not isinstance(projections, Mapping) or "eip" not in {
+        str(value).lower() for value in projections.get("context", [])
+    }:
+        return None
+    rva = protocol.get("resumption_rva")
+    if not isinstance(rva, int) or isinstance(rva, bool):
+        raise CheckedOutcomeProtocolError(
+            "pinned EIP protocol lacks a resumption RVA"
+        )
+    return pinned_continuation_portal_symbol_v1(rva)
 
 
 class CheckedOutcomeProtocolError(ToolkitInputError):
     """An outcome or SEH contract is malformed, stale, or fail-open."""
+
+
+@dataclass(frozen=True)
+class PinnedCodeLayoutAuthorityV2:
+    authority_id: str
+    original_module_sha256: str
+    resolved_external_environment_sha256: str
+    required_image_base: int
+    rva_bindings: tuple[Mapping[str, int], ...]
+    observed_fields: tuple[str, ...]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        original_module_sha256: str,
+        resolved_external_environment_sha256: str,
+        required_image_base: int,
+        rva_bindings: Sequence[Mapping[str, int]],
+        observed_fields: Sequence[str],
+    ) -> "PinnedCodeLayoutAuthorityV2":
+        original = _digest(original_module_sha256, "original module SHA-256")
+        environment = _digest(
+            resolved_external_environment_sha256,
+            "resolved external environment SHA-256",
+        )
+        image_base = _u32(required_image_base, "required image base")
+        bindings: list[dict[str, int]] = []
+        for index, raw in enumerate(rva_bindings):
+            if not isinstance(raw, Mapping) or set(raw) != {"source_rva", "candidate_rva"}:
+                raise CheckedOutcomeProtocolError(
+                    f"pinned RVA binding {index} is malformed"
+                )
+            source = _u32(raw["source_rva"], "pinned source RVA")
+            candidate_rva = _u32(raw["candidate_rva"], "pinned candidate RVA")
+            if source != candidate_rva:
+                raise CheckedOutcomeProtocolError(
+                    "pinned code layout requires exact source/candidate RVA equality"
+                )
+            bindings.append({"source_rva": source, "candidate_rva": candidate_rva})
+        ordered = tuple(sorted(bindings, key=lambda row: row["source_rva"]))
+        if not ordered or tuple(bindings) != ordered or len({row["source_rva"] for row in ordered}) != len(ordered):
+            raise CheckedOutcomeProtocolError(
+                "pinned RVA bindings must be nonempty, sorted, and unique"
+            )
+        observed = tuple(sorted(set(_text(item, "pinned observed field") for item in observed_fields)))
+        if not observed or not set(observed) <= {"ExceptionAddress", "Eip"}:
+            raise CheckedOutcomeProtocolError(
+                "pinned code layout observed fields are unsupported"
+            )
+        core = {
+            "format": PINNED_CODE_LAYOUT_AUTHORITY_FORMAT,
+            "status": "complete",
+            "bindings": {
+                "original_module_sha256": original,
+                "resolved_external_environment_sha256": environment,
+                "required_image_base": image_base,
+            },
+            "rva_bindings": [dict(row) for row in ordered],
+            "observed_fields": list(observed),
+        }
+        return cls(
+            "pinned-code-layout-authority-v2:" + canonical_sha256_v3(core),
+            original, environment, image_base,
+            ordered, observed,
+        )
+
+    @classmethod
+    def parse(cls, value: object) -> "PinnedCodeLayoutAuthorityV2":
+        fields = {"format", "id", "status", "bindings", "rva_bindings", "observed_fields"}
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise CheckedOutcomeProtocolError("pinned code layout authority has invalid fields")
+        if value["format"] != PINNED_CODE_LAYOUT_AUTHORITY_FORMAT:
+            raise CheckedOutcomeProtocolError("unsupported pinned code layout authority format")
+        bindings = value["bindings"]
+        if not isinstance(bindings, Mapping) or set(bindings) != {
+            "original_module_sha256",
+            "resolved_external_environment_sha256",
+            "required_image_base",
+        }:
+            raise CheckedOutcomeProtocolError("pinned code layout bindings are malformed")
+        result = cls.create(
+            original_module_sha256=str(bindings["original_module_sha256"]),
+            resolved_external_environment_sha256=str(
+                bindings["resolved_external_environment_sha256"]
+            ),
+            required_image_base=bindings["required_image_base"],
+            rva_bindings=value["rva_bindings"] if isinstance(value["rva_bindings"], list) else (),
+            observed_fields=value["observed_fields"] if isinstance(value["observed_fields"], list) else (),
+        )
+        if value["id"] != result.authority_id or value["status"] != "complete":
+            raise CheckedOutcomeProtocolError("pinned code layout authority is stale")
+        return result
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "format": PINNED_CODE_LAYOUT_AUTHORITY_FORMAT,
+            "id": self.authority_id,
+            "status": "complete",
+            "bindings": {
+                "original_module_sha256": self.original_module_sha256,
+                "resolved_external_environment_sha256": (
+                    self.resolved_external_environment_sha256
+                ),
+                "required_image_base": self.required_image_base,
+            },
+            "rva_bindings": [dict(row) for row in self.rva_bindings],
+            "observed_fields": list(self.observed_fields),
+        }
 
 
 def _text(value: Any, context: str) -> str:
@@ -49,6 +186,15 @@ def _canonical_strings(value: Any, context: str) -> tuple[str, ...]:
     result = tuple(_text(item, context) for item in value)
     if result != tuple(sorted(set(result))):
         raise CheckedOutcomeProtocolError(f"{context} must be sorted and unique")
+    return result
+
+
+def _ordered_unique_strings(value: Any, context: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise CheckedOutcomeProtocolError(f"{context} must be a list")
+    result = tuple(_text(item, context) for item in value)
+    if len(set(result)) != len(result):
+        raise CheckedOutcomeProtocolError(f"{context} must be unique")
     return result
 
 
@@ -172,6 +318,7 @@ class CheckedSEHProtocolV1:
     portals: tuple[Mapping[str, object], ...]
     observed_address_fields: tuple[str, ...]
     address_policy: str
+    pinned_layout_authority_id: str | None
     issues: tuple[str, ...]
 
     @classmethod
@@ -192,6 +339,7 @@ class CheckedSEHProtocolV1:
         portals: Sequence[Mapping[str, object]],
         observed_address_fields: Sequence[str] = (),
         address_policy: str = "candidate_portal_mapping",
+        pinned_layout_authority_id: str | None = None,
         issues: Sequence[str] = (),
     ) -> "CheckedSEHProtocolV1":
         transition_id = _text(transition_id, "exceptional transition ID")
@@ -226,15 +374,70 @@ class CheckedSEHProtocolV1:
         gateway_handler_symbol = _text(
             gateway_handler_symbol, "SEH gateway handler symbol"
         )
-        unwind = tuple(sorted(set(_text(item, "unwind effect ID") for item in unwind_effect_ids)))
+        unwind = tuple(
+            _text(item, "unwind effect ID") for item in unwind_effect_ids
+        )
+        if len(set(unwind)) != len(unwind):
+            raise CheckedOutcomeProtocolError("SEH unwind effect IDs must be unique")
         portal_rows = _parse_portals(portals)
         observed = tuple(sorted(set(_text(item, "observed address field") for item in observed_address_fields)))
+        if not set(observed) <= {"ExceptionAddress", "Eip"}:
+            raise CheckedOutcomeProtocolError(
+                "SEH observed address fields are unsupported"
+            )
+        projected_numeric_fields: set[str] = set()
+        if "exceptionaddress" in {
+            value.lower() for value in projection_rows["exception_record"]
+        }:
+            projected_numeric_fields.add("ExceptionAddress")
+        if "eip" in {
+            value.lower() for value in projection_rows["context"]
+        }:
+            projected_numeric_fields.add("Eip")
+        if set(observed) != projected_numeric_fields:
+            raise CheckedOutcomeProtocolError(
+                "SEH numeric projections and observed address fields disagree"
+            )
         if address_policy not in {"candidate_portal_mapping", "pinned_original_layout"}:
             raise CheckedOutcomeProtocolError("SEH address policy is unsupported")
+        if pinned_layout_authority_id is not None:
+            pinned_layout_authority_id = _text(
+                pinned_layout_authority_id, "pinned code layout authority ID"
+            )
+        if (address_policy == "pinned_original_layout") != (
+            pinned_layout_authority_id is not None
+        ) or (
+            pinned_layout_authority_id is not None
+            and not projected_numeric_fields
+        ):
+            raise CheckedOutcomeProtocolError(
+                "pinned-original SEH address policy requires exactly one "
+                "needed pinned layout authority"
+            )
         issue_values = set(_text(item, "SEH issue") for item in issues)
-        numeric_fields = {"ExceptionAddress", "Eip"} & set(observed)
-        if numeric_fields and address_policy != "pinned_original_layout":
-            issue_values.add("numeric_original_exception_address_requires_pinned_layout")
+        record_values = {
+            value.lower() for value in projection_rows["exception_record"]
+        }
+        record_paths, malformed_record_fields, bounded_record_fields = (
+            exception_record_projection_paths_v1(record_values)
+        )
+        issue_values.update(
+            f"unsupported_exception_record_projection:{value}"
+            for value in malformed_record_fields
+        )
+        issue_values.update(
+            f"nested_exception_record_depth_unsupported:{value}"
+            for value in bounded_record_fields
+        )
+        if any(
+            path.depth != 0 and path.field == "exceptionaddress"
+            for path in record_paths
+        ):
+            issue_values.add("nested_numeric_exception_address_unsupported")
+        if projected_numeric_fields and pinned_layout_authority_id is None:
+            issue_values.add(
+                "numeric_original_exception_address_requires_pinned_layout"
+            )
         issue_tuple = tuple(sorted(issue_values))
         core = {
             "format": CHECKED_SEH_PROTOCOL_FORMAT,
@@ -252,6 +455,7 @@ class CheckedSEHProtocolV1:
             "portals": [dict(row) for row in portal_rows],
             "observed_address_fields": list(observed),
             "address_policy": address_policy,
+            "pinned_layout_authority_id": pinned_layout_authority_id,
             "issues": list(issue_tuple),
         }
         return cls(
@@ -270,6 +474,7 @@ class CheckedSEHProtocolV1:
             portal_rows,
             observed,
             address_policy,
+            pinned_layout_authority_id,
             issue_tuple,
         )
 
@@ -281,7 +486,8 @@ class CheckedSEHProtocolV1:
             "resumption_unit_id", "resumption_rva",
             "unwind_effect_ids", "escape_disposition", "portals",
             "gateway_handler_symbol",
-            "observed_address_fields", "address_policy", "issues",
+            "observed_address_fields", "address_policy",
+            "pinned_layout_authority_id", "issues",
         }
         if not isinstance(value, Mapping) or set(value) != fields:
             raise CheckedOutcomeProtocolError("checked SEH protocol has invalid fields")
@@ -302,12 +508,19 @@ class CheckedSEHProtocolV1:
             handler_rva=value["handler_rva"] if isinstance(value["handler_rva"], int) else None,
             resumption_unit_id=value["resumption_unit_id"] if isinstance(value["resumption_unit_id"], str) else None,
             resumption_rva=value["resumption_rva"] if isinstance(value["resumption_rva"], int) else None,
-            unwind_effect_ids=_canonical_strings(value["unwind_effect_ids"], "unwind effects"),
+            unwind_effect_ids=_ordered_unique_strings(
+                value["unwind_effect_ids"], "unwind effects"
+            ),
             escape_disposition=str(value["escape_disposition"]),
             gateway_handler_symbol=str(value["gateway_handler_symbol"]),
             portals=value["portals"] if isinstance(value["portals"], list) else (),
             observed_address_fields=_canonical_strings(value["observed_address_fields"], "observed address fields"),
             address_policy=str(value["address_policy"]),
+            pinned_layout_authority_id=(
+                value["pinned_layout_authority_id"]
+                if isinstance(value["pinned_layout_authority_id"], str)
+                else None
+            ),
             issues=_canonical_strings(value["issues"], "SEH issues"),
         )
         if value["id"] != result.protocol_id or value["status"] != result.status:
@@ -336,6 +549,7 @@ class CheckedSEHProtocolV1:
             "portals": [dict(row) for row in self.portals],
             "observed_address_fields": list(self.observed_address_fields),
             "address_policy": self.address_policy,
+            "pinned_layout_authority_id": self.pinned_layout_authority_id,
             "issues": list(self.issues),
         }
 
@@ -393,4 +607,7 @@ __all__ = [
     "CheckedBoundaryOutcomeProtocolV1",
     "CheckedOutcomeProtocolError",
     "CheckedSEHProtocolV1",
+    "PinnedCodeLayoutAuthorityV2",
+    "pinned_continuation_portal_for_protocol_v1",
+    "pinned_continuation_portal_symbol_v1",
 ]

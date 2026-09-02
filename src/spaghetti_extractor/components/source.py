@@ -11,12 +11,11 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 from ..util import sha256_file, write_json
-from .formats import (
-    COMPONENT_SOURCE_PACKAGE_V2_FORMAT,
-    COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
-)
-from .intent import ComponentIntentError
-from .model import SOURCE_ENTRY_ABIS
+from .errors import ComponentArtifactError
+from .formats import COMPONENT_SOURCE_PACKAGE_V3_FORMAT
+
+
+ComponentIntentError = ComponentArtifactError
 
 
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
@@ -27,8 +26,7 @@ def build_component_source_package(
     lift_unit_id: str,
     files: Mapping[str, Path | str],
     shared_inputs: Mapping[str, Path | str] | None,
-    entry: Mapping[str, object] | None = None,
-    operation_symbols: Mapping[str, object] | None = None,
+    operation_symbols: Mapping[str, object],
     out_dir: Path | str,
 ) -> dict[str, object]:
     """Copy and hash the exact source tree consumed by qualification/builds."""
@@ -44,16 +42,7 @@ def build_component_source_package(
         )
     if not regular:
         raise ComponentIntentError("component source package has no source files")
-    if (entry is None) == (operation_symbols is None):
-        raise ComponentIntentError(
-            "component source package requires exactly one of entry or operation_symbols"
-        )
-    entry_payload = None if entry is None else _normalize_entry(entry)
-    symbol_payload = (
-        None
-        if operation_symbols is None
-        else _normalize_operation_symbols(operation_symbols)
-    )
+    symbol_payload = _normalize_operation_symbols(operation_symbols)
 
     output = Path(out_dir)
     source_root = output / "sources"
@@ -63,20 +52,12 @@ def build_component_source_package(
     file_rows = _copy_inputs(regular, source_root, role="source")
     shared_rows = _copy_inputs(shared, source_root, role="shared_input")
     core: dict[str, object] = {
-        "format": (
-            COMPONENT_SOURCE_PACKAGE_V2_FORMAT
-            if entry_payload is not None
-            else COMPONENT_SOURCE_PACKAGE_V3_FORMAT
-        ),
+        "format": COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
         "lift_unit_id": lift_unit_id,
         "files": file_rows,
         "shared_inputs": shared_rows,
+        "operation_symbols": symbol_payload,
     }
-    if entry_payload is not None:
-        core["entry"] = entry_payload
-    else:
-        assert symbol_payload is not None
-        core["operation_symbols"] = symbol_payload
     result = {**core, "implementation_sha256": _canonical_sha256(core)}
     write_json(output / "source-package.json", result)
     return result
@@ -95,30 +76,20 @@ def load_component_source_package(value: Path | str) -> dict[str, object]:
         raise ComponentIntentError("component source-package manifest must be an object")
     payload = copy.deepcopy(dict(raw))
     format_name = payload.get("format")
-    if format_name not in {
-        COMPONENT_SOURCE_PACKAGE_V2_FORMAT,
-        COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
-    }:
+    if format_name != COMPONENT_SOURCE_PACKAGE_V3_FORMAT:
         raise ComponentIntentError("unsupported component source-package format")
     expected = payload.get("implementation_sha256")
     core = copy.deepcopy(payload)
     core.pop("implementation_sha256", None)
     if expected != _canonical_sha256(core):
         raise ComponentIntentError("component source-package self-hash is stale")
-    if format_name == COMPONENT_SOURCE_PACKAGE_V2_FORMAT:
-        _normalize_entry(_mapping(payload.get("entry"), "component source entry"))
-        if "operation_symbols" in payload:
-            raise ComponentIntentError(
-                "component source package V2 cannot contain operation symbols"
-            )
-    else:
-        _normalize_operation_symbols(
-            _mapping(payload.get("operation_symbols"), "component operation symbols")
+    _normalize_operation_symbols(
+        _mapping(payload.get("operation_symbols"), "component operation symbols")
+    )
+    if "entry" in payload:
+        raise ComponentIntentError(
+            "component source package V3 cannot contain a single entry"
         )
-        if "entry" in payload:
-            raise ComponentIntentError(
-                "component source package V3 cannot contain a single entry"
-            )
 
     source_root = manifest_path.parent / "sources"
     listed: set[str] = set()
@@ -154,18 +125,6 @@ def load_component_source_package(value: Path | str) -> dict[str, object]:
             f"missing={sorted(listed - actual)}, unlisted={sorted(actual - listed)}"
         )
     return payload
-
-
-def _normalize_entry(value: Mapping[str, object]) -> dict[str, str]:
-    if set(value) != {"abi", "symbol"}:
-        raise ComponentIntentError("component source entry fields are not canonical")
-    abi = value.get("abi")
-    symbol = value.get("symbol")
-    if not isinstance(abi, str) or abi not in SOURCE_ENTRY_ABIS:
-        raise ComponentIntentError("component source entry ABI is unsupported")
-    if not isinstance(symbol, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol) is None:
-        raise ComponentIntentError("component source entry symbol is not a C identifier")
-    return {"abi": abi, "symbol": symbol}
 
 
 def _normalize_operation_symbols(value: Mapping[str, object]) -> dict[str, str]:

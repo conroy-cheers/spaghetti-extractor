@@ -9,9 +9,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
+    ExternalInterfaceProfileError,
     InterfaceCallerMemoryFrame,
     InterfaceMemoryArgument,
     SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
+    parse_interface_local_cell_relation,
     same_library_callback_call_through_effect_json,
     same_library_call_through_effect_json,
 )
@@ -24,12 +26,125 @@ from ..util import sha256_file, write_json
 EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT = (
     "spaghetti-extractor-external-interface-extraction-spec-v1"
 )
-_NAMED_POINTER = re.compile(
-    r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*$"
-)
+_NAMED_POINTER = re.compile(r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*$")
 _NAMED_DOUBLE_POINTER = re.compile(
     r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*\s*\*$"
 )
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def validate_external_interface_extraction_spec(
+    value: object,
+) -> dict[str, Any]:
+    """Validate the one reviewed interface-extraction specification shape."""
+
+    payload = _object(value, "external-interface extraction spec")
+    required_fields = {
+        "format",
+        "id",
+        "model",
+        "headers",
+        "interface_prefixes",
+        "factories",
+    }
+    optional_fields = {
+        "effect_model",
+        "opaque_resource_types",
+        "method_callbacks",
+        "method_local_cells",
+    }
+    if not required_fields <= set(payload) or not set(payload) <= (
+        required_fields | optional_fields
+    ):
+        raise ToolkitInputError("external-interface extraction spec fields differ")
+    if payload.get("format") != EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT:
+        raise ToolkitInputError("unsupported external-interface extraction spec")
+    _nonempty(payload.get("id"), "extraction spec ID")
+    if payload.get("model") != "x86-pe32":
+        raise ToolkitInputError("external-interface extraction requires x86-pe32")
+    if payload.get("effect_model") != SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL:
+        raise ToolkitInputError(
+            "external-interface extraction does not opt into the supported "
+            "same-library call-through effect model"
+        )
+
+    header_names: list[str] = []
+    for index, raw in enumerate(_array(payload.get("headers"), "header bindings")):
+        row = _object(raw, f"header binding {index}")
+        if set(row) != {"include", "sha256"}:
+            raise ToolkitInputError(f"header binding {index} fields differ")
+        header_names.append(_nonempty(row.get("include"), "header include"))
+        digest = row.get("sha256")
+        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise ToolkitInputError(f"header binding {index} digest is invalid")
+    if not header_names or len(header_names) != len(set(header_names)):
+        raise ToolkitInputError("header bindings are empty or duplicated")
+
+    prefixes = [
+        _nonempty(raw, "interface prefix")
+        for raw in _array(payload.get("interface_prefixes"), "interface prefixes")
+    ]
+    if not prefixes or len(prefixes) != len(set(prefixes)):
+        raise ToolkitInputError("interface prefixes are empty or duplicated")
+    opaque_types = [
+        _nonempty(raw, "opaque resource type")
+        for raw in _array(
+            payload.get("opaque_resource_types", []), "opaque resource types"
+        )
+    ]
+    if len(opaque_types) != len(set(opaque_types)):
+        raise ToolkitInputError("opaque resource types are duplicated")
+
+    _callback_specs(payload)
+    _method_local_cell_specs(payload)
+    factory_ids: set[str] = set()
+    factory_imports: set[MachineImportIdentity] = set()
+    for index, raw in enumerate(
+        _array(payload.get("factories"), "factory specifications")
+    ):
+        row = _object(raw, f"factory specification {index}")
+        if set(row) != {"id", "import", "declaration", "out_interfaces"}:
+            raise ToolkitInputError(f"factory specification {index} fields differ")
+        factory_id = _nonempty(row.get("id"), f"factory specification {index} ID")
+        if factory_id in factory_ids:
+            raise ToolkitInputError("factory specification IDs are duplicated")
+        factory_ids.add(factory_id)
+        identity = MachineImportIdentity.from_mapping(
+            _object(row.get("import"), f"factory specification {index} import"),
+            context=f"factory specification {index} import",
+        )
+        if identity in factory_imports:
+            raise ToolkitInputError("factory specification imports are duplicated")
+        factory_imports.add(identity)
+        _nonempty(
+            row.get("declaration"), f"factory specification {index} declaration"
+        )
+        outputs = _array(
+            row.get("out_interfaces"),
+            f"factory specification {index} output interfaces",
+        )
+        if not outputs:
+            raise ToolkitInputError(
+                f"factory specification {index} has no output interfaces"
+            )
+        for output_index, raw_output in enumerate(outputs):
+            output = _object(
+                raw_output,
+                f"factory specification {index} output {output_index}",
+            )
+            if set(output) != {"argument_index", "interface_id"}:
+                raise ToolkitInputError(
+                    f"factory specification {index} output {output_index} fields differ"
+                )
+            _word(
+                output.get("argument_index"),
+                f"factory specification {index} output argument",
+            )
+            _nonempty(
+                output.get("interface_id"),
+                f"factory specification {index} output interface",
+            )
+    return dict(payload)
 
 
 def extract_external_interface_profile(
@@ -43,9 +158,9 @@ def extract_external_interface_profile(
 
     spec_path = Path(spec).resolve()
     ast_path = Path(ast_json).resolve()
-    payload = _read_object(spec_path, "external-interface extraction spec")
-    if payload.get("format") != EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT:
-        raise ToolkitInputError("unsupported external-interface extraction spec")
+    payload = validate_external_interface_extraction_spec(
+        _read_object(spec_path, "external-interface extraction spec")
+    )
     profile_id = _nonempty(payload.get("id"), "extraction spec ID")
     if payload.get("model") != "x86-pe32":
         raise ToolkitInputError("external-interface extraction requires x86-pe32")
@@ -62,13 +177,16 @@ def extract_external_interface_profile(
         raise ToolkitInputError("external-interface extraction has no prefixes")
 
     expected_headers = {
-        _nonempty(_object(raw, "header binding").get("include"), "header include"):
-        _nonempty(_object(raw, "header binding").get("sha256"), "header digest")
+        _nonempty(
+            _object(raw, "header binding").get("include"), "header include"
+        ): _nonempty(_object(raw, "header binding").get("sha256"), "header digest")
         for raw in _array(payload.get("headers"), "header bindings")
     }
     supplied_headers = {Path(path).name: Path(path).resolve() for path in headers}
     if set(supplied_headers) != set(expected_headers):
-        raise ToolkitInputError("supplied interface headers differ from the reviewed spec")
+        raise ToolkitInputError(
+            "supplied interface headers differ from the reviewed spec"
+        )
     for name, path in supplied_headers.items():
         if sha256_file(path) != expected_headers[name]:
             raise ToolkitInputError(f"interface header digest mismatch: {name}")
@@ -85,9 +203,12 @@ def extract_external_interface_profile(
         declarations,
         prefixes=prefixes,
         pointer_aliases=pointer_aliases,
+        type_aliases=type_aliases,
     )
     callback_specs = _callback_specs(payload)
     used_callback_specs: set[tuple[str, str, int]] = set()
+    local_cell_specs = _method_local_cell_specs(payload)
+    used_local_cell_specs: set[tuple[str, str, int]] = set()
     interfaces = _interfaces(
         declarations,
         prefixes,
@@ -96,6 +217,8 @@ def extract_external_interface_profile(
         callback_aliases,
         callback_specs,
         used_callback_specs,
+        local_cell_specs,
+        used_local_cell_specs,
         type_aliases,
         opaque_resource_types,
     )
@@ -106,6 +229,15 @@ def extract_external_interface_profile(
             + ", ".join(
                 f"{interface}::{method} argument {argument}"
                 for interface, method, argument in unused_callback_specs
+            )
+        )
+    unused_local_cell_specs = sorted(set(local_cell_specs) - used_local_cell_specs)
+    if unused_local_cell_specs:
+        raise ToolkitInputError(
+            "local-cell specifications do not match pinned AST methods: "
+            + ", ".join(
+                f"{interface}::{method} argument {argument}"
+                for interface, method, argument in unused_local_cell_specs
             )
         )
     known_interfaces = {row["id"] for row in interfaces}
@@ -120,8 +252,7 @@ def extract_external_interface_profile(
         opaque_resource_types,
     )
     vtable_sizes = {
-        interface["id"]: len(interface["methods"]) * 4
-        for interface in interfaces
+        interface["id"]: len(interface["methods"]) * 4 for interface in interfaces
     }
     result = {
         "format": EXTERNAL_INTERFACE_PROFILE_FORMAT,
@@ -155,7 +286,8 @@ def extract_external_interface_profile(
             "methods": sum(len(interface["methods"]) for interface in interfaces),
             "out_interface_effects": sum(
                 len(factory["out_interfaces"]) for factory in factories
-            ) + sum(
+            )
+            + sum(
                 len(method["out_interfaces"])
                 for interface in interfaces
                 for method in interface["methods"]
@@ -198,13 +330,11 @@ def _factory_machine_signature(
         "machine_abi": dict(_object(factory["machine_abi"], "factory machine ABI")),
         "argument_words": factory["argument_words"],
         "override": True,
-        "result_register_relations": [
-            {"register": "eax", "relation": "exact"}
-        ],
+        "result_register_relations": [{"register": "eax", "relation": "exact"}],
         **same_library_call_through_effect_json(),
-        "caller_memory_frame": dict(_object(
-            factory["caller_memory_frame"], "factory caller-memory frame"
-        )),
+        "caller_memory_frame": dict(
+            _object(factory["caller_memory_frame"], "factory caller-memory frame")
+        ),
         "out_interface_relations": outputs,
         "provenance": {
             "kind": "external_interface_factory_declaration",
@@ -269,8 +399,7 @@ def _interface_aliases(
             direct = _NAMED_DOUBLE_POINTER.fullmatch(qualified)
             interface_id = (
                 direct.group(1)
-                if direct is not None
-                and _selected_interface(direct.group(1), prefixes)
+                if direct is not None and _selected_interface(direct.group(1), prefixes)
                 else None
             )
             if interface_id is None:
@@ -292,9 +421,7 @@ def _type_aliases(
             continue
         name = declaration.get("name")
         type_row = declaration.get("type")
-        qualified = (
-            type_row.get("qualType") if isinstance(type_row, Mapping) else None
-        )
+        qualified = type_row.get("qualType") if isinstance(type_row, Mapping) else None
         if isinstance(name, str) and name and isinstance(qualified, str):
             candidates.setdefault(name, set()).add(qualified.strip())
     return {
@@ -309,6 +436,7 @@ def _callback_aliases(
     *,
     prefixes: Sequence[str],
     pointer_aliases: Mapping[str, str],
+    type_aliases: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for declaration in declarations:
@@ -322,6 +450,9 @@ def _callback_aliases(
         if not isinstance(qualified, str) or "(*)(" not in qualified:
             continue
         parameters = _function_pointer_parameters(qualified)
+        callback_result = _callback_result(
+            qualified.split("(*)", 1)[0].strip(), type_aliases
+        )
         arguments: list[dict[str, Any]] = []
         for argument_index, parameter in enumerate(parameters):
             normalized = " ".join(parameter.replace("const", "").split())
@@ -333,27 +464,83 @@ def _callback_aliases(
                 ):
                     interface_id = direct.group(1)
             if interface_id is not None:
-                arguments.append({
-                    "argument_index": argument_index,
-                    "kind": "interface_object",
-                    "interface_id": interface_id,
-                })
+                arguments.append(
+                    {
+                        "argument_index": argument_index,
+                        "kind": "interface_object",
+                        "interface_id": interface_id,
+                    }
+                )
         result[name] = {
             "declaration_type": qualified,
             "argument_words": len(parameters),
-            "abi_supported": "__attribute__((stdcall))" in qualified,
+            "abi_supported": (
+                "__attribute__((stdcall))" in qualified and callback_result is not None
+            ),
+            "result": callback_result,
             "arguments": arguments,
         }
     return result
+
+
+_PE32_WORD_RESULT_TYPES = frozenset(
+    {
+        "BOOL",
+        "DWORD",
+        "HRESULT",
+        "INT",
+        "LONG",
+        "LRESULT",
+        "NTSTATUS",
+        "ULONG",
+        "UINT",
+        "UINT32",
+        "ULONG32",
+        "LONG32",
+        "WPARAM",
+        "LPARAM",
+        "int",
+        "long",
+        "signed int",
+        "signed long",
+        "unsigned",
+        "unsigned int",
+        "unsigned long",
+    }
+)
+
+
+def _callback_result(
+    declared: str, type_aliases: Mapping[str, str]
+) -> dict[str, str] | None:
+    """Classify callback results with an exact PE32 register transport."""
+
+    current = " ".join(declared.split())
+    seen: set[str] = set()
+    for _ in range(16):
+        normalized = re.sub(r"\b(?:const|volatile|restrict)\b", "", current)
+        normalized = " ".join(normalized.split())
+        if normalized == "void":
+            return {"kind": "void"}
+        if "*" in normalized or normalized in _PE32_WORD_RESULT_TYPES:
+            return {"kind": "word", "register": "eax"}
+        if normalized in seen:
+            return None
+        seen.add(normalized)
+        target = type_aliases.get(normalized)
+        if target is None:
+            return None
+        current = target
+    return None
 
 
 def _callback_specs(
     payload: Mapping[str, Any],
 ) -> dict[tuple[str, str, int], dict[str, Any]]:
     result: dict[tuple[str, str, int], dict[str, Any]] = {}
-    for index, raw in enumerate(_array(
-        payload.get("method_callbacks", []), "method callback specifications"
-    )):
+    for index, raw in enumerate(
+        _array(payload.get("method_callbacks", []), "method callback specifications")
+    ):
         row = _object(raw, f"method callback specification {index}")
         interface_id = _nonempty(
             row.get("interface_id"),
@@ -376,10 +563,12 @@ def _callback_specs(
                 f"method callback specification {index} nullable must be boolean"
             )
         argument_origins: list[dict[str, Any]] = []
-        for argument_origin_index, raw_origin in enumerate(_array(
-            row.get("argument_origins", []),
-            f"method callback specification {index} argument origins",
-        )):
+        for argument_origin_index, raw_origin in enumerate(
+            _array(
+                row.get("argument_origins", []),
+                f"method callback specification {index} argument origins",
+            )
+        ):
             origin = _object(
                 raw_origin,
                 f"method callback specification {index} argument origin "
@@ -403,11 +592,13 @@ def _callback_specs(
                     f"method callback specification {index} argument origin "
                     "kind is unsupported"
                 )
-            argument_origins.append({
-                "argument_index": argument_index,
-                "kind": "interface_object",
-                "interface_id": interface_id_origin,
-            })
+            argument_origins.append(
+                {
+                    "argument_index": argument_index,
+                    "kind": "interface_object",
+                    "interface_id": interface_id_origin,
+                }
+            )
         if len({row["argument_index"] for row in argument_origins}) != len(
             argument_origins
         ):
@@ -453,9 +644,7 @@ def _method_callback_contract(
     else:
         argument_index, alias = callbacks[0]
         source = {"kind": "argument_word", "argument": argument_index}
-        specification = callback_specs.get(
-            (interface_id, method_name, argument_index)
-        )
+        specification = callback_specs.get((interface_id, method_name, argument_index))
         if specification is None:
             blockers.append("callback_lifetime_and_nullability_unspecified")
             nullable = False
@@ -464,15 +653,13 @@ def _method_callback_contract(
             lifetime = str(specification["lifetime"])
             nullable = bool(specification["nullable"])
             declared_arguments = tuple(
-                dict(argument)
-                for argument in specification.get("argument_origins", ())
+                dict(argument) for argument in specification.get("argument_origins", ())
             )
             inferred_arguments = tuple(
                 dict(argument) for argument in alias.get("arguments", ())
             )
             if any(
-                argument not in inferred_arguments
-                for argument in declared_arguments
+                argument not in inferred_arguments for argument in declared_arguments
             ):
                 raise ToolkitInputError(
                     f"{interface_id}::{method_name} callback argument protocol "
@@ -487,6 +674,7 @@ def _method_callback_contract(
                 "argument_words": argument_words,
                 "stack_cleanup_bytes": argument_words * 4,
                 "nullable": nullable,
+                "result": dict(alias["result"]),
             }
     status = "complete" if not blockers else "incomplete"
     return {
@@ -511,6 +699,8 @@ def _interfaces(
     callback_aliases: Mapping[str, Mapping[str, Any]],
     callback_specs: Mapping[tuple[str, str, int], Mapping[str, Any]],
     used_callback_specs: set[tuple[str, str, int]],
+    local_cell_specs: Mapping[tuple[str, str, int], Mapping[str, Any]],
+    used_local_cell_specs: set[tuple[str, str, int]],
     type_aliases: Mapping[str, str],
     opaque_resource_types: frozenset[str],
 ) -> list[dict[str, Any]]:
@@ -556,9 +746,7 @@ def _interfaces(
                 raise ToolkitInputError(
                     f"{vtable} field {slot} is not a PE32 stdcall method"
                 )
-            method_name = _nonempty(
-                field.get("name"), f"{vtable} field {slot} name"
-            )
+            method_name = _nonempty(field.get("name"), f"{vtable} field {slot} name")
             callback_contract = _method_callback_contract(
                 interface_id=interface_id,
                 method_name=method_name,
@@ -570,28 +758,46 @@ def _interfaces(
             outputs = _infer_outputs(
                 parameters, prefixes, pointer_aliases, output_aliases
             )
-            methods.append({
-                "name": method_name,
-                "slot": slot,
-                "offset": slot * 4,
-                **_machine_call_contract(
-                    callback_contract,
-                    caller_memory_frame=_caller_memory_frame(
-                        parameters,
-                        type_aliases=type_aliases,
-                        interface_pointer_aliases=pointer_aliases,
-                        callback_aliases=callback_aliases,
-                        opaque_resource_types=opaque_resource_types,
-                        output_indices={
-                            int(output["argument_index"]) for output in outputs
-                        },
-                        receiver_index=0,
+            argument_interfaces = _infer_argument_interfaces(
+                parameters,
+                prefixes=prefixes,
+                pointer_aliases=pointer_aliases,
+                type_aliases=type_aliases,
+                output_indices={int(output["argument_index"]) for output in outputs},
+            )
+            caller_memory_frame = _caller_memory_frame(
+                parameters,
+                type_aliases=type_aliases,
+                interface_pointer_aliases=pointer_aliases,
+                callback_aliases=callback_aliases,
+                opaque_resource_types=opaque_resource_types,
+                output_indices={int(output["argument_index"]) for output in outputs},
+                receiver_index=0,
+            )
+            local_cells = _selected_method_local_cells(
+                interface_id=interface_id,
+                method_name=method_name,
+                argument_words=len(parameters),
+                caller_memory_frame=caller_memory_frame,
+                specifications=local_cell_specs,
+                used=used_local_cell_specs,
+            )
+            methods.append(
+                {
+                    "name": method_name,
+                    "slot": slot,
+                    "offset": slot * 4,
+                    **_machine_call_contract(
+                        callback_contract,
+                        caller_memory_frame=caller_memory_frame,
                     ),
-                ),
-                "argument_words": len(parameters),
-                "out_interfaces": outputs,
-                "declaration_type": qualified,
-            })
+                    "argument_words": len(parameters),
+                    "out_interfaces": outputs,
+                    "argument_interfaces": argument_interfaces,
+                    **({"local_cells": local_cells} if local_cells else {}),
+                    "declaration_type": qualified,
+                }
+            )
         result.append({"id": interface_id, "vtable": vtable, "methods": methods})
     if not result:
         raise ToolkitInputError("Clang AST contains no selected interface vtables")
@@ -624,7 +830,8 @@ def _factories(
     for index, raw in enumerate(specifications):
         specification = _object(raw, f"factory specification {index}")
         declaration = _nonempty(
-            specification.get("declaration"), f"factory specification {index} declaration"
+            specification.get("declaration"),
+            f"factory specification {index} declaration",
         )
         candidates = functions.get(declaration, set())
         if len(candidates) != 1:
@@ -635,13 +842,13 @@ def _factories(
         if "__attribute__((stdcall))" not in qualified:
             raise ToolkitInputError(f"factory {declaration} is not PE32 stdcall")
         parameters = _function_parameters(qualified)
-        inferred = _infer_outputs(
-            parameters, prefixes, pointer_aliases, output_aliases
-        )
+        inferred = _infer_outputs(parameters, prefixes, pointer_aliases, output_aliases)
         expected = [
             {
                 "argument_index": _word(
-                    _object(value, f"factory {declaration} output").get("argument_index"),
+                    _object(value, f"factory {declaration} output").get(
+                        "argument_index"
+                    ),
                     f"factory {declaration} output argument",
                 ),
                 "interface_id": _nonempty(
@@ -663,36 +870,36 @@ def _factories(
             raise ToolkitInputError(
                 f"factory {declaration} returns an unprofiled interface"
             )
-        imported = _object(
-            specification.get("import"), f"factory {declaration} import"
-        )
+        imported = _object(specification.get("import"), f"factory {declaration} import")
         identity = MachineImportIdentity.from_mapping(
             imported, context=f"factory {declaration} import"
         )
         if identity in identities:
             raise ToolkitInputError(f"duplicate factory import {identity}")
         identities.add(identity)
-        result.append({
-            "id": _nonempty(specification.get("id"), f"factory {declaration} ID"),
-            "import": dict(imported),
-            "declaration": declaration,
-            "declaration_type": qualified,
-            **_machine_call_contract(
-                caller_memory_frame=_caller_memory_frame(
-                    parameters,
-                    type_aliases=type_aliases,
-                    interface_pointer_aliases=pointer_aliases,
-                    callback_aliases={},
-                    opaque_resource_types=opaque_resource_types,
-                    output_indices={
-                        int(output["argument_index"]) for output in expected
-                    },
-                    receiver_index=None,
+        result.append(
+            {
+                "id": _nonempty(specification.get("id"), f"factory {declaration} ID"),
+                "import": dict(imported),
+                "declaration": declaration,
+                "declaration_type": qualified,
+                **_machine_call_contract(
+                    caller_memory_frame=_caller_memory_frame(
+                        parameters,
+                        type_aliases=type_aliases,
+                        interface_pointer_aliases=pointer_aliases,
+                        callback_aliases={},
+                        opaque_resource_types=opaque_resource_types,
+                        output_indices={
+                            int(output["argument_index"]) for output in expected
+                        },
+                        receiver_index=None,
+                    ),
                 ),
-            ),
-            "argument_words": len(parameters),
-            "out_interfaces": expected,
-        })
+                "argument_words": len(parameters),
+                "out_interfaces": expected,
+            }
+        )
     return sorted(
         result,
         key=lambda row: (
@@ -779,14 +986,111 @@ def _caller_memory_frame(
             access = "read" if _pointee_is_const(resolved) else "read_write"
             extent = "enclosing_object"
             retention = "during_call"
-        arguments.append(InterfaceMemoryArgument(
-            argument_index=argument_index,
-            role=role,
-            access=access,
-            extent=extent,
-            retention=retention,
-        ))
+        arguments.append(
+            InterfaceMemoryArgument(
+                argument_index=argument_index,
+                role=role,
+                access=access,
+                extent=extent,
+                retention=retention,
+            )
+        )
     return InterfaceCallerMemoryFrame(tuple(arguments)).as_json()
+
+
+def _method_local_cell_specs(
+    payload: Mapping[str, Any],
+) -> dict[tuple[str, str, int], Mapping[str, Any]]:
+    result: dict[tuple[str, str, int], Mapping[str, Any]] = {}
+    for index, raw in enumerate(
+        _array(
+            payload.get("method_local_cells", []),
+            "method local-cell specifications",
+        )
+    ):
+        row = _object(raw, f"method local-cell specification {index}")
+        if set(row) != {
+            "interface_id",
+            "method",
+            "argument_index",
+            "extent_words",
+            "variants",
+        }:
+            raise ToolkitInputError(
+                f"method local-cell specification {index} fields differ"
+            )
+        interface_id = _nonempty(
+            row.get("interface_id"), f"method local-cell {index} interface"
+        )
+        method = _nonempty(row.get("method"), f"method local-cell {index} method")
+        try:
+            parsed_relation = parse_interface_local_cell_relation(
+                {
+                    "argument_index": row.get("argument_index"),
+                    "extent_words": row.get("extent_words"),
+                    "variants": row.get("variants"),
+                },
+                context=f"method local-cell specification {index}",
+            )
+        except ExternalInterfaceProfileError as exc:
+            raise ToolkitInputError(str(exc)) from exc
+        argument_index = parsed_relation.argument_index
+        relation = parsed_relation.as_json()
+        key = (interface_id, method, argument_index)
+        if key in result:
+            raise ToolkitInputError("method local-cell specifications are duplicated")
+        result[key] = relation
+    return result
+
+
+def _selected_method_local_cells(
+    *,
+    interface_id: str,
+    method_name: str,
+    argument_words: int,
+    caller_memory_frame: Mapping[str, Any],
+    specifications: Mapping[tuple[str, str, int], Mapping[str, Any]],
+    used: set[tuple[str, str, int]],
+) -> list[dict[str, Any]]:
+    memory_arguments = {
+        int(argument["argument_index"]): argument
+        for argument in _array(
+            caller_memory_frame.get("arguments"),
+            "method caller-memory arguments",
+        )
+        if isinstance(argument, Mapping)
+    }
+    result: list[dict[str, Any]] = []
+    for key in sorted(specifications):
+        if key[:2] != (interface_id, method_name):
+            continue
+        argument_index = key[2]
+        memory = memory_arguments.get(argument_index)
+        relation = specifications[key]
+        if (
+            not 0 <= argument_index < argument_words
+            or memory is None
+            or memory.get("role") != "caller_memory"
+            or memory.get("extent") != "enclosing_object"
+            or memory.get("retention") != "during_call"
+            or (
+                any(
+                    variant.get("output_word_indices")
+                    for variant in _array(
+                        relation.get("variants"),
+                        "method local-cell footprint variants",
+                    )
+                    if isinstance(variant, Mapping)
+                )
+                and memory.get("access") != "read_write"
+            )
+        ):
+            raise ToolkitInputError(
+                f"{interface_id}::{method_name} local-cell relation contradicts its AST pointer"
+            )
+        used.add(key)
+        result.append(dict(relation))
+    return result
 
 
 def _opaque_resource_types(
@@ -801,9 +1105,7 @@ def _opaque_resource_types(
         and isinstance(declaration.get("name"), str)
     }
     result: set[str] = set()
-    for index, raw in enumerate(
-        _array(raw_types, "opaque resource types")
-    ):
+    for index, raw in enumerate(_array(raw_types, "opaque resource types")):
         name = _nonempty(raw, f"opaque resource type {index}")
         if name in result:
             raise ToolkitInputError(f"duplicate opaque resource type {name}")
@@ -871,6 +1173,40 @@ def _interface_resource_pointer(
     return name == "IUnknown" or name in interface_pointer_aliases.values()
 
 
+def _infer_argument_interfaces(
+    parameters: Sequence[str],
+    *,
+    prefixes: Sequence[str],
+    pointer_aliases: Mapping[str, str],
+    type_aliases: Mapping[str, str],
+    output_indices: set[int],
+) -> list[dict[str, Any]]:
+    """Preserve exact SDK-declared COM types for method input resources."""
+
+    result: list[dict[str, Any]] = []
+    for argument_index, parameter in enumerate(parameters):
+        if argument_index in output_indices:
+            continue
+        normalized = re.sub(r"\b(?:const|volatile|restrict)\b", "", parameter)
+        normalized = " ".join(normalized.split())
+        interface_id = pointer_aliases.get(normalized)
+        resolved = _resolve_pointer_type(parameter, type_aliases)
+        if interface_id is None and resolved is not None:
+            direct = _NAMED_POINTER.fullmatch(
+                re.sub(r"\b(?:const|volatile|restrict)\b", "", resolved).strip()
+            )
+            if direct is not None and _selected_interface(direct.group(1), prefixes):
+                interface_id = direct.group(1)
+        if interface_id is not None:
+            result.append(
+                {
+                    "argument_index": argument_index,
+                    "interface_id": interface_id,
+                }
+            )
+    return result
+
+
 def _pointee_is_const(resolved: str) -> bool:
     before_pointer = resolved.split("*", 1)[0]
     return bool(re.search(r"(?:^|\s)const(?:\s|$)", before_pointer))
@@ -887,10 +1223,7 @@ def _infer_outputs(
         normalized = " ".join(parameter.replace("const", "").split())
         interface_id: str | None = output_aliases.get(normalized)
         direct = _NAMED_DOUBLE_POINTER.fullmatch(normalized)
-        if (
-            direct is not None
-            and _selected_interface(direct.group(1), prefixes)
-        ):
+        if direct is not None and _selected_interface(direct.group(1), prefixes):
             interface_id = direct.group(1)
         else:
             for alias, candidate in pointer_aliases.items():
@@ -898,11 +1231,13 @@ def _infer_outputs(
                     interface_id = candidate
                     break
         if interface_id is not None:
-            result.append({
-                "argument_index": argument_index,
-                "interface_id": interface_id,
-                "write_width": 4,
-            })
+            result.append(
+                {
+                    "argument_index": argument_index,
+                    "interface_id": interface_id,
+                    "write_width": 4,
+                }
+            )
     return result
 
 

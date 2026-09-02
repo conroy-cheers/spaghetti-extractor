@@ -446,9 +446,11 @@ def _padding_waiver(binary_name: str, span: BlockSide) -> dict[str, Any]:
     return {
         "id": f"{binary_name}-padding-{span.rva_start:x}-{span.rva_end:x}",
         "binary": binary_name,
+        "classification": "verified_padding",
         "rva": span.rva_start,
         "size": span.size,
         "reason": "verified executable section gap is zero-fill or padding instructions",
+        "source": {"kind": "verified_padding_byte_pattern"},
     }
 
 

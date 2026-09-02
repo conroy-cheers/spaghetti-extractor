@@ -1,0 +1,38 @@
+{
+  "blockers": [],
+  "components": [
+    {
+      "binding_intent": "directdraw-init.json",
+      "component_id": "directdraw-init",
+      "intent_sha256": "6799b6c4c5baa51c9f78d725d5f516705ad6e734398ce619556a45a9a53ada76"
+    },
+    {
+      "binding_intent": "startup-1000.json",
+      "component_id": "startup-1000",
+      "intent_sha256": "7c23844287ae5bc81653eb8cd0e51317a74f5063a67e58213c66ce16f0137092"
+    },
+    {
+      "binding_intent": "startup-1005.json",
+      "component_id": "startup-1005",
+      "intent_sha256": "3e33290437d6c004527f2c145d8ab3eeff0da48513121b99293b673c89728381"
+    },
+    {
+      "binding_intent": "startup-1010.json",
+      "component_id": "startup-1010",
+      "intent_sha256": "4bf9442e1c822be5c0ff5dbd7cf60594d4ef44645066557002cba87e002842b3"
+    },
+    {
+      "binding_intent": "startup-101c.json",
+      "component_id": "startup-101c",
+      "intent_sha256": "fa57735816b4b6df5b5eb6b14be70275891ea2d93ef1fb4d6d5c78a43dd4615f"
+    },
+    {
+      "binding_intent": "startup-1026.json",
+      "component_id": "startup-1026",
+      "intent_sha256": "c788cced336e7d4f60aa6b6300cb9b3762bc943257ce69dbb587bb877dfd70c3"
+    }
+  ],
+  "format": "spaghetti-extractor-component-machine-binding-index-v5",
+  "index_sha256": "e8adf6f5f48ee6599f5d9b2549b6394a3f2753824e52605ce48de2fc18ced754",
+  "status": "complete"
+}

@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from ..authority.parametric_summary_records import PE32_CALLEE_PRESERVED_REGISTERS_V3
 from .model import (
     AbiEvidenceV1,
     AbiFactV1,
@@ -16,6 +15,9 @@ from .model import (
     StackCleanupV1,
     VariadicPolicyV1,
 )
+
+
+PE32_CALLEE_PRESERVED_REGISTERS_V3 = ("ebp", "ebx", "edi", "esi")
 
 
 _STDCALL = re.compile(r"^_?([A-Za-z_$][A-Za-z0-9_$?]*)@([0-9]+)$")

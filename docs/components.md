@@ -4,6 +4,26 @@ Components are the supported unit of candidate reconstruction work. They let an 
 one exact machine region, a procedure-sized group, or a larger subsystem while
 every other structural unit remains owned by the machine-IR fallback.
 
+The current canonical operator artifact is `component-work-package-v6`, a
+non-authorizing content-addressed `semantic-slice-v2` projection from
+`linked-semantic-module-v2`.  Its owned definitions are distinct from the
+faithful-C context shown to the operator.  Portable authority is
+`semantic-provider-qualification-v2`; the direct path runs contextual
+refinement, generates the machine overlay, and compiles the PE32 objects from
+the V6 package without consuming a component-contract V4, machine-binding V5,
+or component-implementation V4 artifact.  Total
+`implementation-selection-v2` then explicitly selects that provider or the
+generated Behavioral-C provider for every definition.
+
+GNU Hello's `ascii-to-lower` is the first deployed direct vertical.  The
+program-name, callback-registration, induction, and reusable-library verticals
+exercise the same path. jq and DX-Ball also emit direct V6 work packages, but
+their unresolved machine-effect and portable-interface reviews remain explicit
+blockers. The public V4 contract/implementation/dependency DAG has been removed.
+Some proof-kernel types still carry historical names internally; they are
+in-memory implementation details and must not be serialized or exposed as a
+second component system.
+
 ## Two Graphs
 
 The machine-IR graph is canonical. Component boundaries do not alter it. The
@@ -20,107 +40,77 @@ or unrelated regions first.
 Artifact version numbers describe individual wire formats, not one global
 component generation. New boundary-aware components use
 `PortableComponentInterfaceV5`, which references the shared canonical schema,
-checked operation projections, and lifecycles. Portable interfaces V2-V4 remain
-migration readers for existing targets, and source package V3 remains the
-implementation package. The interface is machine-free; exact machine meaning lives in a
-separate checked binding. Older logical source ABIs remain readable while
-existing targets migrate, but are not the recommended authoring path.
+checked operation projections, and lifecycles. Source package V3 remains the
+implementation package. The interface is machine-free; exact machine meaning
+lives in the checked binding intent and its content-addressed semantic slice.
 
 The component DAG produces these independently cached artifacts:
 
-1. `resolution`: the complete checked catalog used for configuration ownership,
-   plus `resolutionSlices.<id>` containing only one component or operator group.
-   Contracts consume the slice, so adding or editing an unrelated component
-   cannot invalidate an existing contract or its evidence descendants.
-2. `developmentContracts.<id>`: the operator boundary, source operation map,
-   and reviewed portable interface. This small, nonauthorizing input does not
-   depend on proposal discovery or whole-target analysis.
-3. `contracts.<id>`: a machine boundary, reviewed logical interface, and
-   projected canonical external-site evidence used for activation.
-4. `sourcePackages.<id>`: exact portable source bytes plus one C symbol per
-   interface operation.
-5. `compileReceipts.<id>`: host and PE32 ABI conformance, exact source/interface
-   binding, and a prohibition on component-owned mutable globals.
-6. `machineBindingReceipts.<id>`: exact unit membership and checked projections
-   between machine values/effects and portable operations. For an explicitly
-   selected library island this facet also consumes the structural boundary
-   receipt, requires exact equality of both unit inventories, and binds the
-   receipt hash. The receipt cannot bypass semantic refinement.
-7. `semanticContracts.<id>` and `refinementReceipts.<id>`: machine-derived
-   operation paths and a universal CBMC check over portable source, with service
-   responses treated as unconstrained environment inputs.
-8. `serviceGraphs`: configuration-scoped resolution of every service dependency
-   to another component operation or a canonical external site.
-9. `ownershipReceipts.<id>`: exclusive structural-unit ownership.
-10. `activationReceipts.<id>`: one reducer over interface, compile, machine
-    binding, semantic refinement, service graph, and ownership facets. Missing evidence is
-    `incomplete`; contradictory or stale evidence is `violated`.
-11. `activationPlans.<configuration>`: total, exclusive portable, fallback, or
-    explicitly blocked ownership. An enabled component without an exact checked
-    activation receipt is blocked rather than silently downgraded.
-12. `runtimeConfigurations.<configuration>`: the only input accepted by the
-   executable component runtime package.
-13. `runtimePackages.<configuration>`: independently buildable component
-    runtimes, all bound to the workflow's shared machine-IR interpreter.
+1. `v5Interfaces.<id>`: the checked human-facing operation and boundary schema.
+2. `bindingIntentPaths.<id>`: reviewed operation-to-definition projections,
+   services, callbacks, lifecycles, object selectors, and honest blockers.
+3. `sourcePackages.<id>`: exact authored source bytes plus one C symbol per
+   operation.
+4. `v6SemanticSlices.<id>`: the independently cached, content-addressed subset
+   of `linked-semantic-module-v2` needed to refine the component.
+5. `v6WorkPackages.<id>`: a non-authorizing operator package containing the
+   interface, semantic slice, immutable faithful-C context, skeleton, required
+   dependencies, suggested veto tests, and current blockers.
+6. A direct `portable-c-work-package-provider-v2` qualification compiles the
+   source for host and PE32, checks the exact ABI and source profile, runs the
+   contextual CBMC/refinement, relation, induction, lifecycle, service, and
+   ownership kernels that apply, and publishes native objects only when all
+   required authority closes.
+7. Component-operation service edges are expanded directly from binding intent;
+   every selected dependency must itself have a qualified direct provider.
+8. `semanticImplementationSelections.<configuration>` is the sole total
+   definition-ownership decision. It selects portable objects or immutable
+   generated Behavioral C with no implicit per-component fallback.
+9. Native realization links selected objects beside generated Behavioral C
+   through the one shared runtime and dispatch registry.
 
-### Universal Contract Boundary
+Callback authority is a semantic link fact, not a native-ingress input to a
+component. `linked-semantic-module-v1` materializes each reachable callback as
+a content-bound code capability with its original target RVA, protocol,
+lifetime, target symbol, and root provenance. Component refinement validates
+its logical handle against that registry and emits only the semantic target
+RVA. At execution, the shared runtime resolves that RVA through the one native
+code registry. Bridge symbols and candidate addresses therefore remain native
+realization details and cannot enter a component contract or source package.
 
-The lifecycle above feeds one common authority model instead of separate models
-for authored C, recognized libraries, machine IR, and pinned implementations:
+### One Semantic Boundary
 
-```text
-component-contract-v3.json
-  machine-independent types, operations, state, effects, services, callbacks,
-  protocol states, and normalized machine-derived operation semantics
+Authored components, adopted libraries, generated Behavioral C, runtime
+providers, and the external environment all qualify definitions in the same
+semantic-module namespace. A consumer binds the provider operation and semantic
+slice identity, never a native object address. Changing presentation-only work
+package content therefore does not invalidate contextual proof; changing an
+operation's checked semantics does.
 
-machine-binding-v3.json
-  exact PE, machine-IR, structural units, and operation projections
+Library recognition and adoption remain distinct non-authorizing stages. An
+adopted behavior pack uses the same direct provider qualifier and publishes the
+same V2 qualification/object records as operator-authored source. Configuration
+and runtime code do not interpret recognition-specific receipts. External sites
+remain explicit checked environment providers because the operating system is
+not a hidden component implementation.
 
-implementation-v3.json
-  one checked portable-C, machine-IR, pinned-binary, or environment realization
+`hybrid` permits generated Behavioral-C ownership for unlifted definitions.
+`portable` requires zero generated-C ownership in the selected root-reachable
+definition closure. Neither mode permits a selected authored component to
+silently fall back.
 
-component-dependency-graph-v3.json
-  contract-to-contract service edges, exact callsites, external dependencies,
-  reverse consumers, and SCCs
-```
+The component DAG emits no standalone runtime. It generates direct machine-state
+overlays, copies exact authored source, cross-compiles PE32 objects, marks owned
+units in the total activation plan, and forbids silent fallback inside an
+enabled component. Native linking combines those selected objects with immutable
+generated behavioral C and the module's one shared runtime.
 
-Consumers depend on provider contract hashes, never provider implementation
-hashes. Replacing a machine-IR implementation with portable C therefore rebuilds
-that implementation, its configuration graph, and release descendants without
-invalidating independently checked consumers. A contract change still
-invalidates consumers because it changes the behavior they are allowed to rely
-on.
+### Portable Component Interface V5
 
-Generated library components enter through exactly these files. Library
-constellation, checked-island, and behavior-pack evidence is consumed by the
-library-owned adapter that emits the universal records; configuration and
-runtime code do not interpret recognition-specific receipts. External sites
-remain explicit checked environment dependencies because the operating system
-is not a hidden component implementation.
-
-Every release gate also binds the total activation plan and checks that its
-selected component inventory and ownership kinds exactly match the universal
-dependency graph. `hybrid` permits
-checked machine-IR or pinned ownership for remaining units. `portable` requires
-zero machine-IR fallback among units in the checked root-reachable behavioral
-projection. Structurally classified but unreachable units retain fallback
-ownership without blocking portable-lift completion.
-
-The runtime package is constructed directly by the component DAG. It does not
-construct a candidate or require whole-program acceptance. It
-generates the machine-state adapter, copies exact authored source,
-cross-compiles it as a PE32 translation unit, marks internal component members
-as subsumed, and forbids silent fallback inside an enabled component. The same
-interpreter derivation is reused by standalone component runtimes and all
-candidates, and the same portable-selection artifact is consumed by fallback
-coverage, native dispatch, candidate authority, and completion checks.
-
-### Portable Interfaces V2 and V3
-
-Portable interface V2 defines typed operations, framework-managed instance
-state, protocol states, logical resources, effects, and injected services.
-Portable interface V3 adds opaque, typed callback handles without exposing a
-machine ABI or raw function pointer. Both contain no x86 registers, raw
+Portable interface V5 defines typed operations, framework-managed instance
+state, protocol states, logical resources, effects, injected services, objects,
+lifecycles, callbacks, and checked outcomes without exposing a machine ABI or
+raw function pointer. It contains no x86 registers, raw
 addresses, PE ranges, import IDs, or
 external-site identities. Authored source may not define mutable global state.
 
@@ -129,38 +119,18 @@ example, component `directdraw-init` uses interface namespace
 `dxball_directdraw_init`. Receipts bind both explicitly instead of requiring an
 operator-facing ID to be a C identifier.
 
-The DX-Ball DirectDraw draft validates independent source work: its V2 interface
+The DX-Ball DirectDraw draft validates independent source work: its V5 interface
 and source compile without executing DX-Ball. It remains nonauthorizing until
 its machine binding, machine-derived refinement, and configuration service
 graph close.
 
-### Legacy Source ABIs
+### Source Contract
 
-Existing targets may still contain older adapters. `logical-c-v1` accepts scalar
-values and uses a checked machine projection for the surrounding register,
-flag, stack, and control effects. A scalar result may replace either an exact
-register result or the condition selecting a checked finite branch exit.
-`logical-object-c-v1` additionally accepts borrowed read-only byte views.
-`read-only-bytes-v1` exposes a checked `read_u8` callback and explicit extent.
-`nul-terminated-bytes-v1` exposes the same checked read operation without
-inventing an extent that the machine program did not have; finite evidence must
-provide an in-bounds NUL terminator and rejects reads beyond the supplied case.
-Portable code never receives a raw machine address. A scalar result may declare
-`offset-into-view-v1`, which makes a returned interior pointer portable: evidence
-subtracts the exact case allocation base and bounds-checks the offset, while the
-reviewed completion explicitly rebuilds the machine pointer from the entry base
-and logical offset. The adapter declares total register/flag state, exact memory
-writes, and the return target. Evidence checks that completion against concrete
-machine-IR evaluation before qualification, while runtime invokes the portable
-function exactly once and never replays the replaced machine region as fallback.
-
-`portable-interface-v1` was the first component ABI. Its typed IR defines
-portable scalars, records, bounded byte views, logical resources, callbacks,
-effects, and injected service dependencies. The generated C interface contains
-no x86 registers or raw machine addresses. Service calls are explicit function
-pointers over a context object, so the same component can use deterministic
-mocks in development and checked external adapters after activation. New
-components should use portable interface V2; V1 exists only for migration.
+Every authored source package is V3 and maps each V5 operation ID to one C
+symbol. Single-entry source packages and adapter-specific ABIs are rejected.
+Borrowed references, interior pointers, services, callbacks, effects, and
+outcomes are expressed by the V5 interface and its checked machine binding,
+then imported through the shared runtime boundary transducer.
 
 ## Static Refinement Loop
 
@@ -207,8 +177,10 @@ it is not a universal function theorem.
 ## Configuration Safety
 
 - Enabled components with exact checked activation authority use portable source.
-- Draft, missing, or incomplete components retain machine-IR fallback.
-- Every unselected structural unit retains machine-IR fallback.
+- Draft, missing, or incomplete components retain generated Behavioral-C
+  ownership.
+- Every unselected semantic definition retains generated Behavioral-C
+  ownership.
 - Overlapping ownership is rejected.
 - Enabled component members may not fall back individually.
 - Whole-program candidate generation requires structural executability; release
@@ -230,29 +202,45 @@ Targets normally use `sdk.workflow.pe32`, then inspect
 `sdk.lifting.components` for tooling tests.
 
 ```nix
-workflow = sdk.workflow.pe32 {
-  original = originalExe;
-  binaryIdentity = "program.exe";
-  externalProfile = runtimeProfile;
-  machineImportProfiles = [ runtimeProfile ];
-  launchProfileTemplate = launchProfile;
-  componentIntent = ./intent/components.json;
-  componentReviewRoot = ./intent/reviews;
-  componentSourceRoot = ./source;
-  namePrefix = "program";
+environment = sdk.environment.pe32 {
+  id = "program-win32";
+  profilePacks = [ runtimeProfile ];
+  interfacePacks = [ ];
+  launchProfile = launchProfile;
+  boundaryIntents = { };
+  support.processTermination = null;
 };
 
-runtime = workflow.componentRuntimeFor "one-enabled-component";
-candidate = workflow.candidateFor {
-  configurationId = "one-enabled-component";
+workflow = sdk.workflow.pe32 {
+  original = originalExe;
+  targetId = "program";
+  binaryIdentity = "program.exe";
+  externalEnvironment = environment;
+  lifting = {
+    boundaries = [ ];
+    components = {
+      intent = ./intent/components.json;
+      operatorRoot = ./intent;
+      sourceRoot = ./source;
+    };
+    libraries = { packs = [ ]; adoptionRoot = ./intent/libraries; };
+  };
+  backend = { kind = "behavioral-c"; sourcePresentation = null; };
+  analysisLimits = { maxUnits = 512; maxCandidatesPerSeed = 12; };
 };
+
+workPackage =
+  workflow.components.v6WorkPackages."ascii-to-lower";
+selection =
+  workflow.semanticImplementationSelections."one-enabled-component";
+candidate = workflow.nativeRealizations."one-enabled-component";
 ```
 
 For an authored portable unit, `component build` realizes the independent
 compile receipt. `component status --development` reports the local
-contract/source/evidence progress without pulling activation authority.
-`component status` reports the strongest available canonical activation state,
-and `component check` requires that exact machine-derived activation authority.
+contract/source/evidence progress without pulling realization authority.
+`component status` reports the strongest available checked implementation and
+dependency state, and `component check` requires those machine-derived facts.
 Draft units remain independently compilable; configurations remain authority
 gated.
 
@@ -263,7 +251,7 @@ build` always consumes the strict hybrid
 check plus the target's static release gate; diagnostic dependency reports
 cannot make a candidate executable.
 
-Pure component activation depends only on its selected machine-IR units and
+Pure component qualification depends only on its selected machine-IR units and
 checked component artifacts. A component that declares an external-site service
 also depends on the canonical target/ABI evidence for that site. Neither path
 depends on root-scoped target ISA qualification or final candidate acceptance; those
@@ -271,8 +259,11 @@ remain release-level gates.
 
 `runtime` above is exactly the runtime package consumed by the default-compiler
 candidate. Building it does not pull an executable candidate into its closure.
-`workflow.componentRuntimes` and `workflow.candidates.static` provide the
-corresponding configuration-indexed families. The operator-facing interface
+`workflow.components.v6SemanticSlices`,
+`workflow.components.v6WorkPackages`,
+`workflow.semanticImplementationSelections`, and
+`workflow.nativeRealizations` provide the corresponding
+configuration-indexed families. The operator-facing interface
 also exposes independently cached work packages, status reports, and checks for
 every leaf or group, plus runtime/status/check products for each configuration.
 

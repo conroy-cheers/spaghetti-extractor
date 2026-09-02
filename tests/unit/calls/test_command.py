@@ -9,6 +9,9 @@ from pathlib import Path
 
 from spaghetti_extractor.calls.dialects.ia32 import IA32DialectCheckerV1
 from spaghetti_extractor.cli import main
+from spaghetti_extractor.transfer.plan import write_executable_transfer_plan
+from spaghetti_extractor.util import sha256_file
+from tests.unit.candidate.native_ingress_support import machine_ir_transfer
 from tests.unit.calls._support import graph, layouts, machine_evidence, subject
 
 
@@ -27,6 +30,8 @@ class CallProtocolCommandTests(unittest.TestCase):
             frame_path = root / "frame.json"
             evidence_path = root / "evidence.json"
             machine_ir = root / "machine-ir.jsonl"
+            machine_ir_manifest = root / "machine-ir-manifest.json"
+            transfer_plan_root = root / "transfer-plan"
             output = root / "output"
             intent.write_text(json.dumps({
                 "format": "spaghetti-extractor-call-protocol-intent-v1",
@@ -43,17 +48,37 @@ class CallProtocolCommandTests(unittest.TestCase):
             layout_path.write_text(json.dumps(layout_set.to_payload()), encoding="utf-8")
             frame_path.write_text(json.dumps(frame.to_payload()), encoding="utf-8")
             evidence_path.write_text(json.dumps(machine_evidence(frame).to_payload()), encoding="utf-8")
-            for path in (
-                machine_ir,
-            ):
-                path.write_text("{}\n", encoding="utf-8")
+            unit = machine_ir_transfer()
+            machine_ir.write_text(
+                json.dumps(unit, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            machine_ir_manifest.write_text(json.dumps({
+                "format": "spaghetti-extractor-machine-ir-v3",
+                "record_kind": "manifest",
+                "binary": {"sha256": "f" * 64},
+                "artifacts": {
+                    "machine_ir": {"sha256": sha256_file(machine_ir)},
+                },
+                "counts": {"units": 1},
+                "source_map": [{
+                    "unit_id": unit["id"],
+                    "rva_start": unit["source"]["original"]["rva_start"],
+                    "contract_sha256": unit["source"]["contract_sha256"],
+                }],
+            }), encoding="utf-8")
+            write_executable_transfer_plan(
+                machine_ir=machine_ir,
+                machine_ir_manifest=machine_ir_manifest,
+                out=transfer_plan_root,
+            )
             with contextlib.redirect_stdout(io.StringIO()):
                 status = main([
                     "expert", "call-protocol-check",
                     "--intent", str(intent),
                     "--layouts", str(layout_path),
                     "--frame", str(frame_path),
-                    "--machine-ir", str(machine_ir),
+                    "--transfer-plan",
+                    str(transfer_plan_root / "executable-transfer-plan.json"),
                     "--machine-evidence", str(evidence_path),
                     "--out", str(output),
                 ])

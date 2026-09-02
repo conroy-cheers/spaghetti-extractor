@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Mapping
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from .formats import COMPONENT_SOURCE_PROFILE_V1_FORMAT
 from .source import load_component_source_package
 
 
@@ -47,7 +46,6 @@ def check_component_source_profile(*, package: Path | str) -> dict[str, object]:
             })
     status = "incomplete" if issues else "satisfied"
     core: dict[str, object] = {
-        "format": COMPONENT_SOURCE_PROFILE_V1_FORMAT,
         "status": status,
         "profile_id": PROFILE_ID,
         "component_id": source["lift_unit_id"],

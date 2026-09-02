@@ -62,6 +62,11 @@
       "validator_id": "normal-call-abi-premise-v1"
     },
     {
+      "path": "pe32-oniguruma-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
       "path": "pe32-static-cutpoints-and-paired-callables-v1.json",
       "role": "indirect-target-assumption",
       "validator_id": "indirect-target-profile-v1"

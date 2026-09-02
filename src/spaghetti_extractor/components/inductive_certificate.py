@@ -29,8 +29,8 @@ from .inductive_receipts import (
 from .inductive_package import INDUCTIVE_COMPONENT_DECLARATION_V1
 from .inductive_relation import InductiveCutpointRelationV1
 from .inductive_source import InductiveSourcePlanV1
-from .interface_ir import LogicalTypeV1, PortableComponentInterfaceV2
-from .semantic_contract import ComponentSemanticContractV1
+from .interface_ir import ProofKernelLogicalType, ProofKernelComponentInterface
+from .semantic_contract import ProofKernelSemanticContract
 from .semantic_paths import build_inductive_segment_models
 from .source import load_component_source_package
 
@@ -181,10 +181,10 @@ def materialize_inductive_certificate(
     proof = InductiveProofDeclarationV1.parse(
         _load(proof_declaration, "inductive proof declaration")
     )
-    portable = PortableComponentInterfaceV2.parse(
+    portable = ProofKernelComponentInterface.parse(
         _load(interface, "portable component interface")
     )
-    semantic = ComponentSemanticContractV1.parse(
+    semantic = ProofKernelSemanticContract.parse(
         _load(semantic_contract, "component semantic contract")
     )
     if semantic.status != "satisfied":
@@ -797,7 +797,7 @@ def _check_acyclic_bridge_graph(
 
 
 def _derive_variables(
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     plan: InductiveSourcePlanV1,
     relation: InductiveCutpointRelationV1,
 ) -> list[dict[str, object]]:
@@ -870,7 +870,7 @@ def _derive_variables(
     return result
 
 
-def _domain(logical_type: LogicalTypeV1) -> dict[str, object]:
+def _domain(logical_type: ProofKernelLogicalType) -> dict[str, object]:
     if logical_type.kind in {"scalar", "enum"} and logical_type.c_type is not None:
         match = re.fullmatch(r"u?int(8|16|32)_t", logical_type.c_type)
         if match is not None:

@@ -58,6 +58,61 @@ class OverlappingInstructionStartTests(unittest.TestCase):
             result["conflicts"][0]["target_sources"], ["direct_control"]
         )
 
+    def test_reports_every_distinct_active_owner_in_stable_order(self) -> None:
+        result = classify_overlapping_instruction_starts(
+            units=[
+                {
+                    "id": "outer-b",
+                    "rva": 0x1001,
+                    "instructions": [{
+                        "rva_start": 0x1001,
+                        "rva_end": 0x1007,
+                        "instruction_sha256": "b" * 64,
+                    }],
+                },
+                {
+                    "id": "outer-a",
+                    "rva": 0x1000,
+                    "instructions": [{
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1006,
+                        "instruction_sha256": "a" * 64,
+                    }],
+                },
+                {"id": "inner", "rva": 0x1003, "instructions": []},
+                # An owner's own interval is never evidence against itself.
+                {
+                    "id": "self",
+                    "rva": 0x1004,
+                    "instructions": [{
+                        "rva_start": 0x1002,
+                        "rva_end": 0x1008,
+                        "instruction_sha256": "s" * 64,
+                    }],
+                },
+            ],
+            reachable_unit_ids=["outer-a", "outer-b", "self"],
+        )
+
+        by_unit = {
+            row["unit_id"]: row
+            for row in [*result["excluded_units"], *result["conflicts"]]
+        }
+        self.assertEqual(
+            [
+                row["owner_unit_id"]
+                for row in by_unit["inner"]["instruction_evidence"]
+            ],
+            ["outer-a", "outer-b", "self"],
+        )
+        self.assertEqual(
+            [
+                row["owner_unit_id"]
+                for row in by_unit["self"]["instruction_evidence"]
+            ],
+            ["outer-a", "outer-b"],
+        )
+
 
 class SemanticClusterTests(unittest.TestCase):
     def test_loop_scc_and_maximal_chains_stop_at_cutpoints(self) -> None:

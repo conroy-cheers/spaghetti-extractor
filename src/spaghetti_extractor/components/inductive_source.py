@@ -14,8 +14,8 @@ from typing import Mapping, Sequence
 from ..artifacts.artifact_set import canonical_sha256_v3
 from .interface_ir import (
     ComponentInterfaceIRError,
-    PortableComponentInterfaceV2,
-    PortableOperationV2,
+    ProofKernelComponentInterface,
+    ProofKernelOperation,
 )
 
 
@@ -183,7 +183,7 @@ class InductiveSourcePlanV1:
     def create(
         cls,
         *,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         operation_id: str,
         state: Sequence[Mapping[str, object]],
         phase_ids: Sequence[str],
@@ -219,9 +219,9 @@ class InductiveSourcePlanV1:
 
     def validate_for(
         self,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         operation_symbols: Mapping[str, object],
-    ) -> PortableOperationV2:
+    ) -> ProofKernelOperation:
         if self.interface_id != interface.identity or self.interface_sha256 != interface.sha256:
             raise InductiveSourceError(
                 "inductive source plan is bound to a different interface"
@@ -252,7 +252,7 @@ class InductiveSourcePlanV1:
 
     def render_header(
         self,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         operation_symbols: Mapping[str, object],
         *,
         implementation_header: str = "portable-component-implementation.h",
@@ -325,7 +325,7 @@ class InductiveSourcePlanV1:
 
     def render_wrapper(
         self,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         operation_symbols: Mapping[str, object],
         *,
         header: str,
@@ -379,7 +379,7 @@ class InductiveSourcePlanV1:
 
 def validate_inductive_source_plans(
     plans: Sequence[InductiveSourcePlanV1],
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     operation_symbols: Mapping[str, object],
 ) -> tuple[InductiveSourcePlanV1, ...]:
     parsed = tuple(plans)

@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from ..artifacts.artifact_set import canonical_sha256_v3
 from .inductive_receipts import CheckedInductiveMachineReceiptV1
 from .inductive_source import InductiveSourcePlanV1
-from .interface_ir import PortableComponentInterfaceV2
+from .interface_ir import ProofKernelComponentInterface
 from .machine_binding import MachineProjectionV1
 from .value_codec import (
     ValueCodecError,
@@ -360,7 +360,7 @@ class InductiveCutpointRelationV1:
     def create(
         cls,
         *,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         source_plan: InductiveSourcePlanV1,
         machine_receipt: CheckedInductiveMachineReceiptV1,
         cutpoints: Sequence[Mapping[str, object]],
@@ -397,7 +397,7 @@ class InductiveCutpointRelationV1:
 
     def validate_for(
         self,
-        interface: PortableComponentInterfaceV2,
+        interface: ProofKernelComponentInterface,
         source_plan: InductiveSourcePlanV1,
         machine_receipt: CheckedInductiveMachineReceiptV1,
     ) -> None:

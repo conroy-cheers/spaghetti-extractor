@@ -27,7 +27,7 @@ let
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${source}/src
+    export PYTHONPATH=${source.pythonPath}
   '';
   mkPythonClosure = suffix: modules:
     import ./python-module-closure.nix {
@@ -46,15 +46,15 @@ let
     "spaghetti_extractor.reconstruction.rooted_state_machine"
   ];
   machineIrPreparationPythonSource = mkPythonClosure "machine-ir-preparation" [
-    "spaghetti_extractor.reconstruction.ir"
+    "spaghetti_extractor.reconstruction.ir_preparation"
   ];
   machineIrExportPythonSource = mkPythonClosure "machine-ir-export" [
-      "spaghetti_extractor.reconstruction.ir"
-      "spaghetti_extractor.authority_inputs.finite_values"
+      "spaghetti_extractor.reconstruction.ir_export"
+      "spaghetti_extractor.reconstruction.finite_values"
     ];
   launchAssumptionProjectionPythonSource = mkPythonClosure
     "launch-assumption-projection" [
-      "spaghetti_extractor.authority_inputs.launch_assumptions"
+      "spaghetti_extractor.reconstruction.launch_assumptions"
       "spaghetti_extractor.pe32.image"
     ];
   reconstructionPlanPythonSource = mkPythonClosure "reconstruction-plan" [
@@ -98,7 +98,7 @@ let
         import pathlib
         import sys
 
-        from spaghetti_extractor.authority_inputs.launch_assumptions import (
+        from spaghetti_extractor.reconstruction.launch_assumptions import (
             build_launch_analysis_assumptions_v2,
         )
         from spaghetti_extractor.pe32.image import parse_pe_image
@@ -278,8 +278,10 @@ let
       import json
       import pathlib
       import sys
-      from spaghetti_extractor.authority_inputs.finite_values import FiniteU32Dataflow
-      from spaghetti_extractor.reconstruction.ir import export_machine_ir_package
+      from spaghetti_extractor.reconstruction.finite_values import FiniteU32Dataflow
+      from spaghetti_extractor.reconstruction.ir_export import (
+          export_machine_ir_package,
+      )
 
       (
           state_machine,
@@ -362,7 +364,7 @@ let
         "$out" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.reconstruction.ir import (
+      from spaghetti_extractor.reconstruction.ir_preparation import (
           prepare_machine_ir_units_package,
       )
 

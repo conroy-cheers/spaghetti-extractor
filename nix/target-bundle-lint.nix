@@ -28,7 +28,7 @@ pkgs.runCommand "${namePrefix}-target-bundle-lint-v1" {
   set -euo pipefail
   export PYTHONHASHSEED=0
   export PYTHONDONTWRITEBYTECODE=1
-  export PYTHONPATH=${phaseSource}/src
+  export PYTHONPATH=${phaseSource.pythonPath}
   mkdir -p "$out"
   ${pythonEnv}/bin/python3 - \
     ${targetRoot} \

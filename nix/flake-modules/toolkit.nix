@@ -13,15 +13,18 @@
         default = context.package;
         spaghetti-extractor = context.package;
         spaghetti-extractor-native = context.nativeExtension;
+        spaghetti-extractor-transfer-native = context.transferNativeExtension;
         testkit-test-runner = context.packages.testkitTestRunner;
         testkit-developer = context.packages.testkitDeveloper;
         xed-isa-catalog = xedIsaCatalog;
+        qualified-platform-v1 = context.platforms.qualifiedPlatform.derivation;
       };
 
       legacyPackages = {
         default = context.package;
         spaghetti-extractor = context.package;
         spaghetti-extractor-native = context.nativeExtension;
+        spaghetti-extractor-transfer-native = context.transferNativeExtension;
         testkit-test-runner = context.packages.testkitTestRunner;
         testkit-developer = context.packages.testkitDeveloper;
         isa-kernel = context.kernels.isaConformanceKernel;
@@ -29,6 +32,7 @@
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
         relation-kernel = context.kernels.relationKernel;
         bochs-conformance = context.tools.bochsConformance;
+        qualified-platform-v1 = context.platforms.qualifiedPlatform.derivation;
       } // context.fixtureCatalog.packageAttributes context.fixtures;
 
       apps = {
@@ -59,6 +63,7 @@
           context.package
           context.pythonEnv
           context.nativeExtension
+          context.transferNativeExtension
           pkgs.lean4
           pkgs.z3
           pkgs.cbmc

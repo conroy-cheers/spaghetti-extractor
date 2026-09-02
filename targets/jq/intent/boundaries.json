@@ -53,7 +53,7 @@
     {"id": "jv-dumpf-fn", "kind": "function", "result_type_id": "unit", "parameter_type_ids": ["jv", "p-file", "i32"], "variadic": false, "calling_convention": "cdecl"},
     {"id": "math-handler-fn", "kind": "function", "result_type_id": "i32", "parameter_type_ids": ["p-math-exception"], "variadic": false, "calling_convention": "cdecl"},
     {"id": "p-math-handler-fn", "kind": "pointer", "pointee_type_id": "math-handler-fn", "qualifiers": []},
-    {"id": "set-math-handler-fn", "kind": "function", "result_type_id": "p-math-handler-fn", "parameter_type_ids": ["p-math-handler-fn"], "variadic": false, "calling_convention": "cdecl"}
+    {"id": "set-math-handler-fn", "kind": "function", "result_type_id": "unit", "parameter_type_ids": ["p-math-handler-fn"], "variadic": false, "calling_convention": "cdecl"}
   ],
   "signatures": [
     {
@@ -83,7 +83,7 @@
     {
       "id": "set-math-handler", "function_type_id": "set-math-handler-fn",
       "parameters": [{"id": "handler", "type_id": "p-math-handler-fn", "interpretation": "callback", "nullable": true, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}],
-      "results": [{"id": "previous", "type_id": "p-math-handler-fn", "interpretation": "callback", "nullable": true, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}]
+      "results": []
     }
   ],
   "layout": {
@@ -110,11 +110,11 @@
     ]
   },
   "frames": [
-    {"id": "jv-copy", "subject": {"kind": "function", "id": "libjq.jv-copy", "image_selector": "main-image"}, "signature_id": "jv-copy", "transfer_kind": "direct"},
-    {"id": "jv-free", "subject": {"kind": "function", "id": "libjq.jv-free", "image_selector": "main-image"}, "signature_id": "jv-free", "transfer_kind": "direct"},
-    {"id": "jv-dumpf", "subject": {"kind": "function", "id": "libjq.jv-dumpf", "image_selector": "main-image"}, "signature_id": "jv-dumpf", "transfer_kind": "direct"},
+    {"id": "jv-copy", "subject": {"kind": "import", "id": "libjq-1.dll.jv_copy", "image_selector": null}, "signature_id": "jv-copy", "transfer_kind": "import"},
+    {"id": "jv-free", "subject": {"kind": "import", "id": "libjq-1.dll.jv_free", "image_selector": null}, "signature_id": "jv-free", "transfer_kind": "import"},
+    {"id": "jv-dumpf", "subject": {"kind": "import", "id": "libjq-1.dll.jv_dumpf", "image_selector": null}, "signature_id": "jv-dumpf", "transfer_kind": "import"},
     {"id": "math-handler", "subject": {"kind": "callback", "id": "msvcrt-user-math-error-handler", "image_selector": "main-image"}, "signature_id": "math-handler", "transfer_kind": "callback"},
-    {"id": "set-math-handler", "subject": {"kind": "import", "id": "msvcrt.__setusermatherr", "image_selector": "main-image"}, "signature_id": "set-math-handler", "transfer_kind": "import"}
+    {"id": "set-math-handler", "subject": {"kind": "import", "id": "msvcrt.dll.__setusermatherr", "image_selector": "main-image"}, "signature_id": "set-math-handler", "transfer_kind": "import"}
   ],
   "source_names": {
     "types": {"u8": "spx_u8", "i8": "spx_i8", "u16": "spx_u16", "i32": "spx_i32", "u32": "spx_u32", "f64": "spx_f64", "jv-refcnt": "jv_refcnt", "file": "FILE", "p-jv-refcnt": "jv_refcnt_ptr", "p-file": "FILE_ptr", "p-char": "char_ptr", "jv-payload": "jv_payload", "jv": "jv", "math-exception": "spx_math_exception", "p-math-exception": "spx_math_exception_ptr", "jv-copy-fn": "spx_jv_copy_fn", "jv-free-fn": "spx_jv_free_fn", "jv-dumpf-fn": "spx_jv_dumpf_fn", "math-handler-fn": "spx_math_handler_fn", "p-math-handler-fn": "spx_math_handler", "set-math-handler-fn": "spx_set_math_handler_fn"},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 
 from spaghetti_extractor.build_support.python_module_index import (
@@ -81,6 +82,11 @@ SUPPORTED_COMMAND_ROLES = {"fixture-command": "proposal"}
             _write(root, "src/spaghetti_extractor/orphan.py", "VALUE = 2\n")
 
             index = build_python_module_index(root)
+
+            self.assertEqual(
+                index["modules"]["spaghetti_extractor.shared"]["source_sha256"],
+                hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+            )
 
             self.assertEqual(
                 declared_public_command_modules(root),

@@ -2,25 +2,29 @@
 
 let
   context = import ../toolkit-context.nix { inherit pkgs; };
-  releaseGate = pkgs.runCommand
-    "spaghetti-extractor-candidate-test-fixture-release-gate"
-    { __contentAddressed = true; }
+  candidateBinary =
+    "${context.tools.minimalImportCall}/minimal-import-call.exe";
+  nativeRealization = pkgs.runCommand
+    "spaghetti-extractor-candidate-test-fixture-native-realization"
+    { nativeBuildInputs = [ pkgs.coreutils ]; __contentAddressed = true; }
     ''
       mkdir -p "$out"
-      cat > "$out/release-acceptance.json" <<'JSON'
+      candidate_sha256="$(sha256sum ${candidateBinary} | cut -d ' ' -f 1)"
+      cat > "$out/native-realization.json" <<JSON
       {
-        "format": "spaghetti-extractor-release-acceptance-v1",
-        "fixture_only": true,
+        "format": "spaghetti-extractor-native-realization-v2",
         "status": "complete",
-        "executable": true,
-        "release_accepted": true
+        "ready_for_observation": true,
+        "blockers": [],
+        "candidate": {
+          "filename": "minimal-import-call.exe",
+          "sha256": "$candidate_sha256"
+        }
       }
       JSON
     '';
-  candidateBinary =
-    "${context.tools.minimalImportCall}/minimal-import-call.exe";
   candidateTest = import ../candidate-test-suite.nix {
-    inherit pkgs candidateBinary releaseGate;
+    inherit pkgs candidateBinary nativeRealization;
     inherit (context) pythonEnv;
     pythonSource = context.sources.fullSource;
     id = "minimal-import-call";
@@ -41,7 +45,7 @@ pkgs.runCommand "spaghetti-extractor-candidate-test-suite-check" {
     .status == "pass" and
     .policy.candidate_only and
     (.policy.original_binary_executed | not) and
-    .policy.static_release_acceptance_required_before_execution and
+    .policy.native_realization_required_before_execution and
     .policy.headless_wine_required and
     .case_ids == ["writes-expected-output"]
   ' "$receipt" >/dev/null

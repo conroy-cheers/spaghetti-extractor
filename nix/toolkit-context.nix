@@ -28,23 +28,23 @@ let
   # default and prevents static/ISA derivations from accidentally acquiring
   # candidate-only dependencies.
   runtimeOnlySourceFiles = ../src/spaghetti_extractor/candidate;
-  leanSource = ../src/spaghetti_extractor/lean;
+  # Import the proof kernel as its own source identity.  A plain nested path
+  # retains the enclosing dirty flake source context and makes unrelated
+  # candidate/runtime edits reschedule the target-independent ISA campaign.
+  leanSourceFiles = ../src/spaghetti_extractor/lean;
+  leanSource = pkgs.lib.fileset.toSource {
+    root = leanSourceFiles;
+    fileset = leanSourceFiles;
+  };
   staticPythonFiles = pkgs.lib.fileset.difference ../src (
     pkgs.lib.fileset.unions [
       runtimeOnlySourceFiles
-      leanSource
+      leanSourceFiles
     ]
   );
   staticSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
     fileset = staticPythonFiles;
-  };
-  isaSource = pkgs.lib.fileset.toSource {
-    root = repositoryRoot;
-    fileset = pkgs.lib.fileset.unions [
-      staticPythonFiles
-      leanSource
-    ];
   };
   profileSource = pkgs.lib.fileset.toSource {
     root = ../profiles;
@@ -57,10 +57,21 @@ let
   nativeExtension = import ./native-extension.nix {
     inherit pkgs pythonPackages;
   };
+  transferNativeExtension = import ./transfer-native-extension.nix {
+    inherit pkgs pythonPackages;
+  };
   pythonEnv = pkgs.python3.withPackages (ps: with ps; [
     capstone
     pefile
     nativeExtension
+    unicorn
+    z3-solver
+  ]);
+  transferPythonEnv = pkgs.python3.withPackages (ps: with ps; [
+    capstone
+    pefile
+    nativeExtension
+    transferNativeExtension
     unicorn
     z3-solver
   ]);
@@ -73,6 +84,7 @@ let
     dependencies = with pythonPackages; [
       capstone
       nativeExtension
+      transferNativeExtension
       pefile
       z3-solver
     ];
@@ -84,11 +96,11 @@ let
   };
   testkitTestRunner = pkgs.writeShellScriptBin "spaghetti-extractor-test" ''
     export PYTHONPATH=${fullSource}/src
-    exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit.runner "$@"
+    exec ${transferPythonEnv}/bin/python -m spaghetti_extractor.testkit.runner "$@"
   '';
   testkitDeveloper = pkgs.writeShellScriptBin "spaghetti-extractor-dev" ''
     export PYTHONPATH=${fullSource}/src
-    exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit "$@"
+    exec ${transferPythonEnv}/bin/python -m spaghetti_extractor.testkit "$@"
   '';
   isaConformanceKernel = import ./isa-conformance-kernel.nix {
     inherit pkgs leanSource;
@@ -102,8 +114,21 @@ let
   relationKernel = import ./relation-kernel.nix {
     inherit pkgs leanSource;
   };
+  isaFormInventory = builtins.path {
+    path =
+      ../src/spaghetti_extractor/qualified_platform/pe32_i686_isa_forms.json;
+    name = "spaghetti-qualified-platform-pe32-i686-isa-forms.json";
+  };
   bochsConformance = pkgs.callPackage ./bochs-conformance.nix {
     instrumentationSrc = ../tools/bochs-conformance;
+  };
+  qualifiedPlatform = import ./qualified-platform.nix {
+    inherit pkgs pythonEnv;
+    kernelCache = isaConformanceKernel;
+    semanticKernel = "${isaSemanticKernel}/semantic-kernel.json";
+    inherit isaFormInventory;
+    bochsRunner =
+      "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
   };
   headlessWine = pkgs.writeShellApplication {
     name = "spaghetti-headless-wine";
@@ -169,12 +194,12 @@ let
   };
 in
 {
-  inherit repositoryRoot pythonEnv package nativeExtension fixtureCatalog fixtures;
+  inherit repositoryRoot pythonEnv transferPythonEnv package nativeExtension
+    transferNativeExtension fixtureCatalog fixtures;
   sources = {
     inherit
       packageSource
       staticSource
-      isaSource
       profileSource
       fullSource
       leanSource
@@ -190,6 +215,9 @@ in
       inductiveCertificateKernel
       relationKernel
       ;
+  };
+  platforms = {
+    inherit qualifiedPlatform;
   };
   tools = {
     inherit bochsConformance headlessWine minimalImportCall;

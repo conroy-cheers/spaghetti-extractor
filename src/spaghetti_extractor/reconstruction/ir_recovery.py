@@ -7,9 +7,9 @@ import json
 from typing import Any, Callable, Mapping, Sequence
 
 from ..external.callbacks import parse_callback_source
-from ..authority_inputs.target_dependencies import build_bounded_selector_dependency_v2
+from .target_dependencies import build_bounded_selector_dependency_v2
 from ..pe32.model import ParsedPEImage
-from ..authority_inputs.static_indirect_replay import (
+from .static_indirect_replay import (
     direct_predecessors_by_target as _direct_predecessors_by_target,
     indirect_predecessor_evidence as _indirect_predecessor_evidence,
 )

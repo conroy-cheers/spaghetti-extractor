@@ -1,0 +1,173 @@
+{
+  "effects": [
+    {"id": "root_created", "kind": "resource", "operation": "exercise", "target": null},
+    {"id": "root_released", "kind": "resource", "operation": "exercise", "target": null}
+  ],
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "id": "fixture-interface-stale",
+  "intent_sha256": "0b0087e898abb731a279a167b45324bee2a691186edac12106047c5089a6e9aa",
+  "operations": [{
+    "allowed_service_ids": ["create", "fill_record", "release"],
+    "checked_interaction_contract_ids": [],
+    "effect_ids": [],
+    "id": "exercise",
+    "lifecycle_additional_roots": {"state": []},
+    "lifecycle_bindings": [],
+    "post_states": ["ready"],
+    "pre_states": ["ready"],
+    "projection_entries": [{
+      "source_id": "result",
+      "target": {"fields": [], "root": "result", "value_id": "result"}
+    }],
+    "signature_id": "operation.exercise",
+    "source_values": [{
+      "access": "none",
+      "extent": {"bytes": null, "kind": "none", "value_id": null},
+      "id": "result",
+      "interpretation": "value",
+      "nullable": false,
+      "provider_domain": null,
+      "resource_kind": null,
+      "type_id": "u32"
+    }]
+  }],
+  "protocol": {"initial_state": "ready", "states": ["ready"]},
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "component.fixture-interface-stale",
+    "schema_sha256": "dd2c2531c4f034602313fccd21b7f314c946fcc20986a1e14955c997009cf25e",
+    "signatures": [
+      {
+        "function_type_id": "operation.exercise.function",
+        "id": "operation.exercise",
+        "parameters": [],
+        "results": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "result",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        }]
+      },
+      {
+        "function_type_id": "service.create.function",
+        "id": "service.create",
+        "parameters": [{
+          "access": "write",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "created",
+          "interpretation": "resource",
+          "nullable": false,
+          "provider_domain": "component-environment.fixture",
+          "resource_kind": "fixture_object",
+          "type_id": "fixture"
+        }],
+        "results": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "status",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "status"
+        }]
+      },
+      {
+        "function_type_id": "service.fill_record.function",
+        "id": "service.fill_record",
+        "parameters": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "object",
+          "interpretation": "resource",
+          "nullable": false,
+          "provider_domain": "component-environment.fixture",
+          "resource_kind": "fixture_object",
+          "type_id": "fixture"
+        }],
+        "results": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "result",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        }]
+      },
+      {
+        "function_type_id": "service.get_value.function",
+        "id": "service.get_value",
+        "parameters": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "object",
+          "interpretation": "resource",
+          "nullable": false,
+          "provider_domain": "component-environment.fixture",
+          "resource_kind": "fixture_object",
+          "type_id": "fixture"
+        }],
+        "results": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "result",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        }]
+      },
+      {
+        "function_type_id": "service.release.function",
+        "id": "service.release",
+        "parameters": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "object",
+          "interpretation": "resource",
+          "nullable": false,
+          "provider_domain": "component-environment.fixture",
+          "resource_kind": "fixture_object",
+          "type_id": "fixture"
+        }],
+        "results": [{
+          "access": "none",
+          "extent": {"bytes": null, "kind": "none", "value_id": null},
+          "id": "result",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        }]
+      }
+    ],
+    "types": [
+      {"id": "fixture", "kind": "opaque", "nominal_id": "fixture.IFixture"},
+      {"calling_convention": "cdecl", "id": "operation.exercise.function", "kind": "function", "parameter_type_ids": [], "result_type_id": "u32", "variadic": false},
+      {"calling_convention": "cdecl", "id": "service.create.function", "kind": "function", "parameter_type_ids": ["fixture"], "result_type_id": "status", "variadic": false},
+      {"calling_convention": "cdecl", "id": "service.fill_record.function", "kind": "function", "parameter_type_ids": ["fixture"], "result_type_id": "u32", "variadic": false},
+      {"calling_convention": "cdecl", "id": "service.get_value.function", "kind": "function", "parameter_type_ids": ["fixture"], "result_type_id": "u32", "variadic": false},
+      {"calling_convention": "cdecl", "id": "service.release.function", "kind": "function", "parameter_type_ids": ["fixture"], "result_type_id": "u32", "variadic": false},
+      {"enumerators": [], "id": "status", "kind": "enum", "underlying_type_id": "status-underlying"},
+      {"id": "status-underlying", "kind": "integer", "signed": true, "width_bits": 32},
+      {"id": "u32", "kind": "integer", "signed": false, "width_bits": 32},
+      {"id": "unit", "kind": "void"}
+    ]
+  },
+  "services": [
+    {"effect_ids": ["root_created"], "id": "create", "interaction_contract_id": "component-service.fixture.create", "signature_id": "service.create"},
+    {"effect_ids": [], "id": "fill_record", "interaction_contract_id": "component-service.fixture.fill-record", "signature_id": "service.fill_record"},
+    {"effect_ids": [], "id": "get_value", "interaction_contract_id": "component-service.fixture.get-value", "signature_id": "service.get_value"},
+    {"effect_ids": ["root_released"], "id": "release", "interaction_contract_id": "component-service.fixture.release", "signature_id": "service.release"}
+  ],
+  "state": [],
+  "status": "complete"
+}

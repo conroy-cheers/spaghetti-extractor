@@ -14,12 +14,12 @@ from spaghetti_extractor.errors import ToolkitInputError
 
 
 ROOT = Path(__file__).resolve().parents[3]
-TESTKIT = {"resources": ("nix/authority-input-isa-evidence.nix",)}
+TESTKIT = {"resources": ("nix/semantic-isa-requirements.nix",)}
 
 
 class ISAConformanceNixTests(unittest.TestCase):
-    def test_authority_input_reuses_the_canonical_requirements_parser(self):
-        wiring = (ROOT / "nix" / "authority-input-isa-evidence.nix").read_text(
+    def test_semantic_requirements_reuse_the_canonical_parser(self):
+        wiring = (ROOT / "nix" / "semantic-isa-requirements.nix").read_text(
             encoding="utf-8"
         )
         self.assertIn("parse_machine_ir_isa_requirements_v2(requirements)", wiring)

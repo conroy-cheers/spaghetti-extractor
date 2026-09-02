@@ -12,11 +12,14 @@ from spaghetti_extractor.boundary import (
 )
 from spaghetti_extractor.calls.boundary_adapter import (
     reconcile_machine_call_evidence_v1,
+    schema_from_call_v1,
 )
 from spaghetti_extractor.calls.dialects.ia32 import IA32DialectCheckerV1
 from spaghetti_extractor.calls.evidence import MachineCallEvidenceV1
 from spaghetti_extractor.calls.frame import PhysicalCallFrameV3
+from spaghetti_extractor.calls.lifecycle import CallLifecycleV1
 from spaghetti_extractor.calls.protocol_v2 import CheckedCallProtocolV2
+from spaghetti_extractor.calls.types import PortableTypeGraphV1
 
 
 def _value(identity: str, type_id: str) -> dict[str, object]:
@@ -118,6 +121,46 @@ def _checked_protocol() -> tuple[BoundarySchemaV1, CheckedCallProtocolV2]:
 
 
 class CanonicalCallProtocolTests(unittest.TestCase):
+    def test_legacy_root_resource_lifecycle_is_preserved_in_schema(self) -> None:
+        graph = PortableTypeGraphV1.create([
+            {"id": "ctx", "kind": "opaque", "nominal_id": "CTX"},
+            {
+                "id": "p_ctx", "kind": "pointer",
+                "pointee_type_id": "ctx", "qualifiers": [],
+            },
+            {
+                "id": "i32", "kind": "integer", "width_bits": 32,
+                "signed": True,
+            },
+            {
+                "id": "callback", "kind": "function",
+                "result_type_id": "i32",
+                "parameter_type_ids": ["p_ctx"],
+                "variadic": False, "calling_convention": "stdcall",
+            },
+        ])
+        lifecycle = CallLifecycleV1.create([{
+            "id": "borrow.ctx",
+            "path": {"slot_id": "arg0", "fields": []},
+            "transition": "borrow_shared",
+            "resource_kind": "exception_context",
+            "provider_domain": "win32_exception_dispatch",
+            "service_id": None,
+            "condition": None,
+        }])
+
+        schema = schema_from_call_v1(
+            graph, function_type_id="callback", schema_id="fixture-callback",
+            lifecycle=lifecycle,
+        )
+
+        parameter = schema.signature_index["callback"].parameters[0]
+        self.assertEqual(parameter.interpretation, "resource")
+        self.assertEqual(parameter.resource_kind, "exception_context")
+        self.assertEqual(
+            parameter.provider_domain, "win32_exception_dispatch"
+        )
+
     def test_jv_aggregate_return_uses_explicit_memory_class_and_hidden_sret(self) -> None:
         schema = _schema()
         layout = _layout(schema, aggregate_class="aggregate-memory")

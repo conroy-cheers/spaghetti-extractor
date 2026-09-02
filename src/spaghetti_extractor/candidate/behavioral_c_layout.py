@@ -11,7 +11,7 @@ from .behavioral_c_model import (
     BehavioralCLayoutIntent,
     BehavioralCPlan,
 )
-from .interpreter_model import CandidateInterpreterError, _Transfer
+from ..transfer.model import TransferPlanError, _Transfer
 
 
 def build_behavioral_c_plan(
@@ -30,12 +30,12 @@ def build_behavioral_c_plan(
     rows = tuple(sorted(transfers, key=lambda row: row.rva_start))
     by_rva = {row.rva_start: row for row in rows}
     if len(by_rva) != len(rows):
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             "behavioral-C layout received duplicate transfer RVAs",
             code="behavioral_c_layout_ambiguous",
         )
     if not rows:
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             "behavioral-C layout requires at least one checked transfer",
             code="behavioral_c_layout_empty",
         )
@@ -52,7 +52,7 @@ def build_behavioral_c_plan(
             fields.append("forced_labels=" + _rva_text(unknown_labels))
         if unknown_names:
             fields.append("names=" + _rva_text(unknown_names))
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             "behavioral-C layout intent references unknown units: " + "; ".join(fields),
             code="behavioral_c_layout_unknown_rva",
             next_action="anchor layout intent only to stable checked machine-unit RVAs",
@@ -116,7 +116,7 @@ def build_behavioral_c_plan(
         forced_labels=intent.forced_labels,
     )
     if sorted(plan.unit_rvas) != sorted(by_rva):
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             "behavioral-C function ownership is not an exact transfer partition",
             code="behavioral_c_layout_coverage_mismatch",
         )
@@ -127,7 +127,7 @@ def _internal_successors(
     transfer: _Transfer, by_rva: dict[int, _Transfer]
 ) -> tuple[int, ...]:
     if not transfer.actions:
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{transfer.identity}: checked transfer has no terminal action",
             code="behavioral_c_layout_missing_outcome",
         )
@@ -140,11 +140,12 @@ def _internal_successors(
     elif outcome.op in {
         "outcome_return",
         "outcome_indirect",
+        "outcome_nonlocal",
         "outcome_external",
     }:
         targets = ()
     else:
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{transfer.identity}: final action {outcome.op!r} is not an outcome",
             code="behavioral_c_layout_missing_outcome",
         )

@@ -72,7 +72,7 @@ def _derive_x87_enrichment(
         operation = _condition_name(
             row.get("operation"), f"{context}.operation"
         )
-        if operation not in {"negate", "sine", "cosine"}:
+        if operation not in {"negate", "absolute", "sine", "cosine"}:
             raise ToolkitInputError(
                 f"{context}.operation is not a reviewed x87 unary operation"
             )

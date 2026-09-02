@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..artifacts.formats import (
-    COMPONENT_QUALIFICATION_FORMAT,
     LIBRARY_ARTIFACT_INDEX_FORMAT,
     LIBRARY_ARTIFACT_INDEX_V2_FORMAT,
     LIBRARY_ARTIFACT_INPUTS_FORMAT,

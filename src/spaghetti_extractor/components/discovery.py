@@ -726,19 +726,29 @@ def _score_candidate(
     branch_count = 0
     memory_count = 0
     external_count = 0
+    indirect_call_count = 0
+    fault_site_count = 0
+    atomic_event_count = 0
     for unit_id in members:
         semantics = _mapping(inputs.by_id[unit_id].get("semantics"), "semantics")
         outcome = semantics.get("outcome", {})
         if isinstance(outcome, Mapping) and outcome.get("kind") == "branch":
             branch_count += 1
         memory_count += len(semantics.get("memory_events", []))
-        external_count += len(
-            [
-                event
-                for event in semantics.get("external_events", [])
-                if isinstance(event, Mapping) and event.get("kind") != "internal_call"
-            ]
+        external_events = [
+            event for event in semantics.get("external_events", [])
+            if isinstance(event, Mapping)
+        ]
+        external_count += sum(
+            event.get("kind") != "internal_call" for event in external_events
         )
+        indirect_call_count += sum(
+            event.get("kind") == "indirect_call" for event in external_events
+        )
+        faults = semantics.get("faults", [])
+        if isinstance(faults, list):
+            fault_site_count += len(faults)
+        atomic_event_count += _count_kind_fragment(semantics, "atomic")
     raw_control = len(boundary["raw_control_targets"])
     raw_flags = len(boundary["exposed_flags"])
     hint_counts = hints["counts"]
@@ -747,6 +757,24 @@ def _score_candidate(
         hint_counts["results"]
     )
     unresolved_aliases = int(hint_counts["ambiguous_objects"])
+    loop_scc_count = len(
+        {
+            graph.scc_by_unit[unit_id]
+            for unit_id in members
+            if len(graph.sccs[graph.scc_by_unit[unit_id]]) > 1
+        }
+    )
+    entry_count = len(boundary["entries"])
+    exit_count = len(boundary["exits"])
+    expected_proof_cost = (
+        len(members)
+        + 2 * (entry_count + exit_count)
+        + 3 * (unresolved_aliases + int(hint_counts["services"]))
+        + 4 * (indirect_call_count + loop_scc_count)
+        + fault_site_count
+        + 2 * atomic_event_count
+        + len(blockers) * 16
+    )
     return {
         "hard_blockers": len(blockers),
         "raw_machine_exposure": raw_control + raw_flags + raw_stack + raw_registers,
@@ -759,17 +787,18 @@ def _score_candidate(
         "logical_objects": int(hint_counts["objects"]),
         "unresolved_aliases": unresolved_aliases,
         "external_services": int(hint_counts["services"]),
+        "entry_count": entry_count,
+        "exit_count": exit_count,
+        "callback_candidate_count": indirect_call_count,
+        "exception_site_count": fault_site_count,
+        "atomic_event_count": atomic_event_count,
+        "induction_required_count": loop_scc_count,
+        "expected_proof_cost": expected_proof_cost,
         "unit_count": len(members),
         "branch_count": branch_count,
         "memory_event_count": memory_count,
         "external_event_count": external_count,
-        "loop_scc_count": len(
-            {
-                graph.scc_by_unit[unit_id]
-                for unit_id in members
-                if len(graph.sccs[graph.scc_by_unit[unit_id]]) > 1
-            }
-        ),
+        "loop_scc_count": loop_scc_count,
         "machine_units_eliminated": len(members),
         "internal_adapters_eliminated": int(boundary["internal_edge_count"]),
     }
@@ -847,12 +876,29 @@ def _candidate_order_key(
         score["hard_blockers"],
         score["raw_machine_exposure"],
         semantic_priority,
+        score["expected_proof_cost"],
         -score["internal_adapters_eliminated"],
         -score["machine_units_eliminated"],
         score["branch_count"],
         first,
         _canonical_sha256(sorted(candidate.members)),
     )
+
+
+def _count_kind_fragment(value: object, fragment: str) -> int:
+    """Count typed event/action kinds without inventing semantic authority."""
+
+    if isinstance(value, Mapping):
+        own = int(
+            isinstance(value.get("kind"), str)
+            and fragment in str(value["kind"]).lower()
+        )
+        return own + sum(
+            _count_kind_fragment(item, fragment) for item in value.values()
+        )
+    if isinstance(value, list):
+        return sum(_count_kind_fragment(item, fragment) for item in value)
+    return 0
 
 
 def _candidate_blockers(

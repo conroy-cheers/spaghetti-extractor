@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from .atomics import spx_atomics_header
+from .capabilities import spx_reference_runtime_header
 from .cbmc_backend import CbmcBackendError, cbmc_version, run_cbmc_properties
 from .inductive_contract import (
     InductiveOperationCertificateV1,
@@ -26,10 +28,10 @@ from .inductive_world import (
     InductiveWorldError,
     render_inductive_service_world,
 )
-from .interface_ir import PortableComponentInterfaceV2
+from .interface_ir import ProofKernelComponentInterface
 from .semantic_path_errors import SemanticPathError
 from .semantic_paths import build_inductive_segment_models, build_operation_path_model
-from .semantic_contract import ComponentSemanticContractV1
+from .semantic_contract import ProofKernelSemanticContract
 from .source import component_operation_symbols, load_component_source_package
 
 
@@ -53,14 +55,14 @@ def check_inductive_source_refinement_artifacts(
 ) -> dict[str, object]:
     """Load and cross-bind the immutable artifacts used by the Nix phase."""
 
-    semantic = ComponentSemanticContractV1.parse(
+    semantic = ProofKernelSemanticContract.parse(
         _load_artifact(semantic_contract, "component semantic contract")
     )
     if semantic.status != "satisfied":
         raise InductiveRefinementError(
             "inductive refinement requires a satisfied semantic contract"
         )
-    portable = PortableComponentInterfaceV2.parse(
+    portable = ProofKernelComponentInterface.parse(
         _load_artifact(interface, "portable component interface")
     )
     plan = InductiveSourcePlanV1.parse(
@@ -112,7 +114,7 @@ def check_inductive_source_refinement(
     *,
     operation: Mapping[str, object],
     service_bindings: object,
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     source_package: Path | str,
     source_profile: Mapping[str, object],
     source_plan: InductiveSourcePlanV1,
@@ -223,6 +225,12 @@ def check_inductive_source_refinement(
         _write_cbmc_stdint(root / "stdint.h")
         (root / "portable-component.h").write_text(
             interface.render_public_header(), encoding="ascii"
+        )
+        (root / "spx-atomics.h").write_text(
+            spx_atomics_header(), encoding="ascii"
+        )
+        (root / "spx-reference-runtime.h").write_text(
+            spx_reference_runtime_header(), encoding="ascii"
         )
         (root / "portable-component-implementation.h").write_text(
             interface.render_implementation_header(symbols), encoding="ascii"
@@ -344,7 +352,7 @@ def check_inductive_source_refinement(
 
 def _render_harness(
     *,
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     source_plan: InductiveSourcePlanV1,
     relation: InductiveCutpointRelationV1,
     certificate: InductiveOperationCertificateV1,
@@ -505,7 +513,7 @@ def _render_check_function(
     name: str,
     mode: str,
     segments: Sequence[Mapping[str, object]],
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     source_plan: InductiveSourcePlanV1,
     relation: InductiveCutpointRelationV1,
     certificate: InductiveOperationCertificateV1,
@@ -655,7 +663,7 @@ def _render_check_function(
 def _segment_clause(
     segment: Mapping[str, object],
     *,
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     source_plan: InductiveSourcePlanV1,
     certificate: InductiveOperationCertificateV1,
     prefix: str,
@@ -1014,7 +1022,7 @@ def _load_provider_contracts(
     declarations: Mapping[str, object],
     *,
     semantic_payload: Mapping[str, object],
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     operation_id: str,
 ) -> dict[str, dict[str, object]]:
     operation = interface.operation_index()[operation_id]
@@ -1060,7 +1068,7 @@ def _load_provider_contracts(
             raise InductiveRefinementError(
                 f"component service contract {service_id!r} differs from exact resolution"
             )
-        provider_semantic = ComponentSemanticContractV1.parse(
+        provider_semantic = ProofKernelSemanticContract.parse(
             _load_artifact(
                 _text(
                     declaration.get("semantic_contract"),
@@ -1069,7 +1077,7 @@ def _load_provider_contracts(
                 "provider semantic contract",
             )
         )
-        provider_interface = PortableComponentInterfaceV2.parse(
+        provider_interface = ProofKernelComponentInterface.parse(
             _load_artifact(
                 _text(declaration.get("interface"), "provider interface path"),
                 "provider interface",

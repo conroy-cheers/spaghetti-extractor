@@ -81,6 +81,7 @@ class ISAConformanceLeanFixtureTests(unittest.TestCase):
             "wait": [0x9B],
             "add-stack": [0xD8, 0xC1],
             "load-constant": [0xD9, 0xE8],
+            "absolute": [0xD9, 0xE1],
             "add-int32": [0xDA, 0x00],
             "load-int32": [0xDB, 0x00],
             "add-stack-reversed": [0xDC, 0xC1],

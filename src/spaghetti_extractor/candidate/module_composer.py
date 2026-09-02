@@ -5,18 +5,24 @@ from __future__ import annotations
 import json
 import os
 import struct
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
 import pefile
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..artifacts.formats import (
-    NATIVE_INGRESS_LINK_RECEIPT_FORMAT,
+from ..artifacts.formats import PE_COMPOSITION_MANIFEST_FORMAT
+from ..semantic_objects.object_authority import MachineObjectAuthorityV2
+from ..external.formats import RESOLVED_EXTERNAL_ENVIRONMENT_FORMAT
+from ..pe32.formats import PE32_MODULE_INTERFACE_FORMAT
+from .formats import (
     NATIVE_INGRESS_PLAN_FORMAT,
-    PE32_MODULE_INTERFACE_FORMAT,
-    PE_COMPOSITION_MANIFEST_FORMAT,
+    NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT,
 )
+from .build_objects import _payload_symbol_rvas
+from .linked_skeleton_merge import merge_linked_skeleton
+from .outcomes import pinned_continuation_portal_for_protocol_v1
 from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
@@ -72,11 +78,15 @@ class _Surface:
 
 def compose_pe32_native_module(
     *,
-    base_candidate: Path,
-    base_composition_manifest: Path,
+    linked_skeleton: Path,
+    linked_relocation_inventory: Path,
+    load_image_contract: Path,
+    recovered_executable_data: Path | None,
     original_module_interface: Path,
     native_ingress_plan: Path,
-    native_ingress_link_receipt: Path,
+    native_build_manifest: Path,
+    resolved_external_environment: Path,
+    object_authority: Path,
     out: Path,
     candidate_filename: str,
 ) -> dict[str, Any]:
@@ -90,42 +100,128 @@ def compose_pe32_native_module(
         raise PE32ModuleCompositionError(
             "candidate filename must be a loader basename"
         )
-    base_path = Path(base_candidate)
-    base_manifest_path = Path(base_composition_manifest)
+    skeleton_path = Path(linked_skeleton)
+    relocation_path = Path(linked_relocation_inventory)
+    load_contract_path = Path(load_image_contract)
     interface_path = Path(original_module_interface)
     plan_path = Path(native_ingress_plan)
-    link_path = Path(native_ingress_link_receipt)
+    build_manifest_path = Path(native_build_manifest)
+    environment_path = Path(resolved_external_environment)
+    authority_path = Path(object_authority)
     interface = _closed(
         interface_path, PE32_MODULE_INTERFACE_FORMAT, "interface_sha256"
     )
     plan = _closed(plan_path, NATIVE_INGRESS_PLAN_FORMAT, "plan_sha256")
-    link = _closed(
-        link_path, NATIVE_INGRESS_LINK_RECEIPT_FORMAT, "receipt_sha256"
-    )
-    base_manifest = _object(base_manifest_path, "base composition manifest")
+    environment = _object(environment_path, "resolved external environment")
+    authority_payload = _object(authority_path, "machine object authority")
+    authority = MachineObjectAuthorityV2.parse(authority_payload)
     if interface.get("status") != "complete" or plan.get("status") != "complete":
         raise PE32ModuleCompositionError("module interface or ingress plan is incomplete")
-    if base_manifest.get("status") not in {"composed", "candidate-generated"}:
-        raise PE32ModuleCompositionError("base composition is not complete")
     if plan.get("module", {}).get("module_interface_sha256") != sha256_file(
         interface_path
     ):
         raise PE32ModuleCompositionError("ingress plan binds another interface")
-    if link.get("native_ingress_plan_sha256") != sha256_file(plan_path):
-        raise PE32ModuleCompositionError("ingress link receipt is stale")
-    if link.get("linked_module_sha256") != sha256_file(base_path):
-        raise PE32ModuleCompositionError("link receipt binds another base candidate")
-
-    image = bytearray(base_path.read_bytes())
+    if (
+        environment.get("format") != RESOLVED_EXTERNAL_ENVIRONMENT_FORMAT
+        or environment.get("status") != "complete"
+        or environment.get("blockers") != []
+    ):
+        raise PE32ModuleCompositionError("resolved external environment is incomplete")
+    if authority.bindings.get("module_interface_sha256") != sha256_file(
+        interface_path
+    ):
+        raise PE32ModuleCompositionError("object authority binds another interface")
+    relocation_payload = _object(
+        relocation_path, "linked relocation inventory"
+    )
+    build_manifest = _object(
+        build_manifest_path, "native realization build manifest"
+    )
+    manifest_hashes = build_manifest.get("hashes")
+    manifest_core = {
+        key: value for key, value in build_manifest.items() if key != "hashes"
+    }
+    if (
+        build_manifest.get("format") != NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT
+        or build_manifest.get("status") != "linked"
+        or build_manifest.get("acceptance_authority") != "none"
+        or not isinstance(manifest_hashes, Mapping)
+        or manifest_hashes.get("manifest_core_sha256")
+        != canonical_sha256_v3(manifest_core)
+    ):
+        raise PE32ModuleCompositionError(
+            "native realization build manifest is stale or incomplete"
+        )
+    manifest_inputs = build_manifest.get("inputs")
+    linked_binding = (
+        manifest_inputs.get("linked_semantic_module", {})
+        if isinstance(manifest_inputs, Mapping)
+        else {}
+    )
+    ingress_binding = (
+        manifest_inputs.get("native_ingress_plan", {})
+        if isinstance(manifest_inputs, Mapping)
+        else {}
+    )
+    load_binding = (
+        manifest_inputs.get("load_image_contract", {})
+        if isinstance(manifest_inputs, Mapping)
+        else {}
+    )
+    if (
+        ingress_binding.get("artifact_sha256") != sha256_file(plan_path)
+        or load_binding.get("artifact_sha256") != sha256_file(load_contract_path)
+        or linked_binding.get("resolved_external_environment_sha256")
+        != sha256_file(environment_path)
+        or linked_binding.get("machine_object_authority_sha256")
+        != sha256_file(authority_path)
+    ):
+        raise PE32ModuleCompositionError(
+            "native realization build bindings are stale"
+        )
+    outputs = build_manifest.get("outputs")
+    payload_binding = outputs.get("payload", {}) if isinstance(outputs, Mapping) else {}
+    map_binding = outputs.get("linker_map", {}) if isinstance(outputs, Mapping) else {}
+    relocation_binding = (
+        outputs.get("payload_relocation_inventory", {})
+        if isinstance(outputs, Mapping)
+        else {}
+    )
+    linker_map_path = build_manifest_path.parent / "payload.map"
+    if (
+        payload_binding.get("sha256") != sha256_file(skeleton_path)
+        or map_binding.get("sha256") != sha256_file(linker_map_path)
+        or relocation_binding.get("complete") is not True
+        or relocation_binding.get("sha256") != sha256_file(relocation_path)
+        or relocation_payload.get("complete") is not True
+    ):
+        raise PE32ModuleCompositionError(
+            "native realization outputs are stale or incomplete"
+        )
+    linked = _payload_symbol_rvas(
+        linker_map_path,
+        image_base=int(build_manifest["policy"]["image_base"]),
+    )
+    if sha256_file(skeleton_path) == interface.get("identity", {}).get("pe_sha256"):
+        # A checked fixture or internal linker may provide an already merged
+        # skeleton.  Its hash must be the exact original image identity.
+        image = bytearray(skeleton_path.read_bytes())
+    else:
+        with tempfile.TemporaryDirectory(prefix="spx-linked-skeleton-") as temporary:
+            temporary_root = Path(temporary)
+            merge_linked_skeleton(
+                load_image_contract=load_contract_path,
+                payload_pe=skeleton_path,
+                entry_rva=_module_entry_rva(plan, linked),
+                payload_relocation_inventory=relocation_path,
+                recovered_executable_data=recovered_executable_data,
+                out_dir=temporary_root,
+                candidate_filename=candidate_filename,
+            )
+            image = bytearray((temporary_root / candidate_filename).read_bytes())
     pe = pefile.PE(data=bytes(image), fast_load=False)
     try:
         _require_pe32(pe)
-        base_bound = base_manifest.get("candidate")
-        if (
-            not isinstance(base_bound, Mapping)
-            or base_bound.get("sha256") != sha256_bytes(bytes(image))
-        ):
-            raise PE32ModuleCompositionError("base composition candidate is stale")
         if _ensure_section_header_capacity(image, pe):
             pe.close()
             pe = pefile.PE(data=bytes(image), fast_load=False)
@@ -134,10 +230,6 @@ def compose_pe32_native_module(
         file_alignment = int(pe.OPTIONAL_HEADER.FileAlignment)
         section_rva = _align_up(int(pe.OPTIONAL_HEADER.SizeOfImage), section_alignment)
         surface = _Surface(section_rva, int(pe.OPTIONAL_HEADER.ImageBase))
-        linked = {
-            row["symbol"]: int(row["rva"])
-            for row in link["symbols"]
-        }
         directories: dict[int, tuple[int, int]] = {}
         export_geometry = _compose_exports(surface, interface, plan, linked)
         if export_geometry is not None:
@@ -218,11 +310,19 @@ def compose_pe32_native_module(
         "status": "composed",
         "acceptance_authority": "none",
         "inputs": {
-            "base_candidate_sha256": sha256_file(base_path),
-            "base_composition_manifest_sha256": sha256_file(base_manifest_path),
+            "linked_skeleton_sha256": sha256_file(skeleton_path),
+            "linked_relocation_inventory_sha256": sha256_file(relocation_path),
+            "load_image_contract_sha256": sha256_file(load_contract_path),
+            "recovered_executable_data_sha256": (
+                None
+                if recovered_executable_data is None
+                else sha256_file(Path(recovered_executable_data))
+            ),
             "original_module_interface_sha256": sha256_file(interface_path),
             "native_ingress_plan_sha256": sha256_file(plan_path),
-            "native_ingress_link_receipt_sha256": sha256_file(link_path),
+            "native_build_manifest_sha256": sha256_file(build_manifest_path),
+            "resolved_external_environment_sha256": sha256_file(environment_path),
+            "object_authority_sha256": sha256_file(authority_path),
         },
         "candidate": {
             "path": candidate_filename,
@@ -249,6 +349,7 @@ def compose_pe32_native_module(
             "imports": "original_slots_plus_tagged_runtime_support",
             "bound_import_metadata": "cleared",
             "relocations": "canonical_pe32_highlow_regenerated",
+            "linked_relocations": "explicit_native_module_inventory",
         },
     }
     manifest = {
@@ -678,6 +779,8 @@ def _realize_support_symbols(
             )
         if target_kind == "tls_index_cell_va":
             target_rva = tls_index_rva
+        elif target_kind == "module_base_va":
+            target_rva = 0
         elif isinstance(target_kind, str) and target_kind.startswith(
             "runtime_support_iat_va:"
         ):
@@ -772,6 +875,13 @@ def _compose_load_config(
         for portal in protocol.get("portals", [])
         if portal.get("candidate_symbol") in linked
     }
+    portals.update({
+        int(protocol["resumption_rva"]): linked[symbol]
+        for protocol in plan.get("seh_protocols", [])
+        if isinstance(protocol, Mapping)
+        and (symbol := pinned_continuation_portal_for_protocol_v1(protocol))
+        is not None and symbol in linked
+    })
     for pointer in requirements.get("pointer_fields", []):
         value = int(pointer["value_va"])
         if value == 0:

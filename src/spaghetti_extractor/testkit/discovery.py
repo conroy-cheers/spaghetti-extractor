@@ -612,9 +612,20 @@ def _resource_dependency_closure(
             elif isinstance(value, Mapping):
                 stack.extend(value.values())
         for value in strings:
+            # JSON artifacts contain arbitrary semantic strings as well as
+            # path references.  A semantic expression can exceed the host
+            # filename limit; it is not a missing resource and must not make
+            # metadata discovery depend on filesystem-specific ENAMETOOLONG
+            # behavior.
+            if "\x00" in value or "\n" in value or "\r" in value:
+                continue
             candidates = (path.parent / value, repository / value)
             for candidate in candidates:
-                if not candidate.exists():
+                try:
+                    exists = candidate.exists()
+                except OSError:
+                    continue
+                if not exists:
                     continue
                 try:
                     dependency = candidate.resolve().relative_to(repository.resolve()).as_posix()

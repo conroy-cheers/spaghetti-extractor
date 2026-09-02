@@ -44,28 +44,278 @@ let
   original = unverifiedOriginal;
   originalPe = "${original}/bin/jq.exe";
   profileSource = sdk.profiles;
-  workflow = sdk.workflow.pe32 {
-    targetId = target.id;
-    original = originalPe;
-    binaryIdentity = "jq.exe";
-    externalProfile =
-      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
-    machineImportProfiles = [
-      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
+  libjqPublicAbiProfile = sdk.analysis.headerMachineAbiProfile {
+    id = "jq-libjq-public-abi-v1";
+    providerDll = "libjq-1.dll";
+    headers = [
+      { include = "jq.h"; path = "${original}/include/jq.h"; }
+      { include = "jv.h"; path = "${original}/include/jv.h"; }
     ];
-    launchProfileTemplate =
-      "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
-    componentIntent = ./intent/components.json;
-    componentReviewRoot = ./intent/reviews;
-    libraryAdoptionIntentRoot = ./intent/libraries;
-    namePrefix = "spaghetti-extractor-jq-1.8.1";
+    functionPrefixes = [ "jq_" "jv_" ];
   };
-  components = workflow.components;
+  libjqPublicAbiProfilePath =
+    "${libjqPublicAbiProfile}/machine-import-profile.json";
   boundaries = sdk.lifting.boundarySchema {
     name = "spaghetti-extractor-jq-1.8.1";
     spec = ./intent/boundaries.json;
     sources = [ ./source/output-value-boundary.c ];
   };
+  environment = sdk.environment.pe32 {
+    id = "jq-win32";
+    profilePacks = [
+      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
+      "${profileSource}/pe32-oniguruma-runtime-v1.json"
+      libjqPublicAbiProfilePath
+    ];
+    interfacePacks = [ ];
+    launchProfile =
+      "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
+    boundaryIntents."service:output-value-boundary" =
+      ./intent/boundaries.json;
+    support.processTermination = null;
+  };
+  rootWorkflowArgs = {
+    targetId = target.id;
+    original = originalPe;
+    externalEnvironment = environment;
+    lifting = {
+      boundaries = [ {
+        subject = "service:output-value-boundary";
+        package = boundaries;
+      } ];
+      components = {
+        intent = ./intent/components.json;
+        operatorRoot = ./intent;
+        sourceRoot = ./source;
+      };
+      libraries = {
+        packs = [ ];
+        adoptionRoot = ./intent/libraries;
+      };
+    };
+    backend = {
+      kind = "behavioral-c";
+      sourcePresentation = null;
+    };
+    analysisLimits = {
+      maxUnits = 512;
+      maxCandidatesPerSeed = 12;
+    };
+  };
+  libjqEnvironment = sdk.environment.pe32 {
+    id = "jq-libjq-win32";
+    profilePacks = [
+      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
+      "${profileSource}/pe32-oniguruma-runtime-v1.json"
+      libjqPublicAbiProfilePath
+    ];
+    interfacePacks = [ ];
+    launchProfile =
+      "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
+    boundaryIntents = { };
+    support.processTermination = null;
+  };
+  project = sdk.workflow.pe32Project {
+    projectId = "jq";
+    rootImageId = "jq";
+    targetDistributionRoots = [ "bin" ];
+    hostEnvironment = {
+      id = "jq-win32-host-v1";
+      sha256 = builtins.hashString "sha256" "jq-win32-host-v1";
+    };
+    images = {
+      jq = {
+        filename = "jq.exe";
+        aliases = [ ];
+        ownership = "target";
+        implementation = "behavioral_c";
+        configuration_id = target.workflow.default_configuration;
+        workflowArgs = rootWorkflowArgs;
+      };
+      libjq = {
+        filename = "libjq-1.dll";
+        aliases = [ ];
+        ownership = "target";
+        implementation = "behavioral_c";
+        configuration_id = "faithful";
+        workflowArgs = {
+          targetId = "jq-libjq";
+          original = "${original}/bin/libjq-1.dll";
+          externalEnvironment = libjqEnvironment;
+          lifting = {
+            boundaries = [ ];
+            components = null;
+            libraries = {
+              packs = [ ];
+              adoptionRoot = null;
+            };
+          };
+          backend = {
+            kind = "behavioral-c";
+            sourcePresentation = null;
+          };
+          analysisLimits = {
+            maxUnits = 512;
+            maxCandidatesPerSeed = 12;
+          };
+        };
+      };
+      kernel32 = {
+        filename = "kernel32.dll";
+        aliases = [ "kernelbase.dll" ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+      msvcrt = {
+        filename = "msvcrt.dll";
+        aliases = [ ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+      oniguruma = {
+        filename = "libonig-5.dll";
+        aliases = [ ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+      winpthread = {
+        filename = "libwinpthread-1.dll";
+        aliases = [ ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+      libgcc = {
+        filename = "libgcc_s_sjlj-1.dll";
+        aliases = [ ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+      shlwapi = {
+        filename = "shlwapi.dll";
+        aliases = [ ];
+        ownership = "runtime";
+        implementation = "native_host";
+      };
+    };
+  };
+  workflow = project.root;
+  components = workflow.components;
+  componentMigrationStatus = pkgs.writeTextFile {
+    name = "jq-component-v6-migration-status";
+    destination = "/component-v6-migration-status.json";
+    text = builtins.readFile ./intent/interfaces-v5/index.json;
+  };
+  v6ComponentChecks = builtins.listToAttrs (pkgs.lib.concatMap
+    (componentId: [
+      {
+        name = "${componentId}-interface-v5";
+        value = components.v5Interfaces.${componentId}.derivation;
+      }
+      {
+        name = "${componentId}-semantic-slice-v2";
+        value = components.v6SemanticSlices.${componentId}.derivation;
+      }
+      {
+        name = "${componentId}-work-package-v6";
+        value = components.v6WorkPackages.${componentId}.derivation;
+      }
+    ]) (builtins.attrNames components.v6SemanticSlices));
+  authoredComponentChecks = {
+    output-value-pipeline-v6-work-package =
+      components.v6WorkPackages.output-value-pipeline.derivation;
+    math-error-callback-dispatch-v6-work-package =
+      components.v6WorkPackages.math-error-callback-dispatch.derivation;
+  };
+  authoredComponentBlockerGate = pkgs.runCommand
+    "jq-authored-component-v6-honest-blockers"
+    { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; }
+    ''
+      check_blockers() {
+        package="$1/component-work-package-v6.json"
+        component="$2"
+        jq -e --arg component "$component" '
+          .format == "spaghetti-extractor-component-work-package-v6" and
+          .authority == false and
+          .status == "ready" and
+          ([.blockers[].code] | sort) == [
+            "machine_effect_service_callback_outcome_projection_unreviewed",
+            "portable_interface_semantics_unreviewed"
+          ] and
+          ([.blockers[] | .component_id] | unique) == [$component] and
+          ([.blockers[] | .source] | unique) == ["component_binding_intent"]
+        ' "$package" >/dev/null
+      }
+      check_blockers \
+        ${components.v6WorkPackages.output-value-pipeline.derivation} \
+        output-value-pipeline
+      check_blockers \
+        ${components.v6WorkPackages.math-error-callback-dispatch.derivation} \
+        math-error-callback-dispatch
+      touch "$out"
+    '';
+  semanticMigrationGate = pkgs.runCommand
+    "jq-semantic-module-v2-migration-checkpoint"
+    { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; }
+    ''
+      jq -e '
+        .status == "incomplete" and
+        .authority == "none" and
+        ([.blockers[].category] | unique) == [
+          "reachable_import_contract_unresolved"
+        ] and
+        ([.blockers[].identity.symbol] | sort) == [
+          "jq_realpath",
+          "jq_testsuite",
+          "jv_tsd_dtoa_ctx_init"
+        ]
+      ' ${workflow.resolvedEnvironment.derivation}/resolved-external-environment.json >/dev/null
+
+      jq -e '
+        .status == "incomplete" and
+        .counts.roots == 14 and
+        .counts.direct_control_edges == 5709 and
+        .counts.active_relocations == 7026 and
+        .counts.residual_obligations == 89 and
+        .counts.semantic_holes == 21 and
+        ([.semantic_holes | group_by(.code)[] | {
+          code: .[0].code,
+          count: length
+        }]) == [
+          {"code":"checked_import_code_contract_unresolved","count":9},
+          {"code":"linked_import_code_protocol_missing","count":3},
+          {"code":"may_reachable_symbol_has_no_provider","count":6},
+          {"code":"resolved_external_environment_incomplete","count":3}
+        ]
+      ' ${workflow.linkedSemanticModule.linkedSemanticModule} >/dev/null
+
+      jq -e '
+        .status == "incomplete" and
+        .counts.roots == 197 and
+        .counts.direct_control_edges == 46084 and
+        .counts.active_relocations == 51809 and
+        .counts.residual_obligations == 412 and
+        .counts.semantic_holes == 603
+      ' ${project.linkedSemanticModules.libjq} >/dev/null
+
+      jq -e '
+        .status == "incomplete" and
+        .counts.target_images == 2 and
+        .counts.target_edges == 47 and
+        .counts.host_edges == 204 and
+        .counts.blockers == 5 and
+        ([.blockers[] | select(
+          .category == "target_resolved_environment_incomplete"
+        ) | .image_id] | sort) == ["jq", "libjq"] and
+        ([.blockers[] | select(
+          .category == "cross_image_edge_authority_missing"
+        ) | .slot_id] | sort) == [
+          "jq:iat:00012270",
+          "jq:iat:00012290",
+          "jq:iat:0001230c"
+        ]
+      ' ${project.loadPlan}/project-load-plan.json >/dev/null
+      touch "$out"
+    '';
   candidateTests = {
     "jq-1.8.1-idiomatic-candidate-functional" = workflow.candidateTestFor {
       id = "jq-1.8.1-idiomatic-candidate-functional";
@@ -77,14 +327,16 @@ let
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
-  inherit workflow candidateTests;
+  inherit workflow project candidateTests;
   inputs.original = original;
   targetAssets.documentation = [ "intent/libraries/README.md" ];
   targetAssets.boundary_schema = [ "intent/boundaries.json" ];
   targetAssets.boundary_source = [ "source/output-value-boundary.c" ];
   extraArtifacts.boundaries = boundaries;
-  checks = {
-    component-contract = components.contracts.operator-whole;
+  checks = v6ComponentChecks // authoredComponentChecks // {
+    component-v6-migration-status = componentMigrationStatus;
+    authored-component-v6-honest-blockers = authoredComponentBlockerGate;
+    semantic-module-v2-migration-checkpoint = semanticMigrationGate;
     canonical-boundaries = boundaries;
   };
 }

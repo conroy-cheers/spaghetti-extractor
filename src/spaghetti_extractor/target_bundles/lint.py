@@ -18,11 +18,18 @@ TARGET_ASSET_ROLES = frozenset(
         "metadata",
         "module",
         "component_intent",
+        "component_lifting_intent",
+        "component_interface_index",
+        "component_interface_intent",
+        "component_binding_index",
+        "component_binding_intent",
         "component_review",
         "component_source",
         "component_machine_binding",
         "component_induction",
+        "component_induction_intent",
         "component_relation",
+        "component_relation_intent",
         "call_intent",
         "call_layout",
         "library_adoption_intent",
@@ -32,10 +39,18 @@ TARGET_ASSET_ROLES = frozenset(
         "license",
         "boundary_schema",
         "boundary_source",
+        "library_provider",
     }
 )
 _MANUAL_ROLES = frozenset(
-    {"runtime", "documentation", "license", "boundary_schema", "boundary_source"}
+    {
+        "runtime",
+        "documentation",
+        "license",
+        "boundary_schema",
+        "boundary_source",
+        "library_provider",
+    }
 )
 _FORBIDDEN_PARTS = frozenset(
     {".cache", ".direnv", "build", "generated", "result", "results"}

@@ -54,7 +54,7 @@ _EXCLUDED_MIDI_CALLBACK_APIS = {
 
 def _profile_payload(entry: dict[str, object]) -> dict[str, object]:
     return {
-        "format": "spaghetti-extractor-static-machine-import-profile-v1",
+        "format": "spaghetti-extractor-static-machine-import-profile-v2",
         "id": "fixture-native-callthrough-v1",
         "machine_import_signatures": [entry],
     }
@@ -80,7 +80,6 @@ def _callthrough_entry() -> dict[str, object]:
         "memory_effect": "nativeCallthrough",
         "memory_footprints": [],
         "world_effect": "nativeCallthrough",
-        "callback_effect": "none",
     }
 
 
@@ -145,7 +144,7 @@ class NativeCallthroughProfileTests(unittest.TestCase):
                 self.assertEqual(row["memory_effect"], "nativeCallthrough")
                 self.assertIsInstance(row["memory_footprints"], list)
                 self.assertEqual(row["world_effect"], "nativeCallthrough")
-                self.assertEqual(row["callback_effect"], "none")
+                self.assertNotIn("callback_effect", row)
 
     def test_profile_omits_midi_callback_apis(self) -> None:
         selected_symbols = {
@@ -257,14 +256,15 @@ class NativeCallthroughProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(MachineImportProfileError, "exact import identity"):
             _load_fixture(entry)
 
-    def test_loader_requires_full_metadata_for_callback_bearing_api(self) -> None:
+    def test_v2_loader_rejects_retired_callback_fields(self) -> None:
         entry = _callthrough_entry()
         entry["callback_effect"] = "explicit"
         with self.assertRaisesRegex(
-            MachineImportProfileError, "requires source, ABI, and lifetime"
+            MachineImportProfileError, "derive callback_effect from callback_protocol"
         ):
             _load_fixture(entry)
 
+        entry = _callthrough_entry()
         entry.update({
             "callback_source": {"kind": "argument_word", "argument": 0},
             "callback_abi": {
@@ -275,7 +275,8 @@ class NativeCallthroughProfileTests(unittest.TestCase):
             },
             "callback_lifetime": "during_native_call",
         })
-        _load_fixture(entry)
+        with self.assertRaisesRegex(MachineImportProfileError, "retired callback fields"):
+            _load_fixture(entry)
 
 
 if __name__ == "__main__":

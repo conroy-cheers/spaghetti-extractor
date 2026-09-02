@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
+TESTKIT = {"resources": ("targets/flake.nix",)}
 
 
 class NixTestGateArchitectureTests(unittest.TestCase):
@@ -31,6 +32,13 @@ class NixTestGateArchitectureTests(unittest.TestCase):
         self.assertIn("spaghetti-extractor-dev --repository ${testSource} refresh --check", module)
         self.assertIn("repository-metadata = repositoryMetadataFreshness", module)
         self.assertNotIn("testManifestFreshness", module)
+
+    def test_target_acceptance_consumer_contains_native_package_inputs(self) -> None:
+        module = (ROOT / "targets/flake.nix").read_text(encoding="utf-8")
+
+        self.assertIn("consumerSource = pkgs.lib.fileset.toSource", module)
+        self.assertIn("../native", module)
+        self.assertIn("../src", module)
 
 
 if __name__ == "__main__":

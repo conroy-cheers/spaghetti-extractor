@@ -13,16 +13,9 @@ from ..artifacts.formats import FALLBACK_CAPABILITY_ANALYSIS_FORMAT
 
 _DIGEST_LENGTH = 64
 _LOWERING_FIELDS = frozenset({
-    "program_source_sha256",
-    "interpreter_source_sha256",
-    "runtime_header_sha256",
-    "interpreter_header_sha256",
-    "interpreter_internal_header_sha256",
-    "capability_backend_header_sha256",
-    "capability_backend_source_sha256",
-    "atomics_header_sha256",
-    "atomics_backend_header_sha256",
-    "atomics_source_sha256",
+    "transfer_rows_sha256",
+    "transfer_model_sha256",
+    "evaluator_model_sha256",
 })
 
 
@@ -83,16 +76,9 @@ def _optional_u32(value: Any, label: str) -> int | None:
 
 @dataclass(frozen=True)
 class FallbackLoweringHashes:
-    program_source_sha256: str
-    interpreter_source_sha256: str
-    runtime_header_sha256: str
-    interpreter_header_sha256: str
-    interpreter_internal_header_sha256: str
-    capability_backend_header_sha256: str
-    capability_backend_source_sha256: str
-    atomics_header_sha256: str
-    atomics_backend_header_sha256: str
-    atomics_source_sha256: str
+    transfer_rows_sha256: str
+    transfer_model_sha256: str
+    evaluator_model_sha256: str
 
     @classmethod
     def from_payload(cls, value: Any) -> "FallbackLoweringHashes":
@@ -105,22 +91,9 @@ class FallbackLoweringHashes:
 
     def to_payload(self) -> dict[str, str]:
         return {
-            "program_source_sha256": self.program_source_sha256,
-            "interpreter_source_sha256": self.interpreter_source_sha256,
-            "runtime_header_sha256": self.runtime_header_sha256,
-            "interpreter_header_sha256": self.interpreter_header_sha256,
-            "interpreter_internal_header_sha256": (
-                self.interpreter_internal_header_sha256
-            ),
-            "capability_backend_header_sha256": (
-                self.capability_backend_header_sha256
-            ),
-            "capability_backend_source_sha256": (
-                self.capability_backend_source_sha256
-            ),
-            "atomics_header_sha256": self.atomics_header_sha256,
-            "atomics_backend_header_sha256": self.atomics_backend_header_sha256,
-            "atomics_source_sha256": self.atomics_source_sha256,
+            "transfer_rows_sha256": self.transfer_rows_sha256,
+            "transfer_model_sha256": self.transfer_model_sha256,
+            "evaluator_model_sha256": self.evaluator_model_sha256,
         }
 
 

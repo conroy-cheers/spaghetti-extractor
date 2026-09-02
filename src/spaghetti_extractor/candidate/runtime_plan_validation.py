@@ -1,32 +1,29 @@
-"""Native engine plan and external contract validation."""
+"""Canonical module-runtime plan and external-contract validation."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass
+from typing import Iterator
 from typing import Any, Mapping
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..artifacts.formats import NATIVE_ENGINE_PLAN_FORMAT
-from ..external.contracts import (
-    CheckedExternalSiteContractError,
-    ExternalSiteIdentity,
-    parse_checked_external_site_contract,
-)
-from ..external.machine_import_profiles import (
-    MachineImportIdentity,
-    MachineImportProfileError,
-    load_machine_import_profile_set,
-)
+from .formats import MODULE_RUNTIME_PLAN_FORMAT
+from .module_runtime_plan import _canonical_sha256
 from .runtime_model import (
-    NativeExternalRangeRule,
+    NativeGuestDispatchDomain,
+    NativeGuestDispatchSite,
     NativeImplementationDispatch,
     CandidateRuntimeError,
-    _InterpreterTransferBinding,
+    _TransferBinding,
 )
 from .runtime_receipts import (
     _validate_implementation_dispatch_receipt,
 )
 from ..calls.frame import PhysicalCallFrameV2
+from ..external.service_protocols import (
+    CheckedExternalServiceProtocolError,
+    parse_checked_external_service_protocol_v1,
+)
 from .runtime_values import (
     _required_count,
     _required_list,
@@ -37,34 +34,521 @@ from .runtime_values import (
 )
 
 
+_EXTERNAL_TARGET_CONTRACT_FIELDS = {
+    "target_contract_id",
+    "abi_metadata_sha256",
+    "callback_registration",
+    "checked_external_contract",
+    "checked_external_contract_sha256",
+    "target_resolution_evidence",
+    "loader_service",
+    "iat_rva",
+    "import",
+}
+_NORMALIZED_EXTERNAL_SITE_FIELDS = {
+    "id",
+    "transfer_id",
+    "event_index",
+    "instruction_rva",
+    "return_rva",
+    "source_encoding_sha256",
+    "target_expression",
+    "disposition",
+    "transfer_sha256",
+    "continuation_evidence",
+    "site_kind",
+    "checked_domain_sha256",
+    "site_identity_sha256",
+}
+
+
+@dataclass(frozen=True)
+class ValidatedExternalInventoryV8:
+    """Validated in-memory view of the canonical V8 catalog and domains."""
+
+    target_contracts: Mapping[str, Mapping[str, Any]]
+    contract_domains: Mapping[str, tuple[str, ...]]
+    sites: tuple[Mapping[str, Any], ...]
+
+    @property
+    def target_pair_count(self) -> int:
+        return sum(
+            len(self.contract_domains[str(site["checked_domain_sha256"])])
+            for site in self.sites
+        )
+
+    def iter_site_targets(
+        self,
+        *,
+        only_target_ids: frozenset[str] | None = None,
+    ) -> Iterator[tuple[int, Mapping[str, Any], str, Mapping[str, Any]]]:
+        selected_domains = (
+            self.contract_domains
+            if only_target_ids is None
+            else {
+                identity: tuple(
+                    member for member in members
+                    if member in only_target_ids
+                )
+                for identity, members in self.contract_domains.items()
+            }
+        )
+        for site_index, site in enumerate(self.sites):
+            for member in selected_domains[
+                str(site["checked_domain_sha256"])
+            ]:
+                yield site_index, site, member, self.target_contracts[member]
+
+    def expanded_sites(self) -> Iterator[dict[str, Any]]:
+        for _site_index, site, _member, target in self.iter_site_targets():
+            common = {
+                key: value for key, value in site.items()
+                if key not in {
+                    "id", "checked_domain_sha256", "site_identity_sha256"
+                }
+            }
+            resolution = target["target_resolution_evidence"]
+            target_identity = resolution["identity"]
+            event_identity = canonical_sha256_v3({
+                "transfer": common["transfer_id"],
+                "call": common["event_index"],
+                "instruction_rva": common["instruction_rva"],
+                "identity": target_identity,
+            })
+            yield {
+                "id": 0,
+                **common,
+                "event_identity_sha256": event_identity,
+                **target,
+            }
+
+
+def validated_external_inventory_v8(
+    payload: Mapping[str, Any],
+) -> ValidatedExternalInventoryV8:
+    """Validate the compact V8 inventory without expanding site x target."""
+
+    callback_target_domains: dict[str, tuple[int, ...]] = {}
+    previous_callback_domain: str | None = None
+    for index, raw in enumerate(_required_list(
+        payload.get("callback_target_domains"),
+        "module-runtime callback target domains",
+    )):
+        row = _required_object(raw, f"callback target domain {index}")
+        if set(row) != {"domain_sha256", "target_rvas"}:
+            raise CandidateRuntimeError(
+                "module-runtime callback target-domain fields differ"
+            )
+        identity = _required_sha256(
+            row.get("domain_sha256"),
+            f"callback target domain {index} identity",
+        )
+        targets = tuple(
+            _required_u32(value, f"callback target domain {index} target")
+            for value in _required_list(
+                row.get("target_rvas"),
+                f"callback target domain {index} targets",
+            )
+        )
+        if (
+            list(targets) != sorted(set(targets))
+            or identity != _canonical_sha256({"target_rvas": list(targets)})
+            or identity in callback_target_domains
+            or previous_callback_domain is not None
+            and identity <= previous_callback_domain
+        ):
+            raise CandidateRuntimeError(
+                "module-runtime callback target domain is stale, duplicated, "
+                "or noncanonical"
+            )
+        callback_target_domains[identity] = targets
+        previous_callback_domain = identity
+
+    catalog: dict[str, dict[str, Any]] = {}
+    previous_target: str | None = None
+    for index, raw in enumerate(_required_list(
+        payload.get("external_target_contracts"),
+        "module-runtime external target-contract catalog",
+    )):
+        row = _required_object(raw, f"external target contract {index}")
+        if set(row) != _EXTERNAL_TARGET_CONTRACT_FIELDS:
+            raise CandidateRuntimeError(
+                "module-runtime external target-contract fields differ"
+            )
+        identity = _required_sha256(
+            row.get("target_contract_id"),
+            f"external target contract {index} identity",
+        )
+        serialized_body = {
+            key: value for key, value in row.items()
+            if key != "target_contract_id"
+        }
+        if (
+            identity != _canonical_sha256(serialized_body)
+            or identity in catalog
+            or previous_target is not None and identity <= previous_target
+        ):
+            raise CandidateRuntimeError(
+                "module-runtime external target-contract catalog is stale, "
+                "duplicated, or noncanonical"
+            )
+        body = dict(serialized_body)
+        expected_contract_sha256 = body.pop(
+            "checked_external_contract_sha256"
+        )
+        raw_contract = body.get("checked_external_contract")
+        if raw_contract is None:
+            if expected_contract_sha256 is not None:
+                raise CandidateRuntimeError(
+                    "module-runtime absent external contract has a digest"
+                )
+        else:
+            contract = dict(_required_object(
+                raw_contract,
+                f"external target contract {index} checked contract",
+            ))
+            body["checked_external_contract"] = contract
+            expected_contract_sha256 = _required_sha256(
+                expected_contract_sha256,
+                f"external target contract {index} checked contract",
+            )
+            raw_adapter = contract.get("callback_adapter")
+            if raw_adapter is not None:
+                adapter = dict(_required_object(
+                    raw_adapter,
+                    f"external target contract {index} callback adapter",
+                ))
+                contract["callback_adapter"] = adapter
+                if "target_rvas" in adapter or "target_domain_sha256" not in adapter:
+                    raise CandidateRuntimeError(
+                        "module-runtime callback contract is not normalized"
+                    )
+                callback_domain_sha256 = _required_sha256(
+                    adapter.pop("target_domain_sha256"),
+                    f"external target contract {index} callback domain",
+                )
+                targets = callback_target_domains.get(
+                    callback_domain_sha256
+                )
+                if targets is None:
+                    raise CandidateRuntimeError(
+                        "module-runtime callback contract names an unknown target domain"
+                    )
+                adapter["target_rvas"] = list(targets)
+            if _canonical_sha256(contract) != expected_contract_sha256:
+                raise CandidateRuntimeError(
+                    "module-runtime checked external contract digest is stale"
+                )
+        resolution = body.get("target_resolution_evidence")
+        if not isinstance(resolution, Mapping):
+            raise CandidateRuntimeError(
+                "module-runtime external target contract has no resolution evidence"
+            )
+        target_identity = resolution.get("identity")
+        if not isinstance(target_identity, list) or len(target_identity) != 3:
+            raise CandidateRuntimeError(
+                "module-runtime external target contract identity is malformed"
+            )
+        catalog[identity] = body
+        previous_target = identity
+
+    domains: dict[str, tuple[str, ...]] = {}
+    previous_domain: str | None = None
+    for index, raw in enumerate(_required_list(
+        payload.get("external_contract_domains"),
+        "module-runtime external contract domains",
+    )):
+        row = _required_object(raw, f"external contract domain {index}")
+        if set(row) != {"domain_sha256", "target_contract_ids"}:
+            raise CandidateRuntimeError(
+                "module-runtime external contract-domain fields differ"
+            )
+        identity = _required_sha256(
+            row.get("domain_sha256"),
+            f"external contract domain {index} identity",
+        )
+        members = tuple(
+            _required_sha256(member, f"external contract domain {index} member")
+            for member in _required_list(
+                row.get("target_contract_ids"),
+                f"external contract domain {index} members",
+            )
+        )
+        if (
+            not members
+            or members != tuple(sorted(set(members)))
+            or any(member not in catalog for member in members)
+            or identity != _canonical_sha256({"target_contract_ids": list(members)})
+            or identity in domains
+            or previous_domain is not None and identity <= previous_domain
+        ):
+            raise CandidateRuntimeError(
+                "module-runtime external contract domain is stale, empty, "
+                "duplicated, or noncanonical"
+            )
+        domains[identity] = members
+        previous_domain = identity
+
+    validated_sites: list[dict[str, Any]] = []
+    sites = _required_list(payload.get("external_sites"),
+                           "module-runtime external sites")
+    for index, raw in enumerate(sites):
+        site = _required_object(raw, f"module-runtime external site {index}")
+        if set(site) != _NORMALIZED_EXTERNAL_SITE_FIELDS or site.get("id") != index:
+            raise CandidateRuntimeError(
+                "module-runtime normalized external site fields or identity differ"
+            )
+        domain_sha256 = _required_sha256(
+            site.get("checked_domain_sha256"),
+            f"module-runtime external site {index} checked domain",
+        )
+        members = domains.get(domain_sha256)
+        if members is None:
+            raise CandidateRuntimeError(
+                "module-runtime external site names an unknown checked domain"
+            )
+        identity_body = {
+            "transfer_id": site.get("transfer_id"),
+            "event_index": site.get("event_index"),
+            "instruction_rva": site.get("instruction_rva"),
+            "site_kind": site.get("site_kind"),
+            "checked_domain_sha256": domain_sha256,
+        }
+        if site.get("site_identity_sha256") != _canonical_sha256(identity_body):
+            raise CandidateRuntimeError(
+                "module-runtime normalized external site identity is stale"
+            )
+        validated_sites.append(dict(site))
+    return ValidatedExternalInventoryV8(
+        target_contracts=catalog,
+        contract_domains=domains,
+        sites=tuple(validated_sites),
+    )
+
+
+def expanded_external_sites_v8(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Compatibility projection of the validated compact V8 inventory."""
+
+    expanded = list(validated_external_inventory_v8(payload).expanded_sites())
+    for index, site in enumerate(expanded):
+        site["id"] = index
+    return expanded
+
+
 def _validate_native_plan(
     payload: dict[str, Any],
     *,
     state_machine_sha256: str,
     input_mode: str,
     transfer_rvas: tuple[int, ...],
-    transfer_bindings: tuple[_InterpreterTransferBinding, ...],
+    transfer_bindings: tuple[_TransferBinding, ...],
     ingress_descriptors: tuple[dict[str, Any], ...],
+    ingress_callback_domains: tuple[dict[str, Any], ...],
+    ingress_callback_publications: tuple[dict[str, Any], ...],
     ingress_plan_id: str,
 ) -> tuple[
     dict[str, Any],
     tuple[NativeImplementationDispatch, ...],
     tuple[tuple[int, int], ...],
+    tuple[NativeGuestDispatchDomain, ...],
+    tuple[NativeGuestDispatchSite, ...],
+    ValidatedExternalInventoryV8,
 ]:
-    if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
-        raise CandidateRuntimeError("native-engine plan has an unsupported format")
+    expected_plan_fields = {
+        "format",
+        "status",
+        "state_machine_sha256",
+        "input_mode",
+        "native_ingress_plan_id",
+        "counts",
+        "external_target_contracts",
+        "external_contract_domains",
+        "callback_target_domains",
+        "external_sites",
+        "external_service_routes",
+        "guest_dispatch",
+        "import_bindings",
+        "code_capability_bindings",
+        "code_capability_registrations",
+        "compact_code_capability_domains",
+        "compact_code_capability_publications",
+        "implementation_dispatch_receipt",
+        "x87_mode",
+        "x87_operations",
+        "termination_import",
+        "recovered_executable_data",
+        "blockers",
+    }
+    if set(payload) != expected_plan_fields:
+        raise CandidateRuntimeError("module-runtime plan fields differ")
+    if payload.get("format") != MODULE_RUNTIME_PLAN_FORMAT:
+        raise CandidateRuntimeError("module-runtime plan has an unsupported format")
     if payload.get("status") != "ready":
-        raise CandidateRuntimeError("native-engine plan is not ready")
+        raise CandidateRuntimeError("module-runtime plan is not ready")
     if payload.get("state_machine_sha256") != state_machine_sha256:
         raise CandidateRuntimeError(
-            "interpreter and native-engine packages bind different state machines"
+            "module-runtime and module-runtime packages bind different state machines"
         )
     if payload.get("input_mode") != input_mode:
         raise CandidateRuntimeError(
-            "native-engine plan and packages bind different semantic input modes"
+            "module-runtime plan and packages bind different semantic input modes"
         )
-    if _required_list(payload.get("blockers"), "native-engine blockers"):
-        raise CandidateRuntimeError("ready native-engine plan contains blockers")
+    if _required_list(payload.get("blockers"), "module-runtime blockers"):
+        raise CandidateRuntimeError("ready module-runtime plan contains blockers")
+    external_inventory = validated_external_inventory_v8(payload)
+    external_service_routes = _required_list(
+        payload.get("external_service_routes"),
+        "module-runtime external service routes",
+    )
+    previous_service_obligation: str | None = None
+    service_sites: set[tuple[str, int, int]] = set()
+    for index, raw_route in enumerate(external_service_routes):
+        route = _required_object(
+            raw_route, f"module-runtime external service route {index}"
+        )
+        if set(route) != {
+            "obligation_id", "obligation_class",
+            "semantic_contract_sha256", "admitted_domain",
+            "implementation", "route_sha256",
+        }:
+            raise CandidateRuntimeError(
+                "module-runtime external service route fields differ"
+            )
+        route_body = {
+            key: value for key, value in route.items()
+            if key != "route_sha256"
+        }
+        if route.get("route_sha256") != canonical_sha256_v3(route_body):
+            raise CandidateRuntimeError(
+                "module-runtime external service route identity is stale"
+            )
+        obligation_id = _required_string(
+            route.get("obligation_id"),
+            f"external service route {index} obligation",
+        )
+        if (
+            not obligation_id.startswith("residual-obligation-v2:")
+            or len(obligation_id.removeprefix("residual-obligation-v2:")) != 64
+            or previous_service_obligation is not None
+            and obligation_id <= previous_service_obligation
+        ):
+            raise CandidateRuntimeError(
+                "module-runtime external service routes are not canonical"
+            )
+        previous_service_obligation = obligation_id
+        _required_sha256(
+            route.get("semantic_contract_sha256"),
+            f"external service route {index} semantic contract",
+        )
+        admitted = _required_object(
+            route.get("admitted_domain"),
+            f"external service route {index} admitted domain",
+        )
+        if set(admitted) != {
+            "kind", "contract_sha256", "identity", "sites", "protocol",
+        } or admitted.get("kind") != "checked_external_service_protocol_v1":
+            raise CandidateRuntimeError(
+                "module-runtime external service admitted domain differs"
+            )
+        _required_sha256(
+            admitted.get("contract_sha256"),
+            f"external service route {index} checked contract",
+        )
+        identity = _required_object(
+            admitted.get("identity"),
+            f"external service route {index} identity",
+        )
+        if set(identity) != {"dll", "symbol", "ordinal"}:
+            raise CandidateRuntimeError(
+                "module-runtime external service identity differs"
+            )
+        _required_string(
+            identity.get("dll"), f"external service route {index} DLL"
+        )
+        _required_string(
+            identity.get("symbol"), f"external service route {index} symbol"
+        )
+        if identity.get("ordinal") is not None:
+            raise CandidateRuntimeError(
+                "module-runtime checked external service must use a named import"
+            )
+        implementation = _required_string(
+            route.get("implementation"),
+            f"external service route {index} implementation",
+        )
+        protocol = _required_object(
+            admitted.get("protocol"),
+            f"external service route {index} protocol",
+        )
+        argument_words = 1 if protocol.get(
+            "kind"
+        ) == "unhandled_exception_filter" else 4
+        try:
+            parsed_protocol = parse_checked_external_service_protocol_v1(
+                protocol,
+                argument_words=argument_words,
+                context=f"external service route {index} protocol",
+            )
+        except CheckedExternalServiceProtocolError as exc:
+            raise CandidateRuntimeError(str(exc)) from exc
+        supported_service = (
+            parsed_protocol is not None
+            and (
+                (
+                    parsed_protocol.get("id") == "win32-rtl-unwind-v1"
+                    and parsed_protocol.get("kind") == "nonlocal_unwind"
+                    and route.get("obligation_class")
+                    == "checked_external_nonlocal_service"
+                    and identity.get("symbol") == "RtlUnwind"
+                )
+                or (
+                    parsed_protocol.get("id")
+                    == "win32-unhandled-exception-filter-v1"
+                    and parsed_protocol.get("kind")
+                    == "unhandled_exception_filter"
+                    and route.get("obligation_class")
+                    == "checked_external_exception_object_service"
+                    and identity.get("symbol")
+                    == "UnhandledExceptionFilter"
+                )
+            )
+        )
+        if implementation != "checked_runtime" or not supported_service:
+            raise CandidateRuntimeError(
+                "ready module-runtime plan contains an unrealized or "
+                "unsupported external service"
+            )
+        sites = _required_list(
+            admitted.get("sites"),
+            f"external service route {index} sites",
+        )
+        if not sites:
+            raise CandidateRuntimeError(
+                "module-runtime external service route has no sites"
+            )
+        for site_index, raw_site in enumerate(sites):
+            site = _required_object(
+                raw_site,
+                f"external service route {index} site {site_index}",
+            )
+            transfer_id = _required_string(
+                site.get("transfer_id"),
+                f"external service route {index} site transfer",
+            )
+            instruction_rva = _required_u32(
+                site.get("instruction_rva"),
+                f"external service route {index} site instruction RVA",
+            )
+            call_id = _required_count(
+                site.get("call_id"),
+                f"external service route {index} site call ID",
+            )
+            key = (transfer_id, instruction_rva, call_id)
+            if key in service_sites:
+                raise CandidateRuntimeError(
+                    "module-runtime external service sites are duplicated"
+                )
+            service_sites.add(key)
     implementation_dispatch_receipt, implementation_dispatches = (
         _validate_implementation_dispatch_receipt(
             payload,
@@ -74,7 +558,7 @@ def _validate_native_plan(
     )
     if payload.get("native_ingress_plan_id") != ingress_plan_id:
         raise CandidateRuntimeError(
-            "native-engine plan binds a different native ingress plan"
+            "module-runtime plan binds a different native ingress plan"
         )
     module_entries = tuple(
         row for row in ingress_descriptors
@@ -97,25 +581,25 @@ def _validate_native_plan(
     }))
     if callback_targets != tuple(sorted(set(callback_targets))):
         raise CandidateRuntimeError(
-            "native-engine callback RVAs must be sorted and unique"
+            "module-runtime callback RVAs must be sorted and unique"
         )
     if any(target not in transfer_rvas for target in callback_targets):
         raise CandidateRuntimeError(
-            "native-engine callback lacks a checked interpreter transfer"
+            "runtime callback lacks a checked executable transfer"
         )
     recovered_data = _required_object(
         payload.get("recovered_executable_data"),
-        "native-engine recovered executable data",
+        "module-runtime recovered executable data",
     )
     if recovered_data.get("dispatch_policy") != "fail_closed_as_noncode":
         raise CandidateRuntimeError(
-            "native-engine recovered executable data is not fail-closed"
+            "module-runtime recovered executable data is not fail-closed"
         )
     recovered_ranges: list[tuple[int, int]] = []
     for index, raw in enumerate(
         _required_list(
             recovered_data.get("ranges"),
-            "native-engine recovered executable-data ranges",
+            "module-runtime recovered executable-data ranges",
         )
     ):
         row = _required_object(raw, f"recovered executable-data range {index}")
@@ -132,11 +616,11 @@ def _validate_native_plan(
         )
         if end <= start:
             raise CandidateRuntimeError(
-                "native-engine recovered executable-data range is empty"
+                "module-runtime recovered executable-data range is empty"
             )
         if recovered_ranges and start < recovered_ranges[-1][1]:
             raise CandidateRuntimeError(
-                "native-engine recovered executable-data ranges overlap or are unsorted"
+                "module-runtime recovered executable-data ranges overlap or are unsorted"
             )
         recovered_ranges.append((start, end))
     if any(
@@ -162,64 +646,425 @@ def _validate_native_plan(
             )
     capability_registrations = _required_list(
         payload.get("code_capability_registrations"),
-        "native-engine code capability registrations",
+        "module-runtime code capability registrations",
     )
-    callback_capabilities = {
-        int(row["target_rva"]) for row in callback_rows
-        if row.get("role") == "callback"
-    }
-    seen_registrations: set[tuple[int, int, int]] = set()
-    expected_registrations: dict[tuple[int, int, int], dict[str, Any]] = {}
-    for site_index, raw_site in enumerate(
-        _required_list(payload.get("external_sites"), "native-engine external sites")
+    compact_domains = _required_list(
+        payload.get("compact_code_capability_domains"),
+        "module-runtime compact code capability domains",
+    )
+    compact_publications = _required_list(
+        payload.get("compact_code_capability_publications"),
+        "module-runtime compact code capability publications",
+    )
+    callback_capabilities: dict[str, int] = {}
+    for index, row in enumerate(callback_rows):
+        if row.get("role") != "callback":
+            continue
+        capability_id = _required_string(
+            row.get("capability_id"),
+            f"native callback ingress {index} capability identity",
+        )
+        target = _required_u32(
+            row.get("target_rva"), f"native callback ingress {index} target"
+        )
+        if capability_id in callback_capabilities:
+            raise CandidateRuntimeError(
+                "native ingress callback capability identity is duplicated"
+            )
+        callback_capabilities[capability_id] = target
+    seen_registrations: set[tuple[int, int, int, str]] = set()
+    expected_registrations: dict[
+        tuple[int, int, int, str], dict[str, Any]
+    ] = {}
+    expected_interface_publications: dict[str, dict[str, Any]] = {}
+    callback_or_loader_targets = frozenset(
+        target_id
+        for target_id, target in external_inventory.target_contracts.items()
+        if target.get("loader_service") is not None
+        or (
+            isinstance(target.get("checked_external_contract"), Mapping)
+            and target["checked_external_contract"].get("callback_effect")
+            == "explicit"
+        )
+    )
+    for site_index, site, _target_id, target in (
+        external_inventory.iter_site_targets(
+            only_target_ids=callback_or_loader_targets
+        )
     ):
-        site = _required_object(raw_site, f"native-engine external site {site_index}")
-        contract = site.get("checked_external_contract")
+        contract = target.get("checked_external_contract")
+        loader_service = target.get("loader_service")
+        if loader_service is not None:
+            loader = _required_object(
+                loader_service,
+                f"module-runtime external site {site_index} loader service",
+            )
+            if not isinstance(contract, Mapping):
+                raise CandidateRuntimeError(
+                    "module-runtime loader service has no checked external contract"
+                )
+            arity = _required_object(
+                contract.get("arity"),
+                f"module-runtime external site {site_index} arity",
+            )
+            if arity.get("kind") == "fixed":
+                argument_words = _required_count(
+                    arity.get("words"),
+                    f"module-runtime external site {site_index} argument words",
+                )
+            elif arity.get("kind") == "variadic":
+                argument_words = _required_count(
+                    arity.get("minimum_words"),
+                    f"module-runtime external site {site_index} minimum argument words",
+                )
+            else:
+                raise CandidateRuntimeError(
+                    "module-runtime loader service has unsupported call arity"
+                )
+            kind = loader.get("kind")
+            if kind == "module_handle":
+                if set(loader) != {
+                    "kind", "module_name_argument", "nullable_module_name",
+                    "wide_name", "contract_sha256",
+                }:
+                    raise CandidateRuntimeError(
+                        "module-runtime module-handle service fields are not canonical"
+                    )
+                argument = _required_count(
+                    loader.get("module_name_argument"),
+                    f"module-runtime external site {site_index} module-name argument",
+                )
+                if (
+                    argument >= argument_words
+                    or not isinstance(loader.get("nullable_module_name"), bool)
+                    or not isinstance(loader.get("wide_name"), bool)
+                ):
+                    raise CandidateRuntimeError(
+                        "module-runtime module-handle service contradicts its call frame"
+                    )
+            elif kind == "dynamic_export_resolution":
+                if set(loader) != {
+                    "kind", "module_handle_argument", "export_name_argument",
+                    "contract_sha256",
+                }:
+                    raise CandidateRuntimeError(
+                        "module-runtime export-resolution service fields are not canonical"
+                    )
+                module_argument = _required_count(
+                    loader.get("module_handle_argument"),
+                    f"module-runtime external site {site_index} module-handle argument",
+                )
+                export_argument = _required_count(
+                    loader.get("export_name_argument"),
+                    f"module-runtime external site {site_index} export-name argument",
+                )
+                if module_argument >= argument_words or export_argument >= argument_words:
+                    raise CandidateRuntimeError(
+                        "module-runtime export-resolution service contradicts its call frame"
+                    )
+            else:
+                raise CandidateRuntimeError(
+                    "module-runtime loader service kind is unsupported"
+                )
+            _required_sha256(
+                loader.get("contract_sha256"),
+                f"module-runtime external site {site_index} loader-service contract",
+            )
         if not isinstance(contract, Mapping) or contract.get("callback_effect") != "explicit":
             continue
         adapter = _required_object(
             contract.get("callback_adapter"),
-            f"native-engine external site {site_index} callback adapter",
+            f"module-runtime external site {site_index} callback adapter",
         )
         source = _required_object(
             adapter.get("source"),
-            f"native-engine external site {site_index} callback source",
+            f"module-runtime external site {site_index} callback source",
         )
         argument_index = _required_count(
             source.get("argument"),
-            f"native-engine external site {site_index} callback argument",
+            f"module-runtime external site {site_index} callback argument",
         )
         instruction_rva = _required_u32(
             site.get("instruction_rva"),
-            f"native-engine external site {site_index} instruction",
+            f"module-runtime external site {site_index} instruction",
         )
+        checked_contract_sha256 = canonical_sha256_v3(contract)
+        contract_identity = _required_object(
+            contract.get("identity"),
+            f"module-runtime external site {site_index} contract identity",
+        )
+        is_interface_callback = contract_identity.get("kind") == "interface"
+        method_sha256 = None
+        if is_interface_callback:
+            resolution = _required_object(
+                target.get("target_resolution_evidence"),
+                f"module-runtime external site {site_index} target resolution",
+            )
+            method_sha256 = _required_sha256(
+                resolution.get("admitted_member_sha256"),
+                f"module-runtime external site {site_index} interface method",
+            )
+        target_rvas: list[int] = []
         for raw_target in _required_list(
             adapter.get("target_rvas"),
-            f"native-engine external site {site_index} callback targets",
+            f"module-runtime external site {site_index} callback targets",
         ):
             target = _required_u32(
                 raw_target,
-                f"native-engine external site {site_index} callback target",
+                f"module-runtime external site {site_index} callback target",
             )
-            key = (instruction_rva, argument_index, target)
-            if key in expected_registrations:
-                raise CandidateRuntimeError(
-                    "native-engine callback capability authority is ambiguous"
-                )
-            expected_registrations[key] = {
+            target_rvas.append(target)
+            if is_interface_callback:
+                continue
+            key = (
+                instruction_rva, argument_index, target,
+                checked_contract_sha256,
+            )
+            expected = {
                 "lifetime": adapter.get("lifetime"),
                 "invocation": adapter.get("invocation"),
-                "checked_external_contract_sha256": canonical_sha256_v3(contract),
+                "checked_external_contract_sha256": checked_contract_sha256,
             }
+            prior = expected_registrations.get(key)
+            if prior is not None and prior != expected:
+                raise CandidateRuntimeError(
+                    "module-runtime callback capability authority is ambiguous"
+                )
+            # A single checked instruction occurrence may have several exact
+            # transfer entry slices (for example, an original cutpoint and a
+            # recovered interior-entry cutpoint).  They do not create several
+            # callback publications: identical authority for the same
+            # instruction, argument, target, and contract is one fact.
+            expected_registrations[key] = expected
+        if method_sha256 is not None:
+            expected_interface = {
+                "argument_index": argument_index,
+                "target_rvas": target_rvas,
+                "lifetime": adapter.get("lifetime"),
+                "invocation": adapter.get("invocation"),
+            }
+            prior_interface = expected_interface_publications.get(method_sha256)
+            if prior_interface is not None and prior_interface != expected_interface:
+                raise CandidateRuntimeError(
+                    "module-runtime interface callback authority is ambiguous"
+                )
+            expected_interface_publications[method_sha256] = expected_interface
     expected_registration_fields = {
         "instruction_rva",
         "argument_index",
         "logical_target_rva",
         "code_target_rva",
+        "capability_id",
         "lifetime",
         "invocation",
         "checked_external_contract_sha256",
     }
+    expected_compact_domains: dict[str, dict[str, Any]] = {}
+    flat_first = 0
+    for index, raw in enumerate(ingress_callback_domains):
+        if not isinstance(raw, Mapping):
+            raise CandidateRuntimeError(
+                f"native ingress compact callback domain {index} is malformed"
+            )
+        identity = _required_string(
+            raw.get("id"), f"native ingress callback domain {index} identity"
+        )
+        targets = tuple(
+            _required_u32(value, "native ingress compact callback target")
+            for value in _required_list(
+                raw.get("target_rvas"),
+                f"native ingress callback domain {index} targets",
+            )
+        )
+        expected_compact_domains[identity] = {
+            "domain_id": identity,
+            "protocol_id": _required_string(
+                raw.get("protocol_id"),
+                f"native ingress callback domain {index} protocol",
+            ),
+            "target_rvas": list(targets),
+            "trampoline_table_symbol": _required_string(
+                raw.get("trampoline_table_symbol"),
+                f"native ingress callback domain {index} table symbol",
+            ),
+            "trampoline_stride_bytes": _required_count(
+                raw.get("trampoline_stride_bytes"),
+                f"native ingress callback domain {index} table stride",
+            ),
+            "flat_first": flat_first,
+        }
+        flat_first += len(targets)
+    observed_compact_domains: dict[str, dict[str, Any]] = {}
+    expected_compact_domain_fields = {
+        "domain_id", "protocol_id", "target_rvas",
+        "trampoline_table_symbol", "trampoline_stride_bytes", "flat_first",
+    }
+    for index, raw in enumerate(compact_domains):
+        domain = _required_object(raw, f"compact code capability domain {index}")
+        identity = _required_string(
+            domain.get("domain_id"),
+            f"compact code capability domain {index} identity",
+        )
+        if (
+            set(domain) != expected_compact_domain_fields
+            or identity in observed_compact_domains
+            or dict(domain) != expected_compact_domains.get(identity)
+        ):
+            raise CandidateRuntimeError(
+                "compact code capability domain differs from native ingress"
+            )
+        observed_compact_domains[identity] = dict(domain)
+    if observed_compact_domains != expected_compact_domains:
+        raise CandidateRuntimeError(
+            "module-runtime compact capability domains omit native ingress authority"
+        )
+
+    ingress_publications: dict[str, Mapping[str, Any]] = {}
+    interface_ingress_publications: set[str] = set()
+    for index, raw in enumerate(ingress_callback_publications):
+        if not isinstance(raw, Mapping):
+            raise CandidateRuntimeError(
+                f"native ingress compact callback publication {index} is malformed"
+            )
+        identity = _required_string(
+            raw.get("id"),
+            f"native ingress callback publication {index} identity",
+        )
+        if identity in ingress_publications:
+            raise CandidateRuntimeError(
+                "native ingress compact callback publication is duplicated"
+            )
+        ingress_publications[identity] = raw
+        if raw.get("source_kind") == "interface_method":
+            source_id = raw.get("source_id")
+            if (
+                not isinstance(source_id, str)
+                or raw.get("escape_id")
+                != "interface-method-callback-v1:" + source_id
+                or raw.get("instruction_rva") != 0
+            ):
+                raise CandidateRuntimeError(
+                    "native ingress interface callback publication is malformed"
+                )
+            interface_ingress_publications.add(identity)
+    expected_compact_publication_fields = {
+        "publication_id", "domain_id", "authority_kind", "authority_sha256",
+        "instruction_rva", "argument_index", "lifetime", "invocation",
+    }
+    seen_compact_publications: set[str] = set()
+    seen_interface_publications: set[str] = set()
+    for index, raw in enumerate(compact_publications):
+        publication = _required_object(
+            raw, f"compact code capability publication {index}"
+        )
+        identity = _required_string(
+            publication.get("publication_id"),
+            f"compact code capability publication {index} identity",
+        )
+        ingress_publication = ingress_publications.get(identity)
+        domain_id = _required_string(
+            publication.get("domain_id"),
+            f"compact code capability publication {index} domain",
+        )
+        instruction_rva = _required_u32(
+            publication.get("instruction_rva"),
+            f"compact code capability publication {index} instruction",
+        )
+        argument_index = _required_count(
+            publication.get("argument_index"),
+            f"compact code capability publication {index} argument",
+        )
+        authority_kind = _required_string(
+            publication.get("authority_kind"),
+            f"compact code capability publication {index} authority kind",
+        )
+        authority_sha256 = _required_sha256(
+            publication.get("authority_sha256"),
+            f"compact code capability publication {index} authority",
+        )
+        domain = expected_compact_domains.get(domain_id)
+        if (
+            set(publication) != expected_compact_publication_fields
+            or identity in seen_compact_publications
+            or (
+                ingress_publication is not None
+                and (
+                    ingress_publication.get("domain_id") != domain_id
+                    or ingress_publication.get("instruction_rva")
+                    != instruction_rva
+                )
+            )
+            or (
+                ingress_publication is None
+                and not identity.startswith("compact-callback-publication-v2:")
+            )
+            or domain is None
+        ):
+            raise CandidateRuntimeError(
+                "compact code capability publication differs from native ingress"
+            )
+        lifetime = _required_object(
+            publication.get("lifetime"),
+            f"compact code capability publication {index} lifetime",
+        )
+        invocation = _required_string(
+            publication.get("invocation"),
+            f"compact code capability publication {index} invocation",
+        )
+        if authority_kind == "interface_method_contract":
+            expected_interface = expected_interface_publications.get(
+                authority_sha256
+            )
+            if (
+                ingress_publication is None
+                or ingress_publication.get("source_kind") != "interface_method"
+                or ingress_publication.get("source_id") != authority_sha256
+                or instruction_rva != 0
+                or expected_interface is None
+                or authority_sha256 in seen_interface_publications
+                or argument_index != expected_interface["argument_index"]
+                or list(domain["target_rvas"])
+                != expected_interface["target_rvas"]
+                or dict(lifetime) != expected_interface["lifetime"]
+                or invocation != expected_interface["invocation"]
+            ):
+                raise CandidateRuntimeError(
+                    "compact code capability publication changes callback authority"
+                )
+            seen_interface_publications.add(authority_sha256)
+        elif authority_kind == "checked_external_site_contract":
+            for target in domain["target_rvas"]:
+                key = (
+                    instruction_rva, argument_index, int(target),
+                    authority_sha256,
+                )
+                expected = expected_registrations.get(key)
+                if expected is None or (
+                    dict(lifetime) != expected["lifetime"]
+                    or invocation != expected["invocation"]
+                    or authority_sha256
+                    != expected["checked_external_contract_sha256"]
+                    or key in seen_registrations
+                ):
+                    raise CandidateRuntimeError(
+                        "compact code capability publication changes callback authority"
+                    )
+                seen_registrations.add(key)
+        else:
+            raise CandidateRuntimeError(
+                "compact code capability publication authority is unsupported"
+            )
+        seen_compact_publications.add(identity)
+    if seen_interface_publications != set(expected_interface_publications):
+        raise CandidateRuntimeError(
+            "module-runtime interface callback publications are incomplete"
+        )
+    if not (
+        set(ingress_publications) - interface_ingress_publications
+    ).issubset(seen_compact_publications):
+        raise CandidateRuntimeError(
+            "module-runtime compact capability publications omit native ingress authority"
+        )
     for index, raw in enumerate(capability_registrations):
         registration = _required_object(
             raw, f"code capability registration {index}"
@@ -232,9 +1077,13 @@ def _validate_native_plan(
             registration.get("code_target_rva"),
             f"code capability registration {index} target",
         )
-        if target not in callback_capabilities:
+        capability_id = _required_string(
+            registration.get("capability_id"),
+            f"code capability registration {index} identity",
+        )
+        if callback_capabilities.get(capability_id) != target:
             raise CandidateRuntimeError(
-                "code capability registration target lacks callback ingress"
+                "code capability registration does not bind its exact callback ingress"
             )
         logical_target = _required_u32(
             registration.get("logical_target_rva"),
@@ -252,17 +1101,17 @@ def _validate_native_plan(
             registration.get("argument_index"),
             f"code capability registration {index} argument",
         )
-        key = (instruction_rva, argument_index, target)
+        contract_sha256 = _required_sha256(
+            registration.get("checked_external_contract_sha256"),
+            f"code capability registration {index} contract SHA-256",
+        )
+        key = (instruction_rva, argument_index, target, contract_sha256)
         if key in seen_registrations:
             raise CandidateRuntimeError("code capability registration is duplicated")
         seen_registrations.add(key)
         invocation = _required_string(
             registration.get("invocation"),
             f"code capability registration {index} invocation",
-        )
-        contract_sha256 = _required_sha256(
-            registration.get("checked_external_contract_sha256"),
-            f"code capability registration {index} contract SHA-256",
         )
         lifetime = _required_object(
             registration.get("lifetime"),
@@ -283,76 +1132,379 @@ def _validate_native_plan(
             )
     if seen_registrations != set(expected_registrations):
         raise CandidateRuntimeError(
-            "native-engine code capability registrations omit or add checked callback authority"
+            "module-runtime code capability registrations omit or add checked callback authority"
         )
-    passthroughs = _required_list(
-        payload.get("code_capability_passthroughs"),
-        "native-engine code capability passthroughs",
+    registration_by_key = {
+        (
+            int(row["instruction_rva"]), int(row["argument_index"]),
+            int(row["code_target_rva"]), str(row["capability_id"]),
+        ): row
+        for row in capability_registrations
+    }
+    capability_bindings = _required_list(
+        payload.get("code_capability_bindings"),
+        "module-runtime code capability bindings",
     )
-    seen_passthroughs: set[tuple[int, int]] = set()
-    for index, raw in enumerate(passthroughs):
-        passthrough = _required_object(
-            raw, f"native-engine callback passthrough {index}"
+    expected_binding_fields = {
+        "id", "instruction_rva", "argument_index", "original_rva",
+        "code_target_rva", "capability_id", "matching",
+    }
+    seen_binding_keys: set[tuple[int, int, int, str]] = set()
+    for index, raw in enumerate(capability_bindings):
+        binding = _required_object(raw, f"code capability binding {index}")
+        if set(binding) != expected_binding_fields or binding.get("id") != index:
+            raise CandidateRuntimeError(
+                "code capability binding fields or identity are not canonical"
+            )
+        instruction_rva = _required_u32(
+            binding.get("instruction_rva"),
+            f"code capability binding {index} instruction",
         )
-        key = (
-            _required_u32(
-                passthrough.get("instruction_rva"), "callback passthrough call RVA"
-            ),
-            _required_count(
-                passthrough.get("argument_index"), "callback passthrough argument"
-            ),
+        argument_index = _required_count(
+            binding.get("argument_index"),
+            f"code capability binding {index} argument",
         )
-        _required_u32(
-            passthrough.get("storage_va"), "callback passthrough storage VA"
+        original_rva = _required_u32(
+            binding.get("original_rva"),
+            f"code capability binding {index} original target",
         )
+        target = _required_u32(
+            binding.get("code_target_rva"),
+            f"code capability binding {index} code target",
+        )
+        capability_id = _required_string(
+            binding.get("capability_id"),
+            f"code capability binding {index} capability identity",
+        )
+        key = (instruction_rva, argument_index, target, capability_id)
         if (
-            passthrough.get("origin") != "previous_registered_callback"
-            or passthrough.get("storage_invariant") not in {
-                "dominating_previous_registered_callback",
-                "initial_zero_or_previous_registered_callback",
-            }
-            or passthrough.get("runtime_action")
-            != "pass_through_environment_pointer"
-            or key in seen_passthroughs
+            original_rva != target
+            or binding.get("matching") != "logical-image-base-plus-rva"
+            or key in seen_binding_keys
+            or key not in registration_by_key
+            or callback_capabilities.get(capability_id) != target
         ):
             raise CandidateRuntimeError(
-                "native-engine callback passthrough is malformed or duplicate"
+                "code capability binding is stale, duplicate, or unauthorized"
             )
-        seen_passthroughs.add(key)
+        seen_binding_keys.add(key)
+    if seen_binding_keys != set(registration_by_key):
+        raise CandidateRuntimeError(
+            "code capability bindings do not cover registrations exactly"
+        )
     if entry_rva not in transfer_rvas:
         raise CandidateRuntimeError(
-            "native-engine entry RVA is absent from the interpreter transfer table"
+            "runtime entry RVA is absent from the executable transfer table"
         )
-    counts = _required_object(payload.get("counts"), "native-engine counts")
-    if _required_count(counts.get("transfers"), "native-engine transfer count") != len(
+    counts = _required_object(payload.get("counts"), "module-runtime counts")
+    expected_count_fields = {
+        "transfers",
+        "guest_dispatch_sites",
+        "guest_dispatch_domains",
+        "guest_dispatch_domain_targets",
+        "recovered_executable_data_ranges",
+        "external_sites",
+        "external_site_target_pairs",
+        "external_target_contracts",
+        "external_contract_domains",
+        "external_contract_domain_members",
+        "callback_target_domains",
+        "external_service_routes",
+        "import_bindings",
+        "code_capability_registrations",
+        "code_capability_bindings",
+        "compact_code_capability_domains",
+        "compact_code_capability_domain_targets",
+        "compact_code_capability_publications",
+        "implementation_dispatch_entries",
+        "x87_operations",
+        "blockers",
+    }
+    if set(counts) != expected_count_fields:
+        raise CandidateRuntimeError("module-runtime plan count fields differ")
+    if _required_count(counts.get("transfers"), "module-runtime transfer count") != len(
         transfer_rvas
     ):
         raise CandidateRuntimeError(
-            "native-engine and interpreter transfer counts differ"
+            "runtime and executable transfer counts differ"
+        )
+    if _required_count(
+        counts.get("code_capability_bindings"),
+        "module-runtime code capability binding count",
+    ) != len(capability_bindings):
+        raise CandidateRuntimeError(
+            "module-runtime code capability binding count differs from its inventory"
         )
     if _required_count(
         counts.get("code_capability_registrations"),
-        "native-engine code capability registration count",
+        "module-runtime code capability registration count",
     ) != len(capability_registrations):
         raise CandidateRuntimeError(
-            "native-engine code capability registration count differs from its inventory"
+            "module-runtime code capability registration count differs from its inventory"
         )
     if _required_count(
-        counts.get("code_capability_passthroughs"),
-        "native-engine code capability passthrough count",
-    ) != len(passthroughs):
+        counts.get("compact_code_capability_domains"),
+        "module-runtime compact capability domain count",
+    ) != len(compact_domains):
         raise CandidateRuntimeError(
-            "native-engine callback passthrough count differs from its inventory"
+            "module-runtime compact capability domain count differs"
         )
-    return implementation_dispatch_receipt, implementation_dispatches, (
-        tuple(recovered_ranges)
+    if _required_count(
+        counts.get("compact_code_capability_domain_targets"),
+        "module-runtime compact capability target count",
+    ) != sum(len(row["target_rvas"]) for row in compact_domains):
+        raise CandidateRuntimeError(
+            "module-runtime compact capability target count differs"
+        )
+    if _required_count(
+        counts.get("compact_code_capability_publications"),
+        "module-runtime compact capability publication count",
+    ) != len(compact_publications):
+        raise CandidateRuntimeError(
+            "module-runtime compact capability publication count differs"
+        )
+    guest_dispatch = _required_object(
+        payload.get("guest_dispatch"), "module-runtime guest dispatch"
+    )
+    if (
+        guest_dispatch.get("policy")
+        != "content_addressed_admitted_domains_v2"
+        or guest_dispatch.get("unknown_site") != "fail_closed"
+    ):
+        raise CandidateRuntimeError(
+            "module-runtime guest dispatch is not exact and fail-closed"
+        )
+    guest_domains: list[NativeGuestDispatchDomain] = []
+    domain_by_sha256: dict[str, NativeGuestDispatchDomain] = {}
+    previous_domain_sha256: str | None = None
+    domain_fields = {"domain_sha256", "contract", "authority"}
+    for index, raw in enumerate(_required_list(
+        guest_dispatch.get("domains"), "module-runtime guest dispatch domains"
+    )):
+        row = _required_object(raw, f"guest dispatch domain {index}")
+        if set(row) != domain_fields:
+            raise CandidateRuntimeError(
+                "guest dispatch domain fields are not canonical"
+            )
+        domain_sha256 = _required_sha256(
+            row.get("domain_sha256"), f"guest dispatch domain {index} identity"
+        )
+        contract = _required_object(
+            row.get("contract"), f"guest dispatch domain {index} contract"
+        )
+        if domain_sha256 != canonical_sha256_v3(contract):
+            raise CandidateRuntimeError("guest dispatch domain identity is stale")
+        raw_targets = contract.get(
+            "guest_transfer_entry_rvas", contract.get("targets")
+        )
+        targets = tuple(
+            _required_u32(target, f"guest dispatch domain {index} target RVA")
+            for target in _required_list(
+                raw_targets, f"guest dispatch domain {index} targets"
+            )
+        )
+        if targets != tuple(sorted(set(targets))) or any(
+            target not in transfer_rvas for target in targets
+        ):
+            raise CandidateRuntimeError(
+                "guest dispatch domain is not a sorted executable-transfer subset"
+            )
+        authority = _required_string(
+            row.get("authority"), f"guest dispatch domain {index} authority"
+        )
+        if authority not in {
+            "checked_module_execution_closure", "linked_semantic_module_v2",
+        }:
+            raise CandidateRuntimeError(
+                "guest dispatch domain has unsupported authority"
+            )
+        domain = NativeGuestDispatchDomain(
+            domain_sha256=domain_sha256,
+            contract=dict(contract),
+            authority=authority,
+        )
+        if (
+            domain_sha256 in domain_by_sha256
+            or previous_domain_sha256 is not None
+            and domain_sha256 <= previous_domain_sha256
+        ):
+            raise CandidateRuntimeError(
+                "guest dispatch domains are duplicated or noncanonical"
+            )
+        domain_by_sha256[domain_sha256] = domain
+        guest_domains.append(domain)
+        previous_domain_sha256 = domain_sha256
+
+    guest_sites: list[NativeGuestDispatchSite] = []
+    seen_guest_sites: set[tuple[str, int]] = set()
+    previous_sort_key: tuple[int, int, int, int] | None = None
+    expected_fields = {
+        "site", "kind", "source_rva", "instruction_rva", "event_index",
+        "domain_sha256",
+    }
+    for index, raw in enumerate(_required_list(
+        guest_dispatch.get("sites"), "module-runtime guest dispatch sites"
+    )):
+        row = _required_object(raw, f"guest dispatch site {index}")
+        if set(row) != expected_fields:
+            raise CandidateRuntimeError("guest dispatch site fields are not canonical")
+        site = _required_string(row.get("site"), f"guest dispatch site {index} id")
+        kind = _required_string(row.get("kind"), f"guest dispatch site {index} kind")
+        source_rva = _required_u32(
+            row.get("source_rva"), f"guest dispatch site {index} source RVA"
+        )
+        if source_rva not in transfer_rvas:
+            raise CandidateRuntimeError(
+                "guest dispatch source is absent from the executable transfer table"
+            )
+        if kind == "indirect_jump":
+            instruction_rva = _required_u32(
+                row.get("instruction_rva"),
+                f"guest dispatch site {index} instruction RVA",
+            )
+            if (
+                site != "terminator"
+                or instruction_rva != source_rva
+                or row.get("event_index") is not None
+            ):
+                raise CandidateRuntimeError("guest indirect-jump site is malformed")
+            event_index = None
+            kind_code = 1
+        elif kind == "indirect_call":
+            instruction_rva = _required_u32(
+                row.get("instruction_rva"),
+                f"guest dispatch site {index} instruction RVA",
+            )
+            event_index = _required_count(
+                row.get("event_index"), f"guest dispatch site {index} event index"
+            )
+            if site != f"call:{instruction_rva:08x}:{event_index}":
+                raise CandidateRuntimeError("guest indirect-call site is malformed")
+            kind_code = 0
+        else:
+            raise CandidateRuntimeError("guest dispatch site kind is unsupported")
+        domain_sha256 = _required_sha256(
+            row.get("domain_sha256"), f"guest dispatch site {index} domain"
+        )
+        if domain_sha256 not in domain_by_sha256:
+            raise CandidateRuntimeError(
+                "guest dispatch site names an unknown admitted domain"
+            )
+        identity = (site, source_rva)
+        sort_key = (
+            source_rva, kind_code, instruction_rva or 0, event_index or 0
+        )
+        if identity in seen_guest_sites or (
+            previous_sort_key is not None and sort_key <= previous_sort_key
+        ):
+            raise CandidateRuntimeError(
+                "guest dispatch sites are duplicated or not canonically sorted"
+            )
+        seen_guest_sites.add(identity)
+        previous_sort_key = sort_key
+        guest_sites.append(NativeGuestDispatchSite(
+            site=site,
+            kind=kind,
+            source_rva=source_rva,
+            instruction_rva=instruction_rva,
+            event_index=event_index,
+            domain_sha256=domain_sha256,
+        ))
+    if _required_count(
+        counts.get("guest_dispatch_sites"),
+        "module-runtime guest dispatch site count",
+    ) != len(guest_sites) or _required_count(
+        counts.get("guest_dispatch_domains"),
+        "module-runtime guest dispatch domain count",
+    ) != len(guest_domains) or _required_count(
+        counts.get("guest_dispatch_domain_targets"),
+        "module-runtime guest dispatch domain target count",
+    ) != sum(len(domain.target_rvas) for domain in guest_domains):
+        raise CandidateRuntimeError(
+            "module-runtime guest dispatch counts differ from their inventory"
+        )
+    expected_counts = {
+        "transfers": len(transfer_rvas),
+        "guest_dispatch_sites": len(guest_sites),
+        "guest_dispatch_domains": len(guest_domains),
+        "guest_dispatch_domain_targets": sum(
+            len(domain.target_rvas) for domain in guest_domains
+        ),
+        "recovered_executable_data_ranges": len(recovered_ranges),
+        "external_sites": len(
+            _required_list(
+                payload.get("external_sites"),
+                "module-runtime external sites",
+            )
+        ),
+        "external_site_target_pairs": external_inventory.target_pair_count,
+        "external_target_contracts": len(_required_list(
+            payload.get("external_target_contracts"),
+            "module-runtime external target contracts",
+        )),
+        "external_contract_domains": len(_required_list(
+            payload.get("external_contract_domains"),
+            "module-runtime external contract domains",
+        )),
+        "external_contract_domain_members": sum(
+            len(_required_list(
+                domain.get("target_contract_ids"),
+                "module-runtime external contract domain members",
+            ))
+            for domain in _required_list(
+                payload.get("external_contract_domains"),
+                "module-runtime external contract domains",
+            )
+        ),
+        "callback_target_domains": len(_required_list(
+            payload.get("callback_target_domains"),
+            "module-runtime callback target domains",
+        )),
+        "external_service_routes": len(external_service_routes),
+        "import_bindings": len(
+            _required_list(
+                payload.get("import_bindings"),
+                "module-runtime import bindings",
+            )
+        ),
+        "code_capability_registrations": len(capability_registrations),
+        "code_capability_bindings": len(capability_bindings),
+        "compact_code_capability_domains": len(compact_domains),
+        "compact_code_capability_domain_targets": sum(
+            len(row["target_rvas"]) for row in compact_domains
+        ),
+        "compact_code_capability_publications": len(compact_publications),
+        "implementation_dispatch_entries": len(implementation_dispatches),
+        "x87_operations": len(
+            _required_list(
+                payload.get("x87_operations"),
+                "module-runtime typed x87 operations",
+            )
+        ),
+        "blockers": 0,
+    }
+    canonical_counts = {
+        key: _required_count(counts.get(key), f"module-runtime {key} count")
+        for key in expected_count_fields
+    }
+    if canonical_counts != expected_counts:
+        raise CandidateRuntimeError(
+            "module-runtime plan counts differ from their exact inventories"
+        )
+    return (
+        implementation_dispatch_receipt,
+        implementation_dispatches,
+        tuple(recovered_ranges),
+        tuple(guest_domains),
+        tuple(guest_sites),
+        external_inventory,
     )
 
 
 def _validate_native_termination(value: Any) -> bool:
     if value is None:
         return False
-    payload = _required_object(value, "native-engine termination import")
+    payload = _required_object(value, "module-runtime termination import")
     _required_string(payload.get("dll"), "termination import DLL")
     symbol = payload.get("symbol")
     ordinal = payload.get("ordinal")
@@ -371,638 +1523,6 @@ def _validate_native_termination(value: Any) -> bool:
         or payload.get("required_disposition") != "terminates"
     ):
         raise CandidateRuntimeError(
-            "native-engine termination import policy is unsupported"
+            "module-runtime termination import policy is unsupported"
         )
     return True
-
-
-def _external_range_rules(
-    native_plan: dict[str, Any],
-    profile_path: Path | None,
-) -> tuple[
-    tuple[NativeExternalRangeRule, ...],
-    tuple[int, ...],
-    tuple[dict[str, Any], ...],
-]:
-    external_sites = _required_list(
-        native_plan.get("external_sites"), "native-engine external sites"
-    )
-    has_external_site = any(
-        isinstance(site, Mapping)
-        and (
-            isinstance(site.get("import"), Mapping)
-            or site.get("site_kind") in {"external_call", "external_jump"}
-            or isinstance(site.get("external_protocol"), Mapping)
-        )
-        for site in external_sites
-    )
-    if not has_external_site:
-        selected_contracts = {}
-    elif profile_path is None:
-        raise CandidateRuntimeError(
-            "native runtime requires the canonical machine-import profile bundle"
-        )
-    else:
-        try:
-            profile_set = load_machine_import_profile_set([profile_path])
-        except MachineImportProfileError as exc:
-            raise CandidateRuntimeError(str(exc)) from exc
-        selected_contracts = profile_set.by_identity()
-
-    bindings: dict[tuple[str, str, str | int], dict[str, Any]] = {}
-    for binding_index, raw_binding in enumerate(
-        _required_list(native_plan.get("import_bindings", []), "native-engine import bindings")
-    ):
-        binding = _required_object(
-            raw_binding, f"native-engine import binding {binding_index}"
-        )
-        dll = _required_string(binding.get("dll"), "import binding DLL").lower()
-        symbol = binding.get("symbol")
-        ordinal = binding.get("ordinal")
-        identity = (
-            dll,
-            "symbol" if isinstance(symbol, str) else "ordinal",
-            symbol if isinstance(symbol, str) else ordinal,
-        )
-        _required_u32(binding.get("iat_va"), "import binding IAT VA")
-        iat_rva = _required_u32(binding.get("iat_rva"), "import binding IAT RVA")
-        if iat_rva == 0 or identity in bindings:
-            raise CandidateRuntimeError(
-                "native-engine import bindings are duplicate or use RVA zero"
-            )
-        bindings[identity] = dict(binding)
-
-    expanded_sites: list[
-        tuple[dict[str, Any], int | None, dict[str, Any], int, str]
-    ] = []
-    authorized_sites: set[int] = set()
-    blocked_sites: list[dict[str, Any]] = []
-    dispatch_receipt = _required_object(
-        native_plan.get("implementation_dispatch_receipt"),
-        "native-engine implementation dispatch receipt",
-    )
-    dispatch_reachability = _required_object(
-        dispatch_receipt.get("reachability"),
-        "native-engine implementation reachability",
-    )
-    if dispatch_reachability.get("status") != "complete":
-        raise CandidateRuntimeError(
-            "native runtime requires complete implementation reachability"
-        )
-
-    def block_site(
-        *, site_index: int, site: Mapping[str, Any], category: str, detail: str
-    ) -> None:
-        del site_index, site, category
-        raise CandidateRuntimeError(detail)
-
-    for site_index, raw_site in enumerate(external_sites):
-        site = _required_object(raw_site, f"native-engine external site {site_index}")
-        is_external = (
-            isinstance(site.get("import"), Mapping)
-            or isinstance(site.get("external_protocol"), Mapping)
-        )
-        if not is_external:
-            block_site(
-                site_index=site_index,
-                site=site,
-                category="uncontracted_dynamic_external_target",
-                detail=(
-                    f"native-engine external site {site_index} has no checked "
-                    "import, interface, or callable target identity"
-                ),
-            )
-            continue
-        raw_contract = site.get("checked_external_contract")
-        resolution = site.get("target_resolution_evidence")
-        if not isinstance(raw_contract, Mapping):
-            block_site(
-                site_index=site_index,
-                site=site,
-                category="checked_external_contract_missing",
-                detail=(
-                    f"native-engine external site {site_index} has no checked "
-                    "external contract"
-                ),
-            )
-            continue
-        if (
-            not isinstance(resolution, Mapping)
-            or resolution.get("kind") != "canonical-external-sites-v3"
-        ):
-            block_site(
-                site_index=site_index,
-                site=site,
-                category="canonical_external_site_missing",
-                detail=(
-                    f"native-engine external site {site_index} is not bound to "
-                    "canonical-external-sites-v3"
-                ),
-            )
-            continue
-        try:
-            checked = parse_checked_external_site_contract(
-                raw_contract,
-                context=f"native-engine external site {site_index}",
-            )
-        except CheckedExternalSiteContractError as exc:
-            raise CandidateRuntimeError(str(exc)) from exc
-
-        imported_site = site.get("import")
-        if isinstance(imported_site, Mapping):
-            try:
-                outer_identity = ExternalSiteIdentity.imported(
-                    imported_site,
-                    context=f"native-engine external site {site_index}",
-                )
-            except CheckedExternalSiteContractError as exc:
-                raise CandidateRuntimeError(str(exc)) from exc
-            if checked.identity != outer_identity:
-                raise CandidateRuntimeError(
-                    f"native-engine external site {site_index} identity differs from its checked contract"
-                )
-
-        target_iat_rva: int | None = None
-        if checked.identity.kind == "import":
-            profile_identity = MachineImportIdentity(
-                dll=str(checked.identity.dll),
-                kind="symbol" if checked.identity.symbol is not None else "ordinal",
-                value=(
-                    str(checked.identity.symbol)
-                    if checked.identity.symbol is not None
-                    else int(checked.identity.ordinal)
-                ),
-            )
-            selected = selected_contracts.get(profile_identity)
-            if selected is None:
-                raise CandidateRuntimeError(
-                    f"native-engine external site {site_index} has no selected exact profile"
-                )
-            if (
-                checked.profile_binding.get("profile_id") != selected.profile_id
-                or checked.profile_binding.get("profile_sha256")
-                != selected.profile_sha256
-            ):
-                raise CandidateRuntimeError(
-                    f"native-engine external site {site_index} binds a "
-                    "different canonical profile"
-                )
-            binding_identity = (
-                profile_identity.dll,
-                profile_identity.kind,
-                profile_identity.value,
-            )
-            binding = bindings.get(binding_identity)
-            if binding is None and site.get("site_kind") == "dynamic_target":
-                raise CandidateRuntimeError(
-                    f"native-engine external site {site_index} has no exact import binding"
-                )
-            if site.get("site_kind") == "dynamic_target" and binding is not None:
-                target_iat_rva = _required_u32(
-                    binding.get("iat_rva"), "import binding IAT RVA"
-                )
-        expanded_sites.append((
-            dict(site),
-            target_iat_rva,
-            checked.profile_effect_payload(),
-            checked.argument_base_offset,
-            checked.contract_id,
-        ))
-        authorized_sites.add(
-            _required_u32(site.get("instruction_rva"), "external site RVA")
-        )
-
-    rules: list[NativeExternalRangeRule] = []
-    for (
-        site,
-        target_iat_rva,
-        contract,
-        argument_base_offset,
-        contract_id,
-    ) in expanded_sites:
-        instruction_rva = _required_u32(
-            site.get("instruction_rva"), "external site instruction RVA"
-        )
-        argument_count = _required_count(
-            contract.get("argument_words"),
-            f"machine-call contract {contract_id} argument count",
-        )
-        if argument_count > 256:
-            raise CandidateRuntimeError(
-                f"machine-call contract {contract_id} has too many arguments"
-            )
-        disposition = site.get("disposition")
-        if disposition not in {"returns_here", "tail_jump"}:
-            raise CandidateRuntimeError(
-                f"external site {instruction_rva:#x} has an unsupported disposition"
-            )
-        relations = contract.get("result_register_relations", [])
-        if not isinstance(relations, list):
-            raise CandidateRuntimeError(
-                f"machine-call contract {contract_id} has invalid result relations"
-            )
-        for relation_index, raw_relation in enumerate(relations):
-            relation = _required_object(
-                raw_relation,
-                f"machine-call contract {contract_id} result {relation_index}",
-            )
-            if relation.get("relation") != "dynamic_range_base":
-                continue
-            register = _required_string(
-                relation.get("register"), "dynamic-range result register"
-            ).lower()
-            if register not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} uses an unsupported result register"
-                )
-            size = _required_object(
-                relation.get("size"), "dynamic-range result size"
-            )
-            kind = _required_string(size.get("kind"), "dynamic-range size kind")
-            size_value = 0
-            size_argument: int | None = None
-            size_right_argument: int | None = None
-            termination_unit_bytes = 0
-            termination_zero_units = 0
-            termination_max_units = 0
-            if kind == "fixed":
-                size_value = _required_count(
-                    size.get("byte_count"), "fixed dynamic-range size"
-                )
-            elif kind == "argument":
-                size_argument = _required_count(
-                    size.get("argument"), "dynamic-range size argument"
-                )
-                size_value = _required_count(
-                    size.get("scale", 1), "dynamic-range size scale"
-                )
-            elif kind == "product":
-                size_argument = _required_count(
-                    size.get("left_argument"), "dynamic-range left size argument"
-                )
-                size_right_argument = _required_count(
-                    size.get("right_argument"), "dynamic-range right size argument"
-                )
-            elif kind == "bounded_zero_run":
-                termination_unit_bytes = _required_count(
-                    size.get("unit_bytes"), "terminated range unit size"
-                )
-                termination_zero_units = _required_count(
-                    size.get("zero_units"), "terminated range zero-run length"
-                )
-                termination_max_units = _required_count(
-                    size.get("max_units"), "terminated range unit limit"
-                )
-                if (
-                    termination_unit_bytes not in {1, 2, 4}
-                    or termination_zero_units == 0
-                    or termination_zero_units > 16
-                    or termination_max_units < termination_zero_units
-                    or termination_max_units > 1048576
-                ):
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an invalid terminated range size"
-                    )
-            else:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has unsupported range size {kind!r}"
-                )
-            for size_index in (size_argument, size_right_argument):
-                if size_index is not None and size_index >= argument_count:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} range size argument is out of bounds"
-                    )
-            minimum_size = _required_count(
-                relation.get("minimum_size", 0), "dynamic-range minimum size"
-            )
-            nullable = relation.get("nullable")
-            if not isinstance(nullable, bool):
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has invalid nullability"
-                )
-            rules.append(
-                NativeExternalRangeRule(
-                    instruction_rva=instruction_rva,
-                    target_iat_rva=target_iat_rva,
-                    action="add_result_range",
-                    argument_base_offset=argument_base_offset,
-                    argument_count=argument_count,
-                    register=register,
-                    argument=None,
-                    size_kind=kind,
-                    size_value=size_value,
-                    size_argument=size_argument,
-                    size_right_argument=size_right_argument,
-                    minimum_size=minimum_size,
-                    nullable=nullable,
-                    termination_unit_bytes=termination_unit_bytes,
-                    termination_zero_units=termination_zero_units,
-                    termination_max_units=termination_max_units,
-                    pointee_offset=0,
-                    max_elements=0,
-                    element_unit_bytes=0,
-                    element_max_units=0,
-                    contract_id=contract_id,
-                )
-            )
-            required_words = relation.get("required_words", [])
-            if not isinstance(required_words, list):
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has invalid required words"
-                )
-            for word_index, raw_word in enumerate(required_words):
-                word = _required_object(
-                    raw_word,
-                    f"machine-call contract {contract_id} required word {word_index}",
-                )
-                shape = word.get("pointee_shape")
-                if shape is None:
-                    continue
-                if word.get("relation") != "nullable_dynamic_pointer":
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} gives a shape to a non-pointer word"
-                    )
-                shape = _required_object(shape, "dynamic-pointer pointee shape")
-                if shape.get("kind") != "null_terminated_pointer_vector":
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an unsupported pointee shape"
-                    )
-                pointee_offset = _required_count(
-                    word.get("offset"), "dynamic-pointer word offset"
-                )
-                if pointee_offset % 4 != 0 or pointee_offset + 4 > minimum_size:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an out-of-range pointer word"
-                    )
-                max_elements = _required_count(
-                    shape.get("max_elements"), "pointer-vector element limit"
-                )
-                if max_elements == 0 or max_elements > 65536:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an invalid pointer-vector limit"
-                    )
-                element = _required_object(
-                    shape.get("element"), "pointer-vector element shape"
-                )
-                if element.get("kind") != "bounded_terminated":
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an unsupported vector element shape"
-                    )
-                element_unit_bytes = _required_count(
-                    element.get("unit_bytes"), "terminated-element unit size"
-                )
-                if element_unit_bytes not in {1, 2, 4}:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an unsupported element unit"
-                    )
-                sentinel = element.get("sentinel")
-                if sentinel != [0] * element_unit_bytes:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an unsupported element sentinel"
-                    )
-                element_max_units = _required_count(
-                    element.get("max_units"), "terminated-element unit limit"
-                )
-                if element_max_units == 0 or element_max_units > 1048576:
-                    raise CandidateRuntimeError(
-                        f"machine-call contract {contract_id} has an invalid element unit limit"
-                    )
-                rules.append(
-                    NativeExternalRangeRule(
-                        instruction_rva=instruction_rva,
-                        target_iat_rva=target_iat_rva,
-                        action="add_result_pointee_ranges",
-                        argument_base_offset=argument_base_offset,
-                        argument_count=argument_count,
-                        register=register,
-                        argument=None,
-                        size_kind=None,
-                        size_value=0,
-                        size_argument=None,
-                        size_right_argument=None,
-                        minimum_size=0,
-                        nullable=True,
-                        termination_unit_bytes=0,
-                        termination_zero_units=0,
-                        termination_max_units=0,
-                        pointee_offset=pointee_offset,
-                        max_elements=max_elements,
-                        element_unit_bytes=element_unit_bytes,
-                        element_max_units=element_max_units,
-                        contract_id=contract_id,
-                    )
-                )
-        out_pointer_relations = contract.get("out_pointer_relations", [])
-        if not isinstance(out_pointer_relations, list):
-            raise CandidateRuntimeError(
-                f"machine-call contract {contract_id} has invalid out-pointer relations"
-            )
-        for out_index, raw_out in enumerate(out_pointer_relations):
-            out_relation = _required_object(
-                raw_out,
-                f"machine-call contract {contract_id} out pointer {out_index}",
-            )
-            if out_relation.get("relation") != "nullable_dynamic_pointer":
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an unsupported out-pointer relation"
-                )
-            argument = _required_count(
-                out_relation.get("argument"), "out-pointer argument"
-            )
-            if argument >= argument_count:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} out-pointer argument is out of bounds"
-                )
-            pointee_offset = _required_count(
-                out_relation.get("offset", 0), "out-pointer offset"
-            )
-            shape = _required_object(
-                out_relation.get("pointee_shape"), "out-pointer pointee shape"
-            )
-            if shape.get("kind") != "null_terminated_pointer_vector":
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an unsupported out-pointer shape"
-                )
-            max_elements = _required_count(
-                shape.get("max_elements"), "out-pointer vector limit"
-            )
-            if max_elements == 0 or max_elements > 65536:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an invalid out-pointer vector limit"
-                )
-            element = _required_object(
-                shape.get("element"), "out-pointer vector element shape"
-            )
-            if element.get("kind") != "bounded_terminated":
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an unsupported out-pointer element shape"
-                )
-            element_unit_bytes = _required_count(
-                element.get("unit_bytes"), "out-pointer element unit size"
-            )
-            sentinel = element.get("sentinel")
-            if (
-                element_unit_bytes not in {1, 2, 4}
-                or sentinel != [0] * element_unit_bytes
-            ):
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an unsupported out-pointer sentinel"
-                )
-            element_max_units = _required_count(
-                element.get("max_units"), "out-pointer element unit limit"
-            )
-            if element_max_units == 0 or element_max_units > 1048576:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an invalid out-pointer element limit"
-                )
-            rules.append(
-                NativeExternalRangeRule(
-                    instruction_rva=instruction_rva,
-                    target_iat_rva=target_iat_rva,
-                    action="add_argument_pointee_ranges",
-                    argument_base_offset=argument_base_offset,
-                    argument_count=argument_count,
-                    register=None,
-                    argument=argument,
-                    size_kind=None,
-                    size_value=0,
-                    size_argument=None,
-                    size_right_argument=None,
-                    minimum_size=0,
-                    nullable=True,
-                    termination_unit_bytes=0,
-                    termination_zero_units=0,
-                    termination_max_units=0,
-                    pointee_offset=pointee_offset,
-                    max_elements=max_elements,
-                    element_unit_bytes=element_unit_bytes,
-                    element_max_units=element_max_units,
-                    contract_id=contract_id,
-                )
-            )
-        out_interface_relations = contract.get("out_interface_relations", [])
-        if not isinstance(out_interface_relations, list):
-            raise CandidateRuntimeError(
-                f"machine-call contract {contract_id} has invalid out-interface relations"
-            )
-        for out_index, raw_out in enumerate(out_interface_relations):
-            out_relation = _required_object(
-                raw_out,
-                f"machine-call contract {contract_id} out interface {out_index}",
-            )
-            argument = _required_count(
-                out_relation.get("argument_index"), "out-interface argument"
-            )
-            if argument >= argument_count:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} out-interface argument is out of bounds"
-                )
-            pointee_offset = _required_count(
-                out_relation.get("offset", 0), "out-interface offset"
-            )
-            object_size = _required_count(
-                out_relation.get("object_size"), "out-interface object size"
-            )
-            vtable_size = _required_count(
-                out_relation.get("vtable_size"), "out-interface vtable size"
-            )
-            nullable = out_relation.get("nullable")
-            if (
-                out_relation.get("write_width") != 4
-                or object_size < 4
-                or vtable_size < 4
-                or vtable_size % 4 != 0
-                or not isinstance(nullable, bool)
-                or out_relation.get("success_condition")
-                != "hresult_succeeded_eax"
-            ):
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} has an invalid out-interface shape"
-                )
-            rules.append(
-                NativeExternalRangeRule(
-                    instruction_rva=instruction_rva,
-                    target_iat_rva=target_iat_rva,
-                    action="add_argument_interface_ranges",
-                    argument_base_offset=argument_base_offset,
-                    argument_count=argument_count,
-                    register=None,
-                    argument=argument,
-                    size_kind="fixed",
-                    size_value=vtable_size,
-                    size_argument=None,
-                    size_right_argument=None,
-                    minimum_size=object_size,
-                    nullable=nullable,
-                    termination_unit_bytes=0,
-                    termination_zero_units=0,
-                    termination_max_units=0,
-                    pointee_offset=pointee_offset,
-                    max_elements=0,
-                    element_unit_bytes=0,
-                    element_max_units=0,
-                    contract_id=contract_id,
-                )
-            )
-        if contract.get("world_effect") == "dynamicRangeRelease":
-            argument = _required_count(
-                contract.get("world_effect_argument"),
-                "dynamic-range release argument",
-            )
-            if argument >= argument_count:
-                raise CandidateRuntimeError(
-                    f"machine-call contract {contract_id} release argument is out of bounds"
-                )
-            rules.append(
-                NativeExternalRangeRule(
-                    instruction_rva=instruction_rva,
-                    target_iat_rva=target_iat_rva,
-                    action="release_argument_range",
-                    argument_base_offset=argument_base_offset,
-                    argument_count=argument_count,
-                    register=None,
-                    argument=argument,
-                    size_kind=None,
-                    size_value=0,
-                    size_argument=None,
-                    size_right_argument=None,
-                    minimum_size=0,
-                    nullable=True,
-                    termination_unit_bytes=0,
-                    termination_zero_units=0,
-                    termination_max_units=0,
-                    pointee_offset=0,
-                    max_elements=0,
-                    element_unit_bytes=0,
-                    element_max_units=0,
-                    contract_id=contract_id,
-                )
-            )
-    sorted_rules = tuple(
-        sorted(
-            rules,
-            key=lambda item: (
-                item.instruction_rva,
-                item.target_iat_rva or 0,
-                {
-                    "add_result_range": 0,
-                    "add_result_pointee_ranges": 1,
-                    "add_argument_pointee_ranges": 2,
-                    "add_argument_interface_ranges": 3,
-                    "release_argument_range": 4,
-                }[item.action],
-                item.contract_id,
-            ),
-        )
-    )
-    return (
-        sorted_rules,
-        tuple(sorted(authorized_sites)),
-        tuple(sorted(
-            blocked_sites,
-            key=lambda item: (
-                int(item["instruction_rva"]),
-                str(item["category"]),
-            ),
-        )),
-    )

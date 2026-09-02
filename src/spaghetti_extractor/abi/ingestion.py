@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..artifacts.artifact_set import CanonicalValueV3
-from ..artifacts.formats import ABI_DECLARATION_INGESTION_FORMAT
+from .formats import ABI_DECLARATION_INGESTION_FORMAT
 from .declarations import PhysicalAbiDeclarationSetV1, PhysicalAbiDeclarationV1
-from .extraction import AbiExtractionResultV1
 from .model import (
     AbiEvidenceV1,
     AbiFactV1,
@@ -518,10 +517,14 @@ class AbiDeclarationIngestionV1:
 def ingest_abi_declarations(
     *,
     member_declarations: Iterable[CatalogMemberAbiDeclarationV1] = (),
-    extraction_results: Sequence[AbiExtractionResultV1 | Path | str] = (),
     out: Path | str | None = None,
 ) -> AbiDeclarationIngestionV1:
-    """Merge reviewed declarations and prior extraction bundles canonically."""
+    """Ingest reviewed, content-bound catalog ABI declarations canonically.
+
+    Machine ABI facts are part of the linked semantic module.  This operator
+    layer deliberately has no adapter input for independently extracted target
+    facts, so declarations cannot recreate a second target-semantics pipeline.
+    """
 
     binding_index: dict[str, CatalogMemberAbiDeclarationV1] = {}
     for binding in member_declarations:
@@ -646,62 +649,6 @@ def ingest_abi_declarations(
                     dependency_ids=(row.binding_id for row in rows),
                     details={"declaration_ids": sorted(row.declaration.declaration_id for row in rows)},
                 )
-
-    for input_result in extraction_results:
-        extraction = (
-            input_result
-            if isinstance(input_result, AbiExtractionResultV1)
-            else AbiExtractionResultV1.read(input_result)
-        )
-        extraction_id = canonical_sha256(extraction.to_payload())
-        for subject_id, subject_kind in sorted(extraction.subjects.items()):
-            subject(subject_id, subject_kind, extraction_id)
-        for row in extraction.evidence:
-            previous = evidence.get(row.evidence_id)
-            if previous is not None and previous != row:
-                issue(
-                    status="contradiction",
-                    code="abi_evidence_identity_contradiction",
-                    subject_id=row.subject_id,
-                    evidence_ids=(row.evidence_id,),
-                    dependency_ids=(extraction_id,),
-                    details=None,
-                )
-            evidence[row.evidence_id] = row
-        for row in extraction.facts:
-            facts[canonical_json_bytes(row.to_payload())] = row
-        for row in extraction.equalities:
-            equalities[canonical_json_bytes(row.to_payload())] = row
-        for raw in extraction.issues:
-            raw_status = str(raw.get("status", "incomplete"))
-            issue(
-                status=(
-                    "contradiction" if raw_status == "violated" else "incomplete"
-                ),
-                code=str(raw.get("code", "abi_extraction_issue")),
-                subject_id=str(raw.get("subject_id", f"extraction:{extraction_id}")),
-                field=(None if raw.get("field") is None else str(raw["field"])),
-                dependency_ids=(extraction_id,),
-                details=_ingestion_details(raw),
-            )
-        if extraction.status == "violated" and not any(
-            str(raw.get("status")) == "violated" for raw in extraction.issues
-        ):
-            issue(
-                status="contradiction",
-                code="abi_extraction_status_contradiction",
-                subject_id=f"extraction:{extraction_id}",
-                dependency_ids=(extraction_id,),
-                details=None,
-            )
-        elif extraction.status == "incomplete" and not extraction.issues:
-            issue(
-                status="incomplete",
-                code="abi_extraction_incomplete",
-                subject_id=f"extraction:{extraction_id}",
-                dependency_ids=(extraction_id,),
-                details=None,
-            )
 
     evidence_ids = set(evidence)
     valid_facts: list[AbiFactV1] = []

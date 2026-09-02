@@ -19,7 +19,7 @@ from .formats import (
     INTERACTION_CONTRACT_RECEIPT_V1_FORMAT,
     INTERACTION_CONTRACT_V1_FORMAT,
 )
-from .interface_ir import LogicalTypeV1
+from .interface_ir import ProofKernelLogicalType
 
 
 _ID = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.:-]*[A-Za-z0-9])?\Z")
@@ -480,8 +480,8 @@ class InteractionContractReceiptV1:
 
 
 def logical_type_width(
-    logical_type: LogicalTypeV1,
-    types: Mapping[str, LogicalTypeV1],
+    logical_type: ProofKernelLogicalType,
+    types: Mapping[str, ProofKernelLogicalType],
 ) -> int | None:
     if logical_type.kind not in {"scalar", "enum"} or logical_type.c_type is None:
         return None
@@ -494,8 +494,8 @@ def logical_type_width(
 
 def contract_type_matches(
     pattern: InteractionTypeParameterV1,
-    logical_type: LogicalTypeV1,
-    types: Mapping[str, LogicalTypeV1],
+    logical_type: ProofKernelLogicalType,
+    types: Mapping[str, ProofKernelLogicalType],
 ) -> bool:
     if pattern.kind != logical_type.kind:
         return False

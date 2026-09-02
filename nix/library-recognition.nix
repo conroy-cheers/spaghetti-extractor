@@ -10,7 +10,6 @@
   binaryIdentity ? targetId,
   catalogIndexes ? [ ],
   abiCatalogs ? [ ],
-  physicalAbiCatalogs ? [ ],
   catalogLock ? null,
   implementations ? { },
 }:
@@ -22,11 +21,8 @@ let
   recognition = import ./linked-libraries.nix {
     inherit pkgs pythonEnv pythonSource original machineIr namePrefix targetId
       binaryIdentity
-      catalogIndexes abiCatalogs physicalAbiCatalogs catalogLock implementations;
+      catalogIndexes abiCatalogs catalogLock implementations;
     adoptionIntents = { };
-    parametricSummaries = null;
-    canonicalExternalSites = null;
-    targetCertificates = null;
   };
 in {
   inherit (recognition)
@@ -35,6 +31,5 @@ in {
     catalogSearchIndex
     targetSignatureGraph
     releaseHypotheses
-    catalogCallContracts
     ;
 }

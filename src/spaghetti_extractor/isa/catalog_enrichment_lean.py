@@ -11,7 +11,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .catalog_enrichment import _string
 from .semantic_forms import (
     LEAN_SEMANTIC_FORM_CLASSIFIER_MODULES,
     lean_semantic_form_classifier_sha256,
@@ -19,6 +18,14 @@ from .semantic_forms import (
 from ..build_support.lean_runner import run_lean_module_graph
 from ..errors import ToolkitInputError
 from ..util import sha256_bytes
+
+
+def _string(value: Any, context: str) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise ToolkitInputError(
+            f"{context} must be a nonempty string without surrounding whitespace"
+        )
+    return value
 
 _LEAN_METADATA_SUPPORT = r"""
 import SpaghettiExtractor.ISA.ISAQualification

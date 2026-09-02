@@ -3,10 +3,9 @@
   pkgs,
   pythonEnv,
   pythonSource,
-  machineIr,
+  semanticObject,
   namePrefix,
   layoutIntent ? null,
-  runtimeQualification ? null,
   compiler ? pkgs.stdenv.cc,
 }:
 
@@ -18,11 +17,9 @@ let
     name = "${namePrefix}-behavioral-c-python-closure";
   };
   layoutArgument = if layoutIntent == null then "-" else toString layoutIntent;
-  runtimeArgument =
-    if runtimeQualification == null then "-" else toString runtimeQualification;
 in
 pkgs.runCommand
-  "${namePrefix}-behavioral-c-v1"
+  "${namePrefix}-behavioral-c-v2"
   {
     nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils compiler ];
     preferLocalBuild = false;
@@ -35,32 +32,29 @@ pkgs.runCommand
     export PYTHONDONTWRITEBYTECODE=1
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${phasePythonSource}/src
+    export PYTHONPATH=${phasePythonSource.pythonPath}
     ${pythonEnv}/bin/python3 - \
-      ${machineIr}/machine-ir.jsonl "$out" \
-      ${pkgs.lib.escapeShellArg layoutArgument} \
-      ${pkgs.lib.escapeShellArg runtimeArgument} <<'PY'
+      ${semanticObject} "$out" \
+      ${pkgs.lib.escapeShellArg layoutArgument} <<'PY'
     import pathlib
     import sys
     from spaghetti_extractor.candidate.behavioral_c import (
-        write_spx_behavioral_c_package,
+        write_spx_behavioral_c_package_from_semantic_object,
     )
 
-    machine_ir = pathlib.Path(sys.argv[1])
+    semantic_object = pathlib.Path(sys.argv[1])
     output = pathlib.Path(sys.argv[2])
     layout = None if sys.argv[3] == "-" else pathlib.Path(sys.argv[3])
-    runtime = None if sys.argv[4] == "-" else pathlib.Path(sys.argv[4])
-    write_spx_behavioral_c_package(
-        machine_ir=machine_ir,
+    write_spx_behavioral_c_package_from_semantic_object(
+        semantic_object=semantic_object,
         out=output,
         layout_intent=layout,
-        runtime_qualification=runtime,
     )
     PY
     jq -e '
-      .format == "spaghetti-extractor-behavioral-c-package-v1" and
+      .format == "spaghetti-extractor-behavioral-c-package-v2" and
       .status == "ready" and
-      .input_mode == "sanitized_machine_ir_v3" and
+      .input_mode == "semantic_object_v1" and
       .representation == "direct_structured_behavioral_c_v1" and
       .counts.required_units > 0 and
       .counts.required_units == .counts.lowered_units and
@@ -68,13 +62,25 @@ pkgs.runCommand
       (.constraints.original_instruction_bytes_embedded | not) and
       (.constraints.runtime_instruction_decoder | not) and
       (.constraints.semantic_opcode_tables | not) and
-      (.constraints.per_transfer_pc_interpreter_loop | not)
+      (.constraints.per_transfer_pc_dispatch_loop | not)
     ' "$out/behavioral-c-package.json" >/dev/null
     jq -e '
-      .format == "spaghetti-extractor-behavioral-c-coverage-v1" and
-      .status == "complete" and .counts.blockers == 0
+      .format == "spaghetti-extractor-behavioral-c-coverage-v2" and
+      .status == "complete" and .counts.blockers == 0 and
+      .operation_coverage.format ==
+        "spaghetti-extractor-transfer-operation-coverage-v2" and
+      .operation_coverage.status == "complete" and
+      (.operation_coverage.domain_ids | sort) == [
+        "behavioral_c", "concrete_evaluator", "definedness",
+        "reference_provenance", "z3_reconstruction"
+      ]
     ' "$out/behavioral-c-coverage.json" >/dev/null
-    ${compiler}/bin/${compiler.targetPrefix}cc \
-      -std=c11 -Wall -Wextra -Werror -I "$out" \
-      -c "$out/behavioral-c.c" -o "$out/behavioral-c.o"
+    while IFS= read -r source; do
+      object="$out/$(basename "$source" .c).o"
+      ${compiler}/bin/${compiler.targetPrefix}cc \
+        -std=c11 -Wall -Wextra -Werror -I "$out" \
+        -c "$source" -o "$object"
+    done < <(find "$out" -maxdepth 1 -type f \
+      \( -name 'behavioral-fn-*.c' -o -name 'behavioral-dispatch.c' \
+         -o -name 'behavioral-support.c' \) | sort)
   ''

@@ -26,6 +26,99 @@ TRANSPORT_FIELDS = frozenset(
 )
 
 
+def validate_pe32_callback_protocol_frame_v1(
+    frame: PhysicalCallFrameV2,
+    *,
+    protocol: Mapping[str, object],
+    entry_state: Mapping[str, object] | None = None,
+) -> str:
+    """Check that one canonical callback protocol describes ``frame`` exactly."""
+
+    protocol_id = identifier(protocol.get("id"), "callback protocol id")
+    if frame.subject.kind != "callback" or frame.subject.identity != protocol_id:
+        raise CallProtocolError("callback protocol and call subject disagree")
+    if frame.transfer_kind != "callback":
+        raise CallProtocolError("callback evidence requires callback transport")
+    signature = object_(protocol.get("signature"), "callback authority signature")
+    abi_template = signature.get("abi_template")
+    convention = {
+        "pe32-cdecl-v1": "cdecl",
+        "pe32-stdcall-v1": "stdcall",
+        "pe32-fastcall-v1": "fastcall",
+        "pe32-thiscall-v1": "thiscall",
+    }.get(abi_template)
+    if convention is None or frame.calling_convention != convention:
+        raise CallProtocolError("callback calling convention contradicts authority")
+    word_count = signature.get("argument_words")
+    cleanup_bytes = signature.get("stack_cleanup_bytes")
+    if not isinstance(word_count, int) or isinstance(word_count, bool) or word_count < 0:
+        raise CallProtocolError("callback authority argument count is malformed")
+    if not isinstance(cleanup_bytes, int) or isinstance(cleanup_bytes, bool):
+        raise CallProtocolError("callback authority cleanup is malformed")
+    if entry_state is not None:
+        if entry_state.get("model") != "pe32-callback-entry-v1":
+            raise CallProtocolError("callback authority has an unsupported entry model")
+        stack = object_(entry_state.get("stack"), "callback authority stack")
+        if stack.get("callee_cleanup_bytes") != cleanup_bytes:
+            raise CallProtocolError("callback entry state and protocol cleanup disagree")
+        arguments = stack.get("arguments")
+        if not isinstance(arguments, list) or len(arguments) != word_count:
+            raise CallProtocolError("callback entry state and protocol arity disagree")
+        for index, item in enumerate(arguments):
+            row = object_(item, f"callback authority argument {index}")
+            if (
+                row.get("index") != index
+                or row.get("offset") != 4 + 4 * index
+                or row.get("width") != 4
+            ):
+                raise CallProtocolError(
+                    "callback authority has a noncanonical word frame"
+                )
+    physical_words: set[int] = set()
+    for slot in frame.arguments:
+        for fragment in slot.fragments:
+            location = fragment.location
+            if (
+                not fragment.specified
+                or location.kind != "stack"
+                or location.phase != "callee_entry"
+                or location.stack_base != frame.stack.coordinate
+                or location.stack_offset_bytes is None
+                or fragment.location_offset_bits != 0
+                or fragment.width_bits % 32 != 0
+            ):
+                raise CallProtocolError(
+                    "legacy callback authority cannot prove this argument transport"
+                )
+            first = (location.stack_offset_bytes - 4) // 4
+            physical_words.update(range(first, first + fragment.width_bits // 32))
+    if physical_words != set(range(word_count)):
+        raise CallProtocolError("callback argument transport contradicts authority")
+    if frame.stack.cleanup_bytes != cleanup_bytes:
+        raise CallProtocolError("callback stack cleanup contradicts authority")
+    result = object_(signature.get("result"), "callback authority result")
+    if result.get("kind") == "void":
+        if frame.results:
+            raise CallProtocolError(
+                "void callback authority contradicts result transport"
+            )
+    elif result.get("kind") == "word":
+        if len(frame.results) != 1:
+            raise CallProtocolError("word callback authority requires one result")
+        fragments = frame.results[0].fragments
+        register = result.get("register")
+        if (
+            len(fragments) != 1
+            or fragments[0].width_bits != 32
+            or fragments[0].location.kind != "register"
+            or fragments[0].location.name != register
+        ):
+            raise CallProtocolError("callback result transport contradicts authority")
+    else:
+        raise CallProtocolError("callback authority result is unsupported")
+    return protocol_id
+
+
 @dataclass(frozen=True)
 class MachineCallEvidenceV1:
     evidence_id: str
@@ -73,105 +166,25 @@ class MachineCallEvidenceV1:
         return cls.create(producer=producer, subject=frame.subject, binary_sha256=binary_sha256, observed_fields={key: payload[key] for key in sorted(TRANSPORT_FIELDS)}, dependency_ids=dependency_ids)
 
     @classmethod
-    def from_pe32_callback_authority(
+    def from_transfer_callback_binding(
         cls,
         frame: PhysicalCallFrameV2,
         *,
-        authority: Mapping[str, object],
+        protocol: Mapping[str, object],
         binary_sha256: str,
+        binding_id: str,
         dependency_ids: Sequence[str] = (),
     ) -> "MachineCallEvidenceV1":
-        """Translate exact legacy callback-entry authority into call evidence.
+        """Create evidence from an exact transfer/profile callback binding."""
 
-        This is a deliberately narrow migration bridge.  It accepts only the
-        word-oriented PE32 callback facts that the old authority actually
-        proves and refuses register arguments, split values, or other details
-        that cannot be reconstructed losslessly.
-        """
-
-        callback_id = identifier(authority.get("id"), "callback authority id")
-        if authority.get("status") != "complete" or authority.get("authorizing") is not True:
-            raise CallProtocolError("callback authority is not complete and authorizing")
-        protocol = object_(authority.get("protocol"), "callback authority protocol")
-        protocol_id = identifier(protocol.get("id"), "callback protocol id")
-        if frame.subject.kind != "callback" or frame.subject.identity != protocol_id:
-            raise CallProtocolError("callback protocol and call subject disagree")
-        if frame.transfer_kind != "callback":
-            raise CallProtocolError("callback evidence requires callback transport")
-        entry = object_(authority.get("entry_state"), "callback entry state")
-        if entry.get("model") != "pe32-callback-entry-v1":
-            raise CallProtocolError("callback authority has an unsupported entry model")
-        signature = object_(protocol.get("signature"), "callback authority signature")
-        abi_template = signature.get("abi_template")
-        convention = {
-            "pe32-cdecl-v1": "cdecl",
-            "pe32-stdcall-v1": "stdcall",
-            "pe32-fastcall-v1": "fastcall",
-            "pe32-thiscall-v1": "thiscall",
-        }.get(abi_template)
-        if convention is None or frame.calling_convention != convention:
-            raise CallProtocolError("callback calling convention contradicts authority")
-        word_count = signature.get("argument_words")
-        cleanup_bytes = signature.get("stack_cleanup_bytes")
-        if not isinstance(word_count, int) or isinstance(word_count, bool) or word_count < 0:
-            raise CallProtocolError("callback authority argument count is malformed")
-        if not isinstance(cleanup_bytes, int) or isinstance(cleanup_bytes, bool):
-            raise CallProtocolError("callback authority cleanup is malformed")
-        stack = object_(entry.get("stack"), "callback authority stack")
-        if stack.get("callee_cleanup_bytes") != cleanup_bytes:
-            raise CallProtocolError("callback entry state and protocol cleanup disagree")
-        arguments = stack.get("arguments")
-        if not isinstance(arguments, list) or len(arguments) != word_count:
-            raise CallProtocolError("callback entry state and protocol arity disagree")
-        for index, item in enumerate(arguments):
-            row = object_(item, f"callback authority argument {index}")
-            if row.get("index") != index or row.get("offset") != 4 + 4 * index or row.get("width") != 4:
-                raise CallProtocolError("callback authority has a noncanonical word frame")
-        physical_words: set[int] = set()
-        for slot in frame.arguments:
-            for fragment in slot.fragments:
-                location = fragment.location
-                if (
-                    not fragment.specified
-                    or location.kind != "stack"
-                    or location.phase != "callee_entry"
-                    or location.stack_base != frame.stack.coordinate
-                    or location.stack_offset_bytes is None
-                    or fragment.location_offset_bits != 0
-                    or fragment.width_bits % 32 != 0
-                ):
-                    raise CallProtocolError(
-                        "legacy callback authority cannot prove this argument transport"
-                    )
-                first = (location.stack_offset_bytes - 4) // 4
-                physical_words.update(range(first, first + fragment.width_bits // 32))
-        if physical_words != set(range(word_count)):
-            raise CallProtocolError("callback argument transport contradicts authority")
-        if frame.stack.cleanup_bytes != cleanup_bytes:
-            raise CallProtocolError("callback stack cleanup contradicts authority")
-        result = object_(signature.get("result"), "callback authority result")
-        if result.get("kind") == "void":
-            if frame.results:
-                raise CallProtocolError("void callback authority contradicts result transport")
-        elif result.get("kind") == "word":
-            if len(frame.results) != 1:
-                raise CallProtocolError("word callback authority requires one result")
-            fragments = frame.results[0].fragments
-            register = result.get("register")
-            if (
-                len(fragments) != 1
-                or fragments[0].width_bits != 32
-                or fragments[0].location.kind != "register"
-                or fragments[0].location.name != register
-            ):
-                raise CallProtocolError("callback result transport contradicts authority")
-        else:
-            raise CallProtocolError("callback authority result is unsupported")
+        protocol_id = validate_pe32_callback_protocol_frame_v1(
+            frame, protocol=protocol
+        )
         return cls.from_frame(
             frame,
-            producer="callback-authority-v4",
+            producer="executable-transfer-plan-v2",
             binary_sha256=binary_sha256,
-            dependency_ids=(callback_id, protocol_id, *dependency_ids),
+            dependency_ids=(binding_id, protocol_id, *dependency_ids),
         )
 
     @classmethod
@@ -208,4 +221,7 @@ class MachineCallEvidenceV1:
         }
 
 
-__all__ = ["MachineCallEvidenceV1", "TRANSPORT_FIELDS"]
+__all__ = [
+    "MachineCallEvidenceV1", "TRANSPORT_FIELDS",
+    "validate_pe32_callback_protocol_frame_v1",
+]

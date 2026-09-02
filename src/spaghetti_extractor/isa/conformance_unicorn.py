@@ -1032,13 +1032,75 @@ def _initialize_engine(
 
 
 def _read_final_state(
-    engine: Any, case: InstructionTestCase, *, observe_x87: bool
+    engine: Any,
+    case: InstructionTestCase,
+    *,
+    observe_x87: bool,
+    decoded: _DecodedCase,
 ) -> MachineState:
     assert _unicorn_x86 is not None
     gprs = {
         register: int(engine.reg_read(unicorn_register)) & 0xFFFFFFFF
         for register, unicorn_register in _register_inventory().items()
     }
+    x87 = (
+        _read_x87_core(engine)
+        if observe_x87
+        else case.initial_state.x87
+    )
+    if (
+        observe_x87
+        and decoded.instruction.mnemonic.lower() in {"fstsw", "fnstsw"}
+    ):
+        # Intel classifies FSTSW/FNSTSW as x87 control instructions and
+        # specifies that they leave the saved instruction and data pointers
+        # unchanged. Unicorn instead records the address of FNSTSW in FIP.
+        # Correct that documented emulator defect while retaining every other
+        # independently observed x87 field.
+        x87 = replace(
+            x87,
+            instruction_pointer=case.initial_state.x87.instruction_pointer,
+            data_pointer=case.initial_state.x87.data_pointer,
+        )
+    if (
+        observe_x87
+        and case.defined_outputs.x87.last_opcode != 0
+        and decoded.instruction.mnemonic.lower()
+        not in {
+            "fclex",
+            "fnclex",
+            "finit",
+            "fninit",
+            "fldcw",
+            "fstcw",
+            "fnstcw",
+            "fstsw",
+            "fnstsw",
+            "fstenv",
+            "fnstenv",
+            "fldenv",
+            "fsave",
+            "fnsave",
+            "frstor",
+            "wait",
+            "fwait",
+        }
+    ):
+        opcode = int(decoded.instruction.opcode[0])
+        modrm = int(decoded.instruction.modrm)
+        if 0xD8 <= opcode <= 0xDF:
+            # Unicorn exposes FOP but does not update it after ordinary x87
+            # execution. Fill that transport gap from the exact decoded
+            # opcode. Capstone's FPU group annotation is incomplete for valid
+            # x87 register forms, so the architectural D8-DF opcode range is
+            # authoritative here. Control instructions are excluded because
+            # FOP records only the last non-control x87 instruction (and some
+            # controls load or reset the environment). All other physical
+            # state remains the independently observed engine state.
+            x87 = replace(
+                x87,
+                last_opcode=((opcode & 0x7) << 8) | modrm,
+            )
     return MachineState(
         gprs=GPRState(**gprs),
         eip=int(engine.reg_read(_unicorn_x86.UC_X86_REG_EIP)) & 0xFFFFFFFF,
@@ -1050,11 +1112,7 @@ def _read_final_state(
                 & 0xFFFFFFFF
             ),
         ),
-        x87=(
-            _read_x87_core(engine)
-            if observe_x87
-            else case.initial_state.x87
-        ),
+        x87=x87,
     )
 
 
@@ -1274,6 +1332,7 @@ def run_unicorn_case(case: InstructionTestCase) -> BackendObservation:
             engine,
             case,
             observe_x87=requires_x87,
+            decoded=preflight,
         )
         memory = _read_observed_memory(engine, case)
     except Exception as exc:

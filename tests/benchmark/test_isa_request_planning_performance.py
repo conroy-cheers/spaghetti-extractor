@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import unittest
 
-from spaghetti_extractor.authority_inputs.isa_requirements import (
+from spaghetti_extractor.qualified_platform.requirements import (
     build_machine_ir_isa_extraction_request_v2,
 )
 

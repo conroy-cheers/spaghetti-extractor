@@ -8,7 +8,7 @@ from typing import Any
 from spaghetti_extractor.extraction.isa_requirements import (
     _lean_side_form_extraction_source,
 )
-from spaghetti_extractor.authority_inputs.isa_requirements import (
+from spaghetti_extractor.qualified_platform.requirements import (
     MACHINE_IR_FALLBACK_CAPABILITY_V2,
     MachineIRISARequirementsV2Error,
     build_machine_ir_isa_extraction_request_v2,
@@ -99,6 +99,18 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
 
         self.assertIn("span : ISAInventory.Span", source)
         self.assertIn("let bytes : ISAInventory.Bytes", source)
+        self.assertIn('IO.FS.readFile "artifacts/requests.json"', source)
+        self.assertNotIn("nodeId := 0", source)
+        self.assertEqual(
+            source,
+            _lean_side_form_extraction_source(
+                "original",
+                [
+                    {"span": {"rva_start": 0x1000 + index, "size": 1}}
+                    for index in range(1024)
+                ],
+            ),
+        )
         partial = _lean_side_form_extraction_source(
             "original",
             [{"span": {"rva_start": 0x1000, "size": 1}}],

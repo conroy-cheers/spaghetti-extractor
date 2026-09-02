@@ -7,7 +7,7 @@ as ESP at every cutpoint.  This module follows one finite direct path and
 substitutes each local pre-state through the preceding units.
 
 The result is untrusted reconstruction guidance. Candidate assurance still
-checks the sanitized interpreter and the rebuilt program independently.
+checks the canonical transfer plan and the rebuilt program independently.
 """
 
 from __future__ import annotations

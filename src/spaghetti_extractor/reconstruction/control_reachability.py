@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import heapq
 import json
 from collections import deque
 from typing import Any, Mapping, Sequence
@@ -222,18 +223,51 @@ def classify_overlapping_instruction_starts(
                 "instruction_sha256": instruction.get("instruction_sha256"),
             })
 
+    # Query the instruction intervals with a sweep instead of comparing every
+    # unit start with every reachable instruction.  The old nested scan was
+    # quadratic (36,005 x 58,000 comparisons for libjq) even though x86
+    # instruction intervals are short and only the active overlaps can affect
+    # the result.  Tokens preserve duplicate instruction evidence exactly.
+    ordered_instructions = sorted(
+        enumerate(instructions),
+        key=lambda item: (
+            int(item[1]["rva_start"]),
+            int(item[1]["rva_end"]),
+            str(item[1]["owner_unit_id"]),
+            item[0],
+        ),
+    )
+    unit_starts = sorted(
+        (
+            (start, index, unit)
+            for index, unit in enumerate(units)
+            if (start := _unit_start_rva(unit)) is not None
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    active: dict[int, dict[str, Any]] = {}
+    expirations: list[tuple[int, int]] = []
+    instruction_index = 0
+
     excluded: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
-    for unit in units:
+    for start, _unit_index, unit in unit_starts:
         unit_id = str(unit.get("id"))
-        start = _unit_start_rva(unit)
-        if start is None:
-            continue
+        while (
+            instruction_index < len(ordered_instructions)
+            and ordered_instructions[instruction_index][1]["rva_start"] < start
+        ):
+            token, instruction = ordered_instructions[instruction_index]
+            active[token] = instruction
+            heapq.heappush(expirations, (int(instruction["rva_end"]), token))
+            instruction_index += 1
+        while expirations and expirations[0][0] <= start:
+            _end, token = heapq.heappop(expirations)
+            active.pop(token, None)
         owners = [
             instruction
-            for instruction in instructions
+            for instruction in active.values()
             if instruction["owner_unit_id"] != unit_id
-            and instruction["rva_start"] < start < instruction["rva_end"]
         ]
         if not owners:
             continue

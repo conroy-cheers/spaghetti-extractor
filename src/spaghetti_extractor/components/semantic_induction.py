@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from .semantic_contract import transfer_expression_view_v2
 
 
 INDUCTIVE_MACHINE_SHAPE_V1 = (
@@ -431,6 +432,48 @@ def build_inductive_segment_inventory(
 def _edge_rows(
     semantics: Mapping[str, object],
 ) -> tuple[tuple[Mapping[str, object], int], ...]:
+    transfer = semantics.get("transfer_v2")
+    if isinstance(transfer, Mapping):
+        terminator = _object(
+            transfer.get("terminator"), "canonical transfer terminator"
+        )
+        operation = terminator.get("op")
+        operands = terminator.get("operands")
+        if not isinstance(operands, list) or any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or item < 0
+            for item in operands
+        ):
+            raise SemanticInductionError(
+                "canonical transfer terminator operands are malformed"
+            )
+        if operation in {"outcome_fallthrough", "outcome_jump"}:
+            if len(operands) != 1:
+                raise SemanticInductionError(
+                    "canonical direct transfer has invalid arity"
+                )
+            return (({"op": "true"}, operands[0]),)
+        if operation == "outcome_branch":
+            if len(operands) != 3:
+                raise SemanticInductionError(
+                    "canonical branch transfer has invalid arity"
+                )
+            condition = transfer_expression_view_v2(transfer, operands[0])
+            return (
+                (condition, operands[1]),
+                ({"op": "not", "args": [copy.deepcopy(condition)]}, operands[2]),
+            )
+        if operation in {
+            "outcome_return",
+            "outcome_indirect",
+            "outcome_nonlocal",
+            "outcome_external",
+        }:
+            return ()
+        raise SemanticInductionError(
+            "canonical transfer terminator operation is unsupported"
+        )
     raw_edges = semantics.get("edge_conditions", [])
     if not isinstance(raw_edges, list) or any(
         not isinstance(row, Mapping) for row in raw_edges

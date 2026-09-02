@@ -1,14 +1,15 @@
-# spaghetti-extractor-python-role: candidate
+# spaghetti-extractor-python-role: developer
 { pkgs, pythonEnv }:
 
 let
+  context = import ../toolkit-context.nix { inherit pkgs; };
+  transferPythonEnv = context.transferPythonEnv;
   compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
   pythonSource = import ../python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
     modules = [
       "spaghetti_extractor.candidate.module_composer"
-      "spaghetti_extractor.candidate.native_ingress"
       "spaghetti_extractor.candidate.project"
       "spaghetti_extractor.roundtrip_fuzz.image_io"
     ];
@@ -19,7 +20,7 @@ let
     __contentAddressed = true;
   } ''
     set -euo pipefail
-    export PYTHONPATH=${pythonSource}/src
+    export PYTHONPATH=${pythonSource.pythonPath}
     mkdir -p "$out/app" "$out/private"
     cp ${./fixtures/pe32-project-app.c} app.c
     cp ${./fixtures/pe32-project-private.c} private.c
@@ -60,17 +61,63 @@ let
     imageId = "private";
     namePrefix = "spaghetti-extractor-pe32-project-private-fixture";
   };
-  composedPrivate = pkgs.runCommand
-    "spaghetti-extractor-pe32-project-private-composed-fixture" {
-      nativeBuildInputs = [ pythonEnv ];
-      __contentAddressed = true;
-    } ''
-      set -euo pipefail
-      export PYTHONPATH=${pythonSource}/src
-      python ${./fixtures/pe32-project-compose.py} \
-        ${fixture}/private/private.dll \
-        ${privateInterface}/module-interface.json "$out"
-    '';
+  semanticInputsFor = imageId: original: moduleInterface:
+    import ../ca-python-json-phase.nix {
+      inherit pkgs pythonEnv;
+      name = "spaghetti-extractor-pe32-project-${imageId}-semantic-inputs";
+      kind = "pe32-project-semantic-inputs";
+      artifactName = "executable-transfer-plan.json";
+      expectedFormat = "spaghetti-extractor-executable-transfer-plan-v2";
+      allowedStatuses = [ "complete" ];
+      pythonModules = [
+        "spaghetti_extractor.testkit.project_semantic_fixture"
+      ];
+      phaseRole = "developer";
+      inputs = {
+        original_pe = original;
+        module_interface = moduleInterface;
+      };
+      program = ''
+        import shutil
+
+        from spaghetti_extractor.testkit.project_semantic_fixture import (
+            write_project_semantic_inputs,
+        )
+
+        artifacts = write_project_semantic_inputs(
+            original_pe=inputs["original_pe"],
+            module_interface=inputs["module_interface"],
+            out=output.parent,
+        )
+        shutil.copyfile(artifacts["transfer_plan"], output)
+      '';
+    };
+  appSemanticInputs = semanticInputsFor
+    "app" "${fixture}/app/app.exe" "${appInterface}/module-interface.json";
+  privateSemanticInputs = semanticInputsFor
+    "private" "${fixture}/private/private.dll"
+    "${privateInterface}/module-interface.json";
+  semanticObjectFor = imageId: semanticInputs: moduleInterface:
+    import ../semantic-object.nix {
+      inherit pkgs pythonEnv;
+      transferPlan = semanticInputs.artifact;
+      inherit moduleInterface;
+      resolvedExternalEnvironment = semanticInputs.derivation + "/environment";
+      namePrefix = "spaghetti-extractor-pe32-project-${imageId}-fixture";
+    };
+  appSemanticObject = semanticObjectFor
+    "app" appSemanticInputs "${appInterface}/module-interface.json";
+  privateSemanticObject = semanticObjectFor
+    "private" privateSemanticInputs "${privateInterface}/module-interface.json";
+  linkedModuleFor = imageId: semanticObject:
+    import ../linked-semantic-module.nix {
+      inherit pkgs;
+      pythonEnv = transferPythonEnv;
+      semanticObject = semanticObject.artifact;
+      namePrefix = "spaghetti-extractor-pe32-project-${imageId}-fixture";
+    };
+  appLinkedModule = linkedModuleFor "app" appSemanticObject;
+  privateLinkedModule = linkedModuleFor "private" privateSemanticObject;
   intent = pkgs.writeText "spaghetti-extractor-pe32-project-fixture-intent.json"
     (builtins.toJSON {
       format = "spaghetti-extractor-pe32-project-intent-v1";
@@ -107,9 +154,9 @@ let
     });
   loadPlan = import ../pe32-project-load-plan.nix {
     inherit pkgs pythonEnv intent;
-    moduleInterfaces = {
-      app = appInterface;
-      private = privateInterface;
+    linkedSemanticModules = {
+      app = appLinkedModule.linkedSemanticModule;
+      private = privateLinkedModule.linkedSemanticModule;
     };
     namePrefix = "spaghetti-extractor-pe32-project-fixture";
   };
@@ -122,9 +169,11 @@ let
     private_sha="$(sha256sum ${fixture}/private/private.dll | cut -d' ' -f1)"
     jq -n \
       --slurpfile plan ${loadPlan}/project-load-plan.json \
+      --slurpfile appInterface ${appInterface}/module-interface.json \
+      --slurpfile privateInterface ${privateInterface}/module-interface.json \
       --arg appSha "$app_sha" --arg privateSha "$private_sha" '
       {
-        format: "spaghetti-extractor-pe32-load-observation-v1",
+        format: "spaghetti-extractor-pe32-load-observation-v2",
         project_id: $plan[0].project_id,
         environment_sha256: $plan[0].host_environment.sha256,
         runner_sha256: ("2" * 64),
@@ -133,11 +182,13 @@ let
         modules: [
           {
             loader_name: "app.exe", resolved_path: "C:/fixture/app.exe",
-            sha256: $appSha, origin: "target_distribution", image_id: "app"
+            sha256: $appSha, origin: "target_distribution", image_id: "app",
+            loaded_base: $appInterface[0].loader.preferred_base
           },
           {
             loader_name: "private.dll", resolved_path: "C:/fixture/private.dll",
-            sha256: $privateSha, origin: "target_distribution", image_id: "private"
+            sha256: $privateSha, origin: "target_distribution", image_id: "private",
+            loaded_base: $privateInterface[0].loader.preferred_base
           }
         ],
         slots: ($plan[0].edges | map({
@@ -157,46 +208,112 @@ let
     inherit pkgs pythonEnv loadPlan observation;
     namePrefix = "spaghetti-extractor-pe32-project-fixture";
   };
-  deploymentFor = imageId: candidate: pkgs.runCommand
-    "spaghetti-extractor-pe32-project-${imageId}-deployment-fixture" {
-      nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+  realizationFor = imageId: candidate: filename: pkgs.runCommand
+    "spaghetti-extractor-pe32-project-${imageId}-realization-fixture" {
+      nativeBuildInputs = [ pythonEnv pkgs.coreutils ];
     } ''
       mkdir -p "$out"
-      hash="$(sha256sum ${candidate} | cut -d' ' -f1)"
-      jq -n --arg hash "$hash" '{
-        format: "spaghetti-extractor-pe32-module-deployment-v1",
-        status: "complete",
-        image_id: ${builtins.toJSON imageId},
-        module_kind: ${builtins.toJSON (if imageId == "app" then "exe" else "dll")},
-        candidate: {
-          filename: ${builtins.toJSON (if imageId == "app" then "app.exe" else "private.dll")},
-          sha256: $hash,
-          decoded_loader_surface_sha256: ("6" * 64)
-        },
-        bindings: ([
-          "original_interface", "behavioral_c_completion", "ingress_plan",
-          "link_receipt", "exact_runtime_qualification", "loader_surface",
-          "static_assurance", "candidate_interface"
-        ] | map({key: ., value: {filename: (. + ".json"), sha256: ("7" * 64)}})
-          | from_entries),
-        original_identity: {},
-        decoded_loader_surface: {
-          kind: ${builtins.toJSON (if imageId == "app" then "exe" else "dll")},
-          loader: {}, export_directory: {}, tls: null, imports: [], load_config: null
-        },
-        blockers: [],
-        definition_of_complete: "fixture deployment is complete"
-      }' > "$out/module-deployment.json"
-      digest="$(jq -cS . "$out/module-deployment.json" | tr -d '\n' | sha256sum | cut -d' ' -f1)"
-      jq --arg digest "$digest" '. + {deployment_sha256: $digest}' \
-        "$out/module-deployment.json" > "$out/module-deployment.closed.json"
-      mv "$out/module-deployment.closed.json" "$out/module-deployment.json"
+      export PYTHONPATH=${pythonSource.pythonPath}
+      ${pythonEnv}/bin/python3 - ${candidate} "$out/native-realization.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+      from spaghetti_extractor.util import sha256_file, write_json
+
+      candidate = pathlib.Path(sys.argv[1])
+      digest = sha256_file(candidate)
+      provider = "fixture.provider"
+      symbol = "fixture:entry"
+      core = {
+          "format": "spaghetti-extractor-native-realization-v2",
+          "status": "complete",
+          "ready_for_observation": True,
+          "bindings": {
+              "linked_semantic_module_sha256": "1" * 64,
+              "implementation_selection_sha256": "2" * 64,
+              "qualified_platform_sha256": "3" * 64,
+              "original_module_interface_sha256": "4" * 64,
+          },
+          "providers": [{
+              "provider_id": provider,
+              "provider_kind": "generated_behavioral_c",
+              "qualification_sha256": "5" * 64,
+              "artifact_sha256": "6" * 64,
+              "semantic_slice_sha256": "7" * 64,
+              "tool_sha256s": ["8" * 64],
+              "definition_ids": ["definition:entry"],
+              "obligation_ids": [],
+          }],
+          "definitions": [{
+              "definition_id": "definition:entry",
+              "symbol_id": symbol,
+              "provider_id": provider,
+              "provider_kind": "generated_behavioral_c",
+              "qualification_sha256": "5" * 64,
+              "native_symbol": "fixture_entry",
+              "address": {"kind": "linked_rva", "rva": 4096},
+              "implementation_rva": 4096,
+              "bridge_class_id": None,
+          }],
+          "obligations": [],
+          "native_objects": [{
+              "object_sha256": "8" * 64,
+              "role": "generated_behavioral_c",
+              "provider_ids": [provider],
+              "definition_ids": ["definition:entry"],
+              "obligation_ids": [],
+              "section_ids": [".text"],
+          }],
+          "bridges": [],
+          "runtime": {
+              "qualification_sha256": "9" * 64,
+              "tls_layout_sha256": "a" * 64,
+              "private_stack_size": 1048576,
+              "support_import_ids": [],
+              "required_symbols": [{
+                  "symbol": "fixture_entry",
+                  "rva": 4096,
+                  "role": "entry",
+              }],
+              "obligation_receipt_sha256s": [],
+          },
+          "link": {
+              "payload_sha256": "b" * 64,
+              "linker_map_sha256": "c" * 64,
+              "relocation_inventory_sha256": "d" * 64,
+              "section_table_sha256": "e" * 64,
+              "entry_symbols": ["fixture_entry"],
+          },
+          "loader_surface": {
+              "entry_rva": 4096,
+              "exports_sha256": "f" * 64,
+              "imports_sha256": "0" * 64,
+              "tls_sha256": "1" * 64,
+              "base_relocations_sha256": "2" * 64,
+              "resources_sha256": None,
+              "load_config_sha256": None,
+          },
+          "candidate": {
+              "filename": ${builtins.toJSON filename},
+              "sha256": digest,
+              "size": candidate.stat().st_size,
+              "module_interface_sha256": "3" * 64,
+          },
+          "pinned_code_layout_requirements": [],
+          "blockers": [],
+      }
+      write_json(pathlib.Path(sys.argv[2]), {
+          **core,
+          "native_realization_sha256": canonical_sha256_v3(core),
+      })
+      PY
     '';
   completion = import ../pe32-project-completion.nix {
     inherit pkgs pythonEnv loadPlan;
-    moduleDeployments = {
-      app = deploymentFor "app" "${fixture}/app/app.exe";
-      private = deploymentFor "private" "${fixture}/private/private.dll";
+    nativeRealizations = {
+      app = realizationFor "app" "${fixture}/app/app.exe" "app.exe";
+      private = realizationFor "private" "${fixture}/private/private.dll" "private.dll";
     };
     observedLoadGraph = "${observedGraph}/observed-load-graph.json";
     namePrefix = "spaghetti-extractor-pe32-project-fixture";
@@ -215,8 +332,10 @@ pkgs.runCommand "spaghetti-extractor-pe32-project-check" {
     .status == "complete" and
     .counts.images == 3 and
     .counts.target_images == 2 and
-    .counts.target_edges >= 1 and
-    .counts.host_edges >= 1
+    .counts.target_edges == 2 and
+    .counts.host_edges >= 1 and
+    ([.edges[] | select(.resolution.kind == "target_image") |
+      .resolution.export.kind] | sort) == ["code", "data"]
   ' ${loadPlan}/project-load-plan.json >/dev/null
   jq -e '.status == "qualified" and (.blockers | length) == 0' \
     ${observedGraph}/observed-load-graph.json >/dev/null
@@ -239,7 +358,7 @@ pkgs.runCommand "spaghetti-extractor-pe32-project-check" {
   export WINEDLLOVERRIDES="mscoree,mshtml="
   mkdir -p distribution
   cp ${fixture}/app/app.exe distribution/
-  cp ${composedPrivate}/composed/private.dll distribution/
+  cp ${fixture}/private/private.dll distribution/
   xvfb-run -a wineboot -u >/dev/null 2>&1
   (cd distribution && timeout 60 xvfb-run -a wine ./app.exe)
   wineserver -w >/dev/null 2>&1 || true

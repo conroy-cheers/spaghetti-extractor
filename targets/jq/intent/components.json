@@ -1,211 +1,224 @@
 {
-  "format": "spaghetti-extractor-component-catalog-intent-v2",
-  "program_id": "jq-pe32-frontend-reference-v1",
-  "permitted_activation_profiles": [
-    "bounded-equivalence-v1"
-  ],
   "components": [
     {
       "id": "option-name-match",
-      "label": "Option name match",
-      "selector": {
-        "entry_rva": 5184,
-        "end_rva": 5279,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Option name match"
     },
     {
       "id": "usage-exit-route",
-      "label": "Usage termination route",
-      "selector": {
-        "entry_rva": 5528,
-        "end_rva": 5550,
-        "proposal_kind": "single_entry_control_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Usage termination route"
     },
     {
       "id": "usage-write-route",
-      "label": "Usage output route",
-      "selector": {
-        "entry_rva": 5550,
-        "end_rva": 5580,
-        "proposal_kind": "single_entry_control_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Usage output route"
     },
     {
       "id": "stderr-value-kind-route",
-      "label": "Stderr callback value-kind route",
-      "selector": {
-        "entry_rva": 5714,
-        "end_rva": 5780,
-        "proposal_kind": "epilogue_absorption"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Stderr callback value-kind route"
     },
     {
       "id": "debug-value-prefix",
-      "label": "Debug callback value prefix",
-      "selector": {
-        "entry_rva": 6105,
-        "end_rva": 6204,
-        "proposal_kind": "epilogue_absorption"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Debug callback value prefix"
     },
     {
       "id": "option-token-classifier",
-      "label": "Option token classifier",
-      "selector": {
-        "entry_rva": 6450,
-        "end_rva": 6503,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Option token classifier"
     },
     {
       "id": "output-value-release",
-      "label": "Output value release",
-      "selector": {
-        "entry_rva": 7387,
-        "end_rva": 7430,
-        "proposal_kind": "single_entry_control_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Output value release"
     },
     {
       "id": "output-value-dump",
-      "label": "Output value dump",
-      "selector": {
-        "entry_rva": 6827,
-        "end_rva": 6867,
-        "proposal_kind": "epilogue_absorption"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Output value dump"
     },
     {
       "id": "output-value-pipeline",
       "label": "Output value pipeline",
-      "selector": {
-        "entry_rva": 7943,
-        "end_rva": 8055,
-        "proposal_kind": "single_entry_control_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "source": {
+        "files": [
+          "components/output-value-pipeline.c"
+        ],
+        "operation_symbols": {
+          "run": "jq_output_value_pipeline_run"
+        },
+        "shared_inputs": []
+      }
     },
     {
       "id": "option-value-collection",
-      "label": "Option value collection",
-      "selector": {
-        "entry_rva": 10455,
-        "end_rva": 14771,
-        "proposal_kind": "external_event_branch_coarsening"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Option value collection"
     },
     {
       "id": "wide-argument-conversion-tail",
-      "label": "Wide argument conversion tail",
-      "selector": {
-        "entry_rva": 18847,
-        "end_rva": 18933,
-        "proposal_kind": "epilogue_absorption"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Wide argument conversion tail"
     },
     {
       "id": "math-error-callback-dispatch",
       "label": "Optional math-error callback dispatch",
-      "selector": {
-        "entry_rva": 21229,
-        "end_rva": 21318,
-        "proposal_kind": "single_entry_control_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "source": {
+        "files": [
+          "components/math-error-callback-dispatch.c"
+        ],
+        "operation_symbols": {
+          "run": "jq_math_error_callback_dispatch_run"
+        },
+        "shared_inputs": []
+      }
     },
     {
       "id": "pe32-section-count",
-      "label": "Validated PE32 section count",
-      "selector": {
-        "entry_rva": 22912,
-        "end_rva": 22973,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Validated PE32 section count"
     },
     {
       "id": "pe32-image-base",
-      "label": "Validated PE32 image base",
-      "selector": {
-        "entry_rva": 23104,
-        "end_rva": 23164,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Validated PE32 image base"
     },
     {
       "id": "pe32-section-for-address",
-      "label": "PE32 section for address",
-      "selector": {
-        "entry_rva": 22768,
-        "end_rva": 22897,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "PE32 section for address"
     },
     {
       "id": "windows-path-info-scan",
-      "label": "Windows path component scan",
-      "selector": {
-        "entry_rva": 23584,
-        "end_rva": 24141,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Windows path component scan"
     },
     {
       "id": "invalid-parameter-handler-get",
-      "label": "Invalid-parameter handler getter",
-      "selector": {
-        "entry_rva": 49952,
-        "end_rva": 49958,
-        "proposal_kind": "singleton"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Invalid-parameter handler getter"
     },
     {
       "id": "invalid-parameter-handler-exchange",
-      "label": "Invalid-parameter handler exchange",
-      "selector": {
-        "entry_rva": 49968,
-        "end_rva": 49979,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Invalid-parameter handler exchange"
     },
     {
       "id": "bounded-string-length",
-      "label": "Bounded byte-string length",
-      "selector": {
-        "entry_rva": 48272,
-        "end_rva": 48328,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Bounded byte-string length"
     },
     {
       "id": "bounded-wide-string-length",
-      "label": "Bounded wide-string length",
-      "selector": {
-        "entry_rva": 47680,
-        "end_rva": 47719,
-        "proposal_kind": "call_target_return_closure"
-      },
-      "evidence_profile": "structural-draft-v1"
+      "label": "Bounded wide-string length"
     }
   ],
+  "configurations": [
+    {
+      "id": "leaves",
+      "label": "Independent leaf components",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "option-name-match",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "usage-exit-route",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "usage-write-route",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "stderr-value-kind-route",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "debug-value-prefix",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "option-token-classifier",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "output-value-release",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "output-value-dump",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "output-value-pipeline",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "option-value-collection",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "wide-argument-conversion-tail",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "math-error-callback-dispatch",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "pe32-section-count",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "pe32-image-base",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "pe32-section-for-address",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "windows-path-info-scan",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "invalid-parameter-handler-get",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "invalid-parameter-handler-exchange",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "bounded-string-length",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "bounded-wide-string-length",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "operator-whole",
+      "label": "One operator-defined aggregate",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "operator-whole",
+          "kind": "group"
+        }
+      ]
+    }
+  ],
+  "format": "spaghetti-extractor-component-lifting-intent-v1",
   "groups": [
     {
       "id": "operator-whole",
@@ -231,128 +244,14 @@
         "invalid-parameter-handler-exchange",
         "bounded-string-length",
         "bounded-wide-string-length"
-      ],
-      "evidence_profile": "structural-draft-v1",
-      "interface_review": "reviews/operator-whole.json"
+      ]
     }
   ],
-  "configurations": [
-    {
-      "id": "leaves",
-      "label": "Independent leaf components",
-      "selections": [
-        {
-          "kind": "component",
-          "id": "option-name-match",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "usage-exit-route",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "usage-write-route",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "stderr-value-kind-route",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "debug-value-prefix",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "option-token-classifier",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "output-value-release",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "output-value-dump",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "output-value-pipeline",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "option-value-collection",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "wide-argument-conversion-tail",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "math-error-callback-dispatch",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "pe32-section-count",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "pe32-image-base",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "pe32-section-for-address",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "windows-path-info-scan",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "invalid-parameter-handler-get",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "invalid-parameter-handler-exchange",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-string-length",
-          "activation": "draft"
-        },
-        {
-          "kind": "component",
-          "id": "bounded-wide-string-length",
-          "activation": "draft"
-        }
-      ]
-    },
-    {
-      "id": "operator-whole",
-      "label": "One operator-defined aggregate",
-      "selections": [
-        {
-          "kind": "group",
-          "id": "operator-whole",
-          "activation": "draft"
-        }
-      ]
-    }
-  ]
+  "intent_sha256": "1046a5842dae36aa47a5d800c738333294f39e51ae8a2651f13384d6816d481c",
+  "policy": {
+    "machine_authority_from_v5_bindings_only": true,
+    "operation_symbols_only": true,
+    "tests_authorize": false
+  },
+  "program_id": "jq-pe32-frontend-reference-v1"
 }

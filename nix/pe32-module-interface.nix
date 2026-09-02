@@ -16,19 +16,25 @@ pkgs.runCommand "${namePrefix}-module-interface-v2" {
 } ''
   set -euo pipefail
   export PYTHONHASHSEED=0
-  export PYTHONPATH=${pythonSource}/src
+  export PYTHONPATH=${pythonSource.pythonPath}
   ${pythonEnv}/bin/python3 - ${original} \
     ${if loadImageContract != null then loadImageContract else "${staticExport}/load-image-contract.json"} \
     "$out" <<'PY'
   import pathlib
   import sys
   from spaghetti_extractor.candidate.project import write_pe32_module_interface
+  from spaghetti_extractor.pe32.module_interface import Pe32ModuleInterfaceV2
 
-  write_pe32_module_interface(
+  payload = write_pe32_module_interface(
       image_id=${builtins.toJSON imageId},
       original_pe=pathlib.Path(sys.argv[1]),
       load_image_contract=pathlib.Path(sys.argv[2]),
       out=pathlib.Path(sys.argv[3]),
+  )
+  Pe32ModuleInterfaceV2.parse(
+      payload,
+      expected_image_id=${builtins.toJSON imageId},
+      require_complete=True,
   )
   PY
   jq -e '

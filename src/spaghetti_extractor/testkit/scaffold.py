@@ -12,7 +12,6 @@ from .model import canonical_sha256
 from .static_manifest import refresh_repository_metadata
 
 
-PHASE_KINDS = frozenset({"map-units", "map-sccs", "reduce"})
 TEST_TIERS = frozenset({"benchmark", "integration", "smoke", "unit"})
 NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 TARGET_ID = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -174,89 +173,6 @@ def plan_test_scaffold(
     )
 
 
-def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
-    if phase_kind not in PHASE_KINDS:
-        raise TestkitError(Diagnostic("error", "invalid_phase_kind", f"unsupported phase kind {phase_kind!r}", remediation=f"Choose one of: {', '.join(sorted(PHASE_KINDS))}."))
-    name = _name(name, field="phase name")
-    constructor = phase_kind.replace("-", "_")
-    if phase_kind == "map-units":
-        transform_signature = "def transform(context: PhaseContextV3, source: ArtifactRecordV3) -> ArtifactRecordV3:\n"
-        transform_body = "    return ArtifactRecordV3.create(source.record_id, source.value.to_value())\n"
-        constructor_arguments = (
-            '    source_input="source",\n'
-            '    input_artifact_kinds={"source": "source-v3"},\n'
-            f'    output_artifact_kind={name!r} + "-v3",\n'
-            "    transform=transform,\n"
-        )
-    elif phase_kind == "map-sccs":
-        transform_signature = "def transform(context: PhaseContextV3, work_item: SccWorkItemV3) -> ArtifactRecordV3:\n"
-        transform_body = "    return ArtifactRecordV3.create(work_item.record_id, {\"members\": list(work_item.scc.members)})\n"
-        constructor_arguments = (
-            '    input_artifact_kinds={"source": "source-v3"},\n'
-            f'    output_artifact_kind={name!r} + "-v3",\n'
-            "    transform=transform,\n"
-        )
-    else:
-        transform_signature = "def transform(context: PhaseContextV3) -> ArtifactRecordV3:\n"
-        transform_body = "    return ArtifactRecordV3.create(\"summary\", {\"status\": \"incomplete\"})\n\n\ndef check_complete(output, context: PhaseContextV3) -> None:\n    output.validate_completeness((\"summary\",))\n"
-        constructor_arguments = (
-            '    input_artifact_kinds={"source": "source-v3"},\n'
-            f'    output_artifact_kind={name!r} + "-v3",\n'
-            "    transform=transform,\n"
-            "    completeness=check_complete,\n"
-        )
-    source = (
-        f'"""{phase_kind} authority phase over typed v3 artifacts."""\n\n'
-        "from __future__ import annotations\n\n"
-        "from spaghetti_extractor.artifacts.artifact_set import ArtifactRecordV3\n"
-        "from spaghetti_extractor.artifacts.phases import (\n"
-        "    PhaseContextV3,\n"
-        "    SccWorkItemV3,\n"
-        f"    {constructor},\n"
-        ")\n\n\n"
-        + transform_signature
-        + transform_body
-        + "\n\nPHASE = "
-        + constructor
-        + "(\n"
-        + f"    name={name!r},\n"
-        + '    version="1",\n'
-        + constructor_arguments
-        + ")\n"
-    )
-    test = (
-        "from __future__ import annotations\n\n"
-        "import unittest\n\n"
-        f"from spaghetti_extractor.authority.{name} import PHASE\n\n\n"
-        f"class {''.join(part.title() for part in name.split('_'))}PhaseTests(unittest.TestCase):\n"
-        "    def test_declares_expected_phase_kind(self) -> None:\n"
-        f"        self.assertEqual(PHASE.form, {constructor!r})\n"
-    )
-    nix = (
-        "# Thin registration: execution, dependency tracking, and CA packing are shared.\n"
-        "{ mkArtifactPhaseV3, inputs, bindings, schedule ? null }:\n"
-        "mkArtifactPhaseV3 {\n"
-        f"  name = {json.dumps('spaghetti-' + name + '-v3')};\n"
-        f"  phaseReference = {json.dumps(f'spaghetti_extractor.authority.{name}:PHASE')};\n"
-        f"  expectedKind = {json.dumps(name + '-v3')};\n"
-        "  inherit inputs bindings schedule;\n"
-        "}\n"
-    )
-    return ScaffoldPlan(
-        kind="phase",
-        name=name,
-        files=(
-            ScaffoldFile(f"src/spaghetti_extractor/authority/{name}.py", source, "typed v3 phase implementation"),
-            ScaffoldFile(f"tests/unit/authority/test_{name}.py", test, "focused phase unit test"),
-            ScaffoldFile(f"nix/phase-v3-{name}.nix", nix, "thin v3 phase registration"),
-        ),
-        next_commands=(
-            f"nix run .#test -- affected --changed src/spaghetti_extractor/authority/{name}.py",
-            "nix run .#dev -- doctor",
-        ),
-    )
-
-
 def plan_fixture_scaffold(*, fixture_kind: str, name: str) -> ScaffoldPlan:
     fixture_kind = _name(fixture_kind, field="fixture kind")
     name = _name(name, field="fixture name")
@@ -328,14 +244,27 @@ let
   # Bind a reproducible PE derivation before adding this target to registry.nix.
   originalPe = throw "configure the {target_id} original PE derivation";
   runtimeProfile = "${{sdk.profiles}}/pe32-native-callthrough-runtime-v1.json";
+  environment = sdk.environment.pe32 {{
+    id = "{target_id}-win32";
+    profilePacks = [ runtimeProfile ];
+    interfacePacks = [ ];
+    launchProfile =
+      "${{sdk.profiles}}/pe32-win32-console-launch-assumptions-v1.json";
+    boundaryIntents = {{ }};
+    support.processTermination = null;
+  }};
   workflow = sdk.workflow.pe32 {{
     original = originalPe;
+    targetId = "{target_id}";
     binaryIdentity = "{target_id}.exe";
-    externalProfile = runtimeProfile;
-    machineImportProfiles = [ runtimeProfile ];
-    launchProfileTemplate =
-      "${{sdk.profiles}}/pe32-win32-console-launch-assumptions-v1.json";
-    namePrefix = "spaghetti-extractor-{target_id}";
+    externalEnvironment = environment;
+    lifting = {{
+      boundaries = [ ];
+      components = null;
+      libraries = {{ packs = [ ]; adoptionRoot = null; }};
+    }};
+    backend = {{ kind = "behavioral-c"; sourcePresentation = null; }};
+    analysisLimits = {{ maxUnits = 512; maxCandidatesPerSeed = 12; }};
   }};
 in
 sdk.target.pe32Bundle {{
@@ -368,13 +297,11 @@ sdk.target.pe32Bundle {{
 
 
 __all__ = [
-    "PHASE_KINDS",
     "TEST_TIERS",
     "ScaffoldFile",
     "ScaffoldPlan",
     "apply_scaffold_plan",
     "plan_fixture_scaffold",
-    "plan_phase_scaffold",
     "plan_target_scaffold",
     "plan_test_scaffold",
 ]

@@ -154,7 +154,7 @@ let
   set -euo pipefail
   export PYTHONHASHSEED=0
   export PYTHONDONTWRITEBYTECODE=1
-  export PYTHONPATH=${catalogPythonSource}/src
+  export PYTHONPATH=${catalogPythonSource.pythonPath}
   mkdir -p "$out/behavior-packs"
   ${pythonEnv}/bin/python3 - \
     ${declaration} ${artifactRoot} "$out/library-artifact-index.json" <<'PY'
@@ -207,10 +207,10 @@ let
       ${lib.escapeShellArg id} <<'PY'
     import sys
     from spaghetti_extractor.libraries.v4_behavior_manifest import (
-        read_library_behavior_pack_declaration_v1,
+        read_library_behavior_pack_declaration,
     )
 
-    behavior_pack = read_library_behavior_pack_declaration_v1(sys.argv[1])
+    behavior_pack = read_library_behavior_pack_declaration(sys.argv[1])
     if behavior_pack.implementation.implementation_id != sys.argv[2]:
         raise SystemExit("reusable implementation ID disagrees with its catalog key")
     PY
@@ -230,7 +230,7 @@ let
       set -euo pipefail
       export PYTHONHASHSEED=0
       export PYTHONDONTWRITEBYTECODE=1
-      export PYTHONPATH=${abiSpecPythonSource}/src
+      export PYTHONPATH=${abiSpecPythonSource.pythonPath}
       mkdir -p "$out"
       ${pythonEnv}/bin/python3 - \
         ${lib.escapeShellArg abiDeclarationSpecInput} \
@@ -266,7 +266,7 @@ let
     set -euo pipefail
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
-    export PYTHONPATH=${abiPythonSource}/src
+    export PYTHONPATH=${abiPythonSource.pythonPath}
     mkdir -p "$out"
     ${pythonEnv}/bin/python3 - \
       ${package}/library-artifact-index.json \

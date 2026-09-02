@@ -1,0 +1,939 @@
+{
+  "blockers": [
+    {
+      "code": "machine_effect_service_callback_outcome_projection_unreviewed",
+      "component_id": "directdraw-init"
+    },
+    {
+      "code": "contextual_tail_live_in_object_outcome_projection_unreviewed",
+      "component_id": "directdraw-init",
+      "entry_rva": 52572,
+      "excluded_prefix_rva_end": 52572,
+      "excluded_prefix_rva_start": 52320,
+      "required_review": [
+        "checked_faithful_continuation_portal_state",
+        "six_zero_failure_one_success_outcome_projections",
+        "two_internal_call_effects"
+      ]
+    }
+  ],
+  "component_id": "directdraw-init",
+  "format": "spaghetti-extractor-component-machine-binding-intent-v1",
+  "intent_sha256": "6799b6c4c5baa51c9f78d725d5f516705ad6e734398ce619556a45a9a53ada76",
+  "operations": [
+    {
+      "callback_ids": [],
+      "effect_ids": [],
+      "entry_rvas": [
+        52572
+      ],
+      "id": "initialize",
+      "induction_evidence_sha256": null,
+      "kind": "operation",
+      "machine_projection": {
+        "operation": {
+          "callback_operation_ids": [],
+          "continuation_unit_ids": [],
+          "effects": [],
+          "entry_unit_ids": [
+            "semantic-transfer:original-cutpoint-0000cd5c-0000cd6a"
+          ],
+          "exit_unit_ids": [
+            "semantic-transfer:original-cutpoint-0000cda8-0000cda9",
+            "semantic-transfer:original-cutpoint-0000cdfb-0000cdfc",
+            "semantic-transfer:original-cutpoint-0000ceae-0000ceaf",
+            "semantic-transfer:original-cutpoint-0000cf27-0000cf28",
+            "semantic-transfer:original-cutpoint-0000cfe6-0000cfe7",
+            "semantic-transfer:original-cutpoint-0000cfff-0000d006"
+          ],
+          "operation_id": "initialize",
+          "parameters": [
+            {
+              "id": "window",
+              "projection": {
+                "kind": "resource",
+                "resource_kind": "window_handle",
+                "source": {
+                  "at": "entry",
+                  "kind": "static_slot",
+                  "rva": 215412,
+                  "width": 32
+                }
+              }
+            }
+          ],
+          "preserved_state_ids": [
+            "clipper_mode"
+          ],
+          "results": [
+            {
+              "id": "status",
+              "projection": {
+                "at": "exit",
+                "kind": "register",
+                "register": "eax",
+                "width": 32
+              }
+            }
+          ],
+          "state": [
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 96764,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 96764,
+                "width": 32
+              },
+              "id": "capability_mode"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 215452,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 215452,
+                "width": 32
+              },
+              "id": "clipper_mode"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 96772,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 96772,
+                "width": 32
+              },
+              "id": "directdraw_initialized"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 96776,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 96776,
+                "width": 32
+              },
+              "id": "video_memory_capability"
+            }
+          ]
+        },
+        "preserved_unit_inventory": [
+          "semantic-transfer:original-cutpoint-0000cd5c-0000cd6a",
+          "semantic-transfer:original-cutpoint-0000cd6a-0000cd6e",
+          "semantic-transfer:original-cutpoint-0000cd6e-0000cd79",
+          "semantic-transfer:original-cutpoint-0000cd79-0000cd8b",
+          "semantic-transfer:original-cutpoint-0000cd8b-0000cd92",
+          "semantic-transfer:original-cutpoint-0000cd92-0000cd9e",
+          "semantic-transfer:original-cutpoint-0000cd9e-0000cda8",
+          "semantic-transfer:original-cutpoint-0000cda8-0000cda9",
+          "semantic-transfer:original-cutpoint-0000cda9-0000cdb7",
+          "semantic-transfer:original-cutpoint-0000cdb7-0000cdbd",
+          "semantic-transfer:original-cutpoint-0000cdbd-0000cdc1",
+          "semantic-transfer:original-cutpoint-0000cdc1-0000cdcb",
+          "semantic-transfer:original-cutpoint-0000cdcb-0000cddd",
+          "semantic-transfer:original-cutpoint-0000cddd-0000cde4",
+          "semantic-transfer:original-cutpoint-0000cde4-0000cdf1",
+          "semantic-transfer:original-cutpoint-0000cdf1-0000cdfb",
+          "semantic-transfer:original-cutpoint-0000cdfb-0000cdfc",
+          "semantic-transfer:original-cutpoint-0000cdfc-0000ce13",
+          "semantic-transfer:original-cutpoint-0000ce13-0000ce2c",
+          "semantic-transfer:original-cutpoint-0000ce2c-0000ce31",
+          "semantic-transfer:original-cutpoint-0000ce31-0000ce3f",
+          "semantic-transfer:original-cutpoint-0000ce3f-0000ce55",
+          "semantic-transfer:original-cutpoint-0000ce55-0000ce6b",
+          "semantic-transfer:original-cutpoint-0000ce6b-0000ce70",
+          "semantic-transfer:original-cutpoint-0000ce70-0000ce74",
+          "semantic-transfer:original-cutpoint-0000ce74-0000ce7e",
+          "semantic-transfer:original-cutpoint-0000ce7e-0000ce90",
+          "semantic-transfer:original-cutpoint-0000ce90-0000ce97",
+          "semantic-transfer:original-cutpoint-0000ce97-0000cea4",
+          "semantic-transfer:original-cutpoint-0000cea4-0000ceae",
+          "semantic-transfer:original-cutpoint-0000ceae-0000ceaf",
+          "semantic-transfer:original-cutpoint-0000ceaf-0000cec2",
+          "semantic-transfer:original-cutpoint-0000cec2-0000cedf",
+          "semantic-transfer:original-cutpoint-0000cedf-0000cee9",
+          "semantic-transfer:original-cutpoint-0000cee9-0000ceed",
+          "semantic-transfer:original-cutpoint-0000ceed-0000cef7",
+          "semantic-transfer:original-cutpoint-0000cef7-0000cf09",
+          "semantic-transfer:original-cutpoint-0000cf09-0000cf10",
+          "semantic-transfer:original-cutpoint-0000cf10-0000cf1d",
+          "semantic-transfer:original-cutpoint-0000cf1d-0000cf27",
+          "semantic-transfer:original-cutpoint-0000cf27-0000cf28",
+          "semantic-transfer:original-cutpoint-0000cf28-0000cf34",
+          "semantic-transfer:original-cutpoint-0000cf34-0000cf42",
+          "semantic-transfer:original-cutpoint-0000cf42-0000cf48",
+          "semantic-transfer:original-cutpoint-0000cf48-0000cf4c",
+          "semantic-transfer:original-cutpoint-0000cf4c-0000cf57",
+          "semantic-transfer:original-cutpoint-0000cf57-0000cf65",
+          "semantic-transfer:original-cutpoint-0000cf65-0000cf73",
+          "semantic-transfer:original-cutpoint-0000cf73-0000cf79",
+          "semantic-transfer:original-cutpoint-0000cf79-0000cf7d",
+          "semantic-transfer:original-cutpoint-0000cf7d-0000cf88",
+          "semantic-transfer:original-cutpoint-0000cf88-0000cf96",
+          "semantic-transfer:original-cutpoint-0000cf96-0000cfa3",
+          "semantic-transfer:original-cutpoint-0000cfa3-0000cfa8",
+          "semantic-transfer:original-cutpoint-0000cfa8-0000cfac",
+          "semantic-transfer:original-cutpoint-0000cfac-0000cfb7",
+          "semantic-transfer:original-cutpoint-0000cfb7-0000cfc3",
+          "semantic-transfer:original-cutpoint-0000cfc3-0000cfcf",
+          "semantic-transfer:original-cutpoint-0000cfcf-0000cfdc",
+          "semantic-transfer:original-cutpoint-0000cfdc-0000cfe6",
+          "semantic-transfer:original-cutpoint-0000cfe6-0000cfe7",
+          "semantic-transfer:original-cutpoint-0000cfe7-0000cfec",
+          "semantic-transfer:original-cutpoint-0000cfec-0000cff8",
+          "semantic-transfer:original-cutpoint-0000cff8-0000cfff",
+          "semantic-transfer:original-cutpoint-0000cfff-0000d006"
+        ],
+        "service_bindings": [
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 1
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cfa3-0000cfa8"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "8d07447c4dea3fcd45b50c1eaca59f07f0c021ccba8f1f4500ef5c6c4bc11282"
+            },
+            "service_id": "attach_clipper"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "cell_id": "surface_descriptor",
+                  "initial_words": [
+                    108,
+                    7,
+                    480,
+                    640,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    16448
+                  ],
+                  "kind": "local_cell",
+                  "local_cell_relation_sha256": "62be9a58f0d0c09e24124fd198d97d89145ec23b3937ce54da8e7a229b83dfc5"
+                },
+                {
+                  "kind": "out_interface",
+                  "out_interface_relation_sha256": "4febf70c23ce02fac743a70767a0deec8491140db6da607afe3193b96f1c8ec1",
+                  "parameter_index": 1
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cedf-0000cee9"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "4152365210559748cb015b9ceb3de1869517cb49d1c87015fefca5ce28e38ba3"
+            },
+            "service_id": "create_backbuffer"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                },
+                {
+                  "kind": "out_interface",
+                  "out_interface_relation_sha256": "a66a1a57efe267d4fea7e372f4b67a63534a34abe571bd15d3328b853f26a0c1",
+                  "parameter_index": 1
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf42-0000cf48"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "7e57d0c03f00822f7233fc192514b72fff8658221b9a6a829862c65ef298e79f"
+            },
+            "service_id": "create_clipper"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "cell_id": "surface_descriptor",
+                  "initial_words": [
+                    108,
+                    1,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    512
+                  ],
+                  "kind": "local_cell",
+                  "local_cell_relation_sha256": "62be9a58f0d0c09e24124fd198d97d89145ec23b3937ce54da8e7a229b83dfc5"
+                },
+                {
+                  "kind": "out_interface",
+                  "out_interface_relation_sha256": "4febf70c23ce02fac743a70767a0deec8491140db6da607afe3193b96f1c8ec1",
+                  "parameter_index": 1
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ce6b-0000ce70"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "4152365210559748cb015b9ceb3de1869517cb49d1c87015fefca5ce28e38ba3"
+            },
+            "service_id": "create_primary_surface"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cd92-0000cd9e"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cde4-0000cdf1"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ce97-0000cea4"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf10-0000cf1d"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cfcf-0000cfdc"
+                }
+              ],
+              "identity": {
+                "dll": "user32.dll",
+                "ordinal": null,
+                "symbol": "DestroyWindow"
+              },
+              "kind": "external_call"
+            },
+            "service_id": "destroy_window"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "constant",
+                  "value": 0
+                },
+                {
+                  "kind": "out_interface",
+                  "out_interface_relation_sha256": "e220809dd3ac1eafffe3d242346078485f32a55910d5537f699d54616b0a567d",
+                  "parameter_index": 0
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cd5c-0000cd6a"
+                }
+              ],
+              "identity": {
+                "dll": "ddraw.dll",
+                "ordinal": null,
+                "symbol": "DirectDrawCreate"
+              },
+              "kind": "external_call"
+            },
+            "service_id": "directdraw_create"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "cell_id": "driver_caps",
+                  "initial_words": [
+                    380,
+                    {
+                      "kind": "entry_projection",
+                      "projection": {
+                        "at": "entry",
+                        "kind": "stack",
+                        "offset": 160,
+                        "width": 32
+                      }
+                    },
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  "kind": "local_cell",
+                  "local_cell_relation_sha256": "ff1bd7282bf7187d68601727627579830206329d296f9241c1ea0503ea930abf"
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ce2c-0000ce31"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "96a3e77ac70ac8b67b894c27d72632aed6dbe29d427470a5b3c5f3cb209847b4",
+              "result_projection": {
+                "cell_id": "driver_caps",
+                "kind": "local_cell_word",
+                "word_index": 1
+              }
+            },
+            "service_id": "get_caps"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cd6e-0000cd79"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cdc1-0000cdcb"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ce74-0000ce7e"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ceed-0000cef7"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf4c-0000cf57"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf7d-0000cf88"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cfac-0000cfb7"
+                }
+              ],
+              "identity": {
+                "dll": "user32.dll",
+                "ordinal": null,
+                "symbol": "ShowWindow"
+              },
+              "kind": "external_call",
+              "target_projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "esi",
+                "width": 32
+              }
+            },
+            "service_id": "hide_window"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "cases": [
+                    {
+                      "logical_value": 1,
+                      "physical_value": 4291244
+                    },
+                    {
+                      "logical_value": 2,
+                      "physical_value": 4291568
+                    },
+                    {
+                      "logical_value": 3,
+                      "physical_value": 4291520
+                    },
+                    {
+                      "logical_value": 4,
+                      "physical_value": 4291468
+                    },
+                    {
+                      "logical_value": 5,
+                      "physical_value": 4291420
+                    },
+                    {
+                      "logical_value": 6,
+                      "physical_value": 4291364
+                    },
+                    {
+                      "logical_value": 7,
+                      "physical_value": 4291304
+                    }
+                  ],
+                  "kind": "finite_word_map",
+                  "parameter_index": 1
+                },
+                {
+                  "kind": "constant",
+                  "value": 4285340
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cd8b-0000cd92"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cddd-0000cde4"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000ce90-0000ce97"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf09-0000cf10"
+                },
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cfc3-0000cfcf"
+                }
+              ],
+              "identity": {
+                "dll": "user32.dll",
+                "ordinal": null,
+                "symbol": "MessageBoxA"
+              },
+              "kind": "external_call"
+            },
+            "service_id": "message_box"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "argument_transducers": [
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 0
+                },
+                {
+                  "kind": "constant",
+                  "value": 0
+                },
+                {
+                  "kind": "logical_argument",
+                  "parameter_index": 1
+                }
+              ],
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cf73-0000cf79"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "065ab57257b7b0cc87709f680082615dc27eba4fbb5e0502f0a92e1700094aaa"
+            },
+            "service_id": "set_clipper_window"
+          },
+          {
+            "mediation": "direct",
+            "provider": {
+              "events": [
+                {
+                  "event_index": 0,
+                  "unit_id": "semantic-transfer:original-cutpoint-0000cdb7-0000cdbd"
+                }
+              ],
+              "kind": "interface_method",
+              "method_contract_sha256": "e68d1604d068317fdeb07334d453db3634f120f4b09d94b3b69385cff1c07f85"
+            },
+            "service_id": "set_cooperative_level"
+          }
+        ]
+      },
+      "object_authority_selectors": [],
+      "outcome_protocol_ids": [
+        "normal"
+      ],
+      "pointer_views": [],
+      "relation_receipt_sha256s": [],
+      "service_ids": [
+        "attach_clipper",
+        "create_backbuffer",
+        "create_clipper",
+        "create_primary_surface",
+        "destroy_window",
+        "directdraw_create",
+        "get_caps",
+        "hide_window",
+        "message_box",
+        "set_clipper_window",
+        "set_cooperative_level"
+      ],
+      "transfer_ids": [
+        "semantic-transfer:original-cutpoint-0000cd5c-0000cd6a",
+        "semantic-transfer:original-cutpoint-0000cd6a-0000cd6e",
+        "semantic-transfer:original-cutpoint-0000cd6e-0000cd79",
+        "semantic-transfer:original-cutpoint-0000cd79-0000cd8b",
+        "semantic-transfer:original-cutpoint-0000cd8b-0000cd92",
+        "semantic-transfer:original-cutpoint-0000cd92-0000cd9e",
+        "semantic-transfer:original-cutpoint-0000cd9e-0000cda8",
+        "semantic-transfer:original-cutpoint-0000cda8-0000cda9",
+        "semantic-transfer:original-cutpoint-0000cda9-0000cdb7",
+        "semantic-transfer:original-cutpoint-0000cdb7-0000cdbd",
+        "semantic-transfer:original-cutpoint-0000cdbd-0000cdc1",
+        "semantic-transfer:original-cutpoint-0000cdc1-0000cdcb",
+        "semantic-transfer:original-cutpoint-0000cdcb-0000cddd",
+        "semantic-transfer:original-cutpoint-0000cddd-0000cde4",
+        "semantic-transfer:original-cutpoint-0000cde4-0000cdf1",
+        "semantic-transfer:original-cutpoint-0000cdf1-0000cdfb",
+        "semantic-transfer:original-cutpoint-0000cdfb-0000cdfc",
+        "semantic-transfer:original-cutpoint-0000cdfc-0000ce13",
+        "semantic-transfer:original-cutpoint-0000ce13-0000ce2c",
+        "semantic-transfer:original-cutpoint-0000ce2c-0000ce31",
+        "semantic-transfer:original-cutpoint-0000ce31-0000ce3f",
+        "semantic-transfer:original-cutpoint-0000ce3f-0000ce55",
+        "semantic-transfer:original-cutpoint-0000ce55-0000ce6b",
+        "semantic-transfer:original-cutpoint-0000ce6b-0000ce70",
+        "semantic-transfer:original-cutpoint-0000ce70-0000ce74",
+        "semantic-transfer:original-cutpoint-0000ce74-0000ce7e",
+        "semantic-transfer:original-cutpoint-0000ce7e-0000ce90",
+        "semantic-transfer:original-cutpoint-0000ce90-0000ce97",
+        "semantic-transfer:original-cutpoint-0000ce97-0000cea4",
+        "semantic-transfer:original-cutpoint-0000cea4-0000ceae",
+        "semantic-transfer:original-cutpoint-0000ceae-0000ceaf",
+        "semantic-transfer:original-cutpoint-0000ceaf-0000cec2",
+        "semantic-transfer:original-cutpoint-0000cec2-0000cedf",
+        "semantic-transfer:original-cutpoint-0000cedf-0000cee9",
+        "semantic-transfer:original-cutpoint-0000cee9-0000ceed",
+        "semantic-transfer:original-cutpoint-0000ceed-0000cef7",
+        "semantic-transfer:original-cutpoint-0000cef7-0000cf09",
+        "semantic-transfer:original-cutpoint-0000cf09-0000cf10",
+        "semantic-transfer:original-cutpoint-0000cf10-0000cf1d",
+        "semantic-transfer:original-cutpoint-0000cf1d-0000cf27",
+        "semantic-transfer:original-cutpoint-0000cf27-0000cf28",
+        "semantic-transfer:original-cutpoint-0000cf28-0000cf34",
+        "semantic-transfer:original-cutpoint-0000cf34-0000cf42",
+        "semantic-transfer:original-cutpoint-0000cf42-0000cf48",
+        "semantic-transfer:original-cutpoint-0000cf48-0000cf4c",
+        "semantic-transfer:original-cutpoint-0000cf4c-0000cf57",
+        "semantic-transfer:original-cutpoint-0000cf57-0000cf65",
+        "semantic-transfer:original-cutpoint-0000cf65-0000cf73",
+        "semantic-transfer:original-cutpoint-0000cf73-0000cf79",
+        "semantic-transfer:original-cutpoint-0000cf79-0000cf7d",
+        "semantic-transfer:original-cutpoint-0000cf7d-0000cf88",
+        "semantic-transfer:original-cutpoint-0000cf88-0000cf96",
+        "semantic-transfer:original-cutpoint-0000cf96-0000cfa3",
+        "semantic-transfer:original-cutpoint-0000cfa3-0000cfa8",
+        "semantic-transfer:original-cutpoint-0000cfa8-0000cfac",
+        "semantic-transfer:original-cutpoint-0000cfac-0000cfb7",
+        "semantic-transfer:original-cutpoint-0000cfb7-0000cfc3",
+        "semantic-transfer:original-cutpoint-0000cfc3-0000cfcf",
+        "semantic-transfer:original-cutpoint-0000cfcf-0000cfdc",
+        "semantic-transfer:original-cutpoint-0000cfdc-0000cfe6",
+        "semantic-transfer:original-cutpoint-0000cfe6-0000cfe7",
+        "semantic-transfer:original-cutpoint-0000cfe7-0000cfec",
+        "semantic-transfer:original-cutpoint-0000cfec-0000cff8",
+        "semantic-transfer:original-cutpoint-0000cff8-0000cfff",
+        "semantic-transfer:original-cutpoint-0000cfff-0000d006"
+      ],
+      "unit_ids": [
+        "semantic-transfer:original-cutpoint-0000cd5c-0000cd6a",
+        "semantic-transfer:original-cutpoint-0000cd6a-0000cd6e",
+        "semantic-transfer:original-cutpoint-0000cd6e-0000cd79",
+        "semantic-transfer:original-cutpoint-0000cd79-0000cd8b",
+        "semantic-transfer:original-cutpoint-0000cd8b-0000cd92",
+        "semantic-transfer:original-cutpoint-0000cd92-0000cd9e",
+        "semantic-transfer:original-cutpoint-0000cd9e-0000cda8",
+        "semantic-transfer:original-cutpoint-0000cda8-0000cda9",
+        "semantic-transfer:original-cutpoint-0000cda9-0000cdb7",
+        "semantic-transfer:original-cutpoint-0000cdb7-0000cdbd",
+        "semantic-transfer:original-cutpoint-0000cdbd-0000cdc1",
+        "semantic-transfer:original-cutpoint-0000cdc1-0000cdcb",
+        "semantic-transfer:original-cutpoint-0000cdcb-0000cddd",
+        "semantic-transfer:original-cutpoint-0000cddd-0000cde4",
+        "semantic-transfer:original-cutpoint-0000cde4-0000cdf1",
+        "semantic-transfer:original-cutpoint-0000cdf1-0000cdfb",
+        "semantic-transfer:original-cutpoint-0000cdfb-0000cdfc",
+        "semantic-transfer:original-cutpoint-0000cdfc-0000ce13",
+        "semantic-transfer:original-cutpoint-0000ce13-0000ce2c",
+        "semantic-transfer:original-cutpoint-0000ce2c-0000ce31",
+        "semantic-transfer:original-cutpoint-0000ce31-0000ce3f",
+        "semantic-transfer:original-cutpoint-0000ce3f-0000ce55",
+        "semantic-transfer:original-cutpoint-0000ce55-0000ce6b",
+        "semantic-transfer:original-cutpoint-0000ce6b-0000ce70",
+        "semantic-transfer:original-cutpoint-0000ce70-0000ce74",
+        "semantic-transfer:original-cutpoint-0000ce74-0000ce7e",
+        "semantic-transfer:original-cutpoint-0000ce7e-0000ce90",
+        "semantic-transfer:original-cutpoint-0000ce90-0000ce97",
+        "semantic-transfer:original-cutpoint-0000ce97-0000cea4",
+        "semantic-transfer:original-cutpoint-0000cea4-0000ceae",
+        "semantic-transfer:original-cutpoint-0000ceae-0000ceaf",
+        "semantic-transfer:original-cutpoint-0000ceaf-0000cec2",
+        "semantic-transfer:original-cutpoint-0000cec2-0000cedf",
+        "semantic-transfer:original-cutpoint-0000cedf-0000cee9",
+        "semantic-transfer:original-cutpoint-0000cee9-0000ceed",
+        "semantic-transfer:original-cutpoint-0000ceed-0000cef7",
+        "semantic-transfer:original-cutpoint-0000cef7-0000cf09",
+        "semantic-transfer:original-cutpoint-0000cf09-0000cf10",
+        "semantic-transfer:original-cutpoint-0000cf10-0000cf1d",
+        "semantic-transfer:original-cutpoint-0000cf1d-0000cf27",
+        "semantic-transfer:original-cutpoint-0000cf27-0000cf28",
+        "semantic-transfer:original-cutpoint-0000cf28-0000cf34",
+        "semantic-transfer:original-cutpoint-0000cf34-0000cf42",
+        "semantic-transfer:original-cutpoint-0000cf42-0000cf48",
+        "semantic-transfer:original-cutpoint-0000cf48-0000cf4c",
+        "semantic-transfer:original-cutpoint-0000cf4c-0000cf57",
+        "semantic-transfer:original-cutpoint-0000cf57-0000cf65",
+        "semantic-transfer:original-cutpoint-0000cf65-0000cf73",
+        "semantic-transfer:original-cutpoint-0000cf73-0000cf79",
+        "semantic-transfer:original-cutpoint-0000cf79-0000cf7d",
+        "semantic-transfer:original-cutpoint-0000cf7d-0000cf88",
+        "semantic-transfer:original-cutpoint-0000cf88-0000cf96",
+        "semantic-transfer:original-cutpoint-0000cf96-0000cfa3",
+        "semantic-transfer:original-cutpoint-0000cfa3-0000cfa8",
+        "semantic-transfer:original-cutpoint-0000cfa8-0000cfac",
+        "semantic-transfer:original-cutpoint-0000cfac-0000cfb7",
+        "semantic-transfer:original-cutpoint-0000cfb7-0000cfc3",
+        "semantic-transfer:original-cutpoint-0000cfc3-0000cfcf",
+        "semantic-transfer:original-cutpoint-0000cfcf-0000cfdc",
+        "semantic-transfer:original-cutpoint-0000cfdc-0000cfe6",
+        "semantic-transfer:original-cutpoint-0000cfe6-0000cfe7",
+        "semantic-transfer:original-cutpoint-0000cfe7-0000cfec",
+        "semantic-transfer:original-cutpoint-0000cfec-0000cff8",
+        "semantic-transfer:original-cutpoint-0000cff8-0000cfff",
+        "semantic-transfer:original-cutpoint-0000cfff-0000d006"
+      ]
+    }
+  ],
+  "status": "incomplete"
+}

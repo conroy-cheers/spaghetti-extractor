@@ -6,6 +6,13 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+TESTKIT = {
+    "resources": (
+        "nix/component-v6-work-package.nix",
+        "nix/qualified-runtime-provider-v2.nix",
+        "nix/native-realization-v2.nix",
+    )
+}
 
 
 class ComponentAnalysisNixTests(unittest.TestCase):
@@ -39,78 +46,114 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn(".exact.complete and .potential.complete", discovery)
         self.assertIn('"$out/proposal-index.json"', discovery)
 
-    def test_component_dag_has_granular_phase_inputs(self) -> None:
+    def test_component_dag_is_the_direct_v6_clean_cut(self) -> None:
         module = (ROOT / "nix" / "component-workflow.nix").read_text(
             encoding="utf-8"
         )
-        for declaration in (
-            "component-resolution-v2",
-            "component-contract-v2",
-            "component-source-package-v2",
-            "component-evidence-v3",
-            "component-qualification-v3",
-            "component-activation-plan-v3",
-            "component-sources-v3",
+        for phase in (
+            "component-v5-interface-package.nix",
+            "component-source-package-v3.nix",
+            "component-semantic-slice-v2.nix",
+            "component-v6-work-package.nix",
         ):
-            self.assertIn(declaration, module)
-        self.assertIn("__contentAddressed = true;", module)
-        self.assertNotIn("component_workspace", module)
-        self.assertNotIn("identity_authorizes_activation", module)
-        self.assertIn("sourcePackages", module)
-        self.assertIn("mkDevelopmentDeclaration", module)
-        self.assertIn("developmentDeclarations", module)
-        development_body = module.split(
-            "mkDevelopmentDeclaration =", 1
-        )[1].split("mkSourcePaths =", 1)[0]
-        self.assertNotIn("proposalInput", development_body)
-        self.assertNotIn("resolutionSlices", development_body)
-        self.assertNotIn("machineIr", development_body)
-        development_package = module.split(
-            "developmentPackages =", 1
-        )[1].split("mkActivationPlan =", 1)[0]
-        self.assertNotIn("resolutionSlices", development_package)
-        self.assertIn('name = "declaration"', development_package)
-        self.assertIn("evidences", module)
-        self.assertIn("exhaustive-finite-domain-v1", module)
-        self.assertIn("runtimeConfigurations", module)
-        self.assertIn("runtimeFor", module)
-        self.assertIn("runtimePackages", module)
-        self.assertIn("machineIr interpreterPackage", module)
-        self.assertIn("implementation=pathlib.Path(sys.argv[2])", module)
-        self.assertIn("proposalInput.selectedProposals", module)
-        resolution_body = module.split(
-            'resolution = pkgs.runCommand', 1
-        )[1].split('mkContract =', 1)[0]
-        self.assertNotIn("${componentProposals}", resolution_body)
-        contract_gate = module.split(
-            '.format == "spaghetti-extractor-component-contract-package-v2"', 1
-        )[1].split('"$out/contract.json"', 1)[0]
-        self.assertIn('.status == "violated"', contract_gate)
-
-        proposal_input = (
-            ROOT / "nix" / "component-proposal-input.nix"
+            self.assertIn(phase, module)
+        self.assertIn("component-v5-index.nix", module)
+        source_package = (
+            ROOT / "nix" / "component-source-package-v3.nix"
         ).read_text(encoding="utf-8")
-        self.assertIn("builtins.readFile", proposal_input)
-        self.assertIn("builtins.toFile", proposal_input)
-        self.assertIn("__contentAddressed = true;", proposal_input)
+        self.assertIn("operation_symbols", source_package)
+        self.assertIn("directV6ProviderIds", module)
+        self.assertIn("selectedComponentIdsByConfiguration", module)
+        self.assertIn("v6SemanticSlices", module)
+        self.assertIn("v6WorkPackages", module)
+        for retired in (
+            "component-v5-contract.nix",
+            "component-v5-semantic-refinement.nix",
+            "component-v5-relation.nix",
+            "component-v5-external-sites.nix",
+            "component-v5-work-package.nix",
+            "component-v4-implementation.nix",
+            "component-v4-dependency-graph.nix",
+            "component-v4-activation-plan.nix",
+        ):
+            self.assertFalse((ROOT / "nix" / retired).exists())
+            self.assertNotIn(retired, module)
+        self.assertNotIn("component-source-package-v2", module)
+        self.assertNotIn("component-activation-plan-v3", module)
+        self.assertNotIn("developmentDeclarations", module)
+        self.assertNotIn("relationKernel", module)
+        self.assertNotIn("interactionContractCatalog", module)
 
-    def test_component_runtime_is_factored_out_of_candidate_construction(self) -> None:
-        candidate = (
-            ROOT / "nix" / "candidate-hybrid.nix"
+    def test_v6_work_package_projects_one_canonical_semantic_module(self) -> None:
+        workflow = (ROOT / "nix" / "component-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        module = (ROOT / "nix" / "component-v6-work-package.nix").read_text(
+            encoding="utf-8"
+        )
+        projection = (
+            ROOT / "src/spaghetti_extractor/components/work_package_v6.py"
         ).read_text(encoding="utf-8")
+        self.assertIn("linkedSemanticModule", module)
+        self.assertNotIn("linkedSemanticModuleV2", module)
+        self.assertIn("interfacePackage", module)
+        self.assertIn("bindingIntent", module)
+        self.assertIn("behavioralCPackage", module)
+        self.assertNotIn("transferPlan", module)
+        self.assertNotIn("machineIr", module)
+        self.assertNotIn("machineIrManifest", module)
+        self.assertIn("LinkedSemanticModuleV2.load", projection)
+        self.assertIn("build_component_semantic_slice_v2", projection)
+        self.assertIn("faithful_c_slices", projection)
+        self.assertNotIn("ComponentContractV4", projection)
+        self.assertNotIn("ComponentMachineBindingV5", projection)
+        self.assertEqual(workflow.count("interfaceIntentPath id"), 1)
+        self.assertIn("interfacePackage = v5Interfaces.${id}.derivation", workflow)
+        self.assertIn(
+            "semanticSlice = v6SemanticSlices.${providerId}.semanticSlice",
+            workflow,
+        )
+
+    def test_direct_component_provider_reuses_the_exact_runtime_abi(self) -> None:
+        component = (
+            ROOT / "nix" / "portable-c-work-package-provider-v2.nix"
+        ).read_text(encoding="utf-8")
+        implementation = (
+            ROOT / "src/spaghetti_extractor/semantic_providers/portable_c_work_package.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("semanticSlice", component)
+        self.assertIn("bindingIntent", component)
+        self.assertIn("interfacePackage", component)
+        self.assertIn("sourcePackage", component)
+        self.assertIn("write_portable_c_work_package_provider_v2", component)
+        self.assertNotIn("componentImplementations", component)
+        self.assertNotIn("component-implementation-v4", component)
+        self.assertIn(
+            "from ..transfer.runtime_abi import exact_runtime_header",
+            implementation,
+        )
+        self.assertFalse(
+            (ROOT / "src/spaghetti_extractor/candidate/runtime_abi.py").exists()
+        )
+
+    def test_legacy_component_runtime_is_absent_from_candidate_construction(self) -> None:
+        realization = (ROOT / "nix" / "native-realization-v2.nix").read_text(
+            encoding="utf-8"
+        )
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
-        self.assertIn("interpreterPackage,", candidate)
-        self.assertIn("componentRuntimePackage,", candidate)
-        self.assertIn("static-closed candidates require a component runtime", candidate)
-        self.assertNotIn("import ./candidate-interpreter-package.nix", candidate)
-        self.assertNotIn("import ./component-runtime-package.nix", candidate)
-        self.assertIn(
-            "componentRuntimeFor = if hasComponents then components.runtimeFor else null",
-            sdk,
-        )
-        self.assertIn("componentRuntimePackage = components.mkRuntime", sdk)
-        self.assertIn("interpreterPackage = interpreterSupport", sdk)
+        self.assertNotIn("behavioralCPackage", realization)
+        self.assertIn("linkedSemanticModule", realization)
+        self.assertIn("providerQualifications", realization)
+        self.assertNotIn("intrinsicProviderPackage", realization)
+        self.assertNotIn("componentRuntimePackage", realization)
+        self.assertNotIn("component_runtime_package", realization)
+        self.assertFalse((ROOT / "nix" / "candidate-deployment.nix").exists())
+        self.assertFalse((ROOT / "nix" / "native-linked-skeleton.nix").exists())
+        self.assertNotIn("componentRuntimeFor", sdk)
+        self.assertNotIn("componentRuntimes", sdk)
+        self.assertNotIn("componentRuntimePackage = components.mkRuntime", sdk)
 
     def test_pe32_bundle_exports_standard_configuration_families(self) -> None:
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
@@ -118,79 +161,39 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("mkPe32Bundle", sdk)
         self.assertIn('"spaghetti-extractor-target-bundle-v3"', sdk)
         self.assertIn("workflow.hasComponents", sdk)
-        self.assertIn("runtimes = workflow.componentRuntimes", sdk)
-        self.assertIn("static = lib.mapAttrs", sdk)
+        self.assertIn("semantic-slices-v2 = lib.mapAttrs", sdk)
+        self.assertIn("work-packages-v6 = lib.mapAttrs", sdk)
+        self.assertNotIn("dependency-graphs-v4", sdk)
+        self.assertIn("native-realizations = lib.mapAttrs", sdk)
         self.assertIn("diagnostics = {", sdk)
-        self.assertIn("runtime-frontiers = workflow.runtimeFrontiers", sdk)
+        self.assertNotIn("runtime-frontiers = workflow.runtimeFrontiers", sdk)
         self.assertNotIn("diagnostic = lib.mapAttrs", sdk)
         self.assertNotIn("target = {\n    bundle =", sdk)
 
-    def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
-        module = (ROOT / "nix" / "machine-ir-support-package.nix").read_text(encoding="utf-8")
-        gate = (ROOT / "nix" / "candidate-interpreter-package.nix").read_text(encoding="utf-8")
+    def test_transfer_capability_is_non_executable_and_content_addressed(self) -> None:
+        module = (ROOT / "nix" / "fallback-capability-analysis.nix").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("machineIr", module)
-        self.assertIn("capabilityAnalysis", module)
+        self.assertIn("write_transfer_capability_analysis", module)
+        self.assertIn("transfer_rows_sha256", (
+            ROOT / "src/spaghetti_extractor/transfer/capability_analysis.py"
+        ).read_text(encoding="utf-8"))
         self.assertNotIn("finalAuthorityGate", module)
-        self.assertIn("supportPackage", gate)
-        self.assertIn("executionGate", gate)
-        self.assertNotIn("finalAuthorityGate", gate)
-        self.assertIn("write_spx_interpreter_package", module)
-        for digest in (
-            "program_source_sha256",
-            "interpreter_source_sha256",
-            "runtime_header_sha256",
-            "interpreter_header_sha256",
-            "interpreter_internal_header_sha256",
-            "atomics_header_sha256",
-            "atomics_backend_header_sha256",
-            "atomics_source_sha256",
-        ):
-            self.assertIn(digest, module)
-        self.assertIn("__contentAddressed = true;", module)
-        self.assertNotIn("spaghetti-extractor-jq", module.lower())
-        self.assertNotIn("wine", module.lower())
+        self.assertNotIn("compiler", module)
+        self.assertNotIn("object", module)
 
     def test_fallback_support_does_not_use_ifd_or_prebuild_executable_code(self) -> None:
-        workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
+        capability = (ROOT / "nix/fallback-capability-analysis.nix").read_text(
             encoding="utf-8"
         )
-        implementation = (
-            ROOT / "nix" / "authority-input-implementation-capabilities.nix"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("fallbackCapabilityAnalysis", workflow)
-        self.assertIn("capabilityAnalysis = fallbackCapabilityAnalysis", workflow)
-        self.assertIn("fallbackSupport", workflow)
-        self.assertNotIn("fallbackInterpreter", workflow)
-        self.assertNotIn("preImplementationReadiness", workflow)
-        self.assertNotIn("authority-preimplementation-readiness.nix", workflow)
-        self.assertNotIn("builtins.readFile", workflow[workflow.index(
-            "fallbackCapabilityAnalysis ="
-        ):workflow.index("diagnosticsArtifacts =")])
-        self.assertIn("expectedRecordIds = null", workflow)
-        self.assertIn("itemIds = machineInput.expectedRecordIds", workflow)
-        self.assertIn("--capability-analysis", implementation)
-        self.assertNotIn("--implementation-file", implementation)
-
-    def test_native_object_graph_normalizes_ifd_inputs_into_ca_units(self) -> None:
-        module = (ROOT / "nix" / "candidate-native-object-graph.nix").read_text(
-            encoding="utf-8"
+        self.assertFalse((ROOT / "nix/authority-workflow.nix").exists())
+        self.assertFalse(
+            (ROOT / "nix/authority-input-implementation-capabilities.nix").exists()
         )
-        self.assertIn("builtins.readFile", module)
-        self.assertNotIn("builtins.path", module)
-        self.assertNotIn("unsafeDiscardStringContext", module)
-        self.assertIn("native-source-bundle-v1", module)
-        self.assertIn(
-            "compile_spx_interpreter_native_source_bundle", module
-        )
-        self.assertIn("assemble_spx_interpreter_native_objects", module)
-        self.assertIn("__contentAddressed = true;", module)
-        self.assertIn("compiledObjects", module)
-        self.assertIn("spaghetti-extractor-interpreter-native-object-graph-v2", module)
-        graph_declaration = module[
-            module.index('graph = pkgs.runCommand') : module.index("graphPayload =")
-        ]
-        self.assertNotIn("__contentAddressed = true;", graph_declaration)
+        self.assertNotIn("builtins.readFile", capability)
+        self.assertNotIn("fallbackInterpreter", capability)
+        self.assertNotIn("--implementation-file", capability)
 
     def test_machine_ir_preparation_is_a_distinct_reusable_phase(self) -> None:
         module = (ROOT / "nix" / "component-analysis.nix").read_text(
@@ -207,11 +210,22 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("prepared_units_reused", module)
         self.assertIn("machineIrPreparationPythonSource", module)
         self.assertIn("machineIrExportPythonSource", module)
-        self.assertIn('"spaghetti_extractor.authority_inputs.finite_values"', module)
+        self.assertIn('"spaghetti_extractor.reconstruction.finite_values"', module)
         preparation = module[
             module.index("machineIrPreparationPythonSource") :
             module.index("machineIrExportPythonSource")
         ]
+        self.assertIn(
+            '"spaghetti_extractor.reconstruction.ir_preparation"', preparation
+        )
+        self.assertNotIn(
+            '"spaghetti_extractor.reconstruction.ir"', preparation
+        )
+        export = module[
+            module.index("machineIrExportPythonSource") :
+            module.index("launchAssumptionProjectionPythonSource")
+        ]
+        self.assertIn('"spaghetti_extractor.reconstruction.ir_export"', export)
         self.assertNotIn("finite_value_domain", preparation)
         self.assertIn("finite_dataflow_factory=FiniteU32Dataflow", module)
 
@@ -228,143 +242,34 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, module)
 
-    def test_v3_registry_owns_the_complete_authority_family(self) -> None:
-        registry = (
-            ROOT / "src" / "spaghetti_extractor" / "authority" / "registry.py"
-        ).read_text(encoding="utf-8")
-        for phase in (
-            "TRANSITION_SUMMARIES_PHASE_V3",
-            "MEMORY_VERSIONS_PHASE_V3",
-            "INDUCTIVE_AUTHORITY_PHASE_V3",
-            "FINAL_AUTHORITY_PHASE_V3",
-        ):
-            self.assertIn(phase, registry)
-        self.assertIn("require_complete_family", registry)
+    def test_v3_target_wide_authority_registry_is_retired(self) -> None:
+        authority = ROOT / "src/spaghetti_extractor/authority"
+        self.assertFalse((authority / "registry.py").exists())
+        self.assertFalse((authority / "graph.py").exists())
 
-    def test_transition_summaries_are_native_content_addressed_units(self) -> None:
-        transition = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "transition_summaries.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("map_units(", transition)
-        self.assertIn('source_input="exact_units"', transition)
-        self.assertNotIn("transition_summary_v2", transition)
-        self.assertNotIn("authority_bindings_v2", transition)
-
-    def test_memory_authority_is_a_dependency_scc_phase(self) -> None:
-        memory = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "memory_versions.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("map_sccs(", memory)
-        self.assertIn('schedule_record_inputs=("semantic_index",)', memory)
-        self.assertIn('"transition_summaries": "transition-summaries-v3"', memory)
-
-    def test_inductive_authority_consumes_native_checked_summaries(self) -> None:
-        inductive = (
-            ROOT / "src" / "spaghetti_extractor" / "authority" / "inductive.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("map_sccs(", inductive)
-        self.assertIn('"memory_versions": "memory-versions-v3"', inductive)
-        self.assertIn('"transition_summaries": "transition-summaries-v3"', inductive)
-        self.assertNotIn("invariant_certificate_v2", inductive)
-
-    def test_authority_graph_is_registry_derived_not_manually_plumbed(self) -> None:
-        graph = (ROOT / "nix" / "authority-graph-v3.nix").read_text(
-            encoding="utf-8"
-        )
-        manifest = (ROOT / "nix" / "authority-graph-manifest.nix").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("graph.phases", graph)
-        self.assertIn("authority_graph_manifest_v3", manifest)
-        graph_module = (
-            ROOT / "src" / "spaghetti_extractor" / "authority" / "graph.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("AUTHORITY_PHASE_REGISTRY_V3", graph_module)
-        self.assertNotIn("staticHybridAuthorityV2", graph)
-
-    def test_authority_graph_plumbing_uses_narrow_python_closures(self) -> None:
-        graph = (ROOT / "nix" / "authority-graph-v3.nix").read_text(
-            encoding="utf-8"
-        )
-        gate = (
-            ROOT / "nix" / "authority-final-gate.nix"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn(
-            "artifactSetPythonSource = import ./python-module-closure.nix",
-            graph,
-        )
-        self.assertIn('"spaghetti_extractor.artifacts.artifact_set"', graph)
-        self.assertIn('"spaghetti_extractor.artifacts.io"', graph)
-        self.assertIn(
-            "planningPythonSource = import ./python-module-closure.nix", graph
-        )
-        self.assertIn(
-            'modules = [ "spaghetti_extractor.authority.planning" ];',
-            graph,
-        )
-        self.assertIn("pythonSource = artifactSetPythonSource;", graph)
-        self.assertIn("pythonSource = planningPythonSource;", graph)
-        self.assertIn("pythonClosure = import ./python-module-closure.nix", gate)
-        self.assertIn('"spaghetti_extractor.authority.final_authority"', gate)
-        self.assertIn('"spaghetti_extractor.artifacts.io"', gate)
-
-    def test_late_authority_families_have_independent_phase_boundaries(self) -> None:
-        registry = (
-            ROOT / "src" / "spaghetti_extractor" / "authority" / "registry.py"
-        ).read_text(encoding="utf-8")
-        for phase in (
-            "CANONICAL_EXTERNAL_SITES_PHASE_V3",
-            "CALLBACK_AUTHORITY_PHASE_V3",
-            "LAUNCH_ROOT_CLOSURE_PHASE_V3",
-            "EXCEPTIONAL_TRANSITIONS_PHASE_V3",
-            "ISA_QUALIFICATION_PHASE_V3",
-            "FALLBACK_COVERAGE_PHASE_V3",
-        ):
-            self.assertIn(phase, registry)
-
-    def test_exact_source_plan_is_separate_from_semantic_consumers(self) -> None:
-        source_plan = (ROOT / "nix" / "authority-source-plan.nix").read_text(
-            encoding="utf-8"
-        )
-        machine_input = (
-            ROOT / "nix" / "authority-machine-ir-input.nix"
-        ).read_text(encoding="utf-8")
-        self.assertIn("prepare_analysis_source_v3", source_plan)
-        self.assertIn('"${preparation}/plan.json"', machine_input)
-        self.assertIn("preplannedBoundaries", machine_input)
-        self.assertIn("builtins.toFile", machine_input)
-
-    def test_native_v3_module_closure_excludes_legacy_authority(self) -> None:
-        index = json.loads(
-            (ROOT / "nix/generated/python-module-index.json").read_text(encoding="utf-8")
-        )["modules"]
-        pending = ["spaghetti_extractor.authority.registry"]
-        closure: set[str] = set()
-        while pending:
-            module = pending.pop()
-            if module in closure:
-                continue
-            closure.add(module)
-            pending.extend(index[module]["dependencies"])
+    def test_target_authority_manifest_and_final_gate_are_retired(self) -> None:
+        self.assertFalse((ROOT / "nix/authority-graph-v3.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-graph-v3-boundaries.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-graph-v3-packs.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-graph-manifest.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-final-gate.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-workflow.nix").exists())
         self.assertFalse(
-            [module for module in closure if module.endswith("_v2")],
-            sorted(closure),
+            (ROOT / "src/spaghetti_extractor/authority/graph.py").exists()
+        )
+        self.assertFalse(
+            (ROOT / "src/spaghetti_extractor/authority/registry.py").exists()
         )
 
-    def test_final_authority_recomputes_family_completeness(self) -> None:
-        final = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "final_authority.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("_check_unit_inventory", final)
-        self.assertIn("_check_inductive_authority", final)
-        self.assertIn("validate_authority_decision_v3", final)
-        self.assertNotIn("static_hybrid_final_audit_v2", final)
+    def test_linked_module_has_no_separate_invalidation_projection(self) -> None:
+        module = (ROOT / "nix/tests/linked-semantic-module.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("linked-semantic-module-invalidation-check", module)
+        self.assertNotIn('{ name = "invalidation";', module)
+        self.assertNotIn("memoryLimitMiB", module)
 
-    def test_candidate_builder_validates_v3_authority_twice(self) -> None:
+    def test_candidate_builder_has_one_realization_build_manifest(self) -> None:
         builder = "\n".join(
             path.read_text(encoding="utf-8")
             for path in sorted(
@@ -373,162 +278,153 @@ class ComponentAnalysisNixTests(unittest.TestCase):
                 )
             )
         )
-        self.assertGreaterEqual(builder.count("_validate_candidate_authority_v3("), 3)
+        self.assertIn("NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT", builder)
+        self.assertIn("native-realization-build-manifest.json", builder)
+        self.assertNotIn("native_module_build_plan", builder)
+        self.assertNotIn("candidate_authority", builder)
         self.assertNotIn("spx_candidate_authority_v2", builder)
         self.assertNotIn("final_static_hybrid_audit", builder)
 
-    def test_isa_and_fallback_bindings_are_v3_native(self) -> None:
-        isa = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "isa_qualification.py"
-        ).read_text(encoding="utf-8")
-        fallback = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "fallback_coverage.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("ISA_QUALIFICATION_PHASE_V3", isa)
-        self.assertIn("FALLBACK_COVERAGE_PHASE_V3", fallback)
-        self.assertIn('unit_aligned_inputs=("isa_qualification",)', fallback)
-
-    def test_hybrid_candidate_uses_phase_specific_python_closures(self) -> None:
-        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
+    def test_native_realization_uses_shared_phase_constructor(self) -> None:
+        module = (ROOT / "nix" / "native-realization-v2.nix").read_text(
             encoding="utf-8"
         )
         closure = (ROOT / "nix" / "python-module-closure.nix").read_text(
             encoding="utf-8"
         )
 
-        for name in (
-            "nativeEnginePythonSource",
-            "nativeRuntimePythonSource",
-            "nativeBuildPythonSource",
-        ):
-            self.assertIn(name, module)
-        interpreter = (
-            ROOT / "nix" / "machine-ir-support-package.nix"
-        ).read_text(encoding="utf-8")
-        self.assertIn("phasePythonSource", interpreter)
-        self.assertIn("__contentAddressed = true;", closure)
+        self.assertIn("import ./ca-python-json-phase.nix", module)
+        self.assertNotIn("module-runtime-core-package.nix", module)
+        self.assertIn("lib.fileset.toSource", closure)
+        self.assertIn("builtins.toFile", closure)
         self.assertIn("python-module-index.json", closure)
         self.assertIn("role-checked-module-index-v3", closure)
         self.assertIn("role-derived-source-class-v1", closure)
         self.assertIn("unauthorizedModules", closure)
+        self.assertIn("staleSourceModules", closure)
+        self.assertIn('builtins.hashFile "sha256"', closure)
+        self.assertIn("nix run .#dev -- refresh", closure)
         self.assertNotIn("python-module-validation.nix", closure)
-        self.assertIn("ast.parse", closure)
-        self.assertIn("python-module-closure.json", closure)
-        self.assertIn('package = module.split(".", 1)[0]', closure)
-        self.assertIn("run `nix run .#dev -- refresh`", closure)
+        self.assertNotIn("pkgs.runCommand", closure)
+        self.assertNotIn("ast.parse", closure)
+        self.assertIn("spaghetti-python-module-closure.json", closure)
+        checks = (ROOT / "nix/flake-modules/checks.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("assert !staleSourceClosure.success", checks)
+        self.assertIn("assert !(transferEvaluatorPythonClosure ? drvPath)", checks)
 
-    def test_runtime_frontier_report_cannot_emit_or_execute_a_candidate(self) -> None:
-        module = (
-            ROOT / "nix" / "runtime-frontier-report.nix"
+    def test_native_linking_consumes_the_canonical_transfer_universe(self) -> None:
+        realization = (ROOT / "nix" / "native-realization-v2.nix").read_text(
+            encoding="utf-8"
+        )
+        validation = (
+            ROOT / "src/spaghetti_extractor/candidate/build_validation.py"
+        ).read_text(encoding="utf-8")
+        workflow = (
+            ROOT / "src/spaghetti_extractor/candidate/build_workflow.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("build_runtime_frontier_report", module)
-        self.assertIn(".policy.object_code_emitted", module)
-        self.assertIn("runtime frontier report emitted implementation material", module)
-        self.assertNotIn("wine ", module.lower())
+        self.assertIn("linked_semantic_module", realization)
+        self.assertNotIn("machineIr", realization)
+        self.assertNotIn('inputs["machine_ir"]', realization)
+        self.assertNotIn('inputs["machine_ir_manifest"]', realization)
+        self.assertIn("load_executable_transfer_plan", validation)
+        self.assertNotIn("machine_ir: Path", validation)
+        self.assertNotIn("machine_ir_manifest: Path", validation)
+        self.assertNotIn("machine_ir: Path", workflow)
+        self.assertNotIn("machine_ir_manifest: Path", workflow)
+
+    def test_target_sdk_owns_transfer_compilation_outside_authority(self) -> None:
+        sdk = (ROOT / "nix/target-sdk.nix").read_text(encoding="utf-8")
+        self.assertIn("transferPlan = executableTransferPlan", sdk)
+        self.assertNotIn("transferPlan = authority.transferPlan", sdk)
+        self.assertFalse((ROOT / "nix/authority-workflow.nix").exists())
+        self.assertFalse((ROOT / "nix/authority-input-isa-evidence.nix").exists())
+        isa_requirements = (
+            ROOT / "nix/semantic-isa-requirements.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("extract_lean_instruction_forms_side", isa_requirements)
+        self.assertIn("isaRequirements = semanticISARequirements", sdk)
+
+    def test_qualified_runtime_provider_owns_canonical_runtime_lowering(self) -> None:
+        module = (
+            ROOT / "nix" / "qualified-runtime-provider-v2.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("write_qualified_runtime_provider_v2", module)
+        self.assertIn("linkedSemanticModule", module)
+        self.assertIn("behavioralCPackage", module)
+        self.assertNotIn("intrinsicProviderPackage", module)
+        self.assertNotIn("sharedModuleRuntimePackage", module)
 
     def test_candidate_suites_require_authority_and_headless_wine(self) -> None:
         module = (
             ROOT / "nix" / "candidate-test-suite.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("spaghetti-extractor-release-acceptance-v1", module)
+        self.assertIn("spaghetti-extractor-native-realization-v2", module)
+        self.assertNotIn("spaghetti-extractor-native-realization-v1", module)
         self.assertIn(".status == \"complete\"", module)
-        self.assertIn(".release_accepted", module)
-        self.assertIn(".executable", module)
+        self.assertIn(".ready_for_observation", module)
+        self.assertIn("native_realization_required_before_execution", module)
         self.assertIn("xvfb-run -a", module)
         self.assertIn("WINEDEBUG=-all", module)
         self.assertIn("candidate_only: true", module)
         self.assertIn("original_binary_executed: false", module)
 
-    def test_candidate_generation_uses_structural_execution_gate(self) -> None:
-        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
-            encoding="utf-8"
-        )
+    def test_target_candidate_generation_uses_native_realization_only(self) -> None:
+        module = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
-        self.assertIn("structuralExecutionGate", module)
-        self.assertIn("spaghetti-extractor-structural-executable-v1", module)
-        self.assertIn("structural_execution_receipt=", module)
-        self.assertNotIn("final_static_hybrid_audit", module)
-        self.assertNotIn("authority_bundle", module)
-        self.assertNotIn("candidateMode ?", module)
-        self.assertNotIn('"structural-diagnostic"', module)
-        self.assertIn("candidate_authority=None", module)
-        self.assertIn('execution_scope == "structural-executable-v1"', module)
-        self.assertNotIn("write_static_hybrid_closure_receipt", module)
-        self.assertNotIn("write_final_candidate_authorization", module)
-        self.assertNotIn("spaghetti-extractor-final-candidate-generation-authorization-v1", module)
-        self.assertNotIn("externalSiteProposals", module)
-        self.assertNotIn("external_site_proposals=", module)
-        self.assertIn("region_override_package=optional_path", module)
-        self.assertNotIn("proposal-only external-site evidence", module)
+        self.assertIn("workflow.nativeRealizations", module)
+        self.assertIn("nativeRealizationV2", module)
+        self.assertNotIn("nativeRealization = callWith", module)
+        self.assertNotIn("implementationSelection = callWith", module)
+        self.assertNotIn("generatedBehavioralCProvider = callWith", module)
+        self.assertNotIn("workflow.staticCandidates", module)
+        self.assertNotIn("workflow.moduleDeployments", module)
+        self.assertNotIn("spaghetti-extractor-release-acceptance-v1", module)
 
-    def test_candidate_policy_and_portable_gate_share_rooted_projection(self) -> None:
-        projection = (
-            ROOT / "nix" / "rooted-behavioral-projection.nix"
-        ).read_text(encoding="utf-8")
+    def test_candidate_policy_and_provider_selection_share_exact_transfer_plan(self) -> None:
         workflow = (ROOT / "nix" / "component-workflow.nix").read_text(
             encoding="utf-8"
         )
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
-        self.assertIn("derive_rooted_behavioral_projection_v1", projection)
-        self.assertIn("load_rooted_behavioral_projection_v1", workflow)
-        self.assertIn("rooted_projection=", workflow)
-        self.assertIn("rootedBehavioralProjection", sdk)
-        self.assertNotIn("wine", projection.lower())
+        self.assertNotIn("v4ActivationPlans", workflow)
+        self.assertNotIn("v4DependencyGraphs", workflow)
+        self.assertIn("v6SemanticSlices", workflow)
+        self.assertIn("v6WorkPackages", workflow)
+        self.assertIn("linkedSemanticModule", workflow)
+        self.assertNotIn("linkedSemanticModuleV2", workflow)
+        self.assertNotIn("rootedBehavioralProjection", sdk)
+        self.assertNotIn("compatibilityExecutionClosure", sdk)
+        self.assertIn("linkedSemanticModule.derivation", sdk)
+        self.assertNotIn("moduleExecutionClosure", sdk)
+        self.assertNotIn("parityExecutionClosure", sdk)
+        self.assertIn("transferPlan = transferPlan.plan", sdk)
+        self.assertFalse(
+            (ROOT / "nix" / "rooted-behavioral-projection.nix").exists()
+        )
+        self.assertFalse(
+            (
+                ROOT / "src" / "spaghetti_extractor" / "candidate"
+                / "rooted_projection.py"
+            ).exists()
+        )
 
-    def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:
-        external = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "external_site_checker.py"
-        ).read_text(encoding="utf-8")
-        callbacks = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "callbacks.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("CANONICAL_EXTERNAL_SITES_PHASE_V3 = map_units(", external)
-        self.assertIn("CALLBACK_AUTHORITY_PHASE_V3 = map_units(", callbacks)
-        self.assertNotIn("external_site_proposals_v2", external)
-        self.assertNotIn("callback_entry_contract_v2", callbacks)
-
-    def test_candidate_uses_reusable_machine_ir_support(self) -> None:
-        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
+    def test_candidate_uses_qualified_objects_and_linked_semantics(self) -> None:
+        module = (ROOT / "nix" / "native-realization-v2.nix").read_text(
             encoding="utf-8"
         )
-        self.assertIn("interpreterPackage", module)
-        self.assertIn("structuralExecutionGate", module)
+        self.assertNotIn("behavioralCPackage", module)
+        self.assertIn("linkedSemanticModule", module)
+        self.assertIn("providerQualifications", module)
+        self.assertNotIn("intrinsicProviderPackage", module)
+        self.assertNotIn("interpreterPackage", module)
+        self.assertIn("implementationSelection", module)
         self.assertNotIn("fallbackCoverageReceipt", module)
         self.assertNotIn("candidateAuthorityReport", module)
-
-    def test_mutable_memory_authority_uses_native_version_records(self) -> None:
-        memory = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "memory_records.py"
-        ).read_text(encoding="utf-8")
-        versions = (
-            ROOT / "src" / "spaghetti_extractor" / "authority"
-            / "memory_versions.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("MemoryVersionRecordV3", memory)
-        self.assertIn("check_memory_versions_completeness_v3", versions)
-        self.assertNotIn("global_slot_authority_replay_v2", versions)
-
-    def test_v3_root_isa_and_exception_phases_use_checked_records(self) -> None:
-        root = ROOT / "src" / "spaghetti_extractor" / "authority"
-        launch = (root / "root_closure.py").read_text(encoding="utf-8")
-        isa = (root / "isa_qualification.py").read_text(encoding="utf-8")
-        exceptional = (root / "exceptional_transitions.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("LAUNCH_ROOT_CLOSURE_PHASE_V3", launch)
-        self.assertIn("ISA_QUALIFICATION_PHASE_V3", isa)
-        self.assertIn("EXCEPTIONAL_TRANSITIONS_PHASE_V3", exceptional)
-        self.assertIn("check_launch_root_closure_completeness_v3", launch)
-        self.assertIn("check_isa_qualification_completeness_v3", isa)
-        self.assertIn("check_exceptional_transitions_completeness_v3", exceptional)
 
     def test_sdk_interface_profile_is_a_generic_content_addressed_phase(self) -> None:
         module = (
@@ -551,24 +447,29 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("../src", analysis_source)
         self.assertNotIn("../nix", analysis_source)
 
-    def test_stable_sdk_exposes_only_generic_v3_static_authority_constructor(self) -> None:
+    def test_lean_kernel_source_has_an_independent_cache_identity(self) -> None:
+        context = (ROOT / "nix" / "toolkit-context.nix").read_text(
+            encoding="utf-8"
+        )
+        start = context.index("leanSourceFiles =")
+        end = context.index("staticPythonFiles =", start)
+        lean_source = context[start:end]
+
+        self.assertIn("pkgs.lib.fileset.toSource", lean_source)
+        self.assertIn("leanSourceFiles = ../src/spaghetti_extractor/lean;", lean_source)
+        self.assertIn("root = leanSourceFiles;", lean_source)
+        self.assertIn("fileset = leanSourceFiles;", lean_source)
+
+    def test_stable_sdk_does_not_expose_the_retired_authority_constructor(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
         self.assertIn("mkTargetSdk", flake)
-        self.assertIn("authority = authorityWorkflow", sdk)
+        self.assertNotIn("authority = authorityWorkflow", sdk)
+        self.assertNotIn("authorityWorkflow =", sdk)
+        self.assertNotIn("authority-workflow.nix", sdk)
         self.assertIn("workflow.pe32", sdk)
-        self.assertIn("authority-workflow.nix", sdk)
         self.assertNotIn("dxball-final-authority-v3", flake)
         self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)
-
-    def test_v3_nix_fixture_covers_structural_and_dependency_mutations(self) -> None:
-        fixture = (ROOT / "tests" / "unit" / "nix_v3" / "evaluation.nix").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("structuralMutation", fixture)
-        self.assertIn("recordMutation", fixture)
-        self.assertIn("edgeMutation", fixture)
-        self.assertIn("phaseSourceMutation", fixture)
 
     def test_legacy_nix_authority_graph_is_removed(self) -> None:
         self.assertFalse((ROOT / "nix" / "spaghetti-extractor-static-hybrid-authority-v2.nix").exists())
@@ -576,59 +477,189 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             (ROOT / "nix" / "tests" / "spaghetti-extractor-static-hybrid-authority-v2.nix").exists()
         )
 
-    def test_static_candidate_consumes_canonical_external_site_authority(self) -> None:
-        candidate = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
+    def test_native_realization_consumes_canonical_execution_universe(self) -> None:
+        candidate = (ROOT / "nix" / "native-realization-v2.nix").read_text(
             encoding="utf-8"
         )
-        authority_workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
+        runtime = (ROOT / "nix" / "qualified-runtime-provider-v2.nix").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            'graph.phases."canonical-external-sites-v3".artifact', candidate
-        )
-        for phase in (
-            "launch-root-closure-v3",
-            "indirect-target-certificates-v3",
-            "parametric-scc-summaries-v3",
+        self.assertIn("linkedSemanticModule", candidate)
+        self.assertIn("implementationSelection", candidate)
+        self.assertIn("write_qualified_runtime_provider_v2", runtime)
+        for retired_runtime_input in (
+            "canonicalExternalSites",
+            "callbackAuthority",
+            "rootClosure",
+            "targetCertificates",
+            "parametricSummaries",
         ):
-            self.assertIn(f'graph.phases."{phase}".artifact', candidate)
-        self.assertIn(
-            'outputs ? [ "canonical-external-sites-v3" "final-authority-v3" ]',
-            authority_workflow,
-        )
-        self.assertIn("canonical_external_sites=", candidate)
+            self.assertNotIn(retired_runtime_input, candidate)
+            self.assertNotIn(retired_runtime_input, runtime)
         self.assertNotIn("callableExternalRuntimeContract", candidate)
         self.assertNotIn("callable_external_contract=", candidate)
         self.assertFalse(
             (ROOT / "nix" / "callable-external-runtime-contract.py").exists()
         )
 
-    def test_component_external_sites_are_pre_isa_and_binding_scoped(self) -> None:
-        authority = (ROOT / "nix" / "authority-workflow.nix").read_text(
+    def test_production_runtime_graph_has_one_source_package(self) -> None:
+        self.assertFalse(
+            (ROOT / "nix" / "module-runtime-core-package.nix").exists()
+        )
+        production = "\n".join(
+            (ROOT / "nix" / name).read_text(encoding="utf-8")
+            for name in (
+                "qualified-runtime-provider-v2.nix",
+                "native-realization-v2.nix",
+            )
+        )
+        self.assertNotIn("module-runtime-core-package.nix", production)
+        self.assertNotIn("runtimeCore", production)
+        self.assertNotIn("runtime_core_package", production)
+        self.assertNotIn("machineIr", production)
+        self.assertIn("recoveredExecutableData", production)
+        shared = (
+            ROOT / "nix" / "qualified-runtime-provider-v2.nix"
+        ).read_text(encoding="utf-8")
+        realization = (ROOT / "nix" / "native-realization-v2.nix").read_text(
             encoding="utf-8"
         )
+        self.assertIn("linkedSemanticModule", shared)
+        self.assertIn("behavioralCPackage", shared)
+        self.assertNotIn("componentObjectPackages", shared)
+        self.assertNotIn("behavioralCPackage", realization)
+        self.assertNotIn("componentObjectPackages", realization)
+        self.assertIn("pinnedLayoutAuthorities", shared)
+        self.assertNotIn("executionClosure", shared)
+        self.assertNotIn("resolvedExternalEnvironment", shared)
+        self.assertNotIn("nativeIngressPlan", shared)
+        self.assertNotIn("activationPlan", shared)
+
+    def test_direct_refinement_consumes_the_v6_semantic_slice(self) -> None:
+        phase = (
+            ROOT / "nix" / "portable-c-work-package-provider-v2.nix"
+        ).read_text(encoding="utf-8")
+        workflow = (ROOT / "nix" / "component-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        refinement = (
+            ROOT / "src/spaghetti_extractor/semantic_providers/portable_c_work_package.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("semanticSlice", phase)
+        self.assertIn("bindingIntent", phase)
+        self.assertIn("interfacePackage", phase)
+        self.assertIn("sourcePackage", phase)
+        self.assertIn("semantic_slice=inputs", phase)
+        self.assertIn("v6SemanticSlices", workflow)
+        self.assertNotIn("v5ProofExecutionClosure", workflow)
+        for forbidden in ("machineIr", "machineIrManifest"):
+            self.assertNotIn(forbidden, phase)
+        self.assertIn("SemanticSliceV2", refinement)
+        self.assertIn("check_component_refinement", refinement)
+        self.assertIn("_check_inductive_refinement_v5", refinement)
+        self.assertNotIn("component-implementation-v4.json", refinement)
+
+    def test_native_guest_dispatch_uses_shared_content_addressed_domains(
+        self,
+    ) -> None:
+        canonical = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "runtime_canonical.py"
+        ).read_text(encoding="utf-8")
+        canonical_common = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "runtime_canonical_common.py"
+        ).read_text(encoding="utf-8")
+        canonical_build = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "runtime_canonical_build.py"
+        ).read_text(encoding="utf-8")
+        renderer = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "runtime_render_core.py"
+        ).read_text(encoding="utf-8")
+        model = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "module_runtime_plan.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_guest_dispatch_sites", canonical)
+        self.assertIn("content_addressed_admitted_domains_v2", model)
+        self.assertIn(
+            "def guest_dispatch_from_linked_module_v2", canonical_common
+        )
+        self.assertIn("linked_module=linked_v2.payload", canonical_build)
+        self.assertIn(
+            'authority="linked_semantic_module_v2"', canonical_common
+        )
+        self.assertIn(
+            "callable external member is disconnected", canonical_common
+        )
+        self.assertIn("def external_loader_targets", (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "runtime_model.py"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("NativeGuestDispatchDomain", canonical_common)
+        self.assertNotIn("exact_site_scoped_closure_targets_v1", model)
+        resolver = renderer[
+            renderer.index("static uint32_t spx_native_resolve_code_target("):
+            renderer.index(
+                "static uint32_t spx_native_callable_argument_value("
+            )
+        ]
+        self.assertIn("spx_native_guest_dispatch_sites", resolver)
+        self.assertNotIn("spx_native_transfer_count", resolver)
+
+    def test_callback_ingress_has_one_cardinality_independent_realization(
+        self,
+    ) -> None:
+        derivation = (
+            ROOT / "src" / "spaghetti_extractor" / "candidate" /
+            "native_ingress_derivation.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("_EAGER_CALLBACK_REALIZATION_LIMIT", derivation)
+        self.assertNotIn("if len(targets) >", derivation)
+        self.assertIn(
+            "Preserve every callback may-domain as one runtime publication",
+            derivation,
+        )
+        self.assertIn('callback_domains[domain_id] = domain', derivation)
+        self.assertIn('callback_publications.append({', derivation)
+
+    def test_components_consume_linked_semantics_without_external_sites(self) -> None:
         components = (ROOT / "nix" / "component-workflow.nix").read_text(
             encoding="utf-8"
         )
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+        self.assertFalse((ROOT / "nix/authority-workflow.nix").exists())
+        self.assertNotIn("usesExternalSites", components)
+        self.assertNotIn("externalSiteComponentIds", components)
+        self.assertNotIn("canonicalExternalSites", components)
+        self.assertNotIn("resolvedEnvironmentArtifact", components)
+        self.assertNotIn("resolvedExternalEnvironment", components)
+        self.assertIn("linkedSemanticModule", components)
+        component_start = sdk.index(
+            "      components =", sdk.index("behavioralCSource =")
+        )
+        component_call = sdk[component_start:sdk.index(
+            "configurationIds =", component_start
+        )]
+        self.assertNotIn("componentExternalSites", component_call)
+        self.assertNotIn("resolvedExternalEnvironment", component_call)
+        self.assertIn("linkedSemanticModule", component_call)
 
-        target_start = authority.index("targetEvidenceExternalArtifacts =")
-        target_end = authority.index("targetEvidenceGraph =", target_start)
-        target_inputs = authority[target_start:target_end]
-        self.assertIn("generatedTargetEvidenceArtifact", target_inputs)
-        self.assertNotIn("generatedISAEvidenceArtifact", target_inputs)
-        self.assertIn(
-            'externalSiteGraph.phases."canonical-external-sites-v3".artifact',
-            authority,
+    def test_native_realization_consumes_exact_provider_objects(self) -> None:
+        realization = (ROOT / "nix" / "native-realization-v2.nix").read_text(
+            encoding="utf-8"
         )
-        self.assertIn(
-            "&& liftUnitUsesExternalSites liftUnit",
-            components,
-        )
-        self.assertIn(
-            "canonicalExternalSites = authority.componentExternalSites;",
-            sdk,
-        )
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+        self.assertNotIn("intrinsicProviderPackage", realization)
+        self.assertIn("implementationSelection", realization)
+        self.assertNotIn("sharedModuleRuntimePackage", realization)
+        self.assertNotIn("nativeRealizationObjectManifest", realization)
+        self.assertNotIn("behavioralCPackage", realization)
+        self.assertNotIn("effectiveBehavioralCRuntimeQualifications", sdk)
+        self.assertNotIn("behavioralCByConfiguration", sdk)
+        self.assertNotIn("runtimeQualification", sdk)
 
 if __name__ == "__main__":
     unittest.main()

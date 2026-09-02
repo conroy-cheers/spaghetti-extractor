@@ -10,7 +10,7 @@ from ..artifacts.formats import (
     CALL_FRAME_RELATION_RECEIPT_V1_FORMAT,
     CALL_FRAME_RELATION_V1_FORMAT,
 )
-from ..components.relation_ir import ComponentRelationIRV1
+from ..components.relation_ir import CheckedRelationIRV1
 from ..components.relation_solver import prove_binding_lens
 from ._canonical import (
     CallProtocolError,
@@ -33,7 +33,7 @@ class CallFrameRelationV1:
     type_graph_sha256: str
     layout_set_sha256: str
     physical_frame_sha256: str
-    relation_ir: ComponentRelationIRV1
+    relation_ir: CheckedRelationIRV1
 
     @classmethod
     def create(
@@ -85,7 +85,7 @@ class CallFrameRelationV1:
                 "interactions": [],
             }
         )
-        relation = ComponentRelationIRV1.create(
+        relation = CheckedRelationIRV1.create(
             component_id="call-frame",
             machine_backend=frame.target,
             bindings={
@@ -133,7 +133,7 @@ class CallFrameRelationV1:
         frame_digest = digest(
             row["physical_frame_sha256"], "call frame relation physical frame digest"
         )
-        relation = ComponentRelationIRV1.parse(row["relation_ir"])
+        relation = CheckedRelationIRV1.parse(row["relation_ir"])
         if relation.component_id != "call-frame":
             raise CallProtocolError("call frame relation uses another component")
         expected_bindings = {

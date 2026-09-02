@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from spaghetti_extractor.calls.dialects.ia32 import IA32DialectCheckerV1, IA32DialectReceiptV1
+from spaghetti_extractor.calls._canonical import CallProtocolError
 from spaghetti_extractor.calls.evidence import MachineCallEvidenceV1
 from spaghetti_extractor.calls.frame import PhysicalCallFrameV2
 from tests.unit.calls._support import graph, layouts, machine_evidence, subject
@@ -25,6 +26,16 @@ class IA32DialectTests(unittest.TestCase):
         self.assertEqual(frame.arguments[0].pass_mode, "extended")
         self.assertEqual(frame.stack.cleanup_bytes, 0)
 
+    def test_custom_convention_is_not_silently_treated_as_callee_cleanup(self) -> None:
+        types = graph(convention="custom", result="u32")
+        with self.assertRaisesRegex(
+            CallProtocolError, "does not define calling convention"
+        ):
+            IA32DialectCheckerV1("pe32-i386-gnu-v1").lower(
+                subject=subject(), function_type_id="call", type_graph=types,
+                layout_set=layouts(types),
+            )
+
     def test_large_result_uses_hidden_sret_and_exact_cleanup(self) -> None:
         types = graph(convention="stdcall", result="triple", parameters=("u32",))
         frame = IA32DialectCheckerV1("pe32-i386-gnu-v1").lower(subject=subject(), function_type_id="call", type_graph=types, layout_set=layouts(types))
@@ -44,60 +55,6 @@ class IA32DialectTests(unittest.TestCase):
         changed = PhysicalCallFrameV2.create(**{key: value for key, value in payload.items() if key != "format"})
         receipt = checker.check(proposed=changed, subject=subject(), function_type_id="call", type_graph=types, layout_set=layout_set, machine_evidence=(machine_evidence(frame),))
         self.assertEqual(receipt.status, "violated")
-
-    def test_checked_legacy_callback_authority_migrates_to_exact_evidence(self) -> None:
-        types = graph(convention="stdcall", result="u32", parameters=("p_u8",))
-        layout_set = layouts(types)
-        callback_subject = {
-            "kind": "callback",
-            "id": "win32-unhandled-exception-filter",
-            "image_selector": "main-image",
-        }
-        frame = IA32DialectCheckerV1("pe32-i386-gnu-v1").lower(
-            subject=callback_subject,
-            function_type_id="call",
-            type_graph=types,
-            layout_set=layout_set,
-            transfer_kind="callback",
-        )
-        evidence = MachineCallEvidenceV1.from_pe32_callback_authority(
-            frame,
-            authority={
-                "id": "callback-v3:" + "a" * 64,
-                "status": "complete",
-                "authorizing": True,
-                "entry_state": {
-                    "model": "pe32-callback-entry-v1",
-                    "stack": {
-                        "callee_cleanup_bytes": 4,
-                        "arguments": [
-                            {"index": 0, "offset": 4, "width": 4, "value": {}}
-                        ],
-                    },
-                },
-                "protocol": {
-                    "id": callback_subject["id"],
-                    "signature": {
-                        "abi_template": "pe32-stdcall-v1",
-                        "argument_words": 1,
-                        "stack_cleanup_bytes": 4,
-                        "result": {"kind": "word", "register": "eax"},
-                    }
-                },
-            },
-            binary_sha256="b" * 64,
-        )
-        self.assertTrue(evidence.complete)
-        receipt = IA32DialectCheckerV1("pe32-i386-gnu-v1").check(
-            proposed=frame,
-            subject=callback_subject,
-            function_type_id="call",
-            type_graph=types,
-            layout_set=layout_set,
-            machine_evidence=(evidence,),
-        )
-        self.assertEqual(receipt.status, "complete")
-        self.assertEqual(IA32DialectReceiptV1.parse(receipt.to_payload()), receipt)
 
     def test_complementary_partial_machine_evidence_completes_frame(self) -> None:
         types = graph()

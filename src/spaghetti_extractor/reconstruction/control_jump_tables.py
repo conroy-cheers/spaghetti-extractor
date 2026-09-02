@@ -143,8 +143,11 @@ def recover_static_pe32_jump_table_inventory(
                     "predecessor evidence contains a non-mapping row",
                 )
             guard = _predecessor_path_guard(row)
+            predecessor_index = _predecessor_output_expression(
+                row, bound_expression
+            )
             guard_bound = (
-                _guard_upper_exclusive(guard, bound_expression)
+                _guard_upper_exclusive(guard, predecessor_index)
                 if guard is not None
                 else None
             )
@@ -630,9 +633,60 @@ def _predecessor_path_guard(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return None
 
 
+def _predecessor_output_expression(
+    row: Mapping[str, Any], expression: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Substitute exact final predecessor register expressions.
+
+    The dispatch expression is evaluated after its direct predecessor.  A
+    predecessor guard therefore constrains the predecessor's exact final
+    value, not the dispatch unit's syntactic pre-state register.  Ambiguous or
+    malformed output inventories deliberately leave the expression unchanged.
+    """
+
+    outputs = row.get("register_outputs")
+    if not isinstance(outputs, Sequence) or isinstance(outputs, (str, bytes)):
+        return expression
+    by_register: dict[str, Mapping[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            continue
+        register = output.get("register")
+        value = output.get("value")
+        if not isinstance(register, str) or not isinstance(value, Mapping):
+            continue
+        if register in by_register:
+            ambiguous.add(register)
+        else:
+            by_register[register] = value
+
+    def rewrite(value: Any, active: frozenset[str]) -> Any:
+        if not isinstance(value, Mapping):
+            if isinstance(value, list):
+                return [rewrite(item, active) for item in value]
+            return value
+        if str(value.get("op", "")).lower() in {"reg", "register"}:
+            name = value.get("name", value.get("register"))
+            if (
+                isinstance(name, str)
+                and name not in ambiguous
+                and name not in active
+                and name in by_register
+            ):
+                return rewrite(by_register[name], active | {name})
+        return {key: rewrite(child, active) for key, child in value.items()}
+
+    rewritten = rewrite(expression, frozenset())
+    return rewritten if isinstance(rewritten, Mapping) else expression
+
+
 def _guard_upper_exclusive(guard: Any, index: Mapping[str, Any]) -> int | None:
     if not isinstance(guard, Mapping):
         return None
+    machine_bound = _machine_complemented_unsigned_above_bound(guard, index)
+    if machine_bound is not None:
+        return machine_bound
     op = str(guard.get("op", "")).lower()
     operands = _binary_operands(guard, op)
     if op in _UNSIGNED_LESS_OPS and operands is not None:
@@ -671,6 +725,155 @@ def _guard_upper_exclusive(guard: Any, index: Mapping[str, Any]) -> int | None:
         if less_bound is not None and equal_bound == less_bound:
             return less_bound + 1
     return None
+
+
+def _unary_operand(value: Any, operation: str) -> Any | None:
+    if (
+        not isinstance(value, Mapping)
+        or str(value.get("op", "")).lower() != operation
+    ):
+        return None
+    if "value" in value:
+        return value["value"]
+    arguments = value.get("args")
+    if (
+        isinstance(arguments, Sequence)
+        and not isinstance(arguments, (str, bytes))
+        and len(arguments) == 1
+    ):
+        return arguments[0]
+    return None
+
+
+def _selector_mask(expression: Mapping[str, Any]) -> int | None:
+    operation = str(expression.get("op", "")).lower()
+    if operation in {"load", "read8", "read32"}:
+        width = expression.get("width")
+        if width is None:
+            width = 1 if operation == "read8" else 4 if operation == "read32" else None
+        if isinstance(width, int) and not isinstance(width, bool) and width in {1, 2, 4}:
+            return (1 << (width * 8)) - 1
+    if operation in {"and", "and32", "bit_and"}:
+        operands = _binary_operands(expression, operation)
+        if operands is not None:
+            for candidate, mask_value in (operands, reversed(operands)):
+                mask = _constant_value(mask_value)
+                if (
+                    mask is not None
+                    and isinstance(candidate, Mapping)
+                    and mask == _selector_mask(candidate)
+                ):
+                    return mask
+    return None
+
+
+def _same_selector_value(value: Any, selector: Mapping[str, Any]) -> bool:
+    if _same_expression(value, selector):
+        return True
+    if not isinstance(value, Mapping):
+        return False
+    operation = str(value.get("op", "")).lower()
+    operands = (
+        _binary_operands(value, operation)
+        if operation in {"and", "and32", "bit_and"}
+        else None
+    )
+    if operands is None:
+        return False
+    mask = _selector_mask(selector)
+    return mask is not None and any(
+        _constant_value(mask_value) == mask
+        and _same_expression(candidate, selector)
+        for candidate, mask_value in (operands, reversed(operands))
+    )
+
+
+def _machine_zero_comparison_bound(
+    value: Any, selector: Mapping[str, Any]
+) -> int | None:
+    operands = _binary_operands(value, "eq")
+    if operands is None:
+        return None
+    expression = None
+    for candidate, zero in (operands, reversed(operands)):
+        if _constant_value(zero) == 0:
+            expression = candidate
+            break
+    if expression is None:
+        return None
+    if isinstance(expression, Mapping):
+        operation = str(expression.get("op", "")).lower()
+        masked = (
+            _binary_operands(expression, operation)
+            if operation in {"and", "and32", "bit_and"}
+            else None
+        )
+        mask = _selector_mask(selector)
+        if masked is not None and mask is not None:
+            for candidate, mask_value in (masked, reversed(masked)):
+                if _constant_value(mask_value) == mask:
+                    expression = candidate
+                    break
+    operation = (
+        str(expression.get("op", "")).lower()
+        if isinstance(expression, Mapping)
+        else ""
+    )
+    subtraction = (
+        _binary_operands(expression, operation)
+        if operation in {"sub", "sub32"}
+        else None
+    )
+    if subtraction is None or not _same_selector_value(subtraction[0], selector):
+        return None
+    return _constant_value(subtraction[1])
+
+
+def _machine_unsigned_less_bound(
+    value: Any, selector: Mapping[str, Any]
+) -> int | None:
+    if not isinstance(value, Mapping):
+        return None
+    operation = str(value.get("op", "")).lower()
+    if operation not in _UNSIGNED_LESS_OPS:
+        return None
+    operands = _binary_operands(value, operation)
+    if operands is None or not _same_selector_value(operands[0], selector):
+        return None
+    return _constant_value(operands[1])
+
+
+def _machine_complemented_unsigned_above_bound(
+    condition: Any, selector: Mapping[str, Any]
+) -> int | None:
+    """Recognize exact expanded x86 ``cmp selector,N; ja fallback`` semantics."""
+
+    inner = _unary_operand(condition, "not")
+    operands = _binary_operands(inner, "and_bool")
+    if operands is None:
+        return None
+    zero_bounds: list[int] = []
+    less_bounds: list[int] = []
+    for operand in operands:
+        predicate = _unary_operand(operand, "not")
+        if predicate is None:
+            return None
+        zero = _machine_zero_comparison_bound(predicate, selector)
+        less = _machine_unsigned_less_bound(predicate, selector)
+        if zero is not None:
+            zero_bounds.append(zero)
+        elif less is not None:
+            less_bounds.append(less)
+        else:
+            return None
+    if (
+        len(zero_bounds) != 1
+        or len(less_bounds) != 1
+        or zero_bounds[0] != less_bounds[0]
+        or zero_bounds[0] >= 0xFFFF_FFFF
+    ):
+        return None
+    return zero_bounds[0] + 1
 
 
 def _negated_greater_upper(inner: Mapping[str, Any], index: Mapping[str, Any]) -> int | None:

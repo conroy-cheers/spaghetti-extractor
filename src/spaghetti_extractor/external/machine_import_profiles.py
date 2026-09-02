@@ -14,13 +14,20 @@ from ..artifacts.formats import (
 from ..errors import ToolkitInputError
 from ..util import sha256_file
 from .callback_protocols import callback_protocol_from_contract
+from .service_protocols import (
+    CheckedExternalServiceProtocolError,
+    parse_checked_external_service_protocol_v1,
+)
 
 
+STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT = (
+    "spaghetti-extractor-static-machine-import-profile-v2"
+)
 MACHINE_IMPORT_PROFILE_FORMATS = frozenset({
     "spaghetti-extractor-external-environment-profile-v1",
     "spaghetti-extractor-external-interface-profile-v1",
     "spaghetti-extractor-static-machine-import-profile-v1",
-    "spaghetti-extractor-static-machine-import-profile-v2",
+    STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT,
 })
 NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL = "exact_native_dll_callthrough_v1"
 NATIVE_DLL_CALLTHROUGH_PREREQUISITES = frozenset({
@@ -111,6 +118,7 @@ class SelectedMachineImportContract:
     profile_id: str
     profile_path: Path
     profile_sha256: str
+    profile_format: str
     entry_key: str
     entry_index: int
     contract: Mapping[str, Any]
@@ -125,6 +133,107 @@ class MachineImportProfileSet:
 
     def by_identity(self) -> dict[MachineImportIdentity, SelectedMachineImportContract]:
         return {contract.identity: contract for contract in self.contracts}
+
+
+def materialize_v2_profile_contract(
+    contract: SelectedMachineImportContract,
+) -> dict[str, Any]:
+    """Project a selected contract back into the authored V2 wire format.
+
+    Selection normalizes the checked callback effect for downstream consumers,
+    but V2 profile inputs deliberately derive that effect from
+    ``callback_protocol``.  A content-addressed aggregate profile must therefore
+    remove the normalized field rather than serializing an input that its own
+    codec rejects.  Retired profile versions are rejected instead of adapted.
+    """
+
+    if contract.profile_format != STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT:
+        raise MachineImportProfileError(
+            "cannot materialize a V2 profile contract from retired profile format "
+            f"{contract.profile_format!r}"
+        )
+    result = dict(contract.contract)
+    result.pop("callback_effect", None)
+    result.pop("profile_id", None)
+    result["source_profile_binding"] = {
+        "profile_id": contract.profile_id,
+        "profile_sha256": contract.profile_sha256,
+    }
+    return result
+
+
+def _resolved_profile_sources(
+    profile: LoadedMachineImportProfile,
+) -> frozenset[tuple[str, str]] | None:
+    provenance = profile.payload.get("provenance")
+    if (
+        not isinstance(provenance, Mapping)
+        or provenance.get("kind") != "resolved_machine_import_profile_graph_v1"
+    ):
+        return None
+    if set(provenance) != {"kind", "source_profiles"}:
+        raise MachineImportProfileError(
+            f"{profile.path} resolved profile provenance has unsupported fields"
+        )
+    rows = provenance.get("source_profiles")
+    if not isinstance(rows, list) or not rows:
+        raise MachineImportProfileError(
+            f"{profile.path} resolved profile provenance has no source profiles"
+        )
+    sources: set[tuple[str, str]] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping) or set(row) != {"id", "sha256"}:
+            raise MachineImportProfileError(
+                f"{profile.path} source_profiles[{index}] must bind one id and SHA-256"
+            )
+        profile_id = row.get("id")
+        sha256 = row.get("sha256")
+        if (
+            not isinstance(profile_id, str)
+            or not profile_id
+            or not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+        ):
+            raise MachineImportProfileError(
+                f"{profile.path} source_profiles[{index}] has an invalid binding"
+            )
+        binding = (profile_id, sha256)
+        if binding in sources:
+            raise MachineImportProfileError(
+                f"{profile.path} repeats source profile binding {profile_id!r}"
+            )
+        sources.add(binding)
+    return frozenset(sources)
+
+
+def _selected_source_profile(
+    *,
+    profile: LoadedMachineImportProfile,
+    raw: Mapping[str, Any],
+    sources: frozenset[tuple[str, str]] | None,
+    context: str,
+) -> tuple[str, str]:
+    binding = raw.get("source_profile_binding")
+    if sources is None:
+        if binding is not None:
+            raise MachineImportProfileError(
+                f"{context} has source_profile_binding without resolved provenance"
+            )
+        return profile.profile_id, profile.sha256
+    if not isinstance(binding, Mapping) or set(binding) != {
+        "profile_id",
+        "profile_sha256",
+    }:
+        raise MachineImportProfileError(
+            f"{context} must bind its selected source profile"
+        )
+    selected = (binding.get("profile_id"), binding.get("profile_sha256"))
+    if selected not in sources:
+        raise MachineImportProfileError(
+            f"{context} binds a source profile absent from resolved provenance"
+        )
+    return str(selected[0]), str(selected[1])
 
 
 def load_machine_import_profile_graph(
@@ -202,8 +311,9 @@ def load_machine_import_profile_set(
     ambiguous: set[MachineImportIdentity] = set()
     for profile in profiles:
         profile_format = profile.payload.get("format")
+        resolved_sources = _resolved_profile_sources(profile)
         default_callback_effect = profile.payload.get("default_callback_effect")
-        if profile_format == "spaghetti-extractor-static-machine-import-profile-v2" and (
+        if profile_format == STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT and (
             "default_callback_effect" in profile.payload
         ):
             raise MachineImportProfileError(
@@ -243,6 +353,11 @@ def load_machine_import_profile_set(
                     argument_words=arity_words,
                     context=f"{profile.path} {entry_key}[{entry_index}]",
                 )
+                _validate_external_service_protocol(
+                    raw,
+                    argument_words=arity_words,
+                    context=f"{profile.path} {entry_key}[{entry_index}]",
+                )
                 _validate_effect_model(
                     raw,
                     imported=imported,
@@ -251,11 +366,24 @@ def load_machine_import_profile_set(
                     profile_format=str(profile_format),
                     context=f"{profile.path} {entry_key}[{entry_index}]",
                 )
+                _validate_loader_service_contract(
+                    raw,
+                    identity=identity,
+                    argument_words=arity_words,
+                    context=f"{profile.path} {entry_key}[{entry_index}]",
+                )
+                source_profile_id, source_profile_sha256 = _selected_source_profile(
+                    profile=profile,
+                    raw=raw,
+                    sources=resolved_sources,
+                    context=f"{profile.path} {entry_key}[{entry_index}]",
+                )
                 candidate = SelectedMachineImportContract(
                     identity=identity,
-                    profile_id=profile.profile_id,
+                    profile_id=source_profile_id,
                     profile_path=profile.path,
-                    profile_sha256=profile.sha256,
+                    profile_sha256=source_profile_sha256,
+                    profile_format=str(profile_format),
                     entry_key=entry_key,
                     entry_index=entry_index,
                     contract=_normalize_entry(
@@ -317,6 +445,44 @@ def _arity(entry: Mapping[str, Any]) -> tuple[str | None, int | None]:
             "machine import arity must be fixed or variadic with a bounded word count"
         )
     return str(kind), words
+
+
+def _validate_external_service_protocol(
+    entry: Mapping[str, Any], *, argument_words: int | None, context: str,
+) -> None:
+    raw = entry.get("external_service_protocol")
+    disposition = entry.get("disposition", "returns")
+    if raw is None:
+        if disposition == "nonlocal":
+            raise MachineImportProfileError(
+                f"{context} nonlocal disposition has no checked service protocol"
+            )
+        return
+    if argument_words is None:
+        raise MachineImportProfileError(
+            f"{context} external service requires a fixed physical arity"
+        )
+    try:
+        protocol = parse_checked_external_service_protocol_v1(
+            raw, argument_words=argument_words,
+            context=f"{context} external_service_protocol",
+        )
+    except CheckedExternalServiceProtocolError as exc:
+        raise MachineImportProfileError(str(exc)) from exc
+    assert protocol is not None
+    kind = protocol["kind"]
+    expected_disposition = (
+        "nonlocal" if kind == "nonlocal_unwind" else "returns"
+    )
+    if disposition != expected_disposition:
+        raise MachineImportProfileError(
+            f"{context} service protocol and disposition disagree"
+        )
+    results = entry.get("result_register_relations", [])
+    if kind == "nonlocal_unwind" and results != []:
+        raise MachineImportProfileError(
+            f"{context} nonlocal service cannot declare an ordinary result"
+        )
 
 
 def _validate_effect_model(
@@ -608,7 +774,7 @@ def _validate_native_callthrough_callback(
     context: str,
 ) -> None:
     if (
-        profile_format == "spaghetti-extractor-static-machine-import-profile-v2"
+        profile_format == STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT
         and entry.get("callback_protocol") is None
     ):
         return
@@ -701,6 +867,69 @@ def _validate_legacy_native_callthrough_callback(
         )
 
 
+def _validate_loader_service_contract(
+    entry: Mapping[str, Any],
+    *,
+    identity: MachineImportIdentity,
+    argument_words: int | None,
+    context: str,
+) -> None:
+    loader = entry.get("loader_service")
+    dynamic_export = entry.get("dynamic_export")
+    if loader is not None:
+        if not isinstance(loader, Mapping) or argument_words is None:
+            raise MachineImportProfileError(
+                f"{context} loader_service requires one fixed-arity object"
+            )
+        kind = loader.get("kind")
+        if kind == "module_handle":
+            if (
+                identity.dll != "kernel32.dll"
+                or identity.kind != "symbol"
+                or identity.value not in {"GetModuleHandleA", "GetModuleHandleW"}
+                or set(loader) != {
+                    "kind",
+                    "module_name_argument",
+                    "nullable_module_name",
+                }
+                or loader.get("module_name_argument") != 0
+                or not isinstance(loader.get("nullable_module_name"), bool)
+                or argument_words != 1
+            ):
+                raise MachineImportProfileError(
+                    f"{context} has a contradictory module-handle loader service"
+                )
+        elif kind == "dynamic_export_resolution":
+            if (
+                identity.dll != "kernel32.dll"
+                or identity.kind != "symbol"
+                or identity.value != "GetProcAddress"
+                or set(loader) != {
+                    "kind",
+                    "module_handle_argument",
+                    "export_name_argument",
+                }
+                or loader.get("module_handle_argument") != 0
+                or loader.get("export_name_argument") != 1
+                or argument_words != 2
+            ):
+                raise MachineImportProfileError(
+                    f"{context} has a contradictory export-resolution loader service"
+                )
+        else:
+            raise MachineImportProfileError(
+                f"{context} has unsupported loader_service kind {kind!r}"
+            )
+    if dynamic_export is not None and (
+        not isinstance(dynamic_export, Mapping)
+        or set(dynamic_export) != {"kind"}
+        or dynamic_export.get("kind") not in {"code", "data"}
+    ):
+        raise MachineImportProfileError(
+            f"{context} dynamic_export must classify one code or data export"
+        )
+
+
 def _normalize_entry(
     entry: Mapping[str, Any],
     *,
@@ -711,6 +940,7 @@ def _normalize_entry(
     profile_format: str,
 ) -> dict[str, Any]:
     result = dict(entry)
+    result.pop("source_profile_binding", None)
     arity_kind, words = _arity(entry)
     if arity_kind == "fixed":
         result["argument_words"] = words
@@ -728,7 +958,7 @@ def _normalize_entry(
             "callback_abi",
         )
     )
-    if profile_format == "spaghetti-extractor-static-machine-import-profile-v2":
+    if profile_format == STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT:
         if result.get("callback_protocol") is not None:
             result["callback_effect"] = "explicit"
         else:
@@ -752,7 +982,7 @@ def _validate_callback_contract(
 ) -> None:
     protocol = entry.get("callback_protocol")
     legacy = _LEGACY_CALLBACK_FIELDS & set(entry)
-    if profile_format == "spaghetti-extractor-static-machine-import-profile-v2":
+    if profile_format == STATIC_MACHINE_IMPORT_PROFILE_V2_FORMAT:
         if legacy:
             raise MachineImportProfileError(
                 f"{context} uses retired callback fields {sorted(legacy)!r}"

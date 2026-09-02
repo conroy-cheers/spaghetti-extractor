@@ -20,6 +20,10 @@ from ..external.callbacks import (
     parse_nested_native_callback_behavior,
 )
 from ..external.callback_protocols import callback_protocol_from_machine_contract
+from ..external.service_protocols import (
+    CheckedExternalServiceProtocolError,
+    parse_checked_external_service_protocol_v1,
+)
 from ..errors import ToolkitInputError
 
 
@@ -28,6 +32,7 @@ CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT = (
 )
 _PE32_ABIS = frozenset({"pe32-cdecl-v1", "pe32-stdcall-v1"})
 _REGISTERS = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"})
+_VARIADIC_FORWARDING_KIND = "exact_raw_caller_stack_suffix_v1"
 class CheckedExternalSiteContractError(ToolkitInputError):
     """An external site is missing an exact, executable machine contract."""
 
@@ -74,6 +79,61 @@ def _metadata(value: Any) -> Any:
     if isinstance(value, list):
         return [_metadata(item) for item in value]
     return _json(value, "external contract metadata")
+
+
+def _canonical_variadic_forwarding(minimum_words: int) -> dict[str, Any]:
+    return {
+        "kind": _VARIADIC_FORWARDING_KIND,
+        "minimum_argument_words": minimum_words,
+        "source": "caller_argument_stack",
+        "destination": "same_library_machine_ir_callthrough",
+        "extent": "all_words_after_minimum_prefix",
+        "word_relation": "exact_u32",
+        "order_relation": "preserved",
+    }
+
+
+def _parse_checked_arity(
+    value: Any, *, context: str
+) -> tuple[str, int, Any | None]:
+    if not isinstance(value, Mapping):
+        raise CheckedExternalSiteContractError(f"{context} arity is missing")
+    kind = value.get("kind")
+    if kind == "fixed":
+        if set(value) != {"kind", "words"}:
+            raise CheckedExternalSiteContractError(
+                f"{context} fixed arity has noncanonical fields"
+            )
+        return (
+            "fixed",
+            _uint(value.get("words"), f"{context} argument words", maximum=256),
+            None,
+        )
+    if kind != "variadic":
+        raise CheckedExternalSiteContractError(f"{context} arity kind is unsupported")
+    if set(value) != {
+        "kind",
+        "minimum_words",
+        "raw_caller_stack_suffix_forwarding",
+    }:
+        raise CheckedExternalSiteContractError(
+            f"{context} variadic arity has noncanonical fields"
+        )
+    minimum_words = _uint(
+        value.get("minimum_words"),
+        f"{context} minimum argument words",
+        maximum=256,
+    )
+    forwarding = _json(
+        value.get("raw_caller_stack_suffix_forwarding"),
+        f"{context} variadic forwarding",
+    )
+    if forwarding != _canonical_variadic_forwarding(minimum_words):
+        raise CheckedExternalSiteContractError(
+            f"{context} variadic forwarding is not the canonical exact raw "
+            "caller-stack suffix contract"
+        )
+    return "variadic", minimum_words, forwarding
 
 
 @dataclass(frozen=True, order=True)
@@ -191,12 +251,15 @@ class CheckedStackArgument:
     width: int
     value: Any
 
-    def payload(self) -> dict[str, Any]:
+    def payload(self, *, copy_json: bool = True) -> dict[str, Any]:
         return {
             "index": self.index,
             "offset": self.offset,
             "width": self.width,
-            "value": _json(self.value, "stack argument value"),
+            "value": (
+                _json(self.value, "stack argument value")
+                if copy_json else self.value
+            ),
         }
 
 
@@ -212,17 +275,20 @@ class CheckedCallbackAdapter:
     target_rvas: tuple[int, ...]
     invocation: str
 
-    def payload(self) -> dict[str, Any]:
+    def payload(self, *, copy_json: bool = True) -> dict[str, Any]:
+        def value(item: Any, context: str) -> Any:
+            return _json(item, context) if copy_json else item
+
         return {
-            "source": _json(self.source, "callback source"),
-            "abi": _json(self.abi, "callback ABI"),
-            "lifetime": _json(self.lifetime, "callback lifetime"),
-            "behavior": _json(self.behavior, "callback behavior"),
-            "activation": _json(self.activation, "callback activation"),
-            "resource_binding": _json(
+            "source": value(self.source, "callback source"),
+            "abi": value(self.abi, "callback ABI"),
+            "lifetime": value(self.lifetime, "callback lifetime"),
+            "behavior": value(self.behavior, "callback behavior"),
+            "activation": value(self.activation, "callback activation"),
+            "resource_binding": value(
                 self.resource_binding, "callback resource binding"
             ),
-            "instance_binding": _json(
+            "instance_binding": value(
                 self.instance_binding, "callback instance binding"
             ),
             "target_rvas": list(self.target_rvas),
@@ -237,7 +303,9 @@ class CheckedExternalSiteContract:
     disposition: str
     profile_disposition: str
     abi_template: str
+    arity_kind: str
     argument_words: int
+    raw_caller_stack_suffix_forwarding: Any | None
     argument_base_offset: int
     arguments: tuple[Any, ...]
     stack_arguments: tuple[CheckedStackArgument, ...]
@@ -247,12 +315,35 @@ class CheckedExternalSiteContract:
     memory_effect: str
     memory_footprints: tuple[Any, ...]
     world_effect: str
+    world_effect_argument: int | None
     callback_effect: str
     callback_adapter: CheckedCallbackAdapter | None
     out_pointer_relations: tuple[Any, ...] = ()
     out_interface_relations: tuple[Any, ...] = ()
+    external_service_protocol: Any | None = None
 
-    def payload(self) -> dict[str, Any]:
+    @property
+    def minimum_argument_words(self) -> int:
+        """Words whose expressions are statically described at every site."""
+
+        return self.argument_words
+
+    def arity_payload(self) -> dict[str, Any]:
+        if self.arity_kind == "fixed":
+            return {"kind": "fixed", "words": self.argument_words}
+        return {
+            "kind": "variadic",
+            "minimum_words": self.argument_words,
+            "raw_caller_stack_suffix_forwarding": _json(
+                self.raw_caller_stack_suffix_forwarding,
+                "checked variadic forwarding",
+            ),
+        }
+
+    def payload(self, *, copy_json: bool = True) -> dict[str, Any]:
+        def value(item: Any, context: str) -> Any:
+            return _json(item, context) if copy_json else item
+
         return {
             "format": CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT,
             "identity": self.identity.payload(),
@@ -260,31 +351,47 @@ class CheckedExternalSiteContract:
             "disposition": self.disposition,
             "profile_disposition": self.profile_disposition,
             "abi_template": self.abi_template,
-            "arity": {"kind": "fixed", "words": self.argument_words},
+            "arity": self.arity_payload(),
             "argument_base_offset": self.argument_base_offset,
-            "arguments": [_json(value, "argument") for value in self.arguments],
-            "stack_arguments": [value.payload() for value in self.stack_arguments],
+            "arguments": [value(item, "argument") for item in self.arguments],
+            "stack_arguments": [
+                item.payload(copy_json=copy_json)
+                for item in self.stack_arguments
+            ],
             "contract_id": self.contract_id,
-            "profile_binding": _json(self.profile_binding, "profile binding"),
+            "profile_binding": value(self.profile_binding, "profile binding"),
             "result_register_relations": [
-                _json(value, "result relation") for value in self.result_register_relations
+                value(item, "result relation")
+                for item in self.result_register_relations
             ],
             "memory_effect": self.memory_effect,
             "memory_footprints": [
-                _json(value, "memory footprint") for value in self.memory_footprints
+                value(item, "memory footprint")
+                for item in self.memory_footprints
             ],
             "world_effect": self.world_effect,
+            **(
+                {"world_effect_argument": self.world_effect_argument}
+                if self.world_effect_argument is not None
+                else {}
+            ),
             "callback_effect": self.callback_effect,
             "callback_adapter": (
-                None if self.callback_adapter is None else self.callback_adapter.payload()
+                None
+                if self.callback_adapter is None
+                else self.callback_adapter.payload(copy_json=copy_json)
             ),
             "out_pointer_relations": [
-                _json(value, "out-pointer relation") for value in self.out_pointer_relations
+                value(item, "out-pointer relation")
+                for item in self.out_pointer_relations
             ],
             "out_interface_relations": [
-                _json(value, "out-interface relation")
-                for value in self.out_interface_relations
+                value(item, "out-interface relation")
+                for item in self.out_interface_relations
             ],
+            "external_service_protocol": value(
+                self.external_service_protocol, "external service protocol"
+            ),
         }
 
     def profile_effect_payload(self) -> dict[str, Any]:
@@ -292,14 +399,23 @@ class CheckedExternalSiteContract:
 
         return {
             "id": self.contract_id,
+            "arity": self.arity_payload(),
             "argument_words": self.argument_words,
             "result_register_relations": list(self.result_register_relations),
             "memory_effect": self.memory_effect,
             "memory_footprints": list(self.memory_footprints),
             "world_effect": self.world_effect,
+            **(
+                {"world_effect_argument": self.world_effect_argument}
+                if self.world_effect_argument is not None
+                else {}
+            ),
             "callback_effect": self.callback_effect,
             "out_pointer_relations": list(self.out_pointer_relations),
             "out_interface_relations": list(self.out_interface_relations),
+            "external_service_protocol": _json(
+                self.external_service_protocol, "external service protocol"
+            ),
         }
 
 
@@ -449,19 +565,16 @@ def parse_checked_external_site_contract(
     if (transfer_kind == "call") != (disposition == "returns_here"):
         raise CheckedExternalSiteContractError(f"{context} transfer and disposition disagree")
     profile_disposition = value.get("profile_disposition")
-    if profile_disposition not in {"returns", "terminates"}:
+    if profile_disposition not in {"returns", "terminates", "nonlocal"}:
         raise CheckedExternalSiteContractError(
             f"{context} profile disposition is unsupported"
         )
     abi_template = value.get("abi_template")
     if abi_template not in _PE32_ABIS:
         raise CheckedExternalSiteContractError(f"{context} ABI template is unsupported")
-    arity = value.get("arity")
-    if not isinstance(arity, Mapping) or arity.get("kind") != "fixed":
-        raise CheckedExternalSiteContractError(
-            f"{context} variadic or missing arity is unsupported"
-        )
-    argument_words = _uint(arity.get("words"), f"{context} argument words", maximum=256)
+    arity_kind, argument_words, raw_suffix_forwarding = _parse_checked_arity(
+        value.get("arity"), context=context
+    )
     argument_base_offset = _uint(
         value.get("argument_base_offset"), f"{context} argument base", maximum=0x10000
     )
@@ -513,6 +626,23 @@ def parse_checked_external_site_contract(
             raise CheckedExternalSiteContractError(f"{context} result register is unsupported")
     memory_effect = _string(value.get("memory_effect"), f"{context} memory effect")
     world_effect = _string(value.get("world_effect"), f"{context} world effect")
+    raw_world_effect_argument = value.get("world_effect_argument")
+    if world_effect == "dynamicRangeRelease":
+        world_effect_argument = _uint(
+            raw_world_effect_argument,
+            f"{context} dynamic-range release argument",
+            maximum=255,
+        )
+        if world_effect_argument >= argument_words:
+            raise CheckedExternalSiteContractError(
+                f"{context} dynamic-range release argument is out of bounds"
+            )
+    else:
+        if raw_world_effect_argument is not None:
+            raise CheckedExternalSiteContractError(
+                f"{context} has a release argument without a release effect"
+            )
+        world_effect_argument = None
     callback_effect = value.get("callback_effect")
     if callback_effect not in {"none", "explicit"}:
         raise CheckedExternalSiteContractError(
@@ -527,26 +657,47 @@ def parse_checked_external_site_contract(
         parsed_callback = None
     else:
         parsed_callback = _parse_callback_adapter(callback_adapter, context=context)
+    try:
+        external_service_protocol = parse_checked_external_service_protocol_v1(
+            value.get("external_service_protocol"),
+            argument_words=argument_words,
+            context=f"{context} external service protocol",
+        )
+    except CheckedExternalServiceProtocolError as exc:
+        raise CheckedExternalSiteContractError(str(exc)) from exc
+    if (profile_disposition == "nonlocal") != (
+        isinstance(external_service_protocol, Mapping)
+        and external_service_protocol.get("kind") == "nonlocal_unwind"
+    ):
+        raise CheckedExternalSiteContractError(
+            f"{context} nonlocal disposition and service protocol disagree"
+        )
     return CheckedExternalSiteContract(
         identity=identity,
         transfer_kind=str(transfer_kind),
         disposition=str(disposition),
         profile_disposition=str(profile_disposition),
         abi_template=str(abi_template),
+        arity_kind=arity_kind,
         argument_words=argument_words,
+        raw_caller_stack_suffix_forwarding=raw_suffix_forwarding,
         argument_base_offset=argument_base_offset,
         arguments=normalized_arguments,
         stack_arguments=tuple(normalized_stack),
         contract_id=contract_id,
         profile_binding=_json(profile_binding, f"{context} profile binding"),
-        result_register_relations=tuple(_json(item, f"{context} result relation") for item in result_relations),
+        result_register_relations=tuple(
+            _metadata(item) for item in result_relations
+        ),
         memory_effect=memory_effect,
-        memory_footprints=tuple(_json(item, f"{context} footprint") for item in memory_footprints),
+        memory_footprints=tuple(_metadata(item) for item in memory_footprints),
         world_effect=world_effect,
+        world_effect_argument=world_effect_argument,
         callback_effect=str(callback_effect),
         callback_adapter=parsed_callback,
-        out_pointer_relations=tuple(_json(item, f"{context} out pointer") for item in out_pointers),
-        out_interface_relations=tuple(_json(item, f"{context} out interface") for item in out_interfaces),
+        out_pointer_relations=tuple(_metadata(item) for item in out_pointers),
+        out_interface_relations=tuple(_metadata(item) for item in out_interfaces),
+        external_service_protocol=external_service_protocol,
     )
 
 
@@ -556,14 +707,13 @@ def checked_external_site_contract_from_authority(
     """Project one checked v3 authority contract into the runtime ABI model."""
 
     raw = _json(contract, context)
-    expected_fields = {
+    common_fields = {
             "id",
             "identity",
             "transfer_kind",
             "disposition",
             "profile_id",
             "profile_sha256",
-            "argument_words",
             "arguments",
             "memory_effect",
             "world_effect",
@@ -571,6 +721,11 @@ def checked_external_site_contract_from_authority(
             "machine_contract",
             "callbacks",
     }
+    expected_fields = (
+        common_fields | {"argument_words"}
+        if "argument_words" in raw
+        else common_fields | {"arity"}
+    )
     if "callback_source_decision" in raw:
         expected_fields.add("callback_source_decision")
     if set(raw) != expected_fields:
@@ -583,7 +738,14 @@ def checked_external_site_contract_from_authority(
     disposition = raw["disposition"]
     profile_id = raw["profile_id"]
     profile_sha256 = raw["profile_sha256"]
-    argument_words = raw["argument_words"]
+    authority_arity = (
+        {"kind": "fixed", "words": raw["argument_words"]}
+        if "argument_words" in raw
+        else raw["arity"]
+    )
+    arity_kind, argument_words, _raw_suffix_forwarding = _parse_checked_arity(
+        authority_arity, context=context
+    )
     arguments = raw["arguments"]
     authority_callback_effect = raw["callback_effect"]
     callbacks = raw["callbacks"]
@@ -595,12 +757,51 @@ def checked_external_site_contract_from_authority(
         raise CheckedExternalSiteContractError(
             f"{context} has malformed identity or machine contract"
         )
+    normalized_identity = dict(identity)
+    if identity.get("kind") == "protocol":
+        protocol_identity = identity.get("protocol")
+        if not isinstance(protocol_identity, Mapping):
+            raise CheckedExternalSiteContractError(
+                f"{context} protocol identity is malformed"
+            )
+        normalized_identity = ExternalSiteIdentity.interface(
+            protocol_identity,
+            context=f"{context} protocol identity",
+        ).payload()
     abi_template = machine.get("abi_template")
     if not isinstance(abi_template, str):
         raise CheckedExternalSiteContractError(f"{context} ABI template is missing")
     if not isinstance(arguments, list) or not isinstance(callbacks, list):
         raise CheckedExternalSiteContractError(
             f"{context} has malformed argument or callback inventories"
+        )
+    if len(arguments) != argument_words:
+        raise CheckedExternalSiteContractError(
+            f"{context} argument inventory does not cover its exact prefix"
+        )
+    if arity_kind == "fixed":
+        machine_arity = {"kind": "fixed", "words": machine.get("argument_words")}
+        if machine_arity != authority_arity:
+            raise CheckedExternalSiteContractError(
+                f"{context} authority and machine arities disagree"
+            )
+    else:
+        machine_profile_arity = machine.get("arity")
+        if (
+            machine.get("arity_contract") != authority_arity
+            or machine.get("minimum_argument_words") != argument_words
+            or machine.get("raw_caller_stack_suffix_forwarding")
+            != authority_arity["raw_caller_stack_suffix_forwarding"]
+            or not isinstance(machine_profile_arity, Mapping)
+            or machine_profile_arity.get("kind") != "variadic"
+            or machine_profile_arity.get("minimum_words") != argument_words
+        ):
+            raise CheckedExternalSiteContractError(
+                f"{context} authority and machine variadic arities disagree"
+            )
+    if arity_kind == "variadic" and authority_callback_effect != "none":
+        raise CheckedExternalSiteContractError(
+            f"{context} variadic callback registration is unsupported"
         )
     _validate_authority_callback_source_decision(
         callback_source_decision,
@@ -691,7 +892,7 @@ def checked_external_site_contract_from_authority(
     return parse_checked_external_site_contract(
         {
             "format": CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT,
-            "identity": dict(identity),
+            "identity": normalized_identity,
             "transfer_kind": transfer_kind,
             "disposition": (
                 "tail_jump"
@@ -702,7 +903,7 @@ def checked_external_site_contract_from_authority(
                 "terminates" if disposition == "noreturn" else "returns"
             ),
             "abi_template": abi_template,
-            "arity": {"kind": "fixed", "words": argument_words},
+            "arity": copy.deepcopy(authority_arity),
             "argument_base_offset": argument_base,
             "arguments": arguments,
             "stack_arguments": [
@@ -727,6 +928,7 @@ def checked_external_site_contract_from_authority(
                 machine.get("memory_footprints", [])
             ),
             "world_effect": world_effect,
+            "world_effect_argument": machine.get("world_effect_argument"),
             "callback_effect": callback_effect,
             "callback_adapter": callback_adapter,
             "out_pointer_relations": copy.deepcopy(
@@ -735,6 +937,7 @@ def checked_external_site_contract_from_authority(
             "out_interface_relations": copy.deepcopy(
                 machine.get("out_interface_relations", [])
             ),
+            "external_service_protocol": None,
         },
         context=context,
     )
@@ -1030,11 +1233,15 @@ def checked_external_site_contract_from_event(
         "memory_effect": choose("memory_effect"),
         "memory_footprints": _metadata(choose("memory_footprints", [])),
         "world_effect": choose("world_effect"),
+        "world_effect_argument": choose("world_effect_argument"),
         "callback_effect": callback_effect,
         "callback_adapter": callback_adapter,
         "out_pointer_relations": _metadata(choose("out_pointer_relations", [])),
         "out_interface_relations": _metadata(
             choose("out_interface_relations", target.get("out_interfaces", []) if isinstance(target, Mapping) else [])
+        ),
+        "external_service_protocol": _metadata(
+            choose("external_service_protocol")
         ),
     }
     return parse_checked_external_site_contract(payload, context=context)
@@ -1090,6 +1297,9 @@ def _resolved_event_machine_contract(
         ),
         "out_interface_relations": copy.deepcopy(
             contract.get("out_interface_relations", [])
+        ),
+        "external_service_protocol": copy.deepcopy(
+            contract.get("external_service_protocol")
         ),
     }
     for field in (
@@ -1180,6 +1390,9 @@ def require_profile_match(
         ),
         "out_pointer_relations": _metadata(profile_contract.get("out_pointer_relations", [])),
         "out_interface_relations": _metadata(profile_contract.get("out_interface_relations", [])),
+        "external_service_protocol": _metadata(
+            profile_contract.get("external_service_protocol")
+        ),
         "profile_binding": expected_binding,
     }
     observed = {
@@ -1194,6 +1407,9 @@ def require_profile_match(
         "callback_effect": contract.callback_effect,
         "out_pointer_relations": list(contract.out_pointer_relations),
         "out_interface_relations": list(contract.out_interface_relations),
+        "external_service_protocol": _metadata(
+            contract.external_service_protocol
+        ),
         "profile_binding": contract.profile_binding,
     }
     if expected["callback_effect"] == "explicit":

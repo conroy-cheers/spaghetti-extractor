@@ -1,16 +1,26 @@
 {
-  "format": "spaghetti-extractor-component-relation-declaration-v2",
+  "format": "spaghetti-extractor-component-relation-intent-v1",
   "component_id": "program-name-selection",
-  "machine_backend": "x86-pe32-v1",
+  "status": "ready_for_check",
   "operations": [
     {
       "operation_id": "select",
-      "interactions": [
+      "requirements": [
         {
-          "site_id": "service:find_last_character:semantic-transfer:original-cutpoint-00002b64-00002b6c:0",
-          "contract_id": "c-runtime.strrchr.borrowed-interior-v1"
+          "id": "find-last-character-borrowed-interior",
+          "relation": "borrowed_interior_or_null",
+          "service_id": "find_last_character",
+          "origin_parameter_id": "program",
+          "result_value_id": "result"
         }
       ]
     }
-  ]
+  ],
+  "blockers": [],
+  "policy": {
+    "intent_authorizes": false,
+    "checked_evidence_required": true,
+    "tests_authorize": false
+  },
+  "intent_sha256": "7ec4653452e178195f69d621797a40d4af7fdbad9be90aa29c975a1786753180"
 }

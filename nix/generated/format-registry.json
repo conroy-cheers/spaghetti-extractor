@@ -1,0 +1,1871 @@
+{
+  "counts": {
+    "active": 65,
+    "formats": 120,
+    "retired": 55
+  },
+  "formats": [
+    {
+      "codec": "spaghetti_extractor.abi.ingestion",
+      "literal": "spaghetti-extractor-abi-declaration-ingestion-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.abi.formats",
+      "role": "operator_declaration_ingestion",
+      "state": "active",
+      "symbol": "ABI_DECLARATION_INGESTION_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/abi/ingestion.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.abi.formats",
+      "literal": "spaghetti-extractor-abi-match-resolution-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.abi.formats",
+      "role": "authority_resolution",
+      "state": "retired",
+      "symbol": "RETIRED_ABI_MATCH_RESOLUTION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-authority-diagnostics-v3",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "operator_diagnostic",
+      "state": "retired",
+      "symbol": "RETIRED_AUTHORITY_DIAGNOSTICS_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-build-manifest-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "build_manifest",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_BUILD_MANIFEST_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-build-manifest-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "build_manifest",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_BUILD_MANIFEST_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py",
+        "src/spaghetti_extractor/semantic_providers/generated_c.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-completion-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "completion",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_COMPLETION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-completion-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "completion",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_COMPLETION_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-coverage-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_COVERAGE_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-coverage-v2",
+      "literal_readers": [
+        "nix/behavioral-c-package.nix"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_COVERAGE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_differential",
+      "literal": "spaghetti-extractor-behavioral-c-differential-v1",
+      "literal_readers": [
+        "nix/behavioral-c-differential.nix",
+        "nix/tests/behavioral-c-differential.nix"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "diagnostic_receipt",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_DIFFERENTIAL_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c_differential.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-layout-intent-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_LAYOUT_INTENT_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_model.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py",
+        "tests/unit/candidate/test_behavioral_c.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-lowering-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_LOWERING_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-lowering-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_LOWERING_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py",
+        "src/spaghetti_extractor/semantic_providers/generated_c.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-package-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "package",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_PACKAGE_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-package-v2",
+      "literal_readers": [
+        "nix/behavioral-c-package.nix",
+        "nix/tests/behavioral-c-differential.nix",
+        "nix/tests/build-infrastructure.nix",
+        "tests/unit/artifacts/test_build_manifest.py"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "package",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_PACKAGE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_differential.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py",
+        "src/spaghetti_extractor/candidate/runtime.py",
+        "src/spaghetti_extractor/native_realization/materialize.py",
+        "src/spaghetti_extractor/semantic_providers/generated_c.py",
+        "tests/unit/candidate/test_behavioral_c.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-plan-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "plan",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_PLAN_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-plan-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "plan",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_PLAN_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c.py",
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-runtime-qualification-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "qualification",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_RUNTIME_QUALIFICATION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-behavioral-c-runtime-qualification-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "qualification",
+      "state": "retired",
+      "symbol": "RETIRED_BEHAVIORAL_C_RUNTIME_QUALIFICATION_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.behavioral_c_package",
+      "literal": "spaghetti-extractor-behavioral-c-source-map-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "source_map",
+      "state": "active",
+      "symbol": "BEHAVIORAL_C_SOURCE_MAP_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/behavioral_c_package.py",
+        "src/spaghetti_extractor/semantic_providers/generated_c.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.artifacts.build_formats",
+      "literal": "spaghetti-extractor-ca-phase-inputs-v1",
+      "literal_readers": [
+        "nix/ca-json-receipt-gate.nix",
+        "nix/ca-python-json-phase.nix"
+      ],
+      "owner": "spaghetti_extractor.artifacts.build_formats",
+      "role": "build_input",
+      "state": "active",
+      "symbol": "CA_PHASE_INPUTS_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.artifacts.build_manifest",
+      "literal": "spaghetti-extractor-ca-phase-manifest-v1",
+      "literal_readers": [
+        "nix/ca-python-json-phase.nix",
+        "nix/tests/build-infrastructure.nix"
+      ],
+      "owner": "spaghetti_extractor.artifacts.build_formats",
+      "role": "build_manifest",
+      "state": "active",
+      "symbol": "CA_PHASE_MANIFEST_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/artifacts/build_manifest.py",
+        "tests/unit/artifacts/test_build_manifest.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.artifacts.build_manifest",
+      "literal": "spaghetti-extractor-ca-receipt-gate-v1",
+      "literal_readers": [
+        "nix/ca-json-receipt-gate.nix",
+        "nix/tests/build-infrastructure.nix"
+      ],
+      "owner": "spaghetti_extractor.artifacts.build_formats",
+      "role": "build_manifest",
+      "state": "active",
+      "symbol": "CA_RECEIPT_GATE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/artifacts/build_manifest.py",
+        "tests/unit/artifacts/test_build_manifest.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.abi.formats",
+      "literal": "spaghetti-extractor-catalog-call-contract-set-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.abi.formats",
+      "role": "authority_contract_set",
+      "state": "retired",
+      "symbol": "RETIRED_CATALOG_CALL_CONTRACT_SET_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.outcomes",
+      "literal": "spaghetti-extractor-checked-boundary-outcome-protocol-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "protocol",
+      "state": "active",
+      "symbol": "CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/outcomes.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.external.service_protocols",
+      "literal": "spaghetti-extractor-checked-external-service-protocol-v1",
+      "literal_readers": [
+        "tests/unit/candidate/test_runtime_canonical.py",
+        "tests/unit/semantic_link/test_module_v2.py"
+      ],
+      "owner": "spaghetti_extractor.external.formats",
+      "role": "checked_service_protocol",
+      "state": "active",
+      "symbol": "CHECKED_EXTERNAL_SERVICE_PROTOCOL_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/runtime_canonical_build.py",
+        "src/spaghetti_extractor/external/service_protocols.py",
+        "src/spaghetti_extractor/semantic_link/module_v2_codec.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.outcomes",
+      "literal": "spaghetti-extractor-checked-seh-protocol-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "protocol",
+      "state": "active",
+      "symbol": "CHECKED_SEH_PROTOCOL_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/outcomes.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-activation-plan-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "plan",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_ACTIVATION_PLAN_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.components.work_package_v6",
+      "literal": "spaghetti-extractor-component-adoption-intent-v1",
+      "literal_readers": [
+        "nix/boundary-workbench.nix",
+        "nix/tests/boundary-workbench.nix"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_ADOPTION_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/work_package_v6.py",
+        "tests/unit/components/test_work_package_v6.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-contract-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "contract",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_CONTRACT_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-dependency-graph-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "graph",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_DEPENDENCY_GRAPH_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-implementation-facet-receipt-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_IMPLEMENTATION_FACET_RECEIPT_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-implementation-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "implementation",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_IMPLEMENTATION_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.components.indexes_v5",
+      "literal": "spaghetti-extractor-component-interface-index-v5",
+      "literal_readers": [
+        "nix/component-v5-index.nix",
+        "nix/component-workflow.nix",
+        "targets/dxball/intent/interfaces-v5/index.json",
+        "targets/gnu-hello/intent/interfaces-v5/index.json",
+        "targets/jq/intent/interfaces-v5/index.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_INTERFACE_INDEX_V5_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/indexes_v5.py"
+      ],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.components.interface_package_v5",
+      "literal": "spaghetti-extractor-component-interface-intent-v1",
+      "literal_readers": [
+        "nix/component-v5-interface-package.nix",
+        "nix/tests/fixtures/library-v5/interface-intent.json",
+        "nix/tests/fixtures/native-module/interface-stale-component.json",
+        "targets/dxball/intent/interfaces-v5/directdraw-init.json",
+        "targets/dxball/intent/interfaces-v5/startup-1000.json",
+        "targets/dxball/intent/interfaces-v5/startup-1005.json",
+        "targets/dxball/intent/interfaces-v5/startup-1010.json",
+        "targets/dxball/intent/interfaces-v5/startup-101c.json",
+        "targets/dxball/intent/interfaces-v5/startup-1026.json",
+        "targets/gnu-hello/intent/interfaces-v5/ascii-string-compare.json",
+        "targets/gnu-hello/intent/interfaces-v5/ascii-to-lower.json",
+        "targets/gnu-hello/intent/interfaces-v5/bounded-string-length.json",
+        "targets/gnu-hello/intent/interfaces-v5/finite-selector-dispatch.json",
+        "targets/gnu-hello/intent/interfaces-v5/last-path-component.json",
+        "targets/gnu-hello/intent/interfaces-v5/memory-regions-equal.json",
+        "targets/gnu-hello/intent/interfaces-v5/program-name-selection.json",
+        "targets/gnu-hello/intent/interfaces-v5/short-option-classifier.json",
+        "targets/gnu-hello/intent/interfaces-v5/startup-atomic-compare-exchange.json",
+        "targets/gnu-hello/intent/interfaces-v5/startup-callback-registration.json",
+        "targets/gnu-hello/intent/interfaces-v5/startup-compare-route.json",
+        "targets/gnu-hello/intent/interfaces-v5/startup-sleep-service.json",
+        "targets/jq/intent/interfaces-v5/bounded-string-length.json",
+        "targets/jq/intent/interfaces-v5/bounded-wide-string-length.json",
+        "targets/jq/intent/interfaces-v5/debug-value-prefix.json",
+        "targets/jq/intent/interfaces-v5/invalid-parameter-handler-exchange.json",
+        "targets/jq/intent/interfaces-v5/invalid-parameter-handler-get.json",
+        "targets/jq/intent/interfaces-v5/math-error-callback-dispatch.json",
+        "targets/jq/intent/interfaces-v5/option-name-match.json",
+        "targets/jq/intent/interfaces-v5/option-token-classifier.json",
+        "targets/jq/intent/interfaces-v5/option-value-collection.json",
+        "targets/jq/intent/interfaces-v5/output-value-dump.json",
+        "targets/jq/intent/interfaces-v5/output-value-pipeline.json",
+        "targets/jq/intent/interfaces-v5/output-value-release.json",
+        "targets/jq/intent/interfaces-v5/pe32-image-base.json",
+        "targets/jq/intent/interfaces-v5/pe32-section-count.json",
+        "targets/jq/intent/interfaces-v5/pe32-section-for-address.json",
+        "targets/jq/intent/interfaces-v5/stderr-value-kind-route.json",
+        "targets/jq/intent/interfaces-v5/usage-exit-route.json",
+        "targets/jq/intent/interfaces-v5/usage-write-route.json",
+        "targets/jq/intent/interfaces-v5/wide-argument-conversion-tail.json",
+        "targets/jq/intent/interfaces-v5/windows-path-info-scan.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_INTERFACE_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/interface_package_v5.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.lifting_intent",
+      "literal": "spaghetti-extractor-component-lifting-intent-v1",
+      "literal_readers": [
+        "nix/component-lifting-intent.nix",
+        "nix/component-workflow.nix",
+        "targets/dxball/intent/components.json",
+        "targets/gnu-hello/intent/components.json",
+        "targets/jq/intent/components.json",
+        "tools/migrate-component-lifting-intent.py"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_LIFTING_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/lifting_intent.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.indexes_v5",
+      "literal": "spaghetti-extractor-component-machine-binding-index-v5",
+      "literal_readers": [
+        "nix/component-v5-index.nix",
+        "nix/component-workflow.nix",
+        "targets/dxball/intent/bindings-v5/index.json",
+        "targets/gnu-hello/intent/bindings-v5/index.json",
+        "targets/jq/intent/bindings-v5/index.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_MACHINE_BINDING_INDEX_V5_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/indexes_v5.py"
+      ],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.components.binding_intent",
+      "literal": "spaghetti-extractor-component-machine-binding-intent-v1",
+      "literal_readers": [
+        "nix/library-provider-binding.nix",
+        "nix/tests/fixtures/native-module/interface-stale-binding.json",
+        "targets/dxball/intent/bindings-v5/directdraw-init.json",
+        "targets/dxball/intent/bindings-v5/startup-1000.json",
+        "targets/dxball/intent/bindings-v5/startup-1005.json",
+        "targets/dxball/intent/bindings-v5/startup-1010.json",
+        "targets/dxball/intent/bindings-v5/startup-101c.json",
+        "targets/dxball/intent/bindings-v5/startup-1026.json",
+        "targets/gnu-hello/intent/bindings-v5/ascii-string-compare.json",
+        "targets/gnu-hello/intent/bindings-v5/ascii-to-lower.json",
+        "targets/gnu-hello/intent/bindings-v5/bounded-string-length.json",
+        "targets/gnu-hello/intent/bindings-v5/finite-selector-dispatch.json",
+        "targets/gnu-hello/intent/bindings-v5/last-path-component.json",
+        "targets/gnu-hello/intent/bindings-v5/memory-regions-equal.json",
+        "targets/gnu-hello/intent/bindings-v5/program-name-selection.json",
+        "targets/gnu-hello/intent/bindings-v5/short-option-classifier.json",
+        "targets/gnu-hello/intent/bindings-v5/startup-atomic-compare-exchange.json",
+        "targets/gnu-hello/intent/bindings-v5/startup-callback-registration.json",
+        "targets/gnu-hello/intent/bindings-v5/startup-compare-route.json",
+        "targets/gnu-hello/intent/bindings-v5/startup-sleep-service.json",
+        "targets/jq/intent/bindings-v5/bounded-string-length.json",
+        "targets/jq/intent/bindings-v5/bounded-wide-string-length.json",
+        "targets/jq/intent/bindings-v5/debug-value-prefix.json",
+        "targets/jq/intent/bindings-v5/invalid-parameter-handler-exchange.json",
+        "targets/jq/intent/bindings-v5/invalid-parameter-handler-get.json",
+        "targets/jq/intent/bindings-v5/math-error-callback-dispatch.json",
+        "targets/jq/intent/bindings-v5/option-name-match.json",
+        "targets/jq/intent/bindings-v5/option-token-classifier.json",
+        "targets/jq/intent/bindings-v5/option-value-collection.json",
+        "targets/jq/intent/bindings-v5/output-value-dump.json",
+        "targets/jq/intent/bindings-v5/output-value-pipeline.json",
+        "targets/jq/intent/bindings-v5/output-value-release.json",
+        "targets/jq/intent/bindings-v5/pe32-image-base.json",
+        "targets/jq/intent/bindings-v5/pe32-section-count.json",
+        "targets/jq/intent/bindings-v5/pe32-section-for-address.json",
+        "targets/jq/intent/bindings-v5/stderr-value-kind-route.json",
+        "targets/jq/intent/bindings-v5/usage-exit-route.json",
+        "targets/jq/intent/bindings-v5/usage-write-route.json",
+        "targets/jq/intent/bindings-v5/wide-argument-conversion-tail.json",
+        "targets/jq/intent/bindings-v5/windows-path-info-scan.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_MACHINE_BINDING_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/binding_intent.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-machine-binding-v5",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "binding",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_MACHINE_BINDING_V5_FORMAT",
+      "symbol_readers": [],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.commands.workflows",
+      "literal": "spaghetti-extractor-component-proposal-inspection-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "view",
+      "state": "active",
+      "symbol": "COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/commands/workflows.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.relation_v5",
+      "literal": "spaghetti-extractor-component-relation-intent-v1",
+      "literal_readers": [
+        "targets/gnu-hello/intent/relations/program-name-selection.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_RELATION_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/relation_v5.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.source",
+      "literal": "spaghetti-extractor-component-source-package-v3",
+      "literal_readers": [
+        "nix/component-source-package-v3.nix",
+        "nix/tests/fixtures/library-v5/source-package/source-package.json",
+        "targets/gnu-hello/intent/libraries/ascii-to-lower-provider/source-package/source-package.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "source_package",
+      "state": "active",
+      "symbol": "COMPONENT_SOURCE_PACKAGE_V3_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/source.py"
+      ],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-unit-inventory-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "inventory",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_UNIT_INVENTORY_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.boundary.work_status",
+      "literal": "spaghetti-extractor-component-work-package-inspection-v1",
+      "literal_readers": [
+        "nix/boundary-workbench.nix",
+        "nix/tests/boundary-workbench.nix"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "view",
+      "state": "active",
+      "symbol": "COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/boundary/work_status.py",
+        "src/spaghetti_extractor/commands/workflows.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.formats",
+      "literal": "spaghetti-extractor-component-work-package-v5",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "work_package",
+      "state": "retired",
+      "symbol": "RETIRED_COMPONENT_WORK_PACKAGE_V5_FORMAT",
+      "symbol_readers": [],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.components.work_package_v6",
+      "literal": "spaghetti-extractor-component-work-package-v6",
+      "literal_readers": [
+        "nix/component-v6-work-package.nix",
+        "nix/tests/boundary-workbench.nix",
+        "targets/dxball/default.nix",
+        "targets/jq/default.nix"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "work_package",
+      "state": "active",
+      "symbol": "COMPONENT_WORK_PACKAGE_V6_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/work_package_v6.py",
+        "tests/unit/components/test_work_package_v6.py"
+      ],
+      "version": 6
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exception-closure-certificate-v3",
+      "literal_readers": [
+        "tests/test_repository_boundaries.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_certificate",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTION_CLOSURE_CERTIFICATE_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exception-closure-certificate-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_certificate",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTION_CLOSURE_CERTIFICATE_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exception-evidence-record-v3",
+      "literal_readers": [
+        "tests/test_repository_boundaries.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_evidence_record",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTION_EVIDENCE_RECORD_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exception-evidence-record-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_evidence_record",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTION_EVIDENCE_RECORD_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exceptional-transition-record-v3",
+      "literal_readers": [
+        "tests/test_repository_boundaries.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_record",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTIONAL_TRANSITION_RECORD_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exceptional-transition-record-v4",
+      "literal_readers": [
+        "tests/test_repository_boundaries.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_record",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTIONAL_TRANSITION_RECORD_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.formats",
+      "literal": "spaghetti-extractor-exceptional-transition-record-v5",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority_record",
+      "state": "retired",
+      "symbol": "RETIRED_EXCEPTIONAL_TRANSITION_RECORD_V5_FORMAT",
+      "symbol_readers": [],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.transfer.plan",
+      "literal": "spaghetti-extractor-executable-transfer-plan-v2",
+      "literal_readers": [
+        "nix/executable-transfer-plan.nix",
+        "nix/tests/native-module.nix",
+        "nix/tests/pe32-project.nix",
+        "nix/tests/semantic-object.nix",
+        "targets/dxball/default.nix",
+        "tests/unit/candidate/test_transfer_plan.py",
+        "tests/unit/components/test_work_package_v6.py"
+      ],
+      "owner": "spaghetti_extractor.transfer.formats",
+      "role": "executable_plan",
+      "state": "active",
+      "symbol": "EXECUTABLE_TRANSFER_PLAN_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/work_package_v6.py",
+        "src/spaghetti_extractor/transfer/plan.py",
+        "tests/unit/candidate/test_native_reference_calls.py",
+        "tests/unit/candidate/test_native_reference_context.py",
+        "tests/unit/candidate/test_native_reference_effects.py",
+        "tests/unit/candidate/test_native_reference_frontiers.py",
+        "tests/unit/candidate/test_native_reference_routes.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.external.environment",
+      "literal": "spaghetti-extractor-external-environment-analysis-projection-v1",
+      "literal_readers": [
+        "nix/tests/external-environment.nix"
+      ],
+      "owner": "spaghetti_extractor.external.formats",
+      "role": "analysis_projection",
+      "state": "active",
+      "symbol": "EXTERNAL_ENVIRONMENT_ANALYSIS_PROJECTION_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/external/environment.py",
+        "tests/unit/external/test_environment.py",
+        "tests/unit/external/test_environment_resolution.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.external.environment",
+      "literal": "spaghetti-extractor-external-environment-intent-v1",
+      "literal_readers": [
+        "nix/external-environment-intent.nix",
+        "nix/tests/external-environment.nix"
+      ],
+      "owner": "spaghetti_extractor.external.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "EXTERNAL_ENVIRONMENT_INTENT_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/external/environment.py",
+        "tests/unit/external/test_environment.py",
+        "tests/unit/external/test_environment_resolution.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.libraries.formats",
+      "literal": "spaghetti-extractor-generated-library-component-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.libraries.formats",
+      "role": "component_package",
+      "state": "retired",
+      "symbol": "RETIRED_GENERATED_LIBRARY_COMPONENT_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_providers.formats",
+      "literal": "spaghetti-extractor-implementation-selection-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_providers.formats",
+      "role": "implementation_selection",
+      "state": "retired",
+      "symbol": "RETIRED_IMPLEMENTATION_SELECTION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_providers.selection_v2",
+      "literal": "spaghetti-extractor-implementation-selection-v2",
+      "literal_readers": [
+        "nix/semantic-provider-selection-v2.nix",
+        "nix/tests/native-module.nix",
+        "nix/tests/target-sdk.nix",
+        "targets/gnu-hello/default.nix",
+        "tests/unit/target_bundles/test_metadata_and_status.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_providers.formats",
+      "role": "implementation_selection",
+      "state": "active",
+      "symbol": "IMPLEMENTATION_SELECTION_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_providers/selection_v2.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.components.interaction_contract",
+      "literal": "spaghetti-extractor-interaction-contract-catalog-v1",
+      "literal_readers": [
+        "src/spaghetti_extractor/profiles/registry.py"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "catalog",
+      "state": "active",
+      "symbol": "INTERACTION_CONTRACT_CATALOG_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/interaction_contract.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.interaction_contract",
+      "literal": "spaghetti-extractor-interaction-contract-receipt-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "INTERACTION_CONTRACT_RECEIPT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/interaction_contract.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.interaction_contract",
+      "literal": "spaghetti-extractor-interaction-contract-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "contract",
+      "state": "active",
+      "symbol": "INTERACTION_CONTRACT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/interaction_contract.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.isa.qualification_worker",
+      "literal": "spaghetti-extractor-isa-semantic-kernel-binding-v1",
+      "literal_readers": [
+        "nix/isa-semantic-kernel.nix",
+        "tests/unit/isa/test_cli.py",
+        "tests/unit/qualified_platform/test_release.py"
+      ],
+      "owner": "spaghetti_extractor.qualified_platform.formats",
+      "role": "qualified_platform_input",
+      "state": "active",
+      "symbol": "ISA_SEMANTIC_KERNEL_BINDING_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/isa/qualification_worker.py",
+        "src/spaghetti_extractor/qualified_platform/isa_form_replay.py",
+        "src/spaghetti_extractor/qualified_platform/release.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_link.replay",
+      "literal": "spaghetti-extractor-linked-semantic-module-replay-v2",
+      "literal_readers": [
+        "nix/linked-semantic-module.nix",
+        "nix/tests/native-module.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_link.formats",
+      "role": "diagnostic",
+      "state": "active",
+      "symbol": "LINKED_SEMANTIC_MODULE_REPLAY_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_link/replay.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_link.formats",
+      "literal": "spaghetti-extractor-linked-semantic-module-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_link.formats",
+      "role": "linked_semantic_module",
+      "state": "retired",
+      "symbol": "RETIRED_LINKED_SEMANTIC_MODULE_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_link.module_v2",
+      "literal": "spaghetti-extractor-linked-semantic-module-v2",
+      "literal_readers": [
+        "nix/linked-semantic-module.nix",
+        "nix/tests/native-module.nix",
+        "targets/gnu-hello/default.nix",
+        "tests/unit/candidate/test_linked_runtime_package.py",
+        "tests/unit/candidate/test_runtime_canonical_packages.py",
+        "tests/unit/libraries/test_component_v5.py",
+        "tests/unit/libraries/test_v4_activation.py",
+        "tests/unit/semantic_link/test_module_v2.py"
+      ],
+      "owner": "spaghetti_extractor.semantic_link.formats",
+      "role": "linked_semantic_module",
+      "state": "active",
+      "symbol": "LINKED_SEMANTIC_MODULE_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/native_ingress_plan.py",
+        "src/spaghetti_extractor/candidate/runtime.py",
+        "src/spaghetti_extractor/candidate/runtime_canonical_build.py",
+        "src/spaghetti_extractor/semantic_link/__init__.py",
+        "src/spaghetti_extractor/semantic_link/module_v2.py",
+        "src/spaghetti_extractor/semantic_link/module_v2_codec.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.object_authority",
+      "literal": "spaghetti-extractor-machine-object-authority-v2",
+      "literal_readers": [
+        "nix/tests/semantic-object.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "authority",
+      "state": "active",
+      "symbol": "MACHINE_OBJECT_AUTHORITY_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_objects/object_authority.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.transfer.closure",
+      "literal": "spaghetti-extractor-module-execution-closure-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.transfer.formats",
+      "role": "execution_closure",
+      "state": "retired",
+      "symbol": "MODULE_EXECUTION_CLOSURE_V1_RETIRED_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.transfer.closure",
+      "literal": "spaghetti-extractor-module-execution-closure-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.transfer.formats",
+      "role": "execution_closure",
+      "state": "active",
+      "symbol": "MODULE_EXECUTION_CLOSURE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/testkit/native_module_fixture.py",
+        "src/spaghetti_extractor/transfer/closure.py",
+        "src/spaghetti_extractor/transfer/closure_calls.py",
+        "src/spaghetti_extractor/transfer/closure_context.py",
+        "src/spaghetti_extractor/transfer/closure_fixed_point.py",
+        "src/spaghetti_extractor/transfer/closure_io.py",
+        "src/spaghetti_extractor/transfer/closure_model.py",
+        "tests/unit/candidate/test_native_ingress_exports.py",
+        "tests/unit/candidate/test_native_ingress_protocols.py",
+        "tests/unit/candidate/test_runtime_canonical.py",
+        "tests/unit/candidate/test_runtime_canonical_domains.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-core-package-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_source_package",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_CORE_PACKAGE_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-core-plan-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_CORE_PLAN_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v3",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v4",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V4_FORMAT",
+      "symbol_readers": [],
+      "version": 4
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v5",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V5_FORMAT",
+      "symbol_readers": [],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v6",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V6_FORMAT",
+      "symbol_readers": [],
+      "version": 6
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-module-runtime-plan-v7",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "retired",
+      "symbol": "RETIRED_MODULE_RUNTIME_PLAN_V7_FORMAT",
+      "symbol_readers": [],
+      "version": 7
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.module_runtime_plan",
+      "literal": "spaghetti-extractor-module-runtime-plan-v8",
+      "literal_readers": [
+        "targets/dxball/default.nix"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_plan",
+      "state": "active",
+      "symbol": "MODULE_RUNTIME_PLAN_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/module_runtime_plan.py",
+        "src/spaghetti_extractor/candidate/runtime_plan_validation.py",
+        "tests/unit/candidate/test_runtime_canonical.py",
+        "tests/unit/candidate/test_runtime_canonical_domains.py"
+      ],
+      "version": 8
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.native_ingress_plan",
+      "literal": "spaghetti-extractor-native-ingress-plan-v2",
+      "literal_readers": [
+        "nix/tests/fixtures/native-ingress-runtime/generate.py",
+        "targets/gnu-hello/default.nix",
+        "tests/unit/candidate/native_ingress_support.py",
+        "tests/unit/candidate/test_linked_runtime_package.py"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "plan",
+      "state": "active",
+      "symbol": "NATIVE_INGRESS_PLAN_FORMAT",
+      "symbol_readers": [
+        "nix/flake-modules/checks.nix",
+        "src/spaghetti_extractor/candidate/module_composer.py",
+        "src/spaghetti_extractor/candidate/native_ingress_plan.py",
+        "src/spaghetti_extractor/candidate/native_ingress_values.py",
+        "src/spaghetti_extractor/candidate/runtime.py",
+        "src/spaghetti_extractor/candidate/runtime_canonical_build.py",
+        "src/spaghetti_extractor/candidate/runtime_sources.py",
+        "src/spaghetti_extractor/native_realization/runtime_provider_v2.py",
+        "tests/unit/candidate/test_runtime_canonical.py",
+        "tests/unit/candidate/test_runtime_canonical_domains.py",
+        "tests/unit/native_realization/test_runtime_provider_v2.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-native-linked-skeleton-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "internal_link_manifest",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_LINKED_SKELETON_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-native-module-build-plan-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "plan",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_MODULE_BUILD_PLAN_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-native-module-build-plan-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "plan",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_MODULE_BUILD_PLAN_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-native-module-link-receipt-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_MODULE_LINK_RECEIPT_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-native-module-link-receipt-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_MODULE_LINK_RECEIPT_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.build_workflow",
+      "literal": "spaghetti-extractor-native-realization-build-manifest-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "internal_link_manifest",
+      "state": "active",
+      "symbol": "NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/build_workflow.py",
+        "src/spaghetti_extractor/candidate/module_composer.py",
+        "tests/unit/candidate/test_native_ingress_exports.py",
+        "tests/unit/components/test_analysis_nix.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.native_realization.formats",
+      "literal": "spaghetti-extractor-native-realization-v1",
+      "literal_readers": [
+        "tests/unit/components/test_analysis_nix.py"
+      ],
+      "owner": "spaghetti_extractor.native_realization.formats",
+      "role": "native_realization",
+      "state": "retired",
+      "symbol": "RETIRED_NATIVE_REALIZATION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.native_realization.receipt_v2",
+      "literal": "spaghetti-extractor-native-realization-v2",
+      "literal_readers": [
+        "nix/candidate-test-aggregate.nix",
+        "nix/candidate-test-suite.nix",
+        "nix/native-realization-v2.nix",
+        "nix/target-sdk.nix",
+        "nix/tests/candidate-test-suite.nix",
+        "nix/tests/native-module.nix",
+        "nix/tests/native-realization.nix",
+        "nix/tests/pe32-project.nix",
+        "nix/tests/target-sdk.nix",
+        "targets/gnu-hello/default.nix",
+        "tests/unit/candidate/test_project.py",
+        "tests/unit/components/test_analysis_nix.py"
+      ],
+      "owner": "spaghetti_extractor.native_realization.formats",
+      "role": "native_realization",
+      "state": "active",
+      "symbol": "NATIVE_REALIZATION_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/native_realization/__init__.py",
+        "src/spaghetti_extractor/native_realization/receipt_v2.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.operator.work_status",
+      "literal": "spaghetti-extractor-operator-work-status-v1",
+      "literal_readers": [
+        "nix/boundary-workbench.nix",
+        "nix/target-sdk.nix",
+        "nix/tests/boundary-workbench.nix",
+        "tests/unit/cli/test_public_commands.py"
+      ],
+      "owner": "spaghetti_extractor.operator.formats",
+      "role": "operator_view",
+      "state": "active",
+      "symbol": "OPERATOR_WORK_STATUS_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/commands/workflows.py",
+        "src/spaghetti_extractor/operator/work_status.py",
+        "tests/unit/target_bundles/test_metadata_and_status.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-load-observation-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "observation",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_LOAD_OBSERVATION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.project",
+      "literal": "spaghetti-extractor-pe32-load-observation-v2",
+      "literal_readers": [
+        "nix/tests/native-module.nix",
+        "nix/tests/pe32-project.nix"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "observation",
+      "state": "active",
+      "symbol": "PE32_LOAD_OBSERVATION_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/project.py",
+        "tests/unit/candidate/test_project.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-loader-surface-receipt-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "receipt",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_LOADER_SURFACE_RECEIPT_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-module-deployment-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "completion",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_MODULE_DEPLOYMENT_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-module-deployment-v3",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "completion",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_MODULE_DEPLOYMENT_V3_FORMAT",
+      "symbol_readers": [],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.module_interface",
+      "literal": "spaghetti-extractor-pe32-module-interface-v2",
+      "literal_readers": [
+        "nix/pe32-module-interface.nix",
+        "nix/tests/native-module.nix",
+        "nix/tests/semantic-object.nix",
+        "src/spaghetti_extractor/external/environment.py",
+        "src/spaghetti_extractor/semantic_objects/object_authority.py",
+        "tests/unit/external/test_environment.py",
+        "tests/unit/external/test_environment_resolution.py"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "interface",
+      "state": "active",
+      "symbol": "PE32_MODULE_INTERFACE_FORMAT",
+      "symbol_readers": [
+        "nix/pe32-single-module-project-intent.nix",
+        "src/spaghetti_extractor/candidate/module_composer.py",
+        "src/spaghetti_extractor/candidate/native_ingress_plan.py",
+        "src/spaghetti_extractor/candidate/native_ingress_values.py",
+        "src/spaghetti_extractor/candidate/project.py",
+        "src/spaghetti_extractor/pe32/module_interface.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.project",
+      "literal": "spaghetti-extractor-pe32-observed-load-graph-v1",
+      "literal_readers": [
+        "nix/pe32-observed-load-graph.nix",
+        "nix/tests/native-module.nix"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "observation",
+      "state": "active",
+      "symbol": "PE32_OBSERVED_LOAD_GRAPH_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/project.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-project-completion-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "completion",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_PROJECT_COMPLETION_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.project",
+      "literal": "spaghetti-extractor-pe32-project-completion-v3",
+      "literal_readers": [
+        "nix/pe32-project-completion.nix",
+        "nix/tests/native-module.nix"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "completion",
+      "state": "active",
+      "symbol": "PE32_PROJECT_COMPLETION_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/project.py"
+      ],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.project_load_plan",
+      "literal": "spaghetti-extractor-pe32-project-intent-v1",
+      "literal_readers": [
+        "nix/pe32-single-module-project-intent.nix",
+        "nix/target-sdk.nix",
+        "nix/tests/pe32-project.nix"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "PE32_PROJECT_INTENT_FORMAT",
+      "symbol_readers": [
+        "nix/pe32-single-module-project-intent.nix",
+        "src/spaghetti_extractor/candidate/project_load_plan.py",
+        "tests/unit/candidate/test_project.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.pe32.formats",
+      "literal": "spaghetti-extractor-pe32-project-load-plan-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "plan",
+      "state": "retired",
+      "symbol": "RETIRED_PE32_PROJECT_LOAD_PLAN_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.project",
+      "literal": "spaghetti-extractor-pe32-project-load-plan-v2",
+      "literal_readers": [
+        "nix/pe32-project-load-plan.nix"
+      ],
+      "owner": "spaghetti_extractor.pe32.formats",
+      "role": "plan",
+      "state": "active",
+      "symbol": "PE32_PROJECT_LOAD_PLAN_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/project.py",
+        "src/spaghetti_extractor/candidate/project_load_plan.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.formats",
+      "literal": "spaghetti-extractor-pinned-code-layout-authority-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "authority",
+      "state": "retired",
+      "symbol": "RETIRED_PINNED_CODE_LAYOUT_AUTHORITY_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.outcomes",
+      "literal": "spaghetti-extractor-pinned-code-layout-authority-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "authority",
+      "state": "active",
+      "symbol": "PINNED_CODE_LAYOUT_AUTHORITY_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/outcomes.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.components.interface_v5",
+      "literal": "spaghetti-extractor-portable-component-interface-v5",
+      "literal_readers": [
+        "nix/tests/component-v5.nix"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "interface",
+      "state": "active",
+      "symbol": "PORTABLE_COMPONENT_INTERFACE_V5_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/interface_v5.py"
+      ],
+      "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.qualified_platform.isa_form_inventory",
+      "literal": "spaghetti-extractor-qualified-platform-isa-form-inventory-v1",
+      "literal_readers": [
+        "src/spaghetti_extractor/qualified_platform/pe32_i686_isa_forms.json"
+      ],
+      "owner": "spaghetti_extractor.qualified_platform.formats",
+      "role": "qualified_platform_input",
+      "state": "active",
+      "symbol": "QUALIFIED_PLATFORM_ISA_FORM_INVENTORY_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/qualified_platform/isa_form_inventory.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.qualified_platform.isa_form_replay",
+      "literal": "spaghetti-extractor-qualified-platform-isa-form-replay-v1",
+      "literal_readers": [
+        "nix/tests/qualified-platform.nix"
+      ],
+      "owner": "spaghetti_extractor.qualified_platform.formats",
+      "role": "qualified_platform_evidence",
+      "state": "active",
+      "symbol": "QUALIFIED_PLATFORM_ISA_FORM_REPLAY_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/qualified_platform/isa_form_replay.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.qualified_platform.migration_parity",
+      "literal": "spaghetti-extractor-qualified-platform-migration-parity-v1",
+      "literal_readers": [
+        "nix/qualified-platform-migration-parity.nix"
+      ],
+      "owner": "spaghetti_extractor.qualified_platform.formats",
+      "role": "diagnostic",
+      "state": "active",
+      "symbol": "QUALIFIED_PLATFORM_MIGRATION_PARITY_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/qualified_platform/migration_parity.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.qualified_platform.release",
+      "literal": "spaghetti-extractor-qualified-platform-v1",
+      "literal_readers": [
+        "nix/qualified-platform.nix",
+        "nix/tests/qualified-platform.nix"
+      ],
+      "owner": "spaghetti_extractor.qualified_platform.formats",
+      "role": "qualified_platform",
+      "state": "active",
+      "symbol": "QUALIFIED_PLATFORM_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/qualified_platform/migration_parity.py",
+        "src/spaghetti_extractor/qualified_platform/release.py",
+        "src/spaghetti_extractor/qualified_platform/replay.py",
+        "src/spaghetti_extractor/qualified_platform/selection.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.external.resolved",
+      "literal": "spaghetti-extractor-resolved-external-environment-v1",
+      "literal_readers": [
+        "nix/resolved-external-environment.nix",
+        "nix/tests/native-module.nix",
+        "nix/tests/semantic-object.nix",
+        "tests/unit/candidate/test_native_ingress_exports.py",
+        "tests/unit/candidate/test_native_ingress_protocols.py",
+        "tests/unit/components/test_machine_overlay_resources_v5.py",
+        "tests/unit/components/test_machine_overlay_v5.py",
+        "tests/unit/components/test_semantic_external_services.py",
+        "tests/unit/components/test_semantic_interface_services.py",
+        "tests/unit/libraries/test_v4_activation.py",
+        "tests/unit/semantic_link/fixture.py",
+        "tests/unit/semantic_objects/test_semantic_object.py",
+        "tests/unit/transfer/test_exception_semantics.py"
+      ],
+      "owner": "spaghetti_extractor.external.formats",
+      "role": "resolved_contract",
+      "state": "active",
+      "symbol": "RESOLVED_EXTERNAL_ENVIRONMENT_FORMAT",
+      "symbol_readers": [
+        "nix/pe32-single-module-project-intent.nix",
+        "src/spaghetti_extractor/candidate/module_composer.py",
+        "src/spaghetti_extractor/candidate/native_ingress_derivation.py",
+        "src/spaghetti_extractor/candidate/native_ingress_plan.py",
+        "src/spaghetti_extractor/candidate/native_ingress_values.py",
+        "src/spaghetti_extractor/candidate/runtime.py",
+        "src/spaghetti_extractor/candidate/runtime_canonical_build.py",
+        "src/spaghetti_extractor/external/environment.py",
+        "src/spaghetti_extractor/external/resolved.py",
+        "src/spaghetti_extractor/semantic_providers/intrinsic.py",
+        "src/spaghetti_extractor/testkit/native_module_fixture.py",
+        "src/spaghetti_extractor/testkit/project_semantic_fixture.py",
+        "src/spaghetti_extractor/transfer/closure_calls.py",
+        "src/spaghetti_extractor/transfer/closure_context.py",
+        "src/spaghetti_extractor/transfer/closure_fixed_point.py",
+        "src/spaghetti_extractor/transfer/closure_io.py",
+        "src/spaghetti_extractor/transfer/closure_model.py",
+        "tests/unit/candidate/test_runtime_canonical.py",
+        "tests/unit/candidate/test_runtime_canonical_domains.py",
+        "tests/unit/external/test_environment.py",
+        "tests/unit/external/test_environment_resolution.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.libraries.behavior_pack_v3",
+      "literal": "spaghetti-extractor-reusable-library-behavior-pack-v3",
+      "literal_readers": [
+        "nix/library-behavior-pack-v3.nix"
+      ],
+      "owner": "spaghetti_extractor.libraries.formats",
+      "role": "behavior_pack",
+      "state": "active",
+      "symbol": "REUSABLE_LIBRARY_BEHAVIOR_PACK_V3_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/libraries/behavior_pack_v3.py"
+      ],
+      "version": 3
+    },
+    {
+      "codec": "spaghetti_extractor.libraries.behavior_pack_v3",
+      "literal": "spaghetti-extractor-reusable-library-source-qualification-v1",
+      "literal_readers": [
+        "nix/tests/fixtures/library-v5/qualification.json",
+        "targets/gnu-hello/intent/libraries/ascii-to-lower-provider/qualification.json"
+      ],
+      "owner": "spaghetti_extractor.libraries.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "REUSABLE_LIBRARY_SOURCE_QUALIFICATION_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/libraries/behavior_pack_v3.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.module_runtime_layout",
+      "literal": "spaghetti-extractor-runtime-state-layout-table-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "linked_runtime_metadata",
+      "state": "active",
+      "symbol": "SPX_RUNTIME_STATE_LAYOUT_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/module_runtime_layout.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_link.formats",
+      "literal": "spaghetti-extractor-semantic-link-performance-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_link.formats",
+      "role": "diagnostic",
+      "state": "retired",
+      "symbol": "RETIRED_SEMANTIC_LINK_PERFORMANCE_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_link.benchmark",
+      "literal": "spaghetti-extractor-semantic-link-performance-v2",
+      "literal_readers": [
+        "nix/linked-semantic-module-performance.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_link.formats",
+      "role": "diagnostic",
+      "state": "active",
+      "symbol": "SEMANTIC_LINK_PERFORMANCE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_link/benchmark.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_objects.semantic_object",
+      "literal": "spaghetti-extractor-semantic-object-v1",
+      "literal_readers": [
+        "nix/semantic-object.nix",
+        "nix/tests/semantic-object.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_objects.formats",
+      "role": "semantic_object",
+      "state": "active",
+      "symbol": "SEMANTIC_OBJECT_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_objects/replay.py",
+        "src/spaghetti_extractor/semantic_objects/semantic_object.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_providers.formats",
+      "literal": "spaghetti-extractor-semantic-provider-qualification-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.semantic_providers.formats",
+      "role": "semantic_provider_qualification",
+      "state": "retired",
+      "symbol": "RETIRED_SEMANTIC_PROVIDER_QUALIFICATION_V1_FORMAT",
+      "symbol_readers": [],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_providers.qualification_v2",
+      "literal": "spaghetti-extractor-semantic-provider-qualification-v2",
+      "literal_readers": [
+        "nix/external-environment-provider-v2.nix",
+        "nix/generated-behavioral-c-provider-v2.nix",
+        "nix/portable-c-work-package-provider-v2.nix",
+        "nix/qualified-runtime-provider-v2.nix",
+        "nix/tests/native-module.nix",
+        "targets/gnu-hello/default.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_providers.formats",
+      "role": "semantic_provider_qualification",
+      "state": "active",
+      "symbol": "SEMANTIC_PROVIDER_QUALIFICATION_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_providers/qualification_v2.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.semantic_providers.slices_v2",
+      "literal": "spaghetti-extractor-semantic-slice-v2",
+      "literal_readers": [
+        "nix/component-semantic-slice-v2.nix",
+        "nix/linked-libraries.nix",
+        "nix/semantic-slice-v2.nix",
+        "nix/tests/boundary-workbench.nix"
+      ],
+      "owner": "spaghetti_extractor.semantic_providers.formats",
+      "role": "semantic_slice",
+      "state": "active",
+      "symbol": "SEMANTIC_SLICE_V2_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/semantic_providers/slices_v2.py",
+        "tests/unit/components/test_work_package_v6.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.runtime",
+      "literal": "spaghetti-extractor-shared-module-runtime-package-v2",
+      "literal_readers": [
+        "targets/dxball/default.nix"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "runtime_source_package",
+      "state": "active",
+      "symbol": "SHARED_MODULE_RUNTIME_PACKAGE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/runtime.py",
+        "src/spaghetti_extractor/native_realization/materialize.py",
+        "src/spaghetti_extractor/native_realization/runtime_provider_v2.py",
+        "tests/unit/native_realization/test_runtime_provider_v2.py"
+      ],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.artifacts.build_formats",
+      "literal": "spaghetti-extractor-structural-executable-v2",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.artifacts.build_formats",
+      "role": "execution_authority_receipt",
+      "state": "retired",
+      "symbol": "RETIRED_STRUCTURAL_EXECUTABLE_V2_FORMAT",
+      "symbol_readers": [],
+      "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.runtime_program_validation",
+      "literal": "spaghetti-extractor-transfer-definedness-use-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.transfer.formats",
+      "role": "analysis_receipt",
+      "state": "active",
+      "symbol": "TRANSFER_DEFINEDNESS_USE_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/runtime_model.py",
+        "src/spaghetti_extractor/candidate/runtime_program_validation.py"
+      ],
+      "version": 1
+    }
+  ],
+  "registry_sha256": "7d8f88f707a7fb7bfeb51266a9272073dce3475fc7564b227f29fd4a44ebe433",
+  "registry_version": 1,
+  "spec_modules": [
+    "spaghetti_extractor.abi.formats",
+    "spaghetti_extractor.artifacts.build_formats",
+    "spaghetti_extractor.candidate.formats",
+    "spaghetti_extractor.components.formats",
+    "spaghetti_extractor.external.formats",
+    "spaghetti_extractor.libraries.formats",
+    "spaghetti_extractor.native_realization.formats",
+    "spaghetti_extractor.operator.formats",
+    "spaghetti_extractor.pe32.formats",
+    "spaghetti_extractor.qualified_platform.formats",
+    "spaghetti_extractor.semantic_objects.formats",
+    "spaghetti_extractor.semantic_link.formats",
+    "spaghetti_extractor.semantic_providers.formats",
+    "spaghetti_extractor.transfer.formats"
+  ],
+  "status": "complete"
+}

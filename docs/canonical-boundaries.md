@@ -8,8 +8,8 @@ target's size, alignment, field placement, padding, pointer width, and ABI
 classification.
 
 The separation is strict. A record does not acquire PE32 offsets merely because
-one consumer is a call checker, and a machine frame does not become an ownership
-contract merely because it transports a pointer. Recursive types are legal
+one consumer checks a call boundary, and a machine frame does not become an
+ownership contract merely because it transports a pointer. Recursive types are legal
 through pointers; direct value recursion, implicit padding, incomplete stored
 types, and stale content digests fail closed.
 
@@ -27,10 +27,9 @@ types, and stale content digests fail closed.
   over the same signatures. Component state, effects, and services no longer
   need a parallel logical type graph.
 
-Legacy call type graphs, layouts, frames, and lifecycle records have read-only
-adapters. The expert call checker emits them under explicit V1 filenames for
-migration, while `checked-call-protocol.json` is V2. New authoring and new
-consumers must use canonical boundary artifacts.
+Retired call type graphs, layouts, frames, and lifecycle records are not accepted
+by production readers. New authoring and all production consumers use the
+canonical boundary artifacts directly.
 
 ## Evidence
 
@@ -48,9 +47,10 @@ trivial aggregate in `EAX:EDX`.
 
 ## Target validation
 
-`expert boundary-check` validates an authored boundary spec, emits canonical
-schema/layout/frame artifacts and a deterministic C header. The target SDK's
-`boundarySchema` workflow additionally cross-compiles selected idiomatic C
+The unified `boundary status|inspect|propose|adopt|check` workbench validates
+boundary intent and reports stable `kind:id` subjects. It emits canonical
+schema, layout, and frame artifacts plus a deterministic C header. The target
+SDK's boundary workflow additionally cross-compiles selected idiomatic C
 translation units with MinGW.
 
 The jq target exercises its real 16-byte `jv` layout, copy/free/dump calls, the

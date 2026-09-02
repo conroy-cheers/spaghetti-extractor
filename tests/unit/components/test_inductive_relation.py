@@ -11,7 +11,7 @@ from spaghetti_extractor.components.inductive_relation import (
     InductiveRelationError,
 )
 from spaghetti_extractor.components.inductive_source import InductiveSourcePlanV1
-from spaghetti_extractor.components.interface_ir import PortableComponentInterfaceV2
+from spaghetti_extractor.components.interface_ir import ProofKernelComponentInterface
 from spaghetti_extractor.components.semantic_paths import (
     _read_projection,
     _write_projection,
@@ -123,10 +123,9 @@ def _operation() -> dict[str, object]:
     }
 
 
-def _interface() -> PortableComponentInterfaceV2:
-    return PortableComponentInterfaceV2.parse(
+def _interface() -> ProofKernelComponentInterface:
+    return ProofKernelComponentInterface.parse(
         {
-            "format": "spaghetti-extractor-component-interface-ir-v2",
             "id": "countdown",
             "types": [{"id": "u32", "kind": "scalar", "c_type": "uint32_t"}],
             "state": [],
@@ -148,7 +147,7 @@ def _interface() -> PortableComponentInterfaceV2:
 
 
 def _artifacts() -> tuple[
-    PortableComponentInterfaceV2,
+    ProofKernelComponentInterface,
     InductiveSourcePlanV1,
     object,
     InductiveCutpointRelationV1,

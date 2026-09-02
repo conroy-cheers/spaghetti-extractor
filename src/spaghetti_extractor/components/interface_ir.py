@@ -1,8 +1,8 @@
-"""Typed portable interfaces for independently lifted components.
+"""Private logical model used only by the checked component proof kernel.
 
-V1 is retained as a migration reader for the original single-operation model.
-V2 is architecture-independent: machine projections and machine/external
-identities are deliberately outside its schema.
+The deployable interface is PortableComponentInterfaceV5.  This module has no
+public artifact codec: V5 data is projected into this formatless model in
+memory solely to reuse the independently checked CBMC obligations.
 """
 
 from __future__ import annotations
@@ -14,18 +14,10 @@ from typing import Any, Mapping, Sequence
 
 from ..artifacts.artifact_set import CanonicalValueV3, canonical_sha256_v3
 from .atomics import ATOMIC_OBJECT_RESOURCE_KIND, interface_uses_atomics
-from .formats import (
-    COMPONENT_INTERFACE_IR_V2_FORMAT,
-    COMPONENT_INTERFACE_IR_V3_FORMAT,
-    COMPONENT_INTERFACE_IR_V4_FORMAT,
-)
 
 
-COMPONENT_INTERFACE_IR_V1 = "spaghetti-extractor-component-interface-ir-v1"
-COMPONENT_INTERFACE_IR_V2 = COMPONENT_INTERFACE_IR_V2_FORMAT
-COMPONENT_INTERFACE_IR_V3 = COMPONENT_INTERFACE_IR_V3_FORMAT
-COMPONENT_INTERFACE_IR_V4 = COMPONENT_INTERFACE_IR_V4_FORMAT
-PORTABLE_COMPONENT_INTERFACE_V2_FORMAT = COMPONENT_INTERFACE_IR_V2
+_PROOF_KERNEL_MODEL = "private-proof-kernel"
+_RETIRED_INTERFACE_FORMAT = object()
 SCALAR_TYPES = frozenset(
     {
         "uint8_t",
@@ -101,20 +93,20 @@ def _exact(row: Mapping[str, object], fields: set[str], context: str) -> None:
 
 
 @dataclass(frozen=True)
-class LogicalFieldV1:
+class ProofKernelLogicalField:
     identity: str
     type_id: str
 
 
 @dataclass(frozen=True)
-class LogicalTypeV1:
+class ProofKernelLogicalType:
     identity: str
     kind: str
     c_type: str | None = None
     access: str | None = None
     extent_parameter_id: str | None = None
     nul_terminated: bool = False
-    fields: tuple[LogicalFieldV1, ...] = ()
+    fields: tuple[ProofKernelLogicalField, ...] = ()
     resource_kind: str | None = None
     ownership: str | None = None
     abi: str | None = None
@@ -128,243 +120,26 @@ class LogicalTypeV1:
     lifetime: str | None = None
 
 
-@dataclass(frozen=True)
-class LogicalValueV1:
-    identity: str
-    type_id: str
-    machine_projection: CanonicalValueV3
-
 
 @dataclass(frozen=True)
-class InterfaceEffectV1:
-    identity: str
-    kind: str
-    target_id: str | None
-    operation: str
-    machine_refs: tuple[CanonicalValueV3, ...]
-
-
-@dataclass(frozen=True)
-class ServiceDependencyV1:
-    identity: str
-    operation_identity: CanonicalValueV3
-    parameter_type_ids: tuple[str, ...]
-    result_type_id: str | None
-    effect_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ComponentInterfaceIRV1:
-    identity: str
-    types: tuple[LogicalTypeV1, ...]
-    parameters: tuple[LogicalValueV1, ...]
-    results: tuple[LogicalValueV1, ...]
-    effects: tuple[InterfaceEffectV1, ...]
-    services: tuple[ServiceDependencyV1, ...]
-
-    @classmethod
-    def parse(cls, value: object) -> "ComponentInterfaceIRV1":
-        root = _object(value, "component interface IR")
-        _exact(
-            root,
-            {"format", "id", "types", "parameters", "results", "effects", "services"},
-            "component interface IR",
-        )
-        if root["format"] != COMPONENT_INTERFACE_IR_V1:
-            raise ComponentInterfaceIRError("unsupported component interface IR format")
-        result = cls(
-            identity=_identifier(root["id"], "interface id"),
-            types=tuple(
-                _parse_type(item, index, interface_format=COMPONENT_INTERFACE_IR_V1)
-                for index, item in enumerate(_array(root["types"], "interface types"))
-            ),
-            parameters=tuple(
-                _parse_value(item, f"parameter {index}")
-                for index, item in enumerate(
-                    _array(root["parameters"], "interface parameters")
-                )
-            ),
-            results=tuple(
-                _parse_value(item, f"result {index}")
-                for index, item in enumerate(_array(root["results"], "interface results"))
-            ),
-            effects=tuple(
-                _parse_effect(item, index)
-                for index, item in enumerate(_array(root["effects"], "interface effects"))
-            ),
-            services=tuple(
-                _parse_service(item, index)
-                for index, item in enumerate(
-                    _array(root["services"], "interface services")
-                )
-            ),
-        )
-        result.validate()
-        return result
-
-    def validate(self) -> None:
-        type_ids = _unique((row.identity for row in self.types), "logical type")
-        value_ids = _unique(
-            (row.identity for row in self.parameters + self.results), "logical value"
-        )
-        effect_ids = _unique((row.identity for row in self.effects), "interface effect")
-        _unique((row.identity for row in self.services), "service dependency")
-        parameter_ids = {row.identity for row in self.parameters}
-        for logical_type in self.types:
-            refs = [field.type_id for field in logical_type.fields]
-            refs.extend(logical_type.parameter_type_ids)
-            if logical_type.result_type_id is not None:
-                refs.append(logical_type.result_type_id)
-            for reference in refs:
-                if reference not in type_ids:
-                    raise ComponentInterfaceIRError(
-                        f"logical type {logical_type.identity!r} references unknown type {reference!r}"
-                    )
-            if (
-                logical_type.extent_parameter_id is not None
-                and logical_type.extent_parameter_id not in parameter_ids
-            ):
-                raise ComponentInterfaceIRError(
-                    f"logical type {logical_type.identity!r} references unknown extent parameter"
-                )
-        for value in self.parameters + self.results:
-            if value.type_id not in type_ids:
-                raise ComponentInterfaceIRError(
-                    f"logical value {value.identity!r} references unknown type {value.type_id!r}"
-                )
-        for effect in self.effects:
-            if effect.target_id is not None and effect.target_id not in value_ids:
-                raise ComponentInterfaceIRError(
-                    f"effect {effect.identity!r} references unknown logical value"
-                )
-        for service in self.services:
-            for reference in service.parameter_type_ids:
-                if reference not in type_ids:
-                    raise ComponentInterfaceIRError(
-                        f"service {service.identity!r} references unknown parameter type"
-                    )
-            if service.result_type_id is not None and service.result_type_id not in type_ids:
-                raise ComponentInterfaceIRError(
-                    f"service {service.identity!r} references unknown result type"
-                )
-            missing = set(service.effect_ids) - effect_ids
-            if missing:
-                raise ComponentInterfaceIRError(
-                    f"service {service.identity!r} references unknown effects {sorted(missing)!r}"
-                )
-
-    def type_index(self) -> dict[str, LogicalTypeV1]:
-        return {row.identity: row for row in self.types}
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "format": COMPONENT_INTERFACE_IR_V1,
-            "id": self.identity,
-            "types": [_type_payload(row) for row in self.types],
-            "parameters": [_value_payload(row) for row in self.parameters],
-            "results": [_value_payload(row) for row in self.results],
-            "effects": [_effect_payload(row) for row in self.effects],
-            "services": [_service_payload(row) for row in self.services],
-        }
-
-    @property
-    def sha256(self) -> str:
-        return canonical_sha256_v3(self.to_payload())
-
-    def render_c_header(self) -> str:
-        """Render a deterministic, pointer-opaque C interface."""
-
-        guard = f"SPX_COMPONENT_{self.identity.upper()}_H"
-        lines = [
-            f"#ifndef {guard}",
-            f"#define {guard}",
-            "",
-            "#include <stdint.h>",
-            "",
-            "typedef uint64_t spx_resource_v1;",
-            "typedef struct {",
-            "  void *context;",
-            "  uint32_t extent;",
-            "  uint32_t (*read_u8)(void *, uint32_t, uint8_t *);",
-            "  uint32_t (*write_u8)(void *, uint32_t, uint8_t);",
-            "} spx_bytes_view_v1;",
-            "",
-        ]
-        index = self.type_index()
-        for logical_type in self.types:
-            lines.extend(_render_type(logical_type, index))
-        if self.services:
-            service_type = f"spx_{self.identity}_services_v1"
-            lines.append(f"typedef struct {service_type} {{")
-            lines.append("  void *context;")
-            for service in self.services:
-                service_parameters = ["void *context"] + [
-                    f"{_c_type(index[type_id])} argument_{position}"
-                    for position, type_id in enumerate(service.parameter_type_ids)
-                ]
-                service_result = (
-                    "void"
-                    if service.result_type_id is None
-                    else _c_value_type(index[service.result_type_id])
-                )
-                lines.append(
-                    f"  {service_result} (*{service.identity})"
-                    f"({', '.join(service_parameters)});"
-                )
-            lines.extend([f"}} {service_type};", ""])
-        parameter_text = ", ".join(
-            f"{_c_type(index[row.type_id])} {row.identity}" for row in self.parameters
-        )
-        if self.services:
-            parameter_text = (
-                f"const spx_{self.identity}_services_v1 *services"
-                + (f", {parameter_text}" if parameter_text else "")
-            )
-        elif not parameter_text:
-            parameter_text = "void"
-        if not self.results:
-            return_type = "void"
-        elif len(self.results) == 1:
-            return_type = _c_value_type(index[self.results[0].type_id])
-        else:
-            result_name = f"spx_{self.identity}_result_v1"
-            lines.append(f"typedef struct {result_name} {{")
-            for result in self.results:
-                lines.append(
-                    f"  {_c_value_type(index[result.type_id])} {result.identity};"
-                )
-            lines.extend([f"}} {result_name};", ""])
-            return_type = result_name
-        lines.extend(
-            [
-                f"{return_type} spx_component_{self.identity}({parameter_text});",
-                "",
-                f"#endif /* {guard} */",
-                "",
-            ]
-        )
-        return "\n".join(lines)
-
-
-@dataclass(frozen=True)
-class LogicalValueV2:
+class ProofKernelLogicalValue:
     identity: str
     type_id: str
 
 
 @dataclass(frozen=True)
-class ComponentStateFieldV2:
+class ProofKernelStateField:
     identity: str
     type_id: str
     initial_value: CanonicalValueV3
 
 
 @dataclass(frozen=True)
-class PortableOperationV2:
+class ProofKernelOperation:
     identity: str
     kind: str
-    parameters: tuple[LogicalValueV2, ...]
-    results: tuple[LogicalValueV2, ...]
+    parameters: tuple[ProofKernelLogicalValue, ...]
+    results: tuple[ProofKernelLogicalValue, ...]
     effect_ids: tuple[str, ...]
     allowed_service_ids: tuple[str, ...]
     pre_states: tuple[str, ...]
@@ -372,7 +147,7 @@ class PortableOperationV2:
 
 
 @dataclass(frozen=True)
-class InterfaceEffectV2:
+class ProofKernelEffect:
     identity: str
     kind: str
     target_id: str | None
@@ -380,7 +155,7 @@ class InterfaceEffectV2:
 
 
 @dataclass(frozen=True)
-class ServiceDependencyV2:
+class ProofKernelService:
     identity: str
     parameter_type_ids: tuple[str, ...]
     result_type_id: str | None
@@ -388,34 +163,33 @@ class ServiceDependencyV2:
 
 
 @dataclass(frozen=True)
-class ProtocolTransitionV2:
+class ProofKernelProtocolTransition:
     operation_id: str
     from_state: str
     to_state: str
 
 
 @dataclass(frozen=True)
-class PortableComponentInterfaceV2:
-    """Machine-free component contract with framework-managed instance state."""
+class ProofKernelComponentInterface:
+    """Machine-free internal model with framework-managed instance state."""
 
     format_version: str
     identity: str
-    types: tuple[LogicalTypeV1, ...]
-    state: tuple[ComponentStateFieldV2, ...]
-    operations: tuple[PortableOperationV2, ...]
-    effects: tuple[InterfaceEffectV2, ...]
-    services: tuple[ServiceDependencyV2, ...]
+    types: tuple[ProofKernelLogicalType, ...]
+    state: tuple[ProofKernelStateField, ...]
+    operations: tuple[ProofKernelOperation, ...]
+    effects: tuple[ProofKernelEffect, ...]
+    services: tuple[ProofKernelService, ...]
     protocol_states: tuple[str, ...]
     initial_protocol_state: str
 
     @classmethod
-    def parse(cls, value: object) -> "PortableComponentInterfaceV2":
-        _reject_v2_machine_fields(value)
-        root = _object(value, "portable component interface V2")
+    def parse(cls, value: object) -> "ProofKernelComponentInterface":
+        _reject_proof_kernel_machine_fields(value)
+        root = _object(value, "component proof-kernel interface")
         _exact(
             root,
             {
-                "format",
                 "id",
                 "types",
                 "state",
@@ -424,17 +198,8 @@ class PortableComponentInterfaceV2:
                 "services",
                 "protocol",
             },
-            "portable component interface V2",
+            "component proof-kernel interface",
         )
-        interface_format = root["format"]
-        if interface_format not in {
-            COMPONENT_INTERFACE_IR_V2,
-            COMPONENT_INTERFACE_IR_V3,
-            COMPONENT_INTERFACE_IR_V4,
-        }:
-            raise ComponentInterfaceIRError(
-                "unsupported portable component interface format"
-            )
         protocol = _object(root["protocol"], "portable interface protocol")
         _exact(
             protocol,
@@ -442,10 +207,10 @@ class PortableComponentInterfaceV2:
             "portable interface protocol",
         )
         result = cls(
-            format_version=str(interface_format),
+            format_version=_PROOF_KERNEL_MODEL,
             identity=_identifier(root["id"], "interface id"),
             types=tuple(
-                _parse_type(item, index, interface_format=str(interface_format))
+                _parse_type(item, index)
                 for index, item in enumerate(_array(root["types"], "interface types"))
             ),
             state=tuple(
@@ -485,12 +250,6 @@ class PortableComponentInterfaceV2:
 
     def validate(self) -> None:
         type_ids = _unique((row.identity for row in self.types), "logical type")
-        if self.format_version == COMPONENT_INTERFACE_IR_V2 and any(
-            row.kind == "callback" for row in self.types
-        ):
-            raise ComponentInterfaceIRError(
-                "callback types require portable component interface V3"
-            )
         state_ids = _unique((row.identity for row in self.state), "state field")
         operation_ids = _unique(
             (row.identity for row in self.operations), "portable operation"
@@ -632,16 +391,16 @@ class PortableComponentInterfaceV2:
                     f"service {service.identity!r} references unknown effects {sorted(missing_effects)!r}"
                 )
 
-    def type_index(self) -> dict[str, LogicalTypeV1]:
+    def type_index(self) -> dict[str, ProofKernelLogicalType]:
         return {row.identity: row for row in self.types}
 
-    def operation_index(self) -> dict[str, PortableOperationV2]:
+    def operation_index(self) -> dict[str, ProofKernelOperation]:
         return {row.identity: row for row in self.operations}
 
     @property
-    def protocol_transitions(self) -> tuple[ProtocolTransitionV2, ...]:
+    def protocol_transitions(self) -> tuple[ProofKernelProtocolTransition, ...]:
         return tuple(
-            ProtocolTransitionV2(operation.identity, before, after)
+            ProofKernelProtocolTransition(operation.identity, before, after)
             for operation in self.operations
             for before in operation.pre_states
             for after in operation.post_states
@@ -667,7 +426,6 @@ class PortableComponentInterfaceV2:
 
     def to_payload(self) -> dict[str, object]:
         return {
-            "format": self.format_version,
             "id": self.identity,
             "types": [_type_payload(row) for row in self.types],
             "state": [
@@ -731,7 +489,11 @@ class PortableComponentInterfaceV2:
             "#include <stdint.h>",
             *(['#include "spx-atomics.h"'] if interface_uses_atomics(self.types) else []),
             "",
-            "typedef uint64_t spx_resource_v2;",
+            "typedef struct spx_resource_v2 {",
+            "  uint32_t type_tag;",
+            "  uint32_t generation;",
+            "  uint64_t identity;",
+            "} spx_resource_v2;",
             "typedef struct {",
             "  void *context;",
             "  uint32_t extent;",
@@ -740,9 +502,8 @@ class PortableComponentInterfaceV2:
             "} spx_bytes_view_v2;",
             "",
         ]
-        if self.format_version == COMPONENT_INTERFACE_IR_V4:
-            lines.extend(
-                [
+        lines.extend(
+            [
                     "typedef struct {",
                     "  uint64_t domain;",
                     "  uint64_t object;",
@@ -763,8 +524,8 @@ class PortableComponentInterfaceV2:
                     "#define SPX_VIEW_V1_DEFINED 1",
                     '#include "spx-reference-runtime.h"',
                     "",
-                ]
-            )
+            ]
+        )
         index = self.type_index()
         for logical_type in self.types:
             lines.extend(_render_type_v2(logical_type, index))
@@ -904,7 +665,7 @@ class PortableComponentInterfaceV2:
         lines.append("")
         return "\n".join(lines)
 
-    def operation_c_result(self, operation: PortableOperationV2) -> str:
+    def operation_c_result(self, operation: ProofKernelOperation) -> str:
         index = self.type_index()
         if not operation.results:
             return "void"
@@ -936,7 +697,7 @@ class PortableComponentInterfaceV2:
 
     def operation_c_parameters(
         self,
-        operation: PortableOperationV2,
+        operation: ProofKernelOperation,
         *,
         include_context: bool = True,
     ) -> tuple[tuple[str, str], ...]:
@@ -953,8 +714,8 @@ class PortableComponentInterfaceV2:
 
     def _render_operation_result(
         self,
-        operation: PortableOperationV2,
-        index: Mapping[str, LogicalTypeV1],
+        operation: ProofKernelOperation,
+        index: Mapping[str, ProofKernelLogicalType],
     ) -> list[str]:
         if len(operation.results) <= 1:
             return []
@@ -968,22 +729,7 @@ class PortableComponentInterfaceV2:
         return lines
 
 
-def parse_component_interface(
-    value: object,
-) -> ComponentInterfaceIRV1 | PortableComponentInterfaceV2:
-    row = _object(value, "component interface")
-    if row.get("format") == COMPONENT_INTERFACE_IR_V1:
-        return ComponentInterfaceIRV1.parse(row)
-    if row.get("format") in {
-        COMPONENT_INTERFACE_IR_V2,
-        COMPONENT_INTERFACE_IR_V3,
-        COMPONENT_INTERFACE_IR_V4,
-    }:
-        return PortableComponentInterfaceV2.parse(row)
-    raise ComponentInterfaceIRError("unsupported component interface format")
-
-
-def _reject_v2_machine_fields(value: object, context: str = "interface") -> None:
+def _reject_proof_kernel_machine_fields(value: object, context: str = "interface") -> None:
     if isinstance(value, Mapping):
         forbidden = sorted(set(value) & _V2_FORBIDDEN_FIELDS)
         if forbidden:
@@ -991,32 +737,32 @@ def _reject_v2_machine_fields(value: object, context: str = "interface") -> None
                 f"portable interface V2 cannot contain machine, unit, or external fields: {forbidden!r}"
             )
         for key, item in value.items():
-            _reject_v2_machine_fields(item, f"{context}.{key}")
+            _reject_proof_kernel_machine_fields(item, f"{context}.{key}")
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            _reject_v2_machine_fields(item, f"{context}[{index}]")
+            _reject_proof_kernel_machine_fields(item, f"{context}[{index}]")
 
 
-def _parse_value_v2(value: object, context: str) -> LogicalValueV2:
+def _parse_value_v2(value: object, context: str) -> ProofKernelLogicalValue:
     row = _object(value, context)
     _exact(row, {"id", "type_id"}, context)
-    return LogicalValueV2(
+    return ProofKernelLogicalValue(
         _identifier(row["id"], f"{context} id"),
         _identifier(row["type_id"], f"{context} type"),
     )
 
 
-def _parse_state_field(value: object, index: int) -> ComponentStateFieldV2:
+def _parse_state_field(value: object, index: int) -> ProofKernelStateField:
     row = _object(value, f"state field {index}")
     _exact(row, {"id", "type_id", "initial"}, f"state field {index}")
-    return ComponentStateFieldV2(
+    return ProofKernelStateField(
         _identifier(row["id"], f"state field {index} id"),
         _identifier(row["type_id"], f"state field {index} type"),
         CanonicalValueV3.of(row["initial"]),
     )
 
 
-def _parse_operation_v2(value: object, index: int) -> PortableOperationV2:
+def _parse_operation_v2(value: object, index: int) -> ProofKernelOperation:
     row = _object(value, f"portable operation {index}")
     _exact(
         row,
@@ -1038,7 +784,7 @@ def _parse_operation_v2(value: object, index: int) -> PortableOperationV2:
             f"unsupported portable operation kind {kind!r}"
         )
     identity = _identifier(row["id"], f"portable operation {index} id")
-    return PortableOperationV2(
+    return ProofKernelOperation(
         identity=identity,
         kind=kind,
         parameters=tuple(
@@ -1077,7 +823,7 @@ def _parse_operation_v2(value: object, index: int) -> PortableOperationV2:
     )
 
 
-def _parse_effect_v2(value: object, index: int) -> InterfaceEffectV2:
+def _parse_effect_v2(value: object, index: int) -> ProofKernelEffect:
     row = _object(value, f"interface effect {index}")
     _exact(
         row,
@@ -1088,7 +834,7 @@ def _parse_effect_v2(value: object, index: int) -> InterfaceEffectV2:
     if kind not in SERVICE_EFFECT_KINDS:
         raise ComponentInterfaceIRError(f"unsupported interface effect kind {kind!r}")
     target = row["target_id"]
-    return InterfaceEffectV2(
+    return ProofKernelEffect(
         identity=_identifier(row["id"], f"interface effect {index} id"),
         kind=kind,
         target_id=(
@@ -1100,7 +846,7 @@ def _parse_effect_v2(value: object, index: int) -> InterfaceEffectV2:
     )
 
 
-def _parse_service_v2(value: object, index: int) -> ServiceDependencyV2:
+def _parse_service_v2(value: object, index: int) -> ProofKernelService:
     row = _object(value, f"service dependency {index}")
     _exact(
         row,
@@ -1108,7 +854,7 @@ def _parse_service_v2(value: object, index: int) -> ServiceDependencyV2:
         f"service dependency {index}",
     )
     result_type = row["result_type_id"]
-    return ServiceDependencyV2(
+    return ProofKernelService(
         identity=_identifier(row["id"], f"service dependency {index} id"),
         parameter_type_ids=tuple(
             _identifier(item, f"service dependency {index} parameter type")
@@ -1130,7 +876,7 @@ def _parse_service_v2(value: object, index: int) -> ServiceDependencyV2:
     )
 
 
-def _value_payload_v2(value: LogicalValueV2) -> dict[str, str]:
+def _value_payload_v2(value: ProofKernelLogicalValue) -> dict[str, str]:
     return {"id": value.identity, "type_id": value.type_id}
 
 
@@ -1141,7 +887,7 @@ def _unique(values: Sequence[str] | Any, context: str) -> set[str]:
     return set(rows)
 
 
-def _validate_record_type_graph(types: Mapping[str, LogicalTypeV1]) -> None:
+def _validate_record_type_graph(types: Mapping[str, ProofKernelLogicalType]) -> None:
     """Reject recursive by-value records before rendering or projection checks.
 
     Portable records are emitted as ordinary C values.  A recursive record
@@ -1174,24 +920,22 @@ def _validate_record_type_graph(types: Mapping[str, LogicalTypeV1]) -> None:
 
 
 def _reachable_bytes_types(
-    logical_type: LogicalTypeV1,
-    types: Mapping[str, LogicalTypeV1],
-) -> tuple[LogicalTypeV1, ...]:
+    logical_type: ProofKernelLogicalType,
+    types: Mapping[str, ProofKernelLogicalType],
+) -> tuple[ProofKernelLogicalType, ...]:
     """Return byte views nested in one finite, acyclic logical value type."""
 
     if logical_type.kind in {"bytes", "view"}:
         return (logical_type,)
     if logical_type.kind != "record":
         return ()
-    result: list[LogicalTypeV1] = []
+    result: list[ProofKernelLogicalType] = []
     for field in logical_type.fields:
         result.extend(_reachable_bytes_types(types[field.type_id], types))
     return tuple(result)
 
 
-def _parse_type(
-    value: object, index: int, *, interface_format: str = COMPONENT_INTERFACE_IR_V2
-) -> LogicalTypeV1:
+def _parse_type(value: object, index: int) -> ProofKernelLogicalType:
     row = _object(value, f"logical type {index}")
     kind = _text(row.get("kind"), f"logical type {index} kind")
     identity = _identifier(row.get("id"), f"logical type {index} id")
@@ -1200,13 +944,13 @@ def _parse_type(
         c_type = _text(row["c_type"], f"logical type {identity} c_type")
         if c_type not in SCALAR_TYPES:
             raise ComponentInterfaceIRError(f"unsupported scalar type {c_type!r}")
-        return LogicalTypeV1(identity, kind, c_type=c_type)
+        return ProofKernelLogicalType(identity, kind, c_type=c_type)
     if kind == "enum":
         _exact(row, {"id", "kind", "c_type"}, f"logical type {identity}")
         c_type = _text(row["c_type"], f"logical type {identity} c_type")
         if c_type not in SCALAR_TYPES:
             raise ComponentInterfaceIRError(f"unsupported enum storage {c_type!r}")
-        return LogicalTypeV1(identity, kind, c_type=c_type)
+        return ProofKernelLogicalType(identity, kind, c_type=c_type)
     if kind == "bytes":
         _exact(
             row,
@@ -1224,7 +968,7 @@ def _parse_type(
             raise ComponentInterfaceIRError(
                 "bytes types require exactly one of an extent parameter or NUL termination"
             )
-        return LogicalTypeV1(
+        return ProofKernelLogicalType(
             identity,
             kind,
             access=access,
@@ -1243,7 +987,7 @@ def _parse_type(
         _unique((field.identity for field in fields), f"record {identity} field")
         if not fields:
             raise ComponentInterfaceIRError("record types require at least one field")
-        return LogicalTypeV1(identity, kind, access=access, fields=fields)
+        return ProofKernelLogicalType(identity, kind, access=access, fields=fields)
     if kind == "resource":
         _exact(
             row,
@@ -1253,7 +997,7 @@ def _parse_type(
         ownership = _text(row["ownership"], f"logical type {identity} ownership")
         if ownership not in RESOURCE_OWNERSHIP:
             raise ComponentInterfaceIRError(f"unsupported resource ownership {ownership!r}")
-        return LogicalTypeV1(
+        return ProofKernelLogicalType(
             identity,
             kind,
             resource_kind=_identifier(
@@ -1261,30 +1005,30 @@ def _parse_type(
             ),
             ownership=ownership,
         )
-    if kind == "callback":
-        if interface_format == COMPONENT_INTERFACE_IR_V1:
-            _exact(
-                row,
-                {"id", "kind", "abi", "parameter_type_ids", "result_type_id"},
-                f"logical type {identity}",
-            )
-            result_type = row["result_type_id"]
-            return LogicalTypeV1(
-                identity,
-                kind,
-                abi=_identifier(row["abi"], f"logical type {identity} ABI"),
-                parameter_type_ids=tuple(
-                    _identifier(item, f"logical type {identity} callback parameter")
-                    for item in _array(row["parameter_type_ids"], "callback parameters")
-                ),
-                result_type_id=None
-                if result_type is None
-                else _identifier(result_type, f"logical type {identity} callback result"),
-            )
-        if interface_format not in {COMPONENT_INTERFACE_IR_V3, COMPONENT_INTERFACE_IR_V4}:
+    if kind == "resource_cell":
+        _exact(
+            row,
+            {"id", "kind", "resource_kind", "ownership", "access"},
+            f"logical type {identity}",
+        )
+        ownership = _text(row["ownership"], f"logical type {identity} ownership")
+        access = _text(row["access"], f"logical type {identity} access")
+        if ownership not in RESOURCE_OWNERSHIP or access not in {
+            "write", "read_write"
+        }:
             raise ComponentInterfaceIRError(
-                "callback types require portable component interface V3"
+                f"logical resource cell {identity!r} has invalid ownership or access"
             )
+        return ProofKernelLogicalType(
+            identity,
+            kind,
+            resource_kind=_identifier(
+                row["resource_kind"], f"logical type {identity} resource kind"
+            ),
+            ownership=ownership,
+            access=access,
+        )
+    if kind == "callback":
         _exact(
             row,
             {
@@ -1300,7 +1044,7 @@ def _parse_type(
                 f"logical callback type {identity!r} has invalid ownership or nullability"
             )
         result_type = row["result_type_id"]
-        return LogicalTypeV1(
+        return ProofKernelLogicalType(
             identity,
             kind,
             ownership=ownership,
@@ -1314,10 +1058,6 @@ def _parse_type(
             nullable=nullable,
         )
     if kind == "view":
-        if interface_format != COMPONENT_INTERFACE_IR_V4:
-            raise ComponentInterfaceIRError(
-                "view types require portable component interface V4"
-            )
         _exact(
             row,
             {"id", "kind", "element_type_id", "access", "extent", "ownership"},
@@ -1354,7 +1094,7 @@ def _parse_type(
             raise ComponentInterfaceIRError(
                 f"logical view type {identity!r} has unsupported extent policy"
             )
-        return LogicalTypeV1(
+        return ProofKernelLogicalType(
             identity,
             kind,
             access=access,
@@ -1369,10 +1109,6 @@ def _parse_type(
             lifetime="origin",
         )
     if kind == "reference":
-        if interface_format != COMPONENT_INTERFACE_IR_V4:
-            raise ComponentInterfaceIRError(
-                "reference types require portable component interface V4"
-            )
         _exact(
             row,
             {
@@ -1399,7 +1135,7 @@ def _parse_type(
             raise ComponentInterfaceIRError(
                 f"logical reference type {identity!r} has invalid policy"
             )
-        return LogicalTypeV1(
+        return ProofKernelLogicalType(
             identity,
             kind,
             access=access,
@@ -1413,145 +1149,17 @@ def _parse_type(
     raise ComponentInterfaceIRError(f"unsupported logical type kind {kind!r}")
 
 
-def _parse_field(value: object, owner: str, index: int) -> LogicalFieldV1:
+def _parse_field(value: object, owner: str, index: int) -> ProofKernelLogicalField:
     row = _object(value, f"record {owner} field {index}")
     _exact(row, {"id", "type_id"}, f"record {owner} field {index}")
-    return LogicalFieldV1(
+    return ProofKernelLogicalField(
         _identifier(row["id"], f"record {owner} field id"),
         _identifier(row["type_id"], f"record {owner} field type"),
     )
 
 
-def _parse_value(value: object, context: str) -> LogicalValueV1:
-    row = _object(value, context)
-    _exact(row, {"id", "type_id", "machine_projection"}, context)
-    return LogicalValueV1(
-        _identifier(row["id"], f"{context} id"),
-        _identifier(row["type_id"], f"{context} type"),
-        CanonicalValueV3.of(
-            _object(row["machine_projection"], f"{context} machine projection")
-        ),
-    )
 
-
-def _parse_effect(value: object, index: int) -> InterfaceEffectV1:
-    row = _object(value, f"interface effect {index}")
-    _exact(
-        row,
-        {"id", "kind", "target_id", "operation", "machine_refs"},
-        f"interface effect {index}",
-    )
-    kind = _text(row["kind"], f"interface effect {index} kind")
-    if kind not in SERVICE_EFFECT_KINDS:
-        raise ComponentInterfaceIRError(f"unsupported interface effect kind {kind!r}")
-    target = row["target_id"]
-    return InterfaceEffectV1(
-        _identifier(row["id"], f"interface effect {index} id"),
-        kind,
-        None if target is None else _identifier(target, "interface effect target"),
-        _identifier(row["operation"], f"interface effect {index} operation"),
-        tuple(
-            CanonicalValueV3.of(
-                _object(item, f"interface effect {index} machine ref")
-            )
-            for item in _array(row["machine_refs"], "interface effect machine refs")
-        ),
-    )
-
-
-def _parse_service(value: object, index: int) -> ServiceDependencyV1:
-    row = _object(value, f"service dependency {index}")
-    _exact(
-        row,
-        {"id", "operation_identity", "parameter_type_ids", "result_type_id", "effect_ids"},
-        f"service dependency {index}",
-    )
-    result = row["result_type_id"]
-    return ServiceDependencyV1(
-        _identifier(row["id"], f"service dependency {index} id"),
-        CanonicalValueV3.of(
-            _object(row["operation_identity"], "service operation identity")
-        ),
-        tuple(
-            _identifier(item, "service parameter type")
-            for item in _array(row["parameter_type_ids"], "service parameter types")
-        ),
-        None if result is None else _identifier(result, "service result type"),
-        tuple(
-            _identifier(item, "service effect id")
-            for item in _array(row["effect_ids"], "service effect ids")
-        ),
-    )
-
-
-def _c_type(logical_type: LogicalTypeV1) -> str:
-    if logical_type.kind in {"scalar", "enum"}:
-        assert logical_type.c_type is not None
-        return logical_type.c_type if logical_type.kind == "scalar" else f"spx_{logical_type.identity}_v1"
-    if logical_type.kind == "bytes":
-        qualifier = "const " if logical_type.access == "read" else ""
-        return f"{qualifier}spx_bytes_view_v1 *"
-    if logical_type.kind == "record":
-        qualifier = "const " if logical_type.access == "read" else ""
-        return f"{qualifier}spx_{logical_type.identity}_v1 *"
-    if logical_type.kind == "resource":
-        return "spx_resource_v1"
-    if logical_type.kind == "callback":
-        return f"spx_{logical_type.identity}_v1"
-    raise AssertionError(logical_type.kind)
-
-
-def _c_value_type(logical_type: LogicalTypeV1) -> str:
-    if logical_type.kind in {"scalar", "enum", "resource", "callback"}:
-        return _c_type(logical_type)
-    if logical_type.kind == "record":
-        return f"spx_{logical_type.identity}_v1"
-    if logical_type.kind == "bytes":
-        return "spx_bytes_view_v1"
-    raise AssertionError(logical_type.kind)
-
-
-def _render_type(
-    logical_type: LogicalTypeV1, index: Mapping[str, LogicalTypeV1]
-) -> list[str]:
-    if logical_type.kind in {"scalar", "bytes", "resource"}:
-        return []
-    if logical_type.kind == "enum":
-        assert logical_type.c_type is not None
-        return [
-            f"typedef {logical_type.c_type} spx_{logical_type.identity}_v1;",
-            "",
-        ]
-    if logical_type.kind == "record":
-        lines = [f"typedef struct spx_{logical_type.identity}_v1 {{"]
-        lines.extend(
-            f"  {_c_value_type(index[field.type_id])} {field.identity};"
-            for field in logical_type.fields
-        )
-        lines.extend([f"}} spx_{logical_type.identity}_v1;", ""])
-        return lines
-    if logical_type.kind == "callback":
-        parameters = ["void *context"] + [
-            f"{_c_type(index[type_id])} argument_{position}"
-            for position, type_id in enumerate(logical_type.parameter_type_ids)
-        ]
-        result = (
-            "void"
-            if logical_type.result_type_id is None
-            else _c_value_type(index[logical_type.result_type_id])
-        )
-        return [
-            f"typedef {result} (*spx_{logical_type.identity}_fn_v1)({', '.join(parameters)});",
-            f"typedef struct spx_{logical_type.identity}_v1 {{",
-            "  void *context;",
-            f"  spx_{logical_type.identity}_fn_v1 invoke;",
-            f"}} spx_{logical_type.identity}_v1;",
-            "",
-        ]
-    raise AssertionError(logical_type.kind)
-
-
-def _type_payload(value: LogicalTypeV1) -> dict[str, object]:
+def _type_payload(value: ProofKernelLogicalType) -> dict[str, object]:
     result: dict[str, object] = {"id": value.identity, "kind": value.kind}
     if value.kind in {"scalar", "enum"}:
         result["c_type"] = value.c_type
@@ -1573,11 +1181,12 @@ def _type_payload(value: LogicalTypeV1) -> dict[str, object]:
                 ],
             }
         )
-    elif value.kind == "resource":
+    elif value.kind in {"resource", "resource_cell"}:
         result.update(
             {
                 "resource_kind": value.resource_kind,
                 "ownership": value.ownership,
+                **({"access": value.access} if value.kind == "resource_cell" else {}),
             }
         )
     elif value.kind == "callback":
@@ -1624,38 +1233,12 @@ def _type_payload(value: LogicalTypeV1) -> dict[str, object]:
     return result
 
 
-def _value_payload(value: LogicalValueV1) -> dict[str, object]:
-    return {
-        "id": value.identity,
-        "type_id": value.type_id,
-        "machine_projection": value.machine_projection.to_value(),
-    }
-
-
-def _effect_payload(value: InterfaceEffectV1) -> dict[str, object]:
-    return {
-        "id": value.identity,
-        "kind": value.kind,
-        "target_id": value.target_id,
-        "operation": value.operation,
-        "machine_refs": [row.to_value() for row in value.machine_refs],
-    }
-
-
-def _service_payload(value: ServiceDependencyV1) -> dict[str, object]:
-    return {
-        "id": value.identity,
-        "operation_identity": value.operation_identity.to_value(),
-        "parameter_type_ids": list(value.parameter_type_ids),
-        "result_type_id": value.result_type_id,
-        "effect_ids": list(value.effect_ids),
-    }
 
 
 def _validate_portable_value(
     value: object,
-    logical_type: LogicalTypeV1,
-    types: Mapping[str, LogicalTypeV1],
+    logical_type: ProofKernelLogicalType,
+    types: Mapping[str, ProofKernelLogicalType],
     context: str,
 ) -> None:
     if logical_type.kind in {"scalar", "enum"}:
@@ -1688,6 +1271,10 @@ def _validate_portable_value(
         ):
             raise ComponentInterfaceIRError(f"{context} is not a valid resource")
         return
+    if logical_type.kind == "resource_cell":
+        raise ComponentInterfaceIRError(
+            f"{context} is an invocation-local resource cell, not a portable value"
+        )
     if logical_type.kind == "record":
         row = _object(value, context)
         if set(row) != {field.identity for field in logical_type.fields}:
@@ -1744,7 +1331,7 @@ def _validate_portable_value(
     if logical_type.kind == "view":
         row = _object(value, context)
         _exact(row, {"base", "extent"}, context)
-        synthetic = LogicalTypeV1(
+        synthetic = ProofKernelLogicalType(
             identity=f"{logical_type.identity}.base",
             kind="reference",
             nullable=False,
@@ -1760,7 +1347,7 @@ def _validate_portable_value(
     )
 
 
-def _c_type_v2(logical_type: LogicalTypeV1) -> str:
+def _c_type_v2(logical_type: ProofKernelLogicalType) -> str:
     if logical_type.kind in {"scalar", "enum"}:
         assert logical_type.c_type is not None
         return (
@@ -1778,6 +1365,8 @@ def _c_type_v2(logical_type: LogicalTypeV1) -> str:
         if logical_type.resource_kind == ATOMIC_OBJECT_RESOURCE_KIND:
             return "spx_atomic_object *"
         return "spx_resource_v2"
+    if logical_type.kind == "resource_cell":
+        return "spx_resource_v2 *"
     if logical_type.kind == "callback":
         return f"spx_callback_{logical_type.identity}_v2 *"
     if logical_type.kind == "reference":
@@ -1788,8 +1377,10 @@ def _c_type_v2(logical_type: LogicalTypeV1) -> str:
     raise AssertionError(logical_type.kind)
 
 
-def _c_value_type_v2(logical_type: LogicalTypeV1) -> str:
-    if logical_type.kind in {"scalar", "enum", "resource", "callback", "reference"}:
+def _c_value_type_v2(logical_type: ProofKernelLogicalType) -> str:
+    if logical_type.kind in {
+        "scalar", "enum", "resource", "resource_cell", "callback", "reference"
+    }:
         return _c_type_v2(logical_type)
     if logical_type.kind == "record":
         return f"spx_{logical_type.identity}_v2"
@@ -1801,9 +1392,11 @@ def _c_value_type_v2(logical_type: LogicalTypeV1) -> str:
 
 
 def _render_type_v2(
-    logical_type: LogicalTypeV1, index: Mapping[str, LogicalTypeV1]
+    logical_type: ProofKernelLogicalType, index: Mapping[str, ProofKernelLogicalType]
 ) -> list[str]:
-    if logical_type.kind in {"scalar", "bytes", "resource", "view", "reference"}:
+    if logical_type.kind in {
+        "scalar", "bytes", "resource", "resource_cell", "view", "reference"
+    }:
         return []
     if logical_type.kind == "enum":
         assert logical_type.c_type is not None
@@ -1828,34 +1421,18 @@ def _render_type_v2(
     raise AssertionError(logical_type.kind)
 
 
-PortableComponentInterfaceV3 = PortableComponentInterfaceV2
-PortableComponentInterfaceV4 = PortableComponentInterfaceV2
-
-
 __all__ = [
     "ACCESS_MODES",
-    "COMPONENT_INTERFACE_IR_V1",
-    "COMPONENT_INTERFACE_IR_V2",
-    "COMPONENT_INTERFACE_IR_V3",
-    "COMPONENT_INTERFACE_IR_V4",
-    "PORTABLE_COMPONENT_INTERFACE_V2_FORMAT",
-    "ComponentStateFieldV2",
-    "ComponentInterfaceIRV1",
+    "ProofKernelStateField",
     "ComponentInterfaceIRError",
-    "InterfaceEffectV1",
-    "InterfaceEffectV2",
-    "LogicalFieldV1",
-    "LogicalTypeV1",
-    "LogicalValueV1",
-    "LogicalValueV2",
-    "PortableComponentInterfaceV2",
-    "PortableComponentInterfaceV3",
-    "PortableComponentInterfaceV4",
-    "PortableOperationV2",
-    "ProtocolTransitionV2",
+    "ProofKernelEffect",
+    "ProofKernelLogicalField",
+    "ProofKernelLogicalType",
+    "ProofKernelLogicalValue",
+    "ProofKernelComponentInterface",
+    "ProofKernelOperation",
+    "ProofKernelProtocolTransition",
     "RESOURCE_OWNERSHIP",
     "SCALAR_TYPES",
-    "ServiceDependencyV1",
-    "ServiceDependencyV2",
-    "parse_component_interface",
+    "ProofKernelService",
 ]

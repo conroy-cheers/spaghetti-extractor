@@ -46,10 +46,12 @@ def _inventory() -> dict[str, object]:
         "padding_waivers": [
             {
                 "binary": "original",
+                "classification": "verified_padding",
                 "id": "original-padding-1008-1010",
                 "reason": "verified zero fill",
                 "rva": 0x1008,
                 "size": 8,
+                "source": {"kind": "test_fixture"},
             }
         ],
         "issues": [],

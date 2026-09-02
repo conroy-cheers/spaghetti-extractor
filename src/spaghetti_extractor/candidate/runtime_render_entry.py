@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from .runtime_model import NativeRuntimePlan
+from .runtime_model import SharedModuleRuntimePlan
 
 
-def _native_runtime_source_entry(plan: NativeRuntimePlan) -> str:
+def _native_runtime_source_entry(plan: SharedModuleRuntimePlan) -> str:
     reentrant_entry = '''  if (context->initialized != 0U) {
+    if (context->nonlocal_active != 0U &&
+        context->unwind_handler_bound == 0U)
+      return SPX_CALL_UNIMPLEMENTED;
     if (context->nested_depth == 0xffffffffU) return SPX_CALL_UNIMPLEMENTED;
     ++context->nested_depth;
     status = spx_native_run_initialized(entry_rva, input, output);
     --context->nested_depth;
+    spx_native_terminal_call_status = status;
+    spx_native_terminal_state = *output;
     return status;
   }
 '''
@@ -20,9 +25,11 @@ def _native_runtime_source_entry(plan: NativeRuntimePlan) -> str:
         if plan.has_typed_x87_handler
         else ""
     )
-    return f'''  .resolve_code_target = spx_native_resolve_code_target{x87_initializer}
+    return f'''  .resolve_code_target = spx_native_resolve_code_target
+  , .route_nonlocal = spx_native_route_nonlocal{x87_initializer}
   , .invoke_callable_external_jump =
       spx_native_invoke_callable_external_jump
+  , .record_access_violation = spx_native_record_access_violation
 }};
 
 static void spx_native_unpack_flags(spx_machine_state *state) {{
@@ -55,7 +62,42 @@ static uint32_t spx_native_has_transfer(uint32_t rva) {{
     else high = middle;
   }}
   return low != spx_native_transfer_count &&
-      spx_native_transfer_rvas[low] == rva && spx_program_lookup(rva) != 0;
+      spx_native_transfer_rvas[low] == rva && spx_behavioral_has_unit(rva);
+}}
+
+void spx_native_runtime_execution_mark(
+    uint32_t *initialized, uint32_t *nested_depth) {{
+  if (initialized != 0)
+    *initialized = spx_native_context_value.initialized != 0U ? 1U : 0U;
+  if (nested_depth != 0)
+    *nested_depth = spx_native_context_value.nested_depth;
+}}
+
+uint32_t spx_native_runtime_restore_execution(
+    uint32_t initialized, uint32_t nested_depth,
+    void *outgoing_mark, void *x87_mark) {{
+  spx_native_context *context = &spx_native_context_value;
+  void **thread_state = (void **)spx_module_runtime_thread_state_current();
+  if (initialized > 1U || (initialized == 0U && nested_depth != 0U) ||
+      thread_state == 0)
+    return 0U;
+  thread_state[0] = outgoing_mark;
+  thread_state[2] = x87_mark;
+  context->initialized = initialized;
+  context->nested_depth = nested_depth;
+  context->undefined_fault = 0U;
+  context->undefined_fault_slot = 0U;
+  context->undefined_fault_rva = 0U;
+  context->nonlocal_active = 0U;
+  context->nonlocal_source_rva = 0U;
+  context->nonlocal_target_rva = 0U;
+  context->nonlocal_value = 0U;
+  context->nonlocal_target_function_entry_rva = 0U;
+  context->unwind_service_active = 0U;
+  context->unwind_exception_record_count = 0U;
+  context->unwind_handler_bound = 0U;
+  if (initialized == 0U) context->owner_fs_base = 0U;
+  return 1U;
 }}
 
 static spx_call_status spx_native_run_initialized(
@@ -63,20 +105,29 @@ static spx_call_status spx_native_run_initialized(
     spx_machine_state *output) {{
   spx_call_status status;
   spx_native_context *context = &spx_native_context_value;
+  spx_runtime runtime = spx_native_runtime_instance;
   if (input == 0 || output == 0 || context->initialized == 0U ||
       !spx_native_has_transfer(entry_rva))
     return SPX_CALL_UNIMPLEMENTED;
   *output = *input;
   spx_native_unpack_flags(output);
   output->original_rva = entry_rva;
-  status = spx_run_function(
-      &spx_native_runtime_instance, entry_rva, output, output);
+  runtime.context = context;
+  runtime.image_base = context->image_base;
+  status = spx_behavioral_run(
+      &runtime, entry_rva, output, output);
   if (context->undefined_fault != 0U) {{
     spx_native_diagnostic_reason = 0x5001U;
     spx_native_diagnostic_value = context->undefined_fault_slot;
     spx_native_diagnostic_aux = context->undefined_fault_rva;
     spx_native_diagnostic_detail = entry_rva;
     return SPX_CALL_UNIMPLEMENTED;
+  }}
+  if (status != SPX_CALL_OK && spx_native_diagnostic_reason == 0U) {{
+    spx_native_diagnostic_reason = 0x5002U;
+    spx_native_diagnostic_value = (uint32_t)status;
+    spx_native_diagnostic_aux = output->original_rva;
+    spx_native_diagnostic_detail = entry_rva;
   }}
   return status;
 }}
@@ -95,6 +146,14 @@ spx_call_status spx_native_runtime_run_at_rva(
   context->undefined_fault_slot = 0U;
   context->undefined_fault_rva = 0U;
   context->last_undefined_fault = 0U;
+  context->nonlocal_active = 0U;
+  context->nonlocal_source_rva = 0U;
+  context->nonlocal_target_rva = 0U;
+  context->nonlocal_value = 0U;
+  context->nonlocal_target_function_entry_rva = 0U;
+  context->unwind_service_active = 0U;
+  context->unwind_exception_record_count = 0U;
+  context->unwind_handler_bound = 0U;
   context->nested_depth = 0U;
   if (!spx_native_validate_image(context) ||
       !spx_native_validate_stack(context, input) ||
@@ -119,10 +178,20 @@ spx_call_status spx_native_runtime_run_at_rva(
   context->initialized = 1U;
   status = spx_native_run_initialized(entry_rva, input, output);
 release:
+  context->nonlocal_active = 0U;
+  context->nonlocal_source_rva = 0U;
+  context->nonlocal_target_rva = 0U;
+  context->nonlocal_value = 0U;
+  context->nonlocal_target_function_entry_rva = 0U;
+  context->unwind_service_active = 0U;
+  context->unwind_exception_record_count = 0U;
+  context->unwind_handler_bound = 0U;
   context->last_undefined_fault = context->undefined_fault;
   context->owner_fs_base = 0U;
   context->nested_depth = 0U;
   context->initialized = 0U;
+  spx_native_terminal_call_status = status;
+  spx_native_terminal_state = *output;
   return status;
 }}
 

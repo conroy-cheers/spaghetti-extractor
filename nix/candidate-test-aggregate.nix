@@ -11,7 +11,7 @@
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
   nativeBuildInputs ? [ ],
-  releaseGate ? null,
+  nativeRealization ? null,
 }:
 
 let
@@ -44,12 +44,18 @@ let
         export PYTHONHASHSEED=0
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
-        export PYTHONPATH=${phasePythonSource}/src
-        ${lib.optionalString (releaseGate != null) ''
-          ${pkgs.jq}/bin/jq -e '
-            .format == "spaghetti-extractor-release-acceptance-v1" and
-            .status == "complete" and .release_accepted and .executable
-          ' ${releaseGate}/release-acceptance.json >/dev/null
+        export PYTHONPATH=${phasePythonSource.pythonPath}
+          ${lib.optionalString (nativeRealization != null) ''
+            ${pkgs.jq}/bin/jq -e '
+            .format == "spaghetti-extractor-native-realization-v2" and
+            .status == "complete" and .ready_for_observation and
+            (.blockers | length) == 0
+          ' ${nativeRealization}/native-realization.json >/dev/null
+          expected_candidate_sha256="$(${pkgs.jq}/bin/jq -r \
+            '.candidate.sha256' ${nativeRealization}/native-realization.json)"
+          actual_candidate_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+            ${candidateBinary} | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
+          test "$expected_candidate_sha256" = "$actual_candidate_sha256"
         ''}
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \
@@ -98,7 +104,7 @@ let
       export PYTHONHASHSEED=0
       export LC_ALL=C.UTF-8
       export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${phasePythonSource}/src
+      export PYTHONPATH=${phasePythonSource.pythonPath}
       ${pythonEnv}/bin/python3 - ${suite} "$out" ${caseArgs} <<'PY'
       import pathlib
       import sys
@@ -127,7 +133,7 @@ assert builtins.isString namePrefix && namePrefix != "";
 assert builtins.isList caseIds && builtins.length caseIds > 0;
 assert builtins.all (id: builtins.isString id && id != "") caseIds;
 assert builtins.isList candidateCommand && builtins.length candidateCommand > 0;
-assert releaseGate == null || lib.isDerivation releaseGate;
+assert nativeRealization == null || lib.isDerivation nativeRealization;
 assert builtins.all
   (case: builtins.isAttrs case && case ? id && builtins.isString case.id && case.id != "")
   cases;

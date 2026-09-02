@@ -1,5 +1,8 @@
 # Documentation
 
+- [Active repository goal](current-goal.md): concise objective, keystone
+  semantic boundary, current checkpoint, ordered active work, and final
+  completion gate.
 - [Architecture and assurance](architecture.md): canonical pipeline, trust
   boundaries, statuses, and completion criteria.
 - [Components](components.md): exact ownership, operator-defined groups,

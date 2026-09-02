@@ -10,13 +10,17 @@
 let
   lib = pkgs.lib;
   checked = lib.mapAttrs (id: spec:
+    let safeId = lib.replaceStrings [ ":" ] [ "-" ] id;
+    in
     assert builtins.isPath spec.intent || builtins.isString spec.intent;
     assert builtins.isPath spec.layouts || builtins.isString spec.layouts;
-    assert builtins.isPath spec.machineIr || builtins.isString spec.machineIr;
+    assert builtins.isPath spec.transferPlan || builtins.isString spec.transferPlan;
     assert (builtins.isList (spec.machineEvidence or [ ])
-      && ((spec.machineEvidence or [ ]) != [ ] || spec ? callbackAuthority));
+      && ((spec.machineEvidence or [ ]) != [ ]
+        || (spec.runtimeProfiles or [ ]) != [ ]));
+    assert !(spec ? callbackProtocolId);
     pkgs.runCommand
-      "${namePrefix}-${id}-checked-call-protocol"
+      "${namePrefix}-${safeId}-checked-call-protocol"
       {
         nativeBuildInputs = [ pythonEnv ];
         __contentAddressed = true;
@@ -29,24 +33,25 @@ let
           --layouts ${lib.escapeShellArg "${spec.layouts}"} \
           ${lib.optionalString (spec ? frame)
             "--frame ${lib.escapeShellArg "${spec.frame}"}"} \
-          --machine-ir ${lib.escapeShellArg "${spec.machineIr}"} \
+          --transfer-plan ${lib.escapeShellArg "${spec.transferPlan}"} \
           ${lib.concatMapStringsSep " "
             (value: "--interaction-contract-id ${lib.escapeShellArg value}")
             (spec.interactionContractIds or [ ])} \
           ${lib.concatMapStringsSep " "
             (value: "--machine-evidence ${lib.escapeShellArg "${value}"}")
             (spec.machineEvidence or [ ])} \
-          ${lib.optionalString (spec ? callbackAuthority) ''
-            --callback-authority ${lib.escapeShellArg "${spec.callbackAuthority}"} \
-            --callback-protocol-id ${lib.escapeShellArg spec.callbackProtocolId} \
-            --binary ${lib.escapeShellArg "${spec.binary}"}''} \
+          ${lib.concatMapStringsSep " "
+            (value: "--runtime-profile ${lib.escapeShellArg "${value}"}")
+            (spec.runtimeProfiles or [ ])} \
           ${lib.optionalString (spec ? compilerProposal)
             "--compiler-proposal ${lib.escapeShellArg "${spec.compilerProposal}"}"} \
           --out "$out"
       '') protocols;
   intentTemplates = lib.mapAttrs (id: spec:
+    let safeId = lib.replaceStrings [ ":" ] [ "-" ] id;
+    in
     pkgs.runCommand
-      "${namePrefix}-${id}-call-intent-template"
+      "${namePrefix}-${safeId}-boundary-intent-template"
       { __contentAddressed = true; }
       ''
         mkdir -p "$out"

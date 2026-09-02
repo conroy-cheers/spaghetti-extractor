@@ -12,39 +12,6 @@ SEMANTIC_TRANSFER_CONTRACT_FORMAT = (
 INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT = (
     "spaghetti-extractor-static-instruction-effects-v1"
 )
-INTERPRETER_NATIVE_BUILD_FORMAT = "spaghetti-extractor-interpreter-native-build-v1"
-SPX_INTERPRETER_PROGRAM_FORMAT = "spaghetti-extractor-semantic-interpreter-program-v1"
-SPX_INTERPRETER_PACKAGE_FORMAT = "spaghetti-extractor-semantic-interpreter-package-v1"
-BEHAVIORAL_C_LAYOUT_INTENT_FORMAT = "spaghetti-extractor-behavioral-c-layout-intent-v1"
-BEHAVIORAL_C_PLAN_FORMAT = "spaghetti-extractor-behavioral-c-plan-v1"
-BEHAVIORAL_C_PACKAGE_FORMAT = "spaghetti-extractor-behavioral-c-package-v1"
-BEHAVIORAL_C_LOWERING_FORMAT = "spaghetti-extractor-behavioral-c-lowering-v1"
-BEHAVIORAL_C_COVERAGE_FORMAT = "spaghetti-extractor-behavioral-c-coverage-v1"
-BEHAVIORAL_C_RUNTIME_QUALIFICATION_FORMAT = (
-    "spaghetti-extractor-behavioral-c-runtime-qualification-v1"
-)
-BEHAVIORAL_C_COMPLETION_FORMAT = "spaghetti-extractor-behavioral-c-completion-v1"
-PE32_MODULE_INTERFACE_FORMAT = "spaghetti-extractor-pe32-module-interface-v2"
-NATIVE_INGRESS_PLAN_FORMAT = "spaghetti-extractor-native-ingress-plan-v1"
-CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT = (
-    "spaghetti-extractor-checked-boundary-outcome-protocol-v1"
-)
-CHECKED_SEH_PROTOCOL_FORMAT = "spaghetti-extractor-checked-seh-protocol-v1"
-NATIVE_INGRESS_LINK_RECEIPT_FORMAT = (
-    "spaghetti-extractor-native-ingress-link-receipt-v1"
-)
-PE32_MODULE_DEPLOYMENT_FORMAT = "spaghetti-extractor-pe32-module-deployment-v1"
-PE32_LOADER_SURFACE_RECEIPT_FORMAT = (
-    "spaghetti-extractor-pe32-loader-surface-receipt-v1"
-)
-PE32_PROJECT_INTENT_FORMAT = "spaghetti-extractor-pe32-project-intent-v1"
-PE32_PROJECT_LOAD_PLAN_FORMAT = "spaghetti-extractor-pe32-project-load-plan-v1"
-PE32_LOAD_OBSERVATION_FORMAT = "spaghetti-extractor-pe32-load-observation-v1"
-PE32_OBSERVED_LOAD_GRAPH_FORMAT = "spaghetti-extractor-pe32-observed-load-graph-v1"
-PE32_PROJECT_COMPLETION_FORMAT = "spaghetti-extractor-pe32-project-completion-v2"
-NATIVE_ENGINE_PLAN_FORMAT = "spaghetti-extractor-native-engine-plan-v1"
-NATIVE_ENGINE_PACKAGE_FORMAT = "spaghetti-extractor-native-engine-package-v1"
-NATIVE_RUNTIME_PACKAGE_FORMAT = "spaghetti-extractor-native-runtime-package-v1"
 MACHINE_IR_V2_FORMAT = "spaghetti-extractor-machine-ir-v2"
 MACHINE_IR_FORMAT = "spaghetti-extractor-machine-ir-v3"
 MACHINE_MEMORY_ACTION_GRAPH_FORMAT = (
@@ -65,8 +32,6 @@ STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT = (
 FALLBACK_CAPABILITY_ANALYSIS_FORMAT = (
     "spaghetti-extractor-fallback-capability-analysis-v1"
 )
-STRUCTURAL_EXECUTABLE_FORMAT = "spaghetti-extractor-structural-executable-v1"
-RELEASE_ACCEPTANCE_FORMAT = "spaghetti-extractor-release-acceptance-v1"
 CALLER_MEMORY_FRAME_MODEL = "pe32-declared-pointer-arguments-v1"
 SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL = "same-library-call-through-v1"
 LAUNCH_ASSUMPTION_TEMPLATE_FORMAT = (
@@ -77,13 +42,9 @@ ISA_ENCODING_PROPOSAL_FORMAT = (
     "spaghetti-extractor-side-isa-executable-encoding-proposal-v1"
 )
 STATIC_MACHINE_IMPORT_PROFILE_FORMAT = "spaghetti-extractor-static-machine-import-profile-v1"
-AUTHORITY_DIAGNOSTICS_V3_FORMAT = (
-    "spaghetti-extractor-authority-diagnostics-v3"
-)
 IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
     "spaghetti-extractor-native-implementation-dispatch-receipt-v3"
 )
-TARGET_HINTS_ARTIFACT_KIND = "target-hints-v3"
 EXTERNAL_OPERATION_PROFILE_FORMAT = "spaghetti-extractor-external-operation-profile-v2"
 EXTERNAL_OPERATION_CONTRACT_FORMAT = "spaghetti-extractor-external-operation-contract-v1"
 SOURCE_OPERATION_CATALOG_FORMAT = "spaghetti-extractor-source-operation-catalog-v1"
@@ -92,20 +53,10 @@ PAYLOAD_RELOCATION_INVENTORY_FORMAT = (
     "spaghetti-extractor-pe-payload-relocation-inventory-v1"
 )
 PE_COMPOSITION_MANIFEST_FORMAT = "spaghetti-extractor-pe-composition-manifest-v1"
-REGION_REPLACEMENT_BUNDLE_FORMAT = "spaghetti-extractor-region-replacement-v2"
 RECONSTRUCTION_PLAN_FORMAT = "spaghetti-extractor-reconstruction-plan-v1"
 RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT = (
     "spaghetti-extractor-reconstruction-contract-analysis-v1"
 )
-SEMANTIC_COMPONENT_DECLARATIONS_FORMAT = (
-    "spaghetti-extractor-semantic-component-declarations-v1"
-)
-SEMANTIC_COMPONENT_CATALOG_FORMAT = "spaghetti-extractor-semantic-component-catalog-v1"
-COMPONENT_INTERFACE_SPEC_FORMAT = "spaghetti-extractor-component-interface-spec-v1"
-COMPONENT_INTERFACE_REFINEMENT_FORMAT = (
-    "spaghetti-extractor-component-interface-refinement-v1"
-)
-COMPONENT_QUALIFICATION_FORMAT = "spaghetti-extractor-component-qualification-v1"
 LIBRARY_ARTIFACT_INPUTS_FORMAT = "spaghetti-extractor-library-artifact-inputs-v1"
 LIBRARY_ARTIFACT_INDEX_FORMAT = "spaghetti-extractor-library-artifact-index-v1"
 LIBRARY_ARTIFACT_INPUTS_V2_FORMAT = "spaghetti-extractor-library-artifact-inputs-v2"
@@ -149,23 +100,7 @@ CHECKED_LIBRARY_ISLAND_V1_FORMAT = "spaghetti-extractor-checked-library-island-v
 REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT = (
     "spaghetti-extractor-reusable-library-implementation-v1"
 )
-REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT = (
-    "spaghetti-extractor-reusable-library-behavior-pack-v1"
-)
-REUSABLE_LIBRARY_BEHAVIOR_PACK_V2_FORMAT = (
-    "spaghetti-extractor-reusable-library-behavior-pack-v2"
-)
-LIBRARY_BEHAVIOR_CONTRACT_V2_FORMAT = (
-    "spaghetti-extractor-library-behavior-contract-v2"
-)
-GENERATED_LIBRARY_COMPONENT_V1_FORMAT = (
-    "spaghetti-extractor-generated-library-component-v1"
-)
 LIBRARY_ADOPTION_INTENT_V1_FORMAT = "spaghetti-extractor-library-adoption-intent-v1"
-CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA = (
-    "spaghetti-extractor-canonical-external-site-record-v3"
-)
-CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3 = "canonical-external-sites-v3"
 CANDIDATE_TEST_SUITE_FORMAT = "spaghetti-extractor-candidate-test-suite-v1"
 CANDIDATE_TEST_CASE_REPORT_FORMAT = (
     "spaghetti-extractor-candidate-test-case-report-v1"
@@ -182,18 +117,11 @@ BOUNDARY_EFFECTS_FORMAT = "spaghetti-extractor-boundary-effects-v1"
 REVIEWED_ABI_ASSUMPTION_FORMAT = "spaghetti-extractor-reviewed-abi-assumption-v1"
 ABI_ANALYSIS_BUNDLE_FORMAT = "spaghetti-extractor-abi-analysis-bundle-v1"
 PHYSICAL_ABI_CATALOG_FORMAT = "spaghetti-extractor-physical-abi-catalog-v1"
-ABI_MATCH_RESOLUTION_FORMAT = "spaghetti-extractor-abi-match-resolution-v1"
-CATALOG_CALL_CONTRACT_SET_FORMAT = (
-    "spaghetti-extractor-catalog-call-contract-set-v1"
-)
 PHYSICAL_ABI_DECLARATIONS_FORMAT = (
     "spaghetti-extractor-physical-abi-declarations-v1"
 )
 PHYSICAL_ABI_DECLARATION_SPEC_FORMAT = (
     "spaghetti-extractor-physical-abi-declaration-spec-v1"
-)
-ABI_DECLARATION_INGESTION_FORMAT = (
-    "spaghetti-extractor-abi-declaration-ingestion-v1"
 )
 PORTABLE_TYPE_GRAPH_V1_FORMAT = "spaghetti-extractor-portable-type-graph-v1"
 SOURCE_NAMING_V1_FORMAT = "spaghetti-extractor-source-naming-v1"
@@ -237,48 +165,18 @@ BOUNDARY_PROJECTION_RECEIPT_V1_FORMAT = (
     "spaghetti-extractor-boundary-projection-receipt-v1"
 )
 __all__ = [
-    "BEHAVIORAL_C_COMPLETION_FORMAT",
-    "BEHAVIORAL_C_COVERAGE_FORMAT",
-    "BEHAVIORAL_C_LAYOUT_INTENT_FORMAT",
-    "BEHAVIORAL_C_LOWERING_FORMAT",
-    "BEHAVIORAL_C_PACKAGE_FORMAT",
-    "BEHAVIORAL_C_PLAN_FORMAT",
-    "BEHAVIORAL_C_RUNTIME_QUALIFICATION_FORMAT",
-    "CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT",
-    "CHECKED_SEH_PROTOCOL_FORMAT",
-    "NATIVE_INGRESS_LINK_RECEIPT_FORMAT",
-    "NATIVE_INGRESS_PLAN_FORMAT",
-    "PE32_MODULE_DEPLOYMENT_FORMAT",
-    "PE32_LOADER_SURFACE_RECEIPT_FORMAT",
-    "PE32_MODULE_INTERFACE_FORMAT",
-    "PE32_PROJECT_INTENT_FORMAT",
-    "PE32_PROJECT_LOAD_PLAN_FORMAT",
-    "PE32_LOAD_OBSERVATION_FORMAT",
-    "PE32_OBSERVED_LOAD_GRAPH_FORMAT",
-    "PE32_PROJECT_COMPLETION_FORMAT",
     "ABI_ANALYSIS_BUNDLE_FORMAT",
     "ABI_CONSTRAINT_RESULT_FORMAT",
     "ABI_EVIDENCE_FORMAT",
     "ABI_FACT_SET_FORMAT",
-    "ABI_MATCH_RESOLUTION_FORMAT",
-    "CATALOG_CALL_CONTRACT_SET_FORMAT",
-    "AUTHORITY_DIAGNOSTICS_V3_FORMAT",
-    "CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA",
-    "CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3",
     "CANDIDATE_TEST_SUITE_FORMAT",
     "CANDIDATE_TEST_CASE_REPORT_FORMAT",
     "CANDIDATE_TEST_REPORT_FORMAT",
     "BOUNDARY_EFFECTS_FORMAT",
-    "COMPONENT_INTERFACE_REFINEMENT_FORMAT",
-    "COMPONENT_INTERFACE_SPEC_FORMAT",
-    "COMPONENT_QUALIFICATION_FORMAT",
     "INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT",
     "CALLER_MEMORY_FRAME_MODEL",
     "IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT",
     "ISA_ENCODING_PROPOSAL_FORMAT",
-    "INTERPRETER_NATIVE_BUILD_FORMAT",
-    "SPX_INTERPRETER_PACKAGE_FORMAT",
-    "SPX_INTERPRETER_PROGRAM_FORMAT",
     "LIBRARY_ARTIFACT_INDEX_FORMAT",
     "LIBRARY_ARTIFACT_INDEX_V2_FORMAT",
     "LIBRARY_ARTIFACT_INPUTS_FORMAT",
@@ -299,10 +197,6 @@ __all__ = [
     "LIBRARY_TARGET_SIGNATURE_GRAPH_V3_FORMAT",
     "CHECKED_LIBRARY_ISLAND_V1_FORMAT",
     "REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT",
-    "REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT",
-    "REUSABLE_LIBRARY_BEHAVIOR_PACK_V2_FORMAT",
-    "LIBRARY_BEHAVIOR_CONTRACT_V2_FORMAT",
-    "GENERATED_LIBRARY_COMPONENT_V1_FORMAT",
     "DYNAMIC_LIBRARY_REQUIREMENTS_FORMAT",
     "EXTERNAL_OPERATION_CONTRACT_FORMAT",
     "EXTERNAL_OPERATION_PROFILE_FORMAT",
@@ -318,35 +212,25 @@ __all__ = [
     "MEMORY_MODEL_RECEIPT_FORMAT",
     "PE32_WB_TSO_PROFILE_ID",
     "LAUNCH_ASSUMPTION_TEMPLATE_FORMAT",
-    "NATIVE_ENGINE_PACKAGE_FORMAT",
-    "NATIVE_ENGINE_PLAN_FORMAT",
-    "NATIVE_RUNTIME_PACKAGE_FORMAT",
     "NATIVE_X87_REPLAY_FORMAT",
     "PAYLOAD_RELOCATION_INVENTORY_FORMAT",
     "PE_COMPOSITION_MANIFEST_FORMAT",
-    "REGION_REPLACEMENT_BUNDLE_FORMAT",
     "RECONSTRUCTION_PLAN_FORMAT",
     "RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT",
-    "SEMANTIC_COMPONENT_CATALOG_FORMAT",
-    "SEMANTIC_COMPONENT_DECLARATIONS_FORMAT",
     "SEMANTIC_IR_FORMAT",
     "SEMANTIC_TRANSFER_CONTRACT_FORMAT",
     "SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL",
     "SOURCE_OPERATION_CATALOG_FORMAT",
     "SOURCE_OPERATION_RENDERING_FORMAT",
     "STATIC_ANALYSIS_PROFILE_ID",
-    "STRUCTURAL_EXECUTABLE_FORMAT",
     "STATIC_PROGRAM_CONTRACT_FORMAT",
     "STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT",
     "FALLBACK_CAPABILITY_ANALYSIS_FORMAT",
     "STATIC_MACHINE_IMPORT_PROFILE_FORMAT",
-    "TARGET_HINTS_ARTIFACT_KIND",
-    "RELEASE_ACCEPTANCE_FORMAT",
     "PHYSICAL_ABI_CERTIFICATE_FORMAT",
     "PHYSICAL_ABI_DECLARATIONS_FORMAT",
     "PHYSICAL_ABI_DECLARATION_SPEC_FORMAT",
     "PHYSICAL_ABI_CATALOG_FORMAT",
-    "ABI_DECLARATION_INGESTION_FORMAT",
     "PORTABLE_TYPE_GRAPH_V1_FORMAT",
     "SOURCE_NAMING_V1_FORMAT",
     "TARGET_LAYOUT_SET_V1_FORMAT",

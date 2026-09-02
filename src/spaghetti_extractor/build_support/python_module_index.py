@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import tomllib
@@ -272,6 +273,7 @@ def build_python_module_index(repository: Path) -> dict[str, object]:
     rows = {
         module: {
             "path": path.relative_to(repository).as_posix(),
+            "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "dependencies": sorted(_local_imports(module=module, path=path)),
             "resources": list(declared_python_resources(repository, path)),
         }

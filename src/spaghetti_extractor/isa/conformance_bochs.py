@@ -26,6 +26,7 @@ from .conformance import (
     ISAConformanceError,
     ISAConformanceReport,
     InstructionTestCase,
+    MachineState,
     ObservationStatus,
     ReportCounts,
     ReportQualification,
@@ -61,6 +62,48 @@ _RESULT_FIELDS = {
 _BACKEND_FIELDS = {"id", "kind", "version"}
 _RAW_COUNT_FIELDS = {"cases", "complete", "unsupported", "errors"}
 _RAW_STATUSES = {"complete", "unsupported", "error"}
+
+
+def _x87_value_tag(value: bytes) -> int:
+    """Return the architectural full-tag classification for one 80-bit value."""
+
+    significand = int.from_bytes(value[:8], "little")
+    exponent = int.from_bytes(value[8:], "little") & 0x7FFF
+    if exponent == 0 and significand == 0:
+        return 0b01
+    if exponent in {0, 0x7FFF} or significand >> 63 == 0:
+        return 0b10
+    return 0b00
+
+
+def _normalize_bochs_x87_tags(
+    case: InstructionTestCase, state: MachineState
+) -> MachineState:
+    """Expand Bochs occupied/empty tags to architectural full tags.
+
+    The private runner exposes Bochs' internal abridged occupancy tags after
+    ordinary x87 operations.  Architectural FSAVE-style tags classify every
+    nonempty physical register from its exact 80-bit value.  Reclassifying only
+    newly occupied slots left existing zero, infinity, NaN, and exchanged slots
+    reported as ``valid`` and created false disagreements with Unicorn's public
+    ``FPTAG`` adapter, which performs this same expansion.
+    """
+
+    after = state.x87.tag_word
+    top = (state.x87.status_word >> 11) & 7
+    normalized = after
+    for physical in range(8):
+        after_tag = (after >> (physical * 2)) & 0b11
+        if after_tag == 0b11:
+            continue
+        logical = (physical - top) & 7
+        tag = _x87_value_tag(state.x87.registers[logical])
+        normalized = (normalized & ~(0b11 << (physical * 2))) | (
+            tag << (physical * 2)
+        )
+    if normalized == after:
+        return state
+    return replace(state, x87=replace(state.x87, tag_word=normalized))
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
@@ -253,6 +296,13 @@ def _mechanical_observation(
 ) -> BackendObservation:
     if raw_status != "complete":
         return observation
+    if observation.final_state is not None:
+        observation = replace(
+            observation,
+            final_state=_normalize_bochs_x87_tags(
+                case, observation.final_state
+            ),
+        )
     matches = case.matches(observation)
     return replace(
         observation,

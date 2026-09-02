@@ -20,6 +20,9 @@ from spaghetti_extractor.components.inductive_relation import (
     InductiveCutpointRelationV1,
 )
 from spaghetti_extractor.components.inductive_source import InductiveSourcePlanV1
+from spaghetti_extractor.components.semantic_path_projection import (
+    _replace_projected_value,
+)
 from spaghetti_extractor.components.source import build_component_source_package
 
 from .test_inductive_package import _declaration, _semantic_contract
@@ -135,7 +138,6 @@ def _two_loop_operation() -> dict[str, object]:
 def _two_loop_semantic_contract() -> dict[str, object]:
     interface = _interface()
     core: dict[str, object] = {
-        "format": "spaghetti-extractor-component-semantic-contract-v1",
         "status": "satisfied",
         "component_id": "two-loop-component",
         "bindings": {
@@ -269,6 +271,27 @@ def _two_loop_declaration() -> dict[str, object]:
 
 
 class InductiveCertificateMaterializerTests(unittest.TestCase):
+    def test_nested_projected_value_decoding_is_total(self) -> None:
+        projected = {"op": "symbol", "name": "observed", "width": 32}
+        decoding = {
+            "op": "and32",
+            "args": [
+                {"op": "projected_value"},
+                {"op": "const", "value": 255, "width": 32},
+            ],
+        }
+
+        self.assertEqual(
+            _replace_projected_value(decoding, projected),
+            {
+                "op": "and32",
+                "args": [
+                    projected,
+                    {"op": "const", "value": 255, "width": 32},
+                ],
+            },
+        )
+
     def test_derives_checked_bridge_between_exact_sccs(self) -> None:
         interface = _interface()
         declaration = _two_loop_declaration()

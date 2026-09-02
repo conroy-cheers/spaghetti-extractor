@@ -21,21 +21,37 @@ original PE bytes
   -> exact PE inventory and executable-byte classification
   -> rooted static state machine and byte-bound unit preparation
   -> canonical byte-free machine IR
-  -> checked classification, fallback capability, and implementation ownership
-     for every exact structural unit
-  -> checked root-reachable behavioral projection
-  -> checked transfer, external-site, callback, exception, summary, and ISA facts
-     for projected units and events
-  -> structural-executable-v1
-  -> executable interpreter/native hybrid baseline
-  -> reviewed portable component interface V2
-  -> independent host/PE32 compile receipt
-  -> machine binding + semantic refinement + service graph + ownership receipts
-  -> component activation receipt and one total component runtime package
-  -> ISA qualification and static release acceptance
-  -> optional candidate-only tests in headless Wine
-  -> release-acceptance-v1
+  -> executable-transfer-plan-v2 (the sole executable semantic body language)
+  -> semantic-object-v1
+       { transfer-v2, exact module interface, resolved environment,
+         object authority, ISA requirements, exceptional semantics }
+  -> linked-semantic-module-v2 + qualified-platform-v1
+       { one conservative may-reach closure, semantic holes,
+         residual runtime obligations, and analysis frontiers }
+  -> one implementation provider per reachable semantic definition
+       { generated Behavioral C, independently checked Portable C,
+         pinned binary, or external environment }
+  -> native-realization-v2
+       { runtime, generic ingress, native link, loader-surface composition,
+         candidate hash, and exact realization receipt }
+  -> candidate-observed project completion
+  -> optional deployment-bound veto tests in headless Wine
 ```
+
+`semantic-object-v1` is the relocatable checked semantic unit.
+`linked-semantic-module-v2` is the one module-wide semantic closure and cache
+boundary. It resolves typed relocations, propagates root provenance once,
+selects the qualified platform meaning, and separates genuine reachable
+semantic holes from typed residual runtime obligations and non-authorizing
+analysis frontiers. It does not authorize execution and is not a container
+around independently authoritative subsystems. All execution consumers use
+its transfer-v2 bodies and checked relations directly.
+
+The authority-v3 fixed-point graph, `structural-executable-v1`, and the older
+component/build/deployment receipts described below are migration inputs only.
+They remain fail-closed until their facts have moved into the semantic object
+and passed exact parity gates; they are not the destination architecture and
+must not regain new consumers.
 
 Extraction and proposal phases may use Capstone, `pefile`, Z3, SDK catalogs,
 library signatures, and operator-authored hints. Those inputs are not authority.
@@ -57,10 +73,10 @@ The Python package enforces the same separation physically:
 
 - `extraction/` may depend on neutral PE, ISA, and utility code, never authority,
   candidate, or component implementations;
-- `authority_inputs/` may construct checked record types, but may not depend on
-  terminal authority, diagnostics, candidate code, or components;
-- `authority/` contains the complete checker-owned graph and imports no proposal
-  adapters or implementation layers;
+- neutral bindings and analyses live directly in `reconstruction/`, `external/`,
+  or `qualified_platform/`; there is no authority-input adapter layer;
+- no standalone Python authority package exists; semantic objects and their
+  total linked closure own executable authority;
 - `components/` is an authority-neutral lifting subsystem over exact machine-IR
   and component contracts;
 - `candidate/` consumes checked structural policies and component runtime ownership, but
@@ -70,10 +86,13 @@ Repository boundary tests parse imports and reject a dependency that crosses
 these ownership rules. Shared schemas belong in small dependency-free modules,
 not in a higher pipeline layer.
 
-## Native V3 Authority
+## Transitional Native V3 Facts
 
-`authority/registry.py` is the complete authority-family registry. The active
-phases, in dependency order, are:
+The target-wide v3 authority registry and graph have been removed. The
+remaining local checkers are transitional typed fact producers; production
+roots may consume a fact only through an explicit `semantic-object-v1` member
+and the total `linked-semantic-module-v2` closure. The historical phase order
+below documents those fact dependencies during their clean-cut migration:
 
 | Phase | Responsibility |
 |---|---|
@@ -91,16 +110,17 @@ phases, in dependency order, are:
 | `incoming-call-frames-v3` | Bind externally entered functions and callbacks to exact incoming physical frames. |
 | `callback-authority-v4` | Bind one canonical callback protocol to registration, entry state, ABI, lifetime, and target evidence. |
 | `launch-root-closure-v3` | Derive rooted closure from PE entry/export/TLS roots and checked callback roots. |
-| `exceptional-transitions-v3` | Classify feasible faults as supported transfer, observable termination, or frontier. |
+| `exceptional-transitions-v5` | Classify feasible faults as supported transfer, observable termination, or an exact handler/unwind/resumption chain. |
 | `isa-qualification-v3` | Bind every reachable instruction form to qualified decode and semantics evidence. |
 | `fallback-coverage-v3` | Check one supported fallback implementation for every structural unit. |
 | `final-authority-v3` | Preserve the stronger formal-analysis aggregate as diagnostic evidence; it is not the executable or release gate. |
 
-The registry rejects missing phases, duplicate names, duplicate artifact
-producers, and phases without independent completeness hooks. Generated status
-fields cannot create authority. Candidate execution is authorized only by the
-independently reduced `structural-executable-v1` receipt; release uses
-`release-acceptance-v1`.
+There is no registry whose completeness can authorize execution. Generated
+status fields cannot create authority. During migration, checked facts may feed
+a semantic object only through an explicit typed member with exact replay. The
+linked semantic module and selected realization—not
+`structural-executable-v1` or `release-acceptance-v1`—are the destination
+execution and release boundaries.
 
 ## Trust Boundaries
 
@@ -235,19 +255,181 @@ Nix is the only first-class build and test system. Phase-specific Python import
 closures, content-addressed artifact packs, and registry-derived dependency
 graphs keep unrelated source changes out of a derivation's identity.
 
-The stable invalidation boundaries are:
+The pivoted stable invalidation boundaries are:
 
 ```text
-PE inventory
-  -> machine IR preparation
-  -> bounded machine-IR packs
-  -> local v3 summaries
-  -> dependent SCC and target certificates
-  -> rooted structural facts
-  -> structural execution and fallback receipts
-  -> component activation and runtime package
-  -> candidate tests and release receipt
+PE interface + checked machine IR + environment intent
+  -> semantic-object-v1
+qualified-platform-v1 -----------------┘
+  -> linked-semantic-module-v2
+  -> provider qualifications + implementation selection
+  -> native-realization-v2
+  -> independent candidate/project observation and veto-only tests
 ```
+
+During the staged migration, legacy authority derivations may still construct
+members of `semantic-object-v1`, but they are not stable cache boundaries. Each
+fact family is moved into the object or the single semantic-link worklist and
+its superseded scheduling path is then removed. Splitting cheap projections
+back into independently scheduled derivations or adding a mutable cache would
+recreate the fan-out that the semantic-module design is intended to eliminate.
+
+`native-realization-v2` is a direct fact table rather than an envelope around
+the retired candidate pipeline. It binds the total implementation selection to
+the exact provider definitions, linked object hashes, semantic-symbol address
+kinds, bridge-equivalence classes, runtime/TLS/private-stack facts, native link
+and relocation inventories, decoded loader surface, and candidate bytes. A
+selected provider object must exist as exact bytes inside its qualification
+package before realization begins, and the same digest must occur in the linked
+native-object inventory under every selected semantic symbol that claims it.
+Runtime-platform and native-realizer provider objects are compiled directly
+from their content-bound source packages; qualification and selection do not
+depend on a pre-existing native link. This preserves the one-way dependency
+from semantic selection to realization while byte-parity checks against the
+transitional linker remain veto-only.
+A selected non-external provider object absent from the linked object inventory is
+an intrinsic realization blocker. Production construction loads provider facts
+from their qualification receipts; it cannot accept operator-authored provider
+rows.
+
+The migrated native-realization constructor consumes the total selection
+directly: selected provider package and realization-infrastructure objects are
+staged by exact hash, and it rejects partial or surplus object consumption
+before invoking the linker. The same content-addressed phase owns the payload,
+map, relocation inventory, composition, decoded candidate surface, candidate
+bytes, and realization receipt. The synthetic PE32/Wine vertical uses this path
+exclusively and observes the realization-owned candidate. The SDK, Hello, jq,
+DX-Ball, and native fixtures all consume this V2 path; the V1 provider,
+selection, and realization codecs and constructors are retired tombstones.
+
+Runtime and environment providers use the same ownership rule. The V2
+generated-C, qualified-runtime, and external-environment constructors emit
+separate exact qualifications, and one total V2 selection names every active
+definition and residual obligation. Fixtures and targets may select those
+records, but may not reproduce the compiler or synthesize missing platform
+symbols. A conditional runtime handler such as typed x87 remains incomplete
+unless it is present in the compiled object and its qualified platform identity
+matches the linked semantic module.
+
+The resolved external environment and machine object authority are already
+content-bound semantic-object members. `external/resolved.py` owns the strict
+resolved-environment codec while `external/environment.py` owns
+intent compilation. Semantic linking, closure projection, independent replay,
+and performance checks open those members through the semantic object; they do
+not accept independent environment or object-authority phase inputs. Checked
+external-function symbols carry the selected logical boundary schema, physical
+frame, exact environment-contract digest, optional loader-service-contract
+digest, and declaration role into the link. Original loader-slot declarations
+carry the same identities, so loader storage and semantic calls cannot silently
+select different contracts. The production linker consumes these fields
+directly while the native worklist cross-checks them against one compact total
+catalog independently projected from the content-bound environment member.
+The narrower executable external-call adapter table remains an implementation
+projection: checked declarations whose effects are not yet lowerable stay
+explicit blockers. Loader-service status is never inferred from an API name.
+
+Evidence is not a parallel graph. Each semantic object contains one canonical
+content-bound evidence catalog, and each definition carries only a sorted list
+of indices into it. The policy is derived from definition kind and exact unit
+facts: transfer bodies bind transfer, qualified-ISA, and exceptional evidence
+as applicable, while mapped-object and loader definitions bind interface and
+object authority. Reachable implementation requirements preserve those exact
+indices. The strict codec, optimized production link view, native link input,
+and independent replay cross-check the same compact relation; no consumer may
+accept a separately scheduled evidence map or copy whole receipts per symbol.
+
+The semantic object is a complete checked relocatable, not an authority and not
+a migration-status surrogate. Its `status = complete`,
+`role = checked_relocatable`, and `authority = false` mean that construction and
+all content bindings closed successfully; unresolved relocation holes remain
+ordinary link inputs. Only `linked-semantic-module-v2` decides whether those
+holes are root-reachable and reports semantic completeness; it never grants
+execution authority. Target workflows do
+not schedule an independent closure for parity: independent object replay and
+independent linked-module replay provide the veto boundaries without creating
+a second production fixed point.
+
+Executable root identity is deliberately distinct from root RVA. The native
+fixed point operates on unique RVAs, while semantic linking expands each RVA
+to every stable entry/export/TLS identity declared for that one semantic
+function. EAT aliases therefore share execution and one target symbol but keep
+distinct provenance throughout symbols, edges, effects, objects, and reference
+facts. Conflicting semantic targets at one root RVA fail closed. Data exports
+and forwarders do not seed executable reachability: data aliases remain exact
+object-authority anchors, and forwarders remain loader/provider declarations.
+
+Checked exception behavior is linked, not consulted as a side registry. Exact
+fault occurrences are part of transfer-v2. Generic terminal/infeasible
+semantics are derived from those occurrences and the resolved launch policy
+inside semantic-object construction, then retained in the resident object
+view. The legacy authority-v3 exception artifact is accepted only for the
+still-migrating handled/unwind/resumption protocol. Each
+function with an authorized transition has a typed
+`exception_transition_activation` relocation to one semantic transition
+definition; handler, resumption, and unwind edges originate at that definition.
+Root provenance therefore reaches exception semantics through the ordinary
+link worklist, and every reachable transition must resolve and select an
+implementation provider with its exact evidence dependencies. Native SEH
+realization must implement that selected definition before execution can be
+authorized.
+
+Callback physical transport has no independent authority graph either. The
+resolved runtime profile declares the provider callback protocol and the exact
+transfer-v2 registration occurrence proves a non-sentinel callback word. That
+pair produces the checked boundary frame. The linked semantic worklist then
+proves target reachability, ownership, escape lifetime, and capability
+selection. This keeps frame checking, callback discovery, and root closure as
+different relations over one semantic module rather than three pipelines that
+reconstruct one another.
+
+The post-propagation unresolved-definition guard is intentionally narrower than
+external resolution. It diagnoses only an unresolved semantic definition made
+newly reachable by a typed relocation, such as an activated exception
+transition. External functions and loader/IAT anchors are classified by the
+resolved-environment and loader-storage policies even when relocation
+propagation adds root provenance; the generic guard must not duplicate or
+override those domain-specific blockers.
+
+Object lifetime meaning follows the same discipline. A linked object derives
+its single generation mode from the existing authority locator, generation
+seed, and lifetime; typed object views are projected only from typed data-
+export anchors already present in that authority. These derived fields make
+the contract explicit to native realization without creating another object or
+lifecycle artifact. The linked codec and independent replay validate the total
+relation. A realization may authorize a rule only when its resolver implements
+that exact generation mode.
+
+Runtime primitive dependencies follow the same rule. `semantic-object-v1`
+stores one compact, sorted effect row per required provider, binding the
+platform symbol to the exact semantic function symbols that need it. Checked
+external-call relocations already carry external provenance. The linker has no
+parallel provider/external source maps and does not expand provider use into
+pseudo-relocations. Independent replay reconstructs both projections from the
+canonical transfer member and vetoes any disagreement. Performance policy is
+speed-first: content-bound in-memory indexes and compact read views are
+welcome. Link, closure, and ordinary test phases have no project RSS veto; the
+host/Nix resource boundary owns exhaustion, while reports retain peak RSS for
+diagnosis. CPU and wall-clock latency, rather than compact resident state, are
+the performance constraints: a content-bound phase may retain fully decoded
+members, indexes, joins, and output-ready projections together when doing so
+avoids a second parse or traversal.
+
+Object authority is also a semantic-object member, not a parallel linker
+argument. The object carries a total canonical object-rule-to-symbol relation;
+strict object replay derives it from machine-object-authority-v2 and the
+semantic declarations, while the native semantic worklist consumes it
+directly. The linker cannot be called with a second environment or object
+registry that disagrees with the object it is linking.
+
+Production linking opens a content-bound link view of that same semantic
+object instead of replaying the full transfer member twice. The view validates
+the object/package hashes, transfer identity, and every smaller typed member;
+the same-pass native worklist independently reconstructs the exact transfer
+function universe, runtime-provider dependencies, and all transfer-derived
+relocations before accepting the view. This is a loader mode, not a second IR
+or receipt. Public parsing and independent replay always use the strict full
+semantic-object codec, and an architecture gate prevents the fast view from
+spreading to replay or other consumers.
 
 A candidate source edit should rebuild its source package, compile and semantic
 refinement receipts, activation receipt, runtime adapter, affected native object pack, and candidate. It
@@ -255,12 +437,17 @@ must not regenerate original extraction,
 ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
 not invalidate authority evidence.
 
-Operator status follows the same dependency discipline. Project status is an
-authority-only leaf and has no dependency on component configurations,
-candidate source, or candidate tests. Candidate status composes that checked
-project status with exactly one configuration status and only its declared
-tests. A broken component may block its candidate status, but cannot prevent an
-operator from inspecting static authority progress.
+Operator status follows the same dependency discipline. Project status is a
+non-authorizing `operator-work-status-v1` projection whose sole semantic input
+is the materialized `linked-semantic-module-v2`; it does not read the legacy
+authority diagnostics, component configurations, candidate source, or
+candidate tests. Candidate status uses the same projector and public format,
+adding exactly one configuration's `implementation-selection-v2`; it no longer
+reduces structural-executable-v2, activation-v4, or test metadata. The module
+and configuration remain separate subjects rather than a synthetic combined
+authority. A broken provider selection may block its configuration subject,
+but cannot prevent an operator from inspecting the semantic module's exact
+blockers.
 
 Component resolution follows the same rule. The full checked catalog owns
 configuration overlap checks, but each component contract consumes a canonical
@@ -281,26 +468,30 @@ distributed package or test graph.
 
 ## Runtime Policy
 
-The original binary is consumed statically only. Before static closure, portable
-source may be compiled but not executed as reconstruction evidence. After static
-release acceptance, optional runtime suites execute the whole candidate against
-curated public expectations and always use an isolated headless Wine session. A
-whole-candidate runtime failure after static closure vetoes confidence and is
-treated as a tooling defect or an unsound assumption, not as ordinary region
-discovery. A passing runtime suite never authorizes a component.
+The original binary is consumed statically only. Before semantic closure,
+portable source may be compiled but not executed as reconstruction evidence.
+After the linked semantic module, total provider selection, and native
+realization are complete, optional runtime suites execute that exact candidate
+against curated public expectations in an isolated headless Wine session. A
+whole-candidate runtime failure vetoes confidence and is treated as a tooling
+defect or an unsound assumption, not as ordinary region discovery. A passing
+runtime suite never authorizes a component or closes a semantic hole.
 
 ## Completion Criteria
 
 A target is fully reconstructed only when:
 
-1. `structural-executable-v1` passes for the complete declared PE and
-   environment profile;
-2. fallback coverage and implementation ownership are complete;
-3. the universal component gate binds the exact activation plan, checked
-   implementations, and complete contract dependency graph;
-4. reachable ISA qualification has no missing or disputed forms;
-5. `release-acceptance-v1` passes and all artifacts are reproducible through
-   the checked Nix graph.
+1. `linked-semantic-module-v2` has no reachable semantic holes;
+2. one total `implementation-selection-v2` owns every reachable semantic
+   definition with independently checked provider qualifications;
+3. component contracts, machine bindings, lifecycle, services, relations,
+   induction, and ownership facets required by selected portable providers are
+   complete;
+4. reachable platform semantics and physical boundary protocols have no
+   missing or disputed forms;
+5. `native-realization-v2` is complete, binds every selected object and loader
+   fact, and its exact candidate is confirmed by candidate-observed project
+   completion.
 
 Optional candidate-only suites may be applied after this gate as independent
 vetoes.

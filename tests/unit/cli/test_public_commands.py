@@ -39,6 +39,19 @@ RETIRED_COMMANDS = (
     "component-source-package-v2",
     "component-qualify-v2",
     "component-compose-v2",
+    "expert candidate-authority-build",
+    "expert candidate-authority-check",
+    "expert candidate-generate-interpreter",
+    "expert candidate-generate-engine",
+    "expert candidate-generate-runtime",
+    "expert candidate-native-ingress-plan",
+    "expert component-resolve",
+    "expert component-contract-build",
+    "expert component-source-package",
+    "expert component-adapter-build",
+    "expert component-evidence-produce",
+    "expert component-qualify",
+    "expert component-compose",
 )
 
 OPERATOR_COMMANDS = (
@@ -51,11 +64,11 @@ OPERATOR_COMMANDS = (
     "component bind",
     "component check",
     "component relation",
-    "call status",
-    "call inspect",
-    "call propose",
-    "call adopt",
-    "call check",
+    "boundary status",
+    "boundary inspect",
+    "boundary propose",
+    "boundary adopt",
+    "boundary check",
     "library status",
     "library inspect",
     "library adopt",
@@ -131,7 +144,14 @@ class PublicCliTests(unittest.TestCase):
         namespaces = _subcommands(parser)
         self.assertEqual(
             tuple(namespaces.choices),
-            ("project", "component", "call", "library", "candidate", "expert"),
+            (
+                "project",
+                "component",
+                "boundary",
+                "library",
+                "candidate",
+                "expert",
+            ),
         )
         self.assertEqual(
             tuple(command.name for command in SUPPORTED_COMMANDS),
@@ -197,7 +217,7 @@ forbidden = {
     "spaghetti_extractor.commands.workflows",
     "spaghetti_extractor.commands.proposal_static",
     "spaghetti_extractor.commands.runtime",
-    "spaghetti_extractor.candidate.engine",
+    "spaghetti_extractor.candidate.runtime_core",
     "spaghetti_extractor.candidate.interpreter",
 }
 loaded = sorted(forbidden.intersection(sys.modules))
@@ -226,9 +246,8 @@ with contextlib.redirect_stdout(io.StringIO()):
 required = "spaghetti_extractor.commands.proposal_static"
 forbidden = {
     "spaghetti_extractor.commands.runtime",
-    "spaghetti_extractor.commands.expert_components",
     "spaghetti_extractor.commands.diagnostic_contracts",
-    "spaghetti_extractor.candidate.engine",
+    "spaghetti_extractor.candidate.runtime_core",
 }
 if required not in sys.modules:
     raise SystemExit("selected command group was not loaded")
@@ -247,28 +266,6 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaisesRegex(SystemExit, "2"):
                 main(["expert", "static-program-export"])
-
-    def test_native_engine_command_exposes_only_static_closed_inputs(self) -> None:
-        parser = _build_parser(
-            selected_command="expert candidate-generate-engine"
-        )
-        command = _command_parser(
-            parser, "expert candidate-generate-engine"
-        )
-        actions = {action.dest: action for action in command._actions}
-
-        self.assertNotIn("state_machine", actions)
-        self.assertNotIn("allow_deferred_potential_transfers", actions)
-        self.assertNotIn("entry_rva", actions)
-        self.assertNotIn("tls_callback_targets", actions)
-        for name in (
-            "machine_ir",
-            "machine_ir_manifest",
-            "canonical_external_sites",
-            "native_ingress_plan",
-            "out",
-        ):
-            self.assertTrue(actions[name].required, name)
 
     def test_operator_workflows_select_explicit_products(self) -> None:
         index = {
@@ -428,22 +425,30 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 2,
             )
 
-    def test_project_status_reads_authority_only_status(self) -> None:
+    def test_project_status_reads_semantic_module_work_view(self) -> None:
         report = {
-            "format": "spaghetti-extractor-project-status-v2",
+            "format": "spaghetti-extractor-operator-work-status-v1",
             "status": "incomplete",
-            "authorizing": False,
-            "authority_ready": False,
-            "authority": {"status": "incomplete", "authorizing": False},
-            "counts": {"primary_frontiers": 1, "dependent_occurrences": 8},
-            "primary_frontiers": [{
-                "status": "incomplete",
-                "family": "isa-qualification-v3",
-                "code": "isa_qualification_evidence_missing",
-                "record_id": "unit:1",
-                "dependent_occurrences": 8,
-                "source_location": {"rva_start": 0x1000},
-                "next_action": "qualify the form",
+            "authority": False,
+            "counts": {
+                "subjects": 1,
+                "complete": 0,
+                "incomplete": 1,
+                "violated": 0,
+                "authoritative": 0,
+                "blockers": 1,
+            },
+            "subjects": [{
+                "subject": "module:gnu-hello",
+                "state": "incomplete",
+                "authority": False,
+                "bindings": [],
+                "blockers": [{
+                    "code": "isa_qualification_evidence_missing",
+                    "unit_id": "unit:1",
+                }],
+                "dependencies": [],
+                "ranked_next_action": "qualify the form",
             }],
         }
         output = io.StringIO()
@@ -454,9 +459,9 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             self.assertEqual(main(["project", "status", "gnu-hello"]), 0)
         self.assertEqual(realize.call_args.args[1], "project.status")
         self.assertEqual(realize.call_args.args[2], "project-status.json")
-        self.assertIn("frontiers=1", output.getvalue())
-        self.assertIn("rva=0x1000", output.getvalue())
-        self.assertIn("authority-ready=false", output.getvalue())
+        self.assertIn("blockers=1", output.getvalue())
+        self.assertIn("[unit:1]", output.getvalue())
+        self.assertIn("semantic-authority=false", output.getvalue())
         self.assertNotIn("configuration=", output.getvalue())
 
     def test_library_status_reads_checked_operator_artifact(self) -> None:
@@ -645,30 +650,22 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertIn("minimal", output.getvalue())
 
     def test_candidate_status_selects_one_configuration_progress_report(self) -> None:
-        index = {
-            "defaultConfiguration": "default",
-            "candidate": {
-                "configurations": ["default", "minimal"],
-                "testSuites": {},
-            },
-        }
         report = {
-            "format": "spaghetti-extractor-candidate-status-v2",
-            "configuration_id": "minimal",
-            "status": "ready",
-            "structural_ready": True,
-            "configuration_ready": True,
-            "build_ready": True,
-            "structural": {"status": "complete", "executable": True},
-            "counts": {"primary_frontiers": 0, "dependent_occurrences": 0},
-            "primary_frontiers": [],
-            "next_action": "build candidate configuration minimal",
+            "format": "spaghetti-extractor-operator-work-status-v1",
+            "status": "complete",
+            "counts": {"blockers": 0},
+            "subjects": [{
+                "subject": "configuration:gnu-hello:minimal",
+                "state": "complete",
+                "authority": False,
+                "bindings": [{"ready_for_realization": True}],
+                "blockers": [],
+                "dependencies": [],
+                "ranked_next_action": "realize semantic module configuration minimal",
+            }],
         }
         output = io.StringIO()
         with patch(
-            "spaghetti_extractor.commands.workflows._operator_index",
-            return_value=index,
-        ), patch(
             "spaghetti_extractor.commands.workflows._realize_json",
             return_value=report,
         ) as realize, contextlib.redirect_stdout(output):
@@ -687,8 +684,32 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertEqual(
             realize.call_args.args[1], 'candidate.statuses."minimal"'
         )
-        self.assertEqual(realize.call_args.args[2], "candidate-status.json")
-        self.assertIn("build-ready=true", output.getvalue())
+        self.assertEqual(realize.call_args.args[2], "project-status.json")
+        self.assertIn("realization-ready=true", output.getvalue())
+
+    def test_candidate_status_reads_materialized_default_without_index(self) -> None:
+        report = {
+            "format": "spaghetti-extractor-operator-work-status-v1",
+            "status": "incomplete",
+            "counts": {"blockers": 1},
+            "subjects": [{
+                "subject": "configuration:gnu-hello:default",
+                "state": "incomplete",
+                "authority": False,
+                "bindings": [{"ready_for_realization": False}],
+                "blockers": [{"code": "implementation_selection_missing"}],
+                "dependencies": [],
+                "ranked_next_action": "resolve the selection",
+            }],
+        }
+        with patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ) as realize, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["candidate", "status", "gnu-hello"]), 0)
+        self.assertEqual(
+            realize.call_args.args[1], "candidate.materializedStatus"
+        )
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
         index = {

@@ -108,22 +108,6 @@ class TestPlanningTests(unittest.TestCase):
         self.assertEqual(plan.selected_tests, (rows[0].id,))
         self.assertFalse(plan.diagnostics)
 
-    def test_nix_test_change_selects_only_its_owned_check(self) -> None:
-        rows = (
-            _test(0, tier="smoke", shard="smoke"),
-            _test(1),
-        )
-        index = ImpactIndex(repository=".", modules=(), tests=rows)
-
-        plan = build_suite_plan(
-            index,
-            mode="affected",
-            changed_paths=("nix/tests/authority-machine-ir-input.nix",),
-        )
-
-        self.assertEqual(plan.selected_tests, (rows[0].id,))
-        self.assertEqual(plan.nix_checks, ("authority-machine-ir-input",))
-
     def test_directory_resource_suppresses_redundant_read_only_children(self) -> None:
         row = _test(1, dependencies=("docs/README.md",))
         row = replace(row, resources=("docs",), declared_resources=("docs",))

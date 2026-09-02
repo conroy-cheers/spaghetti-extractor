@@ -15,6 +15,7 @@ from ...extraction.executable_classification import (
     _resolved_branch_target,
 )
 from ...pe32.model import BlockSide, ParsedPEImage
+from ...isa.x87_encoding import is_x87_instruction_encoding
 from ..model import StaticUnitContext
 from .control import _abi_indexed_jump_table_contract
 from .instruction import _abi_mem_operand_report
@@ -74,6 +75,7 @@ from .flags import (
     _shift_flags,
     _undefined_arithmetic_flags,
     _undefined_bv,
+    _undefined_flag,
 )
 
 from .operands import (
@@ -160,6 +162,18 @@ def _symbolic_execute(
             return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "bytes after a modeled block terminator are not supported")
 
         if mnemonic == "nop":
+            continue
+        if mnemonic == "sahf":
+            if operands:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "sahf takes no explicit operands")
+            ah = _read_register_expr("ah", registers)
+            if ah is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "sahf AH input is unavailable")
+            for name, bit in (("cf", 0), ("pf", 2), ("af", 4), ("zf", 6), ("sf", 7)):
+                flags[name] = _bool_eq(
+                    _expr_and(_expr_lshr(ah, ("const", bit)), ("const", 1)),
+                    ("const", 1),
+                )
             continue
         if mnemonic in {"jmp", "ljmp"}:
             imported_jump = _external_import_jump(binary, insn)
@@ -489,17 +503,37 @@ def _symbolic_execute(
                 continue
             if len(operands) in {2, 3} and operands[0].type == X86_OP_REG:
                 width_bits = _operand_width_bits(insn, operands[0])
-                if width_bits != 32:
-                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit imul destinations are modeled")
+                if width_bits not in {16, 32}:
+                    return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 16-bit and 32-bit imul destinations are modeled")
                 dst = insn.reg_name(operands[0].reg)
-                left = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
-                right = _read_operand_expr(insn, operands[2], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch) if len(operands) == 3 else _read_register_expr(dst, registers)
+                left = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch)
+                right = _read_operand_expr(insn, operands[2], registers, memory_events, memory_writes, width_bits=width_bits, memory_epoch=memory_epoch) if len(operands) == 3 else _read_register_expr(dst, registers)
                 if left is None or right is None:
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul operand")
-                result = _expr_imul_low(left, right)
+                if width_bits == 32:
+                    result = _expr_imul_low(left, right)
+                    overflow = (
+                        "imul_overflow",
+                        32,
+                        left,
+                        right,
+                        result,
+                        _expr_imul_high(left, right),
+                    )
+                else:
+                    signed_left = _expr_sign_extend(left, 16)
+                    signed_right = _expr_sign_extend(right, 16)
+                    product = _expr_mul(signed_left, signed_right)
+                    result = _expr_mask(product, 16)
+                    overflow = _bool_not(
+                        _bool_eq(product, _expr_sign_extend(result, 16))
+                    )
                 if not _write_register_expr(dst, result, registers):
                     return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul destination register")
-                flags.update(_undefined_arithmetic_flags("imul", rva, keep={"cf": ("imul_overflow", 32, left, right, result, _expr_imul_high(left, right)), "of": ("imul_overflow", 32, left, right, result, _expr_imul_high(left, right))}))
+                flags.update(_undefined_arithmetic_flags(
+                    "imul", rva, keep={"cf": overflow, "of": overflow}
+                ))
+                flags["af"] = _undefined_flag("imul", rva, "af")
                 continue
             return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported imul operand shape")
         if mnemonic == "mul":
@@ -685,6 +719,48 @@ def _symbolic_execute(
             )
             if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=width_bits):
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported shift destination operand")
+            continue
+        if mnemonic in {"rol", "ror"}:
+            if len(operands) != 2 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported rotate operand shape")
+            width_bits = _operand_width_bits(insn, operands[0])
+            if width_bits != 32:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "only 32-bit rotate destinations are modeled")
+            value = _read_operand_expr(insn, operands[0], registers, memory_events, memory_writes, width_bits=32, memory_epoch=memory_epoch)
+            count = _read_operand_expr(insn, operands[1], registers, memory_events, memory_writes, width_bits=8, memory_epoch=memory_epoch)
+            if value is None or count is None:
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported rotate operand")
+            count = _expr_and(count, ("const", 0x1F))
+            inverse = _expr_and(_expr_sub(("const", 32), count), ("const", 0x1F))
+            if mnemonic == "rol":
+                result = _expr_or(_expr_shl(value, count), _expr_lshr(value, inverse))
+                active_cf = _bool_eq(_expr_and(result, ("const", 1)), ("const", 1))
+                active_of = _bool_xor(("msb_w", 32, result), active_cf)
+            else:
+                result = _expr_or(_expr_lshr(value, count), _expr_shl(value, inverse))
+                active_cf = ("msb_w", 32, result)
+                active_of = _bool_xor(
+                    ("msb_w", 32, result),
+                    _bool_eq(
+                        _expr_and(_expr_lshr(result, ("const", 30)), ("const", 1)),
+                        ("const", 1),
+                    ),
+                )
+            result = _expr_mask(result, 32)
+            count_is_zero = _bool_eq(count, ("const", 0))
+            count_is_one = _bool_eq(count, ("const", 1))
+            flags["cf"] = _expr_ite(count_is_zero, flags["cf"], active_cf)
+            flags["of"] = _expr_ite(
+                count_is_zero,
+                flags["of"],
+                _expr_ite(
+                    count_is_one,
+                    active_of,
+                    _undefined_flag("rotate_overflow_undefined", rva, "of"),
+                ),
+            )
+            if not _write_operand_expr(insn, operands[0], result, registers, memory_events, memory_writes, width_bits=32):
+                return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported rotate destination operand")
             continue
         if mnemonic == "rcr":
             if (
@@ -948,6 +1024,7 @@ def _symbolic_execute(
             "fdivrp",
             "fxch",
             "fchs",
+            "fabs",
             "fxam",
             "fnstcw",
             "fldcw",
@@ -1090,6 +1167,9 @@ def _symbolic_execute(
             if mnemonic == "fchs":
                 fpu_stack[0] = ("fpu_neg", _canonical_expr(fpu_stack[0]))
                 continue
+            if mnemonic == "fabs":
+                fpu_stack[0] = ("fpu_abs", _canonical_expr(fpu_stack[0]))
+                continue
             if mnemonic in {"fsin", "fcos"}:
                 fpu_stack[0] = (
                     f"fpu_{mnemonic[1:]}",
@@ -1181,6 +1261,39 @@ def _symbolic_execute(
                 if mnemonic in {"fcomip", "fucomip", "fcompi", "fucompi"}:
                     _x87_pop(fpu_stack)
                 continue
+        if is_x87_instruction_encoding(bytes(insn.bytes)):
+            # Exact typed replay owns the complete physical x87/GPR/EFLAGS
+            # transition.  The legacy symbolic stack is presentation guidance
+            # only, so an unmodeled register-only x87 form may invalidate that
+            # guidance without becoming a second semantic implementation.
+            # Memory forms still need an occurrence-level event projection for
+            # object/provenance accounting and therefore remain fail closed.
+            if any(operand.type == X86_OP_MEM for operand in operands):
+                return _symbolic_incomplete(
+                    binary_name,
+                    "unsupported_semantics",
+                    rva,
+                    mnemonic,
+                    insn.op_str,
+                    "unmodeled x87 memory effects require a typed occurrence projection",
+                )
+            if any(operand.type != X86_OP_REG for operand in operands):
+                return _symbolic_incomplete(
+                    binary_name,
+                    "unsupported_semantics",
+                    rva,
+                    mnemonic,
+                    insn.op_str,
+                    "unmodeled x87 operand shape is not representable by exact replay",
+                )
+            fpu_touched = True
+            fpu_stack = [
+                ("x87_exact_replay_output", rva, "stack", index)
+                for index in range(8)
+            ]
+            fpu_control = ("x87_exact_replay_output", rva, "control")
+            fpu_status = ("x87_exact_replay_output", rva, "status")
+            continue
         if mnemonic in {"not", "neg"}:
             if len(operands) != 1 or operands[0].type not in {X86_OP_REG, X86_OP_MEM}:
                 return _symbolic_incomplete(binary_name, "unsupported_semantics", rva, mnemonic, insn.op_str, "unsupported unary operand shape")

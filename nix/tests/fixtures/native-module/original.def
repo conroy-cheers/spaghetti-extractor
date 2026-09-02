@@ -1,0 +1,21 @@
+LIBRARY fixture.dll
+EXPORTS
+  fixture_export=fixture_export@0 @2
+  fixture_alias=fixture_export@0 @4
+  fixture_data @5 DATA
+  fixture_atomic=fixture_atomic@0 @6
+  fixture_reentrant=fixture_reentrant@0 @7
+  fixture_seh=fixture_seh@0 @8
+  fixture_hardware_seh=fixture_hardware_seh@0 @9
+  fixture_register_callback=fixture_register_callback@0 @10
+  fixture_access_violation=fixture_access_violation@0 @11
+  fixture_hardware_access_violation=fixture_hardware_access_violation@0 @12
+  fixture_host_import_seh=fixture_host_import_seh @13
+  fixture_nonlocal=fixture_nonlocal@0 @14
+  fixture_unhandled_filter=fixture_unhandled_filter@4 @15
+  fixture_unwind=fixture_unwind@0 @16
+  fixture_interface=fixture_interface@0 @17
+  fixture_interface_stale=fixture_interface_stale@0 @18
+  fixture_interface_callback_flow=fixture_interface_callback_flow@0 @19
+  fixture_interface_callback=fixture_interface_callback@8 @20
+  fixture_interface_record=fixture_interface_record@0 @21

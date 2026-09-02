@@ -1,0 +1,109 @@
+{
+  "blockers": [],
+  "component_id": "fixture-interface-stale",
+  "format": "spaghetti-extractor-component-machine-binding-intent-v1",
+  "intent_sha256": "fdf77b3d442f4abd42e056c7ad53d32ffd5ce30b6e1b749c2127c6300da99765",
+  "operations": [{
+    "callback_ids": [],
+    "effect_ids": [],
+    "entry_rvas": [4497],
+    "id": "exercise",
+    "induction_evidence_sha256": null,
+    "kind": "operation",
+    "machine_projection": {
+      "operation": {
+        "callback_operation_ids": [],
+        "continuation_unit_ids": [],
+        "effects": [],
+        "entry_unit_ids": ["semantic-transfer:fixture-interface-record-setup"],
+        "exit_unit_ids": ["semantic-transfer:fixture-interface-record-return"],
+        "operation_id": "exercise",
+        "parameters": [],
+        "preserved_state_ids": [],
+        "results": [{
+          "id": "result",
+          "projection": {"at": "exit", "kind": "register", "register": "eax", "width": 32}
+        }],
+        "state": []
+      },
+      "preserved_unit_inventory": [
+        "semantic-transfer:fixture-interface-record-setup",
+        "semantic-transfer:fixture-interface-record-factory",
+        "semantic-transfer:fixture-interface-record-fill-record",
+        "semantic-transfer:fixture-interface-record-release",
+        "semantic-transfer:fixture-interface-record-return"
+      ],
+      "service_bindings": [
+        {
+          "mediation": "direct",
+          "provider": {
+            "argument_transducers": [{
+              "kind": "out_interface",
+              "out_interface_relation_sha256": "d8a0a76227523692b4d76e13d05d41909b910279ccbe1fe265ecab22cd84c56c",
+              "parameter_index": 0
+            }],
+            "events": [{
+              "event_index": 0,
+              "unit_id": "semantic-transfer:fixture-interface-record-factory"
+            }],
+            "identity": {"dll": "fixture-provider.dll", "ordinal": null, "symbol": "FixtureCreate"},
+            "kind": "external_call"
+          },
+          "service_id": "create"
+        },
+        {
+          "mediation": "direct",
+          "provider": {
+            "argument_transducers": [
+              {"kind": "logical_argument", "parameter_index": 0},
+              {
+                "kind": "local_cell",
+                "cell_id": "record",
+                "initial_words": [8, null],
+                "local_cell_relation_sha256": "358d07c51c80f3924b3eed3724d89e45dbe2139d18cc76c1ed50d7dd66fe4694"
+              }
+            ],
+            "events": [{
+              "event_index": 0,
+              "unit_id": "semantic-transfer:fixture-interface-record-fill-record"
+            }],
+            "kind": "interface_method",
+              "method_contract_sha256": "f00519555b442e540b798805ea7b94b7268bba79c0fee556ac648919011e8d8b",
+            "result_projection": {
+              "kind": "local_cell_word",
+              "cell_id": "record",
+              "word_index": 1
+            }
+          },
+          "service_id": "fill_record"
+        },
+        {
+          "mediation": "direct",
+          "provider": {
+            "events": [{
+              "event_index": 0,
+              "unit_id": "semantic-transfer:fixture-interface-record-release"
+            }],
+            "kind": "interface_method",
+              "method_contract_sha256": "d32cda16f8d8258031fda63767d19d49ded1d353890cf64f433db0a9e7a9a16c"
+          },
+          "service_id": "release"
+        }
+      ]
+    },
+    "object_authority_selectors": [],
+    "outcome_protocol_ids": ["normal"],
+    "pointer_views": [],
+    "relation_receipt_sha256s": [],
+    "service_ids": ["create", "fill_record", "release"],
+    "transfer_ids": [
+      "semantic-transfer:fixture-interface-record-factory",
+      "semantic-transfer:fixture-interface-record-fill-record",
+      "semantic-transfer:fixture-interface-record-release",
+      "semantic-transfer:fixture-interface-record-return",
+      "semantic-transfer:fixture-interface-record-setup"
+    ],
+    "unit_ids": ["semantic-transfer:fixture-interface-record-setup"]
+  }],
+  "status": "complete"
+}

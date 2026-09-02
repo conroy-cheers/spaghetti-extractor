@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from spaghetti_extractor.artifacts.formats import MACHINE_IR_FORMAT
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 
 from spaghetti_extractor.libraries.abi_catalog import LibraryAbiCatalogV3
 from spaghetti_extractor.libraries.abi_records import (
@@ -75,13 +76,37 @@ def machine_unit(
         "status": "qualified",
         "function_id": unit_id,
         "source": {
-            "original": {"rva_start": rva, "rva_end": rva + 8},
+            "original": {"rva_start": rva, "rva_end": rva + 8, "size": 8},
+            "contract_sha256": digest,
             "instruction_bytes_sha256": digest,
         },
         "instructions": [],
+        "x87_micro_ops": [],
+        "reachable": True,
         "semantics": {
+            "pre_state": {},
+            "register_writes": [],
+            "flag_writes": [],
+            "memory_events": [],
             "external_events": list(external_events),
-            "outcome": {"kind": control_kind},
+            "faults": [],
+            "ordered_events": [],
+            "edge_conditions": [],
+            "memory_actions": build_memory_action_graph(
+                instructions=[], memory_events=[], ordered_events=[]
+            ),
+            "outcome": (
+                {
+                    "kind": "return",
+                    "value": {"op": "reg", "name": "eax", "width": 32},
+                }
+                if control_kind == "return"
+                else {"kind": control_kind}
+            ),
+            "stack_delta": 0,
+            "counts": {},
+            "fpu_state": None,
+            "instruction_effect_schedule": None,
         },
         "control": {
             "kind": control_kind,
@@ -114,17 +139,33 @@ def write_machine(
         ),
         encoding="utf-8",
     )
+    source_map = [
+        {
+            "unit_id": row["id"],
+            "rva_start": row["source"]["original"]["rva_start"],
+            "contract_sha256": row["source"].get(
+                "contract_sha256", row["source"]["instruction_bytes_sha256"]
+            ),
+        }
+        for row in units
+    ]
     write_json(
         package / "machine-ir-manifest.json",
         {
             "format": MACHINE_IR_FORMAT,
+            "record_kind": "manifest",
             "binary": {"sha256": sha256_file(binary)},
+            "authority_bindings": {
+                "binary": {"pe_sha256": sha256_file(binary)}
+            },
             "artifacts": {
                 "machine_ir": {
                     "path": "machine-ir.jsonl",
                     "sha256": sha256_file(ir),
                 }
             },
+            "counts": {"units": len(units)},
+            "source_map": source_map,
         },
     )
     return package

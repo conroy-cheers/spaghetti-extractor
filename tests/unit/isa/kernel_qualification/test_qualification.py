@@ -55,6 +55,33 @@ class ISAKernelQualificationTests(unittest.TestCase):
         )
         self.assertEqual(consensus.diagnostics[0].json_path, "$.state.eax")
 
+    def test_unicorn_x87_exception_flags_use_pairwise_capability(self):
+        def result(status_word: int):
+            return {
+                "control": "fallthrough",
+                "fault": "none",
+                "final_state": {"x87": {"status_word": status_word}},
+                "memory": [],
+            }
+
+        consensus = _consensus(
+            bochs=result(0x0001),
+            unicorn=result(0x0000),
+            lean=result(0x0001),
+        )
+        self.assertEqual(consensus.status, QualificationStatus.QUALIFIED)
+
+        lean_mismatch = _consensus(
+            bochs=result(0x0001),
+            unicorn=result(0x0000),
+            lean=result(0x0002),
+        )
+        self.assertEqual(lean_mismatch.status, QualificationStatus.VETOED)
+        self.assertEqual(
+            lean_mismatch.diagnostics[0].json_path,
+            "$.final_state.x87.status_word",
+        )
+
     def test_missing_and_unsupported_backends_are_incomplete(self):
         missing = _consensus(omit=BackendRole.LEAN)
         unsupported_rows = [

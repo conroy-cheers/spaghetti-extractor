@@ -9,7 +9,7 @@ from spaghetti_extractor.isa.conformance_unicorn import (
     run_unicorn_corpus,
     unicorn_available,
 )
-from tests.test_isa_conformance_unicorn import _corpus
+from tests.test_isa_conformance_unicorn import _case, _corpus, _state, _x87_state
 
 
 class ISAConformanceDifferentialTests(unittest.TestCase):
@@ -35,6 +35,47 @@ class ISAConformanceDifferentialTests(unittest.TestCase):
         )
         self.assertFalse(lean_report.trust.proof_authority)
         self.assertFalse(unicorn_report.trust.proof_authority)
+
+    @unittest.skipUnless(shutil.which("lean"), "Lean is required")
+    @unittest.skipUnless(unicorn_available(), "Unicorn is required")
+    def test_lean_and_unicorn_match_fabs_bit_exactly(self):
+        payload = _case(case_id="x87-fabs-negative-one")
+        payload["instruction_bytes"] = [0xD9, 0xE1]
+        initial_x87 = _x87_state()
+        initial_x87["tag_word"] = 0xFFFC
+        initial_x87["registers"][0] = list(
+            bytes.fromhex("0000000000000080ffbf")
+        )
+        expected_x87 = _x87_state()
+        expected_x87["tag_word"] = 0xFFFC
+        expected_x87["registers"][0] = list(
+            bytes.fromhex("0000000000000080ff3f")
+        )
+        payload["initial_state"] = _state(x87=initial_x87)
+        payload["defined_outputs"]["x87"]["registers"][0] = [0xFF] * 10
+        payload["expected"]["final_state"] = _state(
+            eip=0x00401002,
+            x87=expected_x87,
+        )
+        corpus = _corpus(payload)
+
+        lean_report = run_lean_isa_conformance(corpus)
+        unicorn_report = run_unicorn_corpus(corpus)
+
+        self.assertEqual(
+            lean_report.qualification,
+            ReportQualification.QUALIFIED,
+            lean_report,
+        )
+        self.assertEqual(
+            unicorn_report.qualification,
+            ReportQualification.QUALIFIED,
+            unicorn_report,
+        )
+        self.assertEqual(
+            lean_report.observations[0].final_state,
+            unicorn_report.observations[0].final_state,
+        )
 
 
 if __name__ == "__main__":

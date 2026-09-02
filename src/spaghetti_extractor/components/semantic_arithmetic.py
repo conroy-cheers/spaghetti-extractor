@@ -36,7 +36,11 @@ def simplify_logical_arithmetic(
         right = _object(args[1], "subtraction right operand")
         left_view = byte_view_offset(left)
         right_view = byte_view_offset(right)
-        if left_view is not None and right_view is not None and left_view[0] == right_view[0]:
+        if (
+            left_view is not None
+            and right_view is not None
+            and left_view[0] == right_view[0]
+        ):
             return simplify_logical_arithmetic(
                 {"op": "sub32", "args": [left_view[1], right_view[1]]}
             )
@@ -53,9 +57,47 @@ def simplify_logical_arithmetic(
         right_key = canonical_sha256_v3(right)
         for index, term in enumerate(terms):
             if canonical_sha256_v3(term) == right_key:
-                return _build_additive_expression(
-                    [*terms[:index], *terms[index + 1 :]]
-                )
+                return _build_additive_expression([*terms[:index], *terms[index + 1 :]])
+    if op in {"eq", "eq_bool"} and isinstance(args, list) and len(args) == 2:
+        left = _object(args[0], "equality left operand")
+        right = _object(args[1], "equality right operand")
+        if canonical_sha256_v3(left) == canonical_sha256_v3(right):
+            return {"op": "true"}
+        left_constant = _fixed_width_constant(left)
+        right_constant = _fixed_width_constant(right)
+        if (
+            left_constant is not None
+            and right_constant is not None
+            and left_constant[0] == right_constant[0]
+        ):
+            return {"op": "true" if left_constant[1] == right_constant[1] else "false"}
+        left_predicate = _constant_predicate(left)
+        right_predicate = _constant_predicate(right)
+        if left_predicate is not None and right_predicate is not None:
+            return {"op": "true" if left_predicate == right_predicate else "false"}
+    if op in {"ult32", "ule32"} and isinstance(args, list) and len(args) == 2:
+        left = _word32_constant(_object(args[0], f"{op} left operand"))
+        right = _word32_constant(_object(args[1], f"{op} right operand"))
+        if left is not None and right is not None:
+            observed = left < right if op == "ult32" else left <= right
+            return {"op": "true" if observed else "false"}
+    if op == "not" and isinstance(args, list) and len(args) == 1:
+        value = _constant_predicate(_object(args[0], "negation operand"))
+        if value is not None:
+            return {"op": "false" if value else "true"}
+    if op in {"and_bool", "or_bool", "xor_bool"} and isinstance(args, list):
+        predicates = [
+            _constant_predicate(_object(item, f"{op} operand")) for item in args
+        ]
+        if all(value is not None for value in predicates):
+            values = [bool(value) for value in predicates]
+            if op == "and_bool":
+                observed = all(values)
+            elif op == "or_bool":
+                observed = any(values)
+            else:
+                observed = sum(values) % 2 == 1
+            return {"op": "true" if observed else "false"}
     if op in {"and32", "or32", "xor32"} and isinstance(args, list) and len(args) == 2:
         left = _object(args[0], f"{op} left operand")
         right = _object(args[1], f"{op} right operand")
@@ -119,14 +161,22 @@ def simplify_logical_arithmetic(
                                 "op": "and32",
                                 "args": [
                                     _object(nested_args[0], "masked union operand"),
-                                    {"op": "const", "value": right_constant, "width": 32},
+                                    {
+                                        "op": "const",
+                                        "value": right_constant,
+                                        "width": 32,
+                                    },
                                 ],
                             },
                             {
                                 "op": "and32",
                                 "args": [
                                     _object(nested_args[1], "masked union operand"),
-                                    {"op": "const", "value": right_constant, "width": 32},
+                                    {
+                                        "op": "const",
+                                        "value": right_constant,
+                                        "width": 32,
+                                    },
                                 ],
                             },
                         ],
@@ -146,15 +196,27 @@ def simplify_logical_arithmetic(
                             {
                                 "op": "and32",
                                 "args": [
-                                    _object(nested_args[1], "masked conditional branch"),
-                                    {"op": "const", "value": right_constant, "width": 32},
+                                    _object(
+                                        nested_args[1], "masked conditional branch"
+                                    ),
+                                    {
+                                        "op": "const",
+                                        "value": right_constant,
+                                        "width": 32,
+                                    },
                                 ],
                             },
                             {
                                 "op": "and32",
                                 "args": [
-                                    _object(nested_args[2], "masked conditional branch"),
-                                    {"op": "const", "value": right_constant, "width": 32},
+                                    _object(
+                                        nested_args[2], "masked conditional branch"
+                                    ),
+                                    {
+                                        "op": "const",
+                                        "value": right_constant,
+                                        "width": 32,
+                                    },
                                 ],
                             },
                         ],
@@ -222,6 +284,32 @@ def _word32_constant(value: Mapping[str, object]) -> int | None:
     ):
         return None
     return raw & 0xFFFFFFFF
+
+
+def _fixed_width_constant(value: Mapping[str, object]) -> tuple[int, int] | None:
+    raw = value.get("value")
+    width = value.get("width")
+    if (
+        value.get("op") != "const"
+        or not isinstance(raw, int)
+        or isinstance(raw, bool)
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not 1 <= width <= 64
+    ):
+        return None
+    return width, raw & ((1 << width) - 1)
+
+
+def _constant_predicate(value: Mapping[str, object]) -> bool | None:
+    if value.get("op") == "true":
+        return True
+    if value.get("op") == "false":
+        return False
+    constant = _fixed_width_constant(value)
+    if constant is not None and constant[0] == 1:
+        return bool(constant[1])
+    return None
 
 
 def _additive_terms(value: Mapping[str, object]) -> list[dict[str, object]]:

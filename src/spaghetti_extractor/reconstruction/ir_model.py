@@ -62,7 +62,7 @@ def _default_finite_dataflow_factory() -> Callable[..., Any]:
     preparation depend on the finite-control implementation.
     """
 
-    module = import_module("spaghetti_extractor.authority_inputs.finite_values")
+    module = import_module("spaghetti_extractor.reconstruction.finite_values")
     return module.FiniteU32Dataflow
 
 

@@ -1,54 +1,13 @@
-"""Common filesystem and schema helpers for interpreter-native builds."""
+"""Common filesystem and schema helpers for behavioral-C module builds."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from ..util import sha256_file
 from . import native_build
-from .build_model import (
-    CandidateNativeBuildError,
-    _Artifact,
-    _Package,
-)
-
-
-def _artifact(
-    root: Path, owner: str, role: str, raw: Mapping[str, Any]
-) -> _Artifact:
-    relative = _relative_path(raw.get("path"), f"{owner} {role} path")
-    digest = native_build._digest(raw.get("sha256"), f"{owner} {role} SHA-256")
-    path = root / relative
-    if not path.is_file():
-        raise CandidateNativeBuildError(
-            f"{owner} {role} artifact is missing: {relative}"
-        )
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError as exc:
-        raise CandidateNativeBuildError(
-            f"{owner} {role} artifact escapes its package root"
-        ) from exc
-    if sha256_file(path) != digest:
-        raise CandidateNativeBuildError(
-            f"{owner} {role} artifact SHA-256 mismatch"
-        )
-    return _Artifact(owner, role, relative.as_posix(), digest, path)
-
-
-def _revalidate_package(package: _Package) -> None:
-    if sha256_file(package.manifest_path) != package.manifest_sha256:
-        raise CandidateNativeBuildError(
-            f"{package.owner} manifest changed during compilation"
-        )
-    for item in package.artifacts:
-        if not item.path.is_file() or sha256_file(item.path) != item.sha256:
-            raise CandidateNativeBuildError(
-                f"{package.owner} artifact changed during compilation: "
-                f"{item.relative_path}"
-            )
+from .build_model import CandidateNativeBuildError
 
 
 def _read_json_object(path: Path, label: str) -> dict[str, Any]:

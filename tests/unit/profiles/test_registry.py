@@ -27,6 +27,7 @@ EXPECTED_PROFILES = {
     "pe32-msvcrt-lockstep-v1.json",
     "pe32-msvcrt-machine-runtime-v1.json",
     "pe32-native-callthrough-runtime-v1.json",
+    "pe32-oniguruma-runtime-v1.json",
     "pe32-normal-return-nonvolatile-v1.json",
     "pe32-static-cutpoints-and-paired-callables-v1.json",
     "pe32-win32-console-launch-assumptions-v1.json",
@@ -60,7 +61,7 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_committed_catalog_validates_exact_inventory(self) -> None:
         registry = validate_profile_inventory(PROFILE_DIRECTORY)
 
-        self.assertEqual(len(registry.profiles), 18)
+        self.assertEqual(len(registry.profiles), 19)
         self.assertEqual(set(registry.by_path()), EXPECTED_PROFILES)
         for registration in registry.registrations:
             self.assertTrue(registration.role)
@@ -143,6 +144,19 @@ class ProfileRegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ProfileRegistryError, "expected profile format"
             ):
+                validate_profile_inventory(directory)
+
+    def test_interface_profile_uses_the_typed_local_cell_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = self.copy_profiles(Path(raw))
+            profile_path = (
+                directory / "pe32-mingw-directx-interface-extraction-v1.json"
+            )
+            payload = json.loads(profile_path.read_text(encoding="utf-8"))
+            payload["method_local_cells"] *= 2
+            profile_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ProfileRegistryError, "duplicated"):
                 validate_profile_inventory(directory)
 
 

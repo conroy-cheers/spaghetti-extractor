@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ..artifacts.formats import BEHAVIORAL_C_LAYOUT_INTENT_FORMAT
-from .interpreter_model import CandidateInterpreterError
+from .formats import BEHAVIORAL_C_LAYOUT_INTENT_FORMAT
+from ..transfer.model import TransferPlanError
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class BehavioralCLayoutIntent:
     @classmethod
     def from_payload(cls, raw: Mapping[str, Any]) -> "BehavioralCLayoutIntent":
         if raw.get("format") != BEHAVIORAL_C_LAYOUT_INTENT_FORMAT:
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 "behavioral-C layout intent has an unsupported format",
                 code="malformed_behavioral_c_layout_intent",
                 next_action="regenerate the sparse layout intent with the current toolkit",
@@ -26,7 +26,7 @@ class BehavioralCLayoutIntent:
         allowed = {"format", "roots", "names", "forced_labels"}
         extras = sorted(set(raw) - allowed)
         if extras:
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"behavioral-C layout intent has unknown fields: {', '.join(extras)}",
                 code="malformed_behavioral_c_layout_intent",
             )
@@ -34,7 +34,7 @@ class BehavioralCLayoutIntent:
         forced = _rvas(raw.get("forced_labels", []), "forced_labels")
         names_raw = raw.get("names", {})
         if not isinstance(names_raw, Mapping):
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 "behavioral-C layout names must be an RVA-to-name object",
                 code="malformed_behavioral_c_layout_intent",
             )
@@ -43,19 +43,19 @@ class BehavioralCLayoutIntent:
             try:
                 rva = int(str(key), 0)
             except ValueError as exc:
-                raise CandidateInterpreterError(
+                raise TransferPlanError(
                     f"behavioral-C layout name key {key!r} is not an RVA",
                     code="malformed_behavioral_c_layout_intent",
                 ) from exc
             if not isinstance(value, str) or not value.strip():
-                raise CandidateInterpreterError(
+                raise TransferPlanError(
                     f"behavioral-C layout name for 0x{rva:x} is empty",
                     code="malformed_behavioral_c_layout_intent",
                 )
             _check_rva(rva, "layout name RVA")
             names.append((rva, value.strip()))
         if len(dict(names)) != len(names):
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 "behavioral-C layout names contain duplicate RVAs",
                 code="malformed_behavioral_c_layout_intent",
             )
@@ -99,14 +99,14 @@ class BehavioralCPlan:
 
 def _rvas(raw: Any, field: str) -> list[int]:
     if not isinstance(raw, list):
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"behavioral-C layout {field} must be a list",
             code="malformed_behavioral_c_layout_intent",
         )
     values: list[int] = []
     for value in raw:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise CandidateInterpreterError(
+            raise TransferPlanError(
                 f"behavioral-C layout {field} contains a non-integer RVA",
                 code="malformed_behavioral_c_layout_intent",
             )
@@ -117,7 +117,7 @@ def _rvas(raw: Any, field: str) -> list[int]:
 
 def _check_rva(value: int, field: str) -> None:
     if not 0 <= value <= 0xFFFFFFFF:
-        raise CandidateInterpreterError(
+        raise TransferPlanError(
             f"{field} is outside the PE32 RVA domain",
             code="malformed_behavioral_c_layout_intent",
         )

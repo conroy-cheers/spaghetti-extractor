@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from spaghetti_extractor.authority_inputs.finite_values import FiniteU32Dataflow
+from spaghetti_extractor.reconstruction.finite_values import FiniteU32Dataflow
 from spaghetti_extractor.reconstruction.ir import (
     MACHINE_IR_FILENAME,
     MACHINE_IR_FORMAT,

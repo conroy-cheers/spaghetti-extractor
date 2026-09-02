@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from .catalog import ISA_PROFILE_ID
@@ -64,40 +65,60 @@ def _parse_proposal(value: Any) -> dict[str, Any]:
         "side-ISA catalog proposal requirements_sha256",
     )
 
-    source = _exact_fields(
-        payload.get("source"),
+    source = payload.get("source")
+    if not isinstance(source, Mapping):
+        raise ToolkitInputError("side-ISA catalog proposal source must be an object")
+    source_fields = set(source)
+    if source_fields not in (
         {"adapter", "side_isa_artifacts"},
-        "side-ISA catalog proposal source",
-    )
+        {"adapter", "platform_inventory"},
+    ):
+        raise ToolkitInputError(
+            "side-ISA catalog proposal source has an invalid inventory"
+        )
     _string(source.get("adapter"), "side-ISA catalog proposal source.adapter")
-    side_sources = _objects(
-        source.get("side_isa_artifacts"),
-        "side-ISA catalog proposal source.side_isa_artifacts",
-    )
-    if not 1 <= len(side_sources) <= 2:
-        raise ToolkitInputError(
-            "side-ISA catalog proposal must name one or two side artifacts"
+    if "side_isa_artifacts" in source:
+        side_sources = _objects(
+            source.get("side_isa_artifacts"),
+            "side-ISA catalog proposal source.side_isa_artifacts",
         )
-    seen_sides: list[str] = []
-    for index, row in enumerate(side_sources):
-        context = f"side-ISA catalog proposal side source {index}"
-        row = _exact_fields(
-            row,
-            {"side", "binary_sha256", "artifact_sha256"},
-            context,
+        if not 1 <= len(side_sources) <= 2:
+            raise ToolkitInputError(
+                "side-ISA catalog proposal must name one or two side artifacts"
+            )
+        seen_sides: list[str] = []
+        for index, row in enumerate(side_sources):
+            context = f"side-ISA catalog proposal side source {index}"
+            row = _exact_fields(
+                row,
+                {"side", "binary_sha256", "artifact_sha256"},
+                context,
+            )
+            side = _string(row.get("side"), f"{context}.side")
+            if side not in {"original", "candidate"}:
+                raise ToolkitInputError(f"{context}.side is invalid")
+            seen_sides.append(side)
+            _sha256(row.get("binary_sha256"), f"{context}.binary_sha256")
+            _sha256(row.get("artifact_sha256"), f"{context}.artifact_sha256")
+        if seen_sides != [
+            side for side in ("original", "candidate") if side in seen_sides
+        ]:
+            raise ToolkitInputError(
+                "side-ISA catalog proposal side sources are not canonically ordered"
+            )
+        if len(seen_sides) != len(set(seen_sides)):
+            raise ToolkitInputError("side-ISA catalog proposal repeats a side source")
+    else:
+        platform = _exact_fields(
+            source.get("platform_inventory"),
+            {"sha256", "content_sha256"},
+            "side-ISA catalog proposal platform inventory",
         )
-        side = _string(row.get("side"), f"{context}.side")
-        if side not in {"original", "candidate"}:
-            raise ToolkitInputError(f"{context}.side is invalid")
-        seen_sides.append(side)
-        _sha256(row.get("binary_sha256"), f"{context}.binary_sha256")
-        _sha256(row.get("artifact_sha256"), f"{context}.artifact_sha256")
-    if seen_sides != [side for side in ("original", "candidate") if side in seen_sides]:
-        raise ToolkitInputError(
-            "side-ISA catalog proposal side sources are not canonically ordered"
+        _sha256(platform.get("sha256"), "platform inventory SHA-256")
+        _sha256(
+            platform.get("content_sha256"),
+            "platform inventory content SHA-256",
         )
-    if len(seen_sides) != len(set(seen_sides)):
-        raise ToolkitInputError("side-ISA catalog proposal repeats a side source")
 
     raw_forms = _objects(payload.get("forms"), "side-ISA catalog proposal forms")
     forms: list[dict[str, Any]] = []

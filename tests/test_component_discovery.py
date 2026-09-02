@@ -179,6 +179,15 @@ class ComponentDiscoveryTests(unittest.TestCase):
             self.assertEqual(
                 proposal["proposal_sha256"], _canonical_sha256(proposal_core)
             )
+            score = proposal["score"]["vector"]
+            self.assertTrue({
+                "entry_count", "exit_count", "loop_scc_count",
+                "unresolved_aliases", "external_services",
+                "callback_candidate_count", "exception_site_count",
+                "atomic_event_count", "induction_required_count",
+                "expected_proof_cost",
+            } <= set(score))
+            self.assertGreater(score["expected_proof_cost"], 0)
 
     def test_full_exact_and_potential_coverage_ledgers_are_complete(self) -> None:
         payload = self._discover()

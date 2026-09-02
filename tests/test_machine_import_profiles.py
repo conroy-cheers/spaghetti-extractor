@@ -15,8 +15,9 @@ from spaghetti_extractor.external.machine_import_profiles import (
     MachineImportIdentity,
     MachineImportProfileError,
     load_machine_import_profile_set,
+    materialize_v2_profile_contract,
 )
-from spaghetti_extractor.authority_inputs.control_disposition import (
+from spaghetti_extractor.external.control_disposition import (
     build_control_disposition_profile,
 )
 from spaghetti_extractor.reconstruction.state_machine import (
@@ -28,8 +29,10 @@ from spaghetti_extractor.reconstruction.state_machine import (
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 _RUNTIME_PROFILE_ARITIES = {
+    ("kernel32.dll", "AreFileApisANSI"): 0,
     ("kernel32.dll", "CloseHandle"): 1,
     ("kernel32.dll", "GetACP"): 0,
+    ("kernel32.dll", "GetConsoleMode"): 2,
     ("kernel32.dll", "GetCPInfo"): 2,
     ("kernel32.dll", "GetCurrentProcess"): 0,
     ("kernel32.dll", "GetFileAttributesA"): 1,
@@ -42,6 +45,9 @@ _RUNTIME_PROFILE_ARITIES = {
     ("kernel32.dll", "GetStringTypeA"): 5,
     ("kernel32.dll", "GetStringTypeW"): 4,
     ("kernel32.dll", "GetVersion"): 0,
+    ("kernel32.dll", "TlsAlloc"): 0,
+    ("kernel32.dll", "TlsFree"): 1,
+    ("kernel32.dll", "TlsSetValue"): 2,
     ("kernel32.dll", "GlobalFree"): 1,
     ("kernel32.dll", "GlobalUnlock"): 1,
     ("kernel32.dll", "HeapCreate"): 3,
@@ -55,13 +61,16 @@ _RUNTIME_PROFILE_ARITIES = {
     ("kernel32.dll", "QueryPerformanceCounter"): 1,
     ("kernel32.dll", "QueryPerformanceFrequency"): 1,
     ("kernel32.dll", "ReadFile"): 5,
+    ("kernel32.dll", "RtlUnwind"): 4,
     ("kernel32.dll", "SetEndOfFile"): 1,
+    ("kernel32.dll", "SetConsoleMode"): 2,
     ("kernel32.dll", "SetFilePointer"): 4,
     ("kernel32.dll", "SetHandleCount"): 1,
     ("kernel32.dll", "SetUnhandledExceptionFilter"): 1,
     ("kernel32.dll", "SetStdHandle"): 2,
     ("kernel32.dll", "TerminateProcess"): 2,
     ("kernel32.dll", "UnmapViewOfFile"): 1,
+    ("kernel32.dll", "UnhandledExceptionFilter"): 1,
     ("kernel32.dll", "WriteFile"): 5,
     ("user32.dll", "GetCursorPos"): 1,
     ("user32.dll", "PostQuitMessage"): 1,
@@ -155,6 +164,107 @@ def _scheduled_call_row() -> dict[str, object]:
 
 
 class MachineImportProfileTests(unittest.TestCase):
+    def test_msvcrt_predicate_family_includes_reachable_isspace(self) -> None:
+        source = _REPOSITORY_ROOT / "profiles/pe32-msvcrt-lockstep-v1.json"
+        selected = load_machine_import_profile_set([source])
+        contracts = {
+            str(contract.identity.value): contract.contract
+            for contract in selected.contracts
+            if contract.identity.kind == "symbol"
+        }
+
+        self.assertIn("isspace", contracts)
+        self.assertEqual(
+            {
+                key: contracts["isspace"][key]
+                for key in (
+                    "abi_template",
+                    "argument_words",
+                    "result_register_relations",
+                    "memory_effect",
+                    "memory_footprints",
+                    "world_effect",
+                )
+            },
+            {
+                key: contracts["isalnum"][key]
+                for key in (
+                    "abi_template",
+                    "argument_words",
+                    "result_register_relations",
+                    "memory_effect",
+                    "memory_footprints",
+                    "world_effect",
+                )
+            },
+        )
+
+    def test_v2_selected_contracts_round_trip_through_aggregate_profile(self) -> None:
+        source = _REPOSITORY_ROOT / "profiles/pe32-msvcrt-lockstep-v1.json"
+        selected = load_machine_import_profile_set([source])
+        callback = next(
+            contract
+            for contract in selected.contracts
+            if contract.contract.get("callback_protocol") is not None
+        )
+        self.assertEqual(callback.contract["callback_effect"], "explicit")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "profile.json"
+            bundle.write_text(json.dumps({
+                "format": "spaghetti-extractor-static-machine-import-profile-v2",
+                "id": "fixture-aggregate",
+                "provenance": {
+                    "kind": "resolved_machine_import_profile_graph_v1",
+                    "source_profiles": [{
+                        "id": profile.profile_id,
+                        "sha256": profile.sha256,
+                    } for profile in selected.profiles],
+                },
+                "machine_import_call_contracts": [
+                    materialize_v2_profile_contract(contract)
+                    for contract in selected.contracts
+                ],
+            }), encoding="utf-8")
+            reloaded = load_machine_import_profile_set([bundle])
+
+        reloaded_callback = next(
+            contract
+            for contract in reloaded.contracts
+            if contract.contract.get("callback_protocol") is not None
+        )
+        self.assertEqual(reloaded_callback.contract["callback_effect"], "explicit")
+        self.assertEqual(reloaded_callback.profile_id, callback.profile_id)
+        self.assertEqual(reloaded_callback.profile_sha256, callback.profile_sha256)
+        self.assertNotIn(
+            "callback_effect", materialize_v2_profile_contract(callback)
+        )
+
+    def test_aggregate_profile_rejects_unbound_selected_source(self) -> None:
+        source = _REPOSITORY_ROOT / "profiles/pe32-msvcrt-lockstep-v1.json"
+        selected = load_machine_import_profile_set([source])
+        row = materialize_v2_profile_contract(selected.contracts[0])
+        row["source_profile_binding"]["profile_sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "profile.json"
+            bundle.write_text(json.dumps({
+                "format": "spaghetti-extractor-static-machine-import-profile-v2",
+                "id": "fixture-aggregate",
+                "provenance": {
+                    "kind": "resolved_machine_import_profile_graph_v1",
+                    "source_profiles": [{
+                        "id": profile.profile_id,
+                        "sha256": profile.sha256,
+                    } for profile in selected.profiles],
+                },
+                "machine_import_call_contracts": [row],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                MachineImportProfileError,
+                "absent from resolved provenance",
+            ):
+                load_machine_import_profile_set([bundle])
+
     def test_control_disposition_projection_ignores_returning_contracts(self) -> None:
         terminating = {
             "id": "exit",
@@ -254,7 +364,12 @@ class MachineImportProfileTests(unittest.TestCase):
                 self.assertEqual(
                     contract.contract["abi_template"], "pe32-stdcall-v1"
                 )
-                self.assertEqual(contract.contract["disposition"], "returns")
+                self.assertEqual(
+                    contract.contract["disposition"],
+                    "nonlocal" if identity == (
+                        "kernel32.dll", "RtlUnwind"
+                    ) else "returns",
+                )
                 self.assertIsInstance(
                     contract.contract["result_register_relations"], list
                 )
@@ -331,6 +446,57 @@ class MachineImportProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             string_type_w["memory_footprints"][1]["size"]["unit_bytes"], 2
+        )
+
+    def test_jq_host_dependencies_have_reusable_reviewed_contracts(self) -> None:
+        profile_set = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-msvcrt-machine-runtime-v1.json",
+            _REPOSITORY_ROOT / "profiles/pe32-oniguruma-runtime-v1.json",
+        ])
+        selected = {
+            (contract.identity.dll, str(contract.identity.value)): contract
+            for contract in profile_set.contracts
+        }
+        expected_arities = {
+            ("msvcrt.dll", "__wgetmainargs"): 5,
+            ("msvcrt.dll", "_isatty"): 1,
+            ("msvcrt.dll", "_setmode"): 2,
+            ("msvcrt.dll", "_strdup"): 1,
+            ("msvcrt.dll", "fputs"): 2,
+            ("msvcrt.dll", "isalpha"): 1,
+            ("msvcrt.dll", "perror"): 1,
+            ("msvcrt.dll", "putchar"): 1,
+            ("msvcrt.dll", "puts"): 1,
+            ("msvcrt.dll", "strtol"): 3,
+            ("libonig-5.dll", "onig_set_parse_depth_limit"): 1,
+        }
+        for identity, argument_words in expected_arities.items():
+            with self.subTest(import_identity=identity):
+                contract = selected[identity]
+                self.assertEqual(contract.arity_kind, "fixed")
+                self.assertEqual(contract.argument_words, argument_words)
+                self.assertEqual(contract.contract["disposition"], "returns")
+
+        wgetmainargs = selected[(
+            "msvcrt.dll", "__wgetmainargs"
+        )].contract
+        self.assertEqual(
+            [row["argument"] for row in wgetmainargs["out_pointer_relations"]],
+            [1, 2],
+        )
+        self.assertTrue(all(
+            row["pointee_shape"]["element"]["unit_bytes"] == 2
+            for row in wgetmainargs["out_pointer_relations"]
+        ))
+        self.assertEqual(
+            selected[("msvcrt.dll", "strtol")].contract["memory_footprints"][1],
+            {
+                "access": "write",
+                "base_argument": 1,
+                "offset": 0,
+                "size": {"kind": "fixed", "bytes": 4},
+                "nullable": True,
+            },
         )
 
     def test_message_loop_abi_facts_do_not_claim_external_effects(self) -> None:
@@ -447,6 +613,56 @@ class MachineImportProfileTests(unittest.TestCase):
             "nullable": True,
             "sentinels": [{"word": 0, "kind": "null"}],
         })
+
+    def test_kernel32_external_exception_services_are_typed(self) -> None:
+        profile_set = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-kernel32-runtime-v1.json"
+        ])
+        contracts = profile_set.by_identity()
+        unwind = contracts[MachineImportIdentity(
+            "kernel32.dll", "symbol", "RtlUnwind"
+        )].contract
+        self.assertEqual(unwind["disposition"], "nonlocal")
+        self.assertEqual(unwind["result_register_relations"], [])
+        self.assertEqual(
+            unwind["external_service_protocol"]["behavior"]["outcome"],
+            "nonlocal",
+        )
+        exception_filter = contracts[MachineImportIdentity(
+            "kernel32.dll", "symbol", "UnhandledExceptionFilter"
+        )].contract
+        service = exception_filter["external_service_protocol"]
+        self.assertEqual(service["kind"], "unhandled_exception_filter")
+        self.assertEqual(service["object_view"], {
+            "kind": "win32_exception_pointers_v1",
+            "size_bytes": 8,
+            "exception_record_pointer_offset": 0,
+            "context_pointer_offset": 4,
+            "exception_record_view": "checked_exception_record_v1",
+            "context_view": "x86_context_v1",
+            "root_access": "read",
+            "referent_access": "read_write",
+            "lifetime": "during_call",
+        })
+
+    def test_nonlocal_profile_without_exact_service_fails_closed(self) -> None:
+        source = json.loads((
+            _REPOSITORY_ROOT / "profiles/pe32-kernel32-runtime-v1.json"
+        ).read_text(encoding="utf-8"))
+        unwind = next(
+            row for row in source["machine_import_signatures"]
+            if row.get("import", {}).get("symbol") == "RtlUnwind"
+        )
+        unwind["external_service_protocol"]["behavior"]["outcome"] = (
+            "normal"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = _write(Path(temporary) / "profile.json", source)
+            with self.assertRaisesRegex(
+                MachineImportProfileError,
+                "nonlocal-unwind contract is unsupported",
+            ):
+                load_machine_import_profile_set([path])
 
     def test_reviewed_dll_policy_expands_to_exact_pe_import_abi(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -755,52 +971,8 @@ class MachineImportProfileTests(unittest.TestCase):
                 "success_condition": "hresult_succeeded_eax",
             }])
 
-    def test_instruction_schedule_receives_the_same_machine_call_contract(self) -> None:
-        contracts = {
-            ("fixture.dll", "Call", None): _contract("Call", words=3),
-        }
 
-        annotated = _annotate_machine_import_arguments(
-            _scheduled_call_row(), contracts
-        )
 
-        schedule = annotated["instruction_effect_schedule"]
-        record = schedule["records"][0]
-        effects = record["effects"]
-        ordered = effects["ordered_events"][0]
-        call_effect = effects["call_effects"][0]
-        self.assertEqual(len(ordered["arguments"]), 3)
-        self.assertEqual(len(call_effect["arguments"]), 3)
-        self.assertEqual(ordered["abi_contract"], call_effect["abi_contract"])
-        self.assertEqual(
-            record["record_sha256"], _digest_payload(record, "record_sha256")
-        )
-        self.assertEqual(
-            schedule["schedule_sha256"],
-            _digest_payload(schedule, "schedule_sha256"),
-        )
-
-    def test_instruction_schedule_call_must_match_aggregate_call(self) -> None:
-        row = _scheduled_call_row()
-        row["ordered_events"][0]["instruction_rva"] = 0x1020
-        contracts = {
-            ("fixture.dll", "Call", None): _contract("Call", words=3),
-        }
-
-        with self.assertRaisesRegex(
-            Exception, "schedule and aggregate machine-import calls differ"
-        ):
-            _annotate_machine_import_arguments(row, contracts)
-
-    def test_instruction_schedule_digest_drift_fails_closed(self) -> None:
-        row = _scheduled_call_row()
-        row["instruction_effect_schedule"]["records"][0]["rva_end"] = 0x1016
-        contracts = {
-            ("fixture.dll", "Call", None): _contract("Call", words=3),
-        }
-
-        with self.assertRaisesRegex(Exception, "schedule digest"):
-            _annotate_machine_import_arguments(row, contracts)
 
 
 if __name__ == "__main__":

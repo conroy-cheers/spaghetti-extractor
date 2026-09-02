@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from .interface_ir import PortableComponentInterfaceV2
+from .interface_ir import ProofKernelComponentInterface
 
 
 class InductiveWorldError(ValueError):
@@ -21,7 +21,7 @@ class InductiveServiceWorld:
 
 def render_inductive_service_world(
     *,
-    interface: PortableComponentInterfaceV2,
+    interface: ProofKernelComponentInterface,
     operation_id: str,
     model: Mapping[str, object],
     nondeterministic_functions: Mapping[str, str],

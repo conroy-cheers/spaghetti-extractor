@@ -10,7 +10,7 @@ from ..util import sha256_bytes
 from .runtime_model import (
     NativeImplementationDispatch,
     CandidateRuntimeError,
-    _InterpreterTransferBinding,
+    _TransferBinding,
     _SHA256_RE,
 )
 from .runtime_values import (
@@ -43,13 +43,13 @@ def _validate_implementation_dispatch_receipt(
     payload: dict[str, Any],
     *,
     state_machine_sha256: str,
-    transfer_bindings: tuple[_InterpreterTransferBinding, ...],
+    transfer_bindings: tuple[_TransferBinding, ...],
 ) -> tuple[dict[str, Any], tuple[NativeImplementationDispatch, ...]]:
-    """Validate exact dispatch coverage independently of engine generation."""
+    """Validate exact dispatch coverage independently of runtime generation."""
 
     raw = _required_object(
         payload.get("implementation_dispatch_receipt"),
-        "native-engine implementation dispatch receipt",
+        "module-runtime implementation dispatch receipt",
     )
     expected_fields = {
         "format",
@@ -70,7 +70,7 @@ def _validate_implementation_dispatch_receipt(
         or raw.get("semantic_input_sha256") != state_machine_sha256
     ):
         raise CandidateRuntimeError(
-            "native-engine implementation dispatch receipt is not canonically bound"
+            "module-runtime implementation dispatch receipt is not canonically bound"
         )
     body = {
         key: raw[key]
@@ -84,11 +84,11 @@ def _validate_implementation_dispatch_receipt(
         != _canonical_json_sha256(body)
     ):
         raise CandidateRuntimeError(
-            "native-engine implementation dispatch receipt hash is invalid"
+            "module-runtime implementation dispatch receipt hash is invalid"
         )
     if _required_list(raw.get("blockers"), "implementation dispatch blockers"):
         raise CandidateRuntimeError(
-            "ready native-engine plan has incomplete implementation dispatch"
+            "ready module-runtime plan has incomplete implementation dispatch"
         )
     policy = _required_object(
         raw.get("policy"), "implementation dispatch policy"
@@ -99,12 +99,12 @@ def _validate_implementation_dispatch_receipt(
         "runtime_code_target_lookup": "exact-active-transfer-rva",
         "unresolved_dispatch": "fail-closed-as-unimplemented",
         "portable_component_fallback_on_unimplemented": False,
-        "structural_execution_receipt_required_for_candidate": True,
+        "linked_semantic_module_selection_required_for_candidate": True,
         "acceptance_authority": False,
     }
     if policy != expected_policy:
         raise CandidateRuntimeError(
-            "native-engine implementation dispatch policy is unsupported"
+            "module-runtime implementation dispatch policy is unsupported"
         )
 
     reachability = _required_object(
@@ -168,7 +168,7 @@ def _validate_implementation_dispatch_receipt(
             )
     else:
         raise CandidateRuntimeError(
-            "ready native-engine implementation reachability is incomplete"
+            "ready module-runtime implementation reachability is incomplete"
         )
 
     entries = _required_list(raw.get("entries"), "implementation dispatch entries")
@@ -194,7 +194,7 @@ def _validate_implementation_dispatch_receipt(
     }
     if len(entries) != len(transfer_bindings):
         raise CandidateRuntimeError(
-            "implementation dispatch omits or adds interpreter transfers"
+            "implementation dispatch omits or adds executable transfers"
         )
     dispatches: list[NativeImplementationDispatch] = []
     entry_by_id: dict[str, NativeImplementationDispatch] = {}
@@ -258,7 +258,7 @@ def _validate_implementation_dispatch_receipt(
             raise CandidateRuntimeError(
                 "implementation dispatch permits a second fallback class"
             )
-        if implementation_class == "machine_ir_fallback":
+        if implementation_class == "generated_behavioral_c":
             if (
                 entry.get("dispatch_lookup") != "spx_program_lookup"
                 or replacement_id is not None
@@ -267,7 +267,7 @@ def _validate_implementation_dispatch_receipt(
                 or component_entry_rva is not None
             ):
                 raise CandidateRuntimeError(
-                    "machine-IR fallback dispatch carries portable metadata"
+                    "generated Behavioral-C dispatch carries portable metadata"
                 )
         elif implementation_class == "selected_portable_component":
             if entry.get("dispatch_lookup") != "spx_region_override_lookup":
@@ -413,8 +413,8 @@ def _validate_implementation_dispatch_receipt(
         "dispatch_entries": len(entries),
         "rooted_reachable_units": len(reachable),
         "rooted_targets": len(targets),
-        "machine_ir_fallback": sum(
-            dispatch.implementation_class == "machine_ir_fallback"
+        "generated_behavioral_c": sum(
+            dispatch.implementation_class == "generated_behavioral_c"
             for dispatch in dispatches
         ),
         "selected_portable_component": sum(

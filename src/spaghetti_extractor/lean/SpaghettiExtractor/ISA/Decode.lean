@@ -464,6 +464,8 @@ def decodeX87RegisterInstruction : Bytes -> Option DecodedInstruction
         decoded (.x87Exchange (modrm - 0xc8))
       else if opcode == 0xd9 && modrm == 0xe0 then
         decoded (.x87Unary .negate)
+      else if opcode == 0xd9 && modrm == 0xe1 then
+        decoded (.x87Unary .absolute)
       else if opcode == 0xd9 && modrm == 0xfe then
         decoded (.x87Unary .sine)
       else if opcode == 0xd9 && modrm == 0xff then

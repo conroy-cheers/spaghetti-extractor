@@ -21,7 +21,7 @@ class CheckedCallProtocolTests(unittest.TestCase):
         self.assertEqual(
             CallFrameRelationReceiptV1.parse(receipt.to_payload()), receipt
         )
-        self.assertEqual(relation.relation_ir.format_version, "spaghetti-extractor-component-relation-ir-v4")
+        self.assertNotIn("format", relation.relation_ir.to_payload())
         result = next(item for item in relation.relation_ir.operations[0].clauses if item.logical_path.identity == "result0")
         self.assertEqual(result.observe.op, "concat")
         self.assertEqual([item.kind for item in result.reads], ["register", "register"])

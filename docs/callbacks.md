@@ -14,17 +14,17 @@ Legacy readers may derive their private adapter view from the structured
 protocol while older profile formats migrate, but the structured protocol is
 the source of truth.
 
-`callback-authority-v4` binds that protocol to the exact canonical external
-site, discovered target unit, target RVA, callback entry state, ABI digest, and
-lifetime. Candidate generation and component machine bindings consume this
-authority. A separate operator callback-target list cannot authorize a native
-callback adapter.
+Transfer-v2 plus the resolved external environment bind that protocol to the
+exact registration event, target unit/RVA, physical frame, entry state, and
+lifetime. The semantic object emits the resulting callback capability and
+relocations once; semantic linking establishes rooted activation. There is no
+callback-authority artifact or separate operator callback-target list.
 
 Portable component interface V3 represents callbacks as distinct opaque C
 handle types. It exposes ownership, nullability, logical parameters, and a
 logical result, but no calling convention, stack cleanup, machine address, or
 function pointer. Exact PE32 details live in a checked `callback_handle`
-machine projection naming the protocol and callback-authority row. Calls to an
+machine projection naming the protocol and semantic capability. Calls to an
 operating-system or C-runtime registration API remain typed injected services,
 so provider behavior stays at the environment boundary.
 

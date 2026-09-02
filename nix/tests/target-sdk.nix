@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 { pkgs }:
 
 let
@@ -5,69 +6,99 @@ let
   pe32WorkflowArguments = builtins.functionArgs sdk.workflow.pe32;
   artifact = pkgs.writeText "minimal-sdk-consumer-artifact" "checked\n";
   acceptance = pkgs.writeText "minimal-sdk-acceptance-artifact" "accepted\n";
-  authorityDiagnostics = pkgs.writeText "minimal-sdk-authority-diagnostics.json"
-    (builtins.toJSON {
-      format = "spaghetti-extractor-authority-diagnostics-v3";
-      status = "complete";
-      authorizing = true;
-      counts = {
-        primary_frontiers = 0;
-        dependent_occurrences = 0;
-      };
-      primary_frontiers = [ ];
-    });
-  configurationStatus = pkgs.writeText "minimal-sdk-configuration-status.json"
-    (builtins.toJSON {
-      format = "spaghetti-extractor-component-configuration-status-v1";
-      configuration_id = "default";
-      status = "ready";
-      counts.blocked = 0;
-      blockers = [ ];
-    });
-  structuralReceipt = pkgs.runCommand
-    "minimal-sdk-structural-executable-receipt" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+  semanticModuleFixture = pkgs.runCommand
+    "minimal-sdk-linked-semantic-module-v2"
+    { nativeBuildInputs = [ sdk.validation.pythonEnv ]; } ''
       mkdir -p "$out"
-      python3 - "$out/structural-executable.json" <<'PY'
+      export PYTHONPATH=${../../.}/src:${../../.}
+      python3 - "$out" <<'PY'
+      import sys
+      from pathlib import Path
+
+      from spaghetti_extractor.semantic_link.module_v2 import (
+          build_linked_semantic_module_v2,
+      )
+      from spaghetti_extractor.semantic_link.may_link import (
+          compile_semantic_may_link_facts_v2,
+      )
+      from spaghetti_extractor.util import write_json
+      from tests.unit.semantic_link.fixture import SemanticLinkFixture
+
+      root = Path(sys.argv[1])
+      SemanticLinkFixture().linked_facts(root)
+      semantic, facts = compile_semantic_may_link_facts_v2(
+          semantic_object=root / "semantic-object.json",
+      )
+      payload = build_linked_semantic_module_v2(
+          semantic=semantic,
+          link_facts=facts,
+      )
+      write_json(root / "linked-semantic-module.json", payload)
+      PY
+    '';
+  mkImplementationSelection = configurationId: mode: pkgs.runCommand
+    "minimal-sdk-${configurationId}-implementation-selection-v2-${mode}"
+    { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      mkdir -p "$out"
+      python3 - \
+        ${semanticModuleFixture}/linked-semantic-module.json \
+        "$out/implementation-selection.json" <<'PY'
       import hashlib
       import json
       import pathlib
       import sys
 
+      module = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="ascii"))
       core = {
-          "format": "spaghetti-extractor-structural-executable-v1",
+          "format": "spaghetti-extractor-implementation-selection-v2",
           "status": "complete",
-          "executable": True,
-          "release_accepted": False,
-          "bindings": {},
-          "families": [{
-              "id": "semantic_index",
-              "status": "complete",
-              "input_sha256": "1" * 64,
-              "record_count": 1,
-              "blocker": None,
-          }],
+          "ready_for_realization": True,
+          "mode": ${builtins.toJSON mode},
+          "bindings": {
+              "linked_semantic_module_sha256": module[
+                  "linked_semantic_module_sha256"
+              ],
+          },
+          "qualification_sha256s": [],
+          "definition_selections": [],
+          "obligation_selections": [],
+          "blockers": [],
       }
       encoded = json.dumps(
           core, sort_keys=True, separators=(",", ":"), ensure_ascii=True
       ).encode("ascii")
-      payload = {**core, "receipt_sha256": hashlib.sha256(encoded).hexdigest()}
-      pathlib.Path(sys.argv[1]).write_text(
+      payload = {**core, "selection_sha256": hashlib.sha256(encoded).hexdigest()}
+      pathlib.Path(sys.argv[2]).write_text(
           json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="ascii"
       )
       PY
     '';
-  candidate = {
-    interpreter = artifact;
-    componentRuntime = artifact;
-    machineImportProfileBundle = artifact;
-    structuralExecutionGate = artifact;
-    fallbackCoverageReceipt = artifact;
-    candidateAuthorityReport = artifact;
-    candidateAuthorityGate = artifact;
-    nativeEngine = artifact;
-    nativeRuntime = artifact;
-    nativeObjects.package = artifact;
-    candidate = artifact;
+  defaultImplementationSelection =
+    mkImplementationSelection "default" "hybrid";
+  minimalImplementationSelection =
+    mkImplementationSelection "minimal" "portable";
+  nativeRealizationFixture = pkgs.runCommand
+    "minimal-sdk-native-realization-v2"
+    { nativeBuildInputs = [ pkgs.coreutils ]; } ''
+      mkdir -p "$out"
+      cp ${artifact} "$out/fixture.exe"
+      candidate_sha256="$(sha256sum "$out/fixture.exe" | cut -d ' ' -f 1)"
+      cat > "$out/native-realization.json" <<JSON
+      {
+        "format": "spaghetti-extractor-native-realization-v2",
+        "status": "complete",
+        "ready_for_observation": true,
+        "blockers": [],
+        "candidate": {
+          "filename": "fixture.exe",
+          "sha256": "$candidate_sha256"
+        }
+      }
+      JSON
+    '';
+  realization = {
+    derivation = nativeRealizationFixture;
+    candidate = "${nativeRealizationFixture}/fixture.exe";
   };
   workflow = {
     hasComponents = true;
@@ -86,10 +117,6 @@ let
     authority = {
       finalAuthority = acceptance;
       finalAuthorityGate = acceptance;
-      diagnostics = pkgs.runCommand "minimal-sdk-authority-diagnostics" { } ''
-        mkdir -p "$out"
-        cp ${authorityDiagnostics} "$out/authority-diagnostics-v3.json"
-      '';
       graph.metadata = artifact;
       graph.phases.example.derivation = artifact;
     };
@@ -102,6 +129,17 @@ let
       resolution = artifact;
       contracts.example = artifact;
       sourcePackages.example = artifact;
+      v5Interfaces.example = {
+        derivation = artifact;
+        interface = artifact;
+        schema = artifact;
+      };
+      bindingIntentPaths.example = artifact;
+      v6SemanticSlices.example.derivation = artifact;
+      v6WorkPackages.example = {
+        derivation = artifact;
+        semanticSlice = artifact;
+      };
       evidences.example = artifact;
       qualifications.example = artifact;
       compileReceipts = { };
@@ -109,26 +147,11 @@ let
       machineBindingReceipts = { };
       serviceGraphs = { };
       ownershipReceipts = { };
-      activationReceipts = { };
-      configurationActivationReceipts = { };
-      activationPlans.default = artifact;
-      activationPlans.minimal = artifact;
       sourceBundles.default = artifact;
       sourceBundles.minimal = artifact;
       statusReports.example = artifact;
       workPackages.example = artifact;
       checkGates.example = artifact;
-      configurationStatusReports.default = pkgs.runCommand
-        "minimal-sdk-configuration-status" { } ''
-          mkdir -p "$out"
-          cp ${configurationStatus} "$out/status.json"
-        '';
-      configurationStatusReports.minimal = pkgs.runCommand
-        "minimal-sdk-configuration-status-minimal" { } ''
-          mkdir -p "$out"
-          ${pkgs.jq}/bin/jq '.configuration_id = "minimal"' \
-            ${configurationStatus} > "$out/status.json"
-        '';
       configurationCheckGates.default = artifact;
       configurationCheckGates.minimal = artifact;
       liftUnitIndex.example = {
@@ -144,27 +167,22 @@ let
         kind = "configuration";
         label = "Default";
         selections = [ ];
-        hasRuntime = true;
+        selectedComponentIds = [ ];
+        allSelectedProvidersEligible = true;
+        mode = "hybrid";
       };
       configurationIndex.minimal = {
         kind = "configuration";
         label = "Minimal";
         selections = [ ];
-        hasRuntime = true;
+        selectedComponentIds = [ ];
+        allSelectedProvidersEligible = true;
+        mode = "portable";
       };
       bundle = artifact;
     };
-    componentRuntimes.default = artifact;
-    componentRuntimes.minimal = artifact;
-    staticCandidates.default = candidate;
-    staticCandidates.minimal = candidate;
-    structuralReceipts.default = structuralReceipt;
-    structuralReceipts.minimal = structuralReceipt;
-    structuralGates.default = structuralReceipt;
-    structuralGates.minimal = structuralReceipt;
-    runtimeFrontiers = artifact;
-    staticReleasePolicies.default = { receipt = acceptance; gate = acceptance; };
-    staticReleasePolicies.minimal = { receipt = acceptance; gate = acceptance; };
+    nativeRealizations.default = realization;
+    nativeRealizations.minimal = realization;
     calls = {
       configured = false;
       assetInventory = [ ];
@@ -172,16 +190,15 @@ let
       subjects = { };
       check = artifact;
     };
-    releaseFor = { configurationId }:
-      assert builtins.elem configurationId [ "default" "minimal" ];
-      { receipt = acceptance; gate = acceptance; };
+    qualifiedPlatform.derivation = artifact;
+    linkedSemanticModule.derivation = semanticModuleFixture;
+    semanticImplementationSelections = {
+      default.derivation = defaultImplementationSelection;
+      minimal.derivation = minimalImplementationSelection;
+    };
   };
-  changedConfigurationStatus = pkgs.runCommand
-    "minimal-sdk-configuration-status-changed" { } ''
-      mkdir -p "$out"
-      ${pkgs.jq}/bin/jq '.counts.revision = 2' \
-        ${configurationStatus} > "$out/status.json"
-    '';
+  changedDefaultImplementationSelection =
+    mkImplementationSelection "default" "portable";
   failingConfigurationStatus = pkgs.runCommand
     "minimal-sdk-configuration-status-must-not-build" { } ''
       echo "project status incorrectly realized component status" >&2
@@ -223,12 +240,10 @@ let
       '';
   };
   changedWorkflow = workflow // {
-    components = workflow.components // {
-      configurationStatusReports =
-        workflow.components.configurationStatusReports // {
-          default = changedConfigurationStatus;
-        };
-    };
+    semanticImplementationSelections =
+      workflow.semanticImplementationSelections // {
+        default.derivation = changedDefaultImplementationSelection;
+      };
   };
   changedTarget = sdk.target.pe32Bundle {
     targetRoot = ../../tests/fixtures/minimal-target-bundle;
@@ -244,10 +259,9 @@ let
   };
   failingWorkflow = workflow // {
     components = workflow.components // {
-      configurationStatusReports =
-        workflow.components.configurationStatusReports // {
-          default = failingConfigurationStatus;
-        };
+      v6WorkPackages = workflow.components.v6WorkPackages // {
+        example.derivation = failingConfigurationStatus;
+      };
     };
   };
   failingTarget = sdk.target.pe32Bundle {
@@ -260,9 +274,7 @@ let
     hasComponents = false;
     components = null;
     configurationIds = [ ];
-    componentRuntimeFor = null;
-    componentRuntimes = { };
-    staticCandidates = { };
+    nativeRealizations = { };
   };
   analysisTarget = sdk.target.pe32Bundle {
     targetRoot = ../../tests/fixtures/minimal-analysis-target-bundle;
@@ -274,29 +286,46 @@ let
     minimal-analysis-consumer = analysisTarget;
   };
 in
-assert sdk.format == "spaghetti-extractor-target-sdk-v3";
+assert sdk.format == "spaghetti-extractor-target-sdk-v4";
+assert builtins.isFunction sdk.environment.pe32;
 assert builtins.isFunction sdk.workflow.pe32Project;
-assert pe32WorkflowArguments ? componentInductionRoot;
-assert pe32WorkflowArguments ? componentRelationRoot;
-assert pe32WorkflowArguments ? behavioralCLayoutIntent;
-assert pe32WorkflowArguments ? behavioralCRuntimeQualification;
-assert pe32WorkflowArguments ? behavioralCExactRuntime;
-assert pe32WorkflowArguments ? nativeProcessTermination;
+assert builtins.isFunction sdk.candidate.nativeRealizationV2;
+assert !(sdk.candidate ? generatedBehavioralCProvider);
+assert !(sdk.candidate ? implementationSelection);
+assert !(sdk.candidate ? nativeRealization);
+assert pe32WorkflowArguments ? externalEnvironment;
+assert pe32WorkflowArguments ? lifting;
+assert pe32WorkflowArguments ? backend;
+assert pe32WorkflowArguments ? analysisLimits;
+assert !(pe32WorkflowArguments ? externalProfile);
+assert !(pe32WorkflowArguments ? machineImportProfiles);
+assert !(pe32WorkflowArguments ? callProtocols);
+assert !(pe32WorkflowArguments ? componentReviewRoot);
+assert !(pe32WorkflowArguments ? componentBindingRoot);
+assert !(pe32WorkflowArguments ? componentInductionRoot);
+assert !(pe32WorkflowArguments ? componentRelationRoot);
+assert !(pe32WorkflowArguments ? behavioralCExactRuntime);
+assert !(pe32WorkflowArguments ? nativeProcessTermination);
 assert registry.minimal-sdk-consumer.metadata.id == "minimal-sdk-consumer";
 assert registry.minimal-sdk-consumer.defaultConfiguration == "default";
 assert registry.minimal-sdk-consumer.artifacts.input.baseline == artifact;
-assert registry.minimal-sdk-consumer.artifacts.components.runtimes.default == artifact;
-assert registry.minimal-sdk-consumer.artifacts.components.induction-packages.example == artifact;
-assert registry.minimal-sdk-consumer.artifacts.candidate.static.default.candidate == artifact;
+assert registry.minimal-sdk-consumer.artifacts.components.interfaces-v5.example == artifact;
+assert registry.minimal-sdk-consumer.artifacts.components.semantic-slices-v2.example == artifact;
+assert registry.minimal-sdk-consumer.artifacts.candidate.native-realizations.default ==
+  nativeRealizationFixture;
 assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.status == artifact;
-assert registry.minimal-sdk-consumer.operator.components.units.example.developmentStatus == artifact;
-assert registry.minimal-sdk-consumer.operator.components.units.example.check == artifact;
-assert registry.minimal-sdk-consumer.operator.components.units.example.developmentCheck == artifact;
-assert registry.minimal-sdk-consumer.operator.components.units.example.inductionPackage == artifact;
-assert registry.minimal-sdk-consumer.operator.components.configurations.default.runtime == artifact;
-assert registry.minimal-sdk-consumer.operator.project.authorityDiagnostics == workflow.authority.diagnostics;
+assert registry.minimal-sdk-consumer.operator.components.units.example.interface == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.bindingIntent == artifact;
+assert registry.minimal-sdk-consumer.operator.components.configurations.default.selection == defaultImplementationSelection;
+assert registry.minimal-sdk-consumer.operator.project.semanticModule == semanticModuleFixture;
 assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;
+assert registry.minimal-sdk-consumer.operator.candidate.materializedStatus ==
+  registry.minimal-sdk-consumer.operator.candidate.statuses.default;
+assert registry.minimal-sdk-consumer.artifacts.diagnostics.candidate-status ==
+  registry.minimal-sdk-consumer.operator.candidate.materializedStatus;
+assert registry.minimal-sdk-consumer.checks.candidate-status ==
+  registry.minimal-sdk-consumer.operator.candidate.materializedStatus;
 assert target.operator.project.status.drvPath == changedTarget.operator.project.status.drvPath;
 assert target.operator.project.status.drvPath == failingTarget.operator.project.status.drvPath;
 assert target.operator.project.status.drvPath == testChangedTarget.operator.project.status.drvPath;
@@ -304,15 +333,17 @@ assert target.operator.candidate.statuses.default.drvPath !=
   changedTarget.operator.candidate.statuses.default.drvPath;
 assert target.operator.candidate.statuses.default.drvPath ==
   testChangedTarget.operator.candidate.statuses.default.drvPath;
-assert target.operator.candidate.statuses.minimal.drvPath !=
+assert target.operator.candidate.statuses.minimal.drvPath ==
   testChangedTarget.operator.candidate.statuses.minimal.drvPath;
+assert target.operator.candidate.statuses.default.drvPath ==
+  failingTarget.operator.candidate.statuses.default.drvPath;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
 assert registry.minimal-analysis-consumer.defaultConfiguration == null;
 assert registry.minimal-analysis-consumer.operatorIndex.hasComponents == false;
 assert registry.minimal-analysis-consumer.operator.components.units == { };
 assert registry.minimal-analysis-consumer.operator.components.proposals ==
   workflow.analysis.componentProposals;
-assert registry.minimal-analysis-consumer.default.componentRuntime == null;
+assert registry.minimal-analysis-consumer.default.implementationSelection == null;
 assert registry.minimal-analysis-consumer.acceptanceChecks.component-intent != null;
 pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
   { name = "regression"; path = registry.minimal-sdk-consumer.defaultCheck; }

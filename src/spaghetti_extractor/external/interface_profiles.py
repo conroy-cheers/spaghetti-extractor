@@ -24,9 +24,7 @@ from ..util import sha256_file
 
 EXTERNAL_INTERFACE_PROFILE_FORMAT = "spaghetti-extractor-external-interface-profile-v1"
 _SAME_NATIVE_TARGET_EFFECT = "sameNativeTargetCallThrough"
-_SDK_EXTRACTION_PROVENANCE_KIND = (
-    "pinned_clang_ast_from_reviewed_sdk_headers"
-)
+_SDK_EXTRACTION_PROVENANCE_KIND = "pinned_clang_ast_from_reviewed_sdk_headers"
 _SAME_LIBRARY_CALL_THROUGH_PREREQUISITES = (
     "candidate_uses_same_runtime_native_library_binding",
     "candidate_resolves_same_native_interface_target",
@@ -36,12 +34,14 @@ _SAME_LIBRARY_CALL_THROUGH_PREREQUISITES = (
 )
 _CALLBACK_PREREQUISITE = "candidate_preserves_native_callback_boundary"
 RECEIVER_RESOURCE_REQUIRED_STATE = "live"
-ReceiverLifecycleEffect: TypeAlias = Literal[
-    "preserve", "may_release", "release"
-]
-RECEIVER_RESOURCE_LIFECYCLE_EFFECTS = frozenset({
-    "preserve", "may_release", "release",
-})
+ReceiverLifecycleEffect: TypeAlias = Literal["preserve", "may_release", "release"]
+RECEIVER_RESOURCE_LIFECYCLE_EFFECTS = frozenset(
+    {
+        "preserve",
+        "may_release",
+        "release",
+    }
+)
 
 
 class ExternalInterfaceProfileError(ToolkitInputError):
@@ -80,20 +80,24 @@ class InterfaceEffectContract:
             "callback_effect": self.callback_effect,
         }
         if self.callback_effect == "explicit":
-            result.update({
-                "callback_source": (
-                    None if self.callback_source is None else dict(self.callback_source)
-                ),
-                "callback_abi": (
-                    None if self.callback_abi is None else dict(self.callback_abi)
-                ),
-                "callback_lifetime": self.callback_lifetime,
-                "callback_contract_status": self.callback_status,
-                "callback_contract_blockers": list(self.callback_blockers),
-                "callback_arguments": [
-                    dict(argument) for argument in self.callback_arguments
-                ],
-            })
+            result.update(
+                {
+                    "callback_source": (
+                        None
+                        if self.callback_source is None
+                        else dict(self.callback_source)
+                    ),
+                    "callback_abi": (
+                        None if self.callback_abi is None else dict(self.callback_abi)
+                    ),
+                    "callback_lifetime": self.callback_lifetime,
+                    "callback_contract_status": self.callback_status,
+                    "callback_contract_blockers": list(self.callback_blockers),
+                    "callback_arguments": [
+                        dict(argument) for argument in self.callback_arguments
+                    ],
+                }
+            )
         return result
 
 
@@ -167,6 +171,20 @@ class InterfaceOutput:
 
 
 @dataclass(frozen=True, order=True)
+class InterfaceArgument:
+    """One physical method argument whose pointed-to COM interface is known."""
+
+    argument_index: int
+    interface_id: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "argument_index": self.argument_index,
+            "interface_id": self.interface_id,
+        }
+
+
+@dataclass(frozen=True, order=True)
 class InterfaceMemoryArgument:
     argument_index: int
     role: str
@@ -198,6 +216,56 @@ class InterfaceCallerMemoryFrame:
                 "non-callback pointer arguments are retained only during the call",
                 "opaque interface resources are disjoint from caller image and stack memory",
             ],
+        }
+
+
+@dataclass(frozen=True, order=True)
+class InterfaceLocalCellDiscriminant:
+    word_index: int
+    mask: int
+    value: int
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "word_index": self.word_index,
+            "mask": self.mask,
+            "value": self.value,
+        }
+
+
+@dataclass(frozen=True, order=True)
+class InterfaceLocalCellVariant:
+    identity: str
+    discriminants: tuple[InterfaceLocalCellDiscriminant, ...]
+    input_word_indices: tuple[int, ...]
+    output_word_indices: tuple[int, ...]
+    output_condition: str
+    failure_preserved_word_indices: tuple[int, ...]
+    failure_observed_word_indices: tuple[int, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "id": self.identity,
+            "discriminants": [item.as_json() for item in self.discriminants],
+            "input_word_indices": list(self.input_word_indices),
+            "output_word_indices": list(self.output_word_indices),
+            "output_condition": self.output_condition,
+            "failure_preserved_word_indices": list(self.failure_preserved_word_indices),
+            "failure_observed_word_indices": list(self.failure_observed_word_indices),
+        }
+
+
+@dataclass(frozen=True, order=True)
+class InterfaceLocalCellRelation:
+    argument_index: int
+    extent_words: int
+    variants: tuple[InterfaceLocalCellVariant, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "argument_index": self.argument_index,
+            "extent_words": self.extent_words,
+            "variants": [variant.as_json() for variant in self.variants],
         }
 
 
@@ -244,7 +312,9 @@ class InterfaceMethod:
     abi: MachineCallABI
     argument_words: int
     outputs: tuple[InterfaceOutput, ...]
+    arguments: tuple[InterfaceArgument, ...]
     receiver_resource: ReceiverResourceContract
+    local_cells: tuple[InterfaceLocalCellRelation, ...] = ()
     effects: InterfaceEffectContract | None = None
     caller_memory_frame: InterfaceCallerMemoryFrame | None = None
 
@@ -252,9 +322,7 @@ class InterfaceMethod:
     def offset(self) -> int:
         return self.slot * 4
 
-    def target_json(
-        self, *, profile_id: str, profile_sha256: str
-    ) -> dict[str, Any]:
+    def target_json(self, *, profile_id: str, profile_sha256: str) -> dict[str, Any]:
         receiver_resource = self.receiver_resource.as_json()
         profile_binding = {
             "profile_id": profile_id,
@@ -276,12 +344,15 @@ class InterfaceMethod:
             "abi": self.abi.as_json(),
             "argument_words": self.argument_words,
             "out_interfaces": [output.as_json() for output in self.outputs],
+            "argument_interfaces": [argument.as_json() for argument in self.arguments],
             "receiver_resource": receiver_resource,
         }
         if self.effects is not None:
             result.update(self.effects.as_json())
         if self.caller_memory_frame is not None:
             result["caller_memory_frame"] = self.caller_memory_frame.as_json()
+        if self.local_cells:
+            result["local_cells"] = [cell.as_json() for cell in self.local_cells]
         return result
 
 
@@ -374,8 +445,10 @@ def load_external_interface_profile(
     if len(interface_ids) != len(raw_interfaces):
         raise ExternalInterfaceProfileError("duplicate external-interface ID")
     interface_vtable_sizes = {
-        _nonempty(_object(raw, "interface").get("id"), "interface ID"):
-        len(_array(_object(raw, "interface").get("methods"), "interface methods")) * 4
+        _nonempty(_object(raw, "interface").get("id"), "interface ID"): len(
+            _array(_object(raw, "interface").get("methods"), "interface methods")
+        )
+        * 4
         for raw in raw_interfaces
     }
 
@@ -444,20 +517,24 @@ def load_external_interface_profile(
             raise ExternalInterfaceProfileError(
                 f"interface factory {identity.dll}!{identity.value} has no output"
             )
-        factories.append(InterfaceFactory(
-            identity=identity,
-            declaration=_nonempty(row.get("declaration"), f"factory {index} declaration"),
-            abi=abi,
-            argument_words=argument_words,
-            outputs=outputs,
-            effects=effects,
-            caller_memory_frame=_caller_memory_frame(
-                row.get("caller_memory_frame"),
+        factories.append(
+            InterfaceFactory(
+                identity=identity,
+                declaration=_nonempty(
+                    row.get("declaration"), f"factory {index} declaration"
+                ),
+                abi=abi,
                 argument_words=argument_words,
-                required=require_call_through,
-                context=f"factory {index}",
-            ),
-        ))
+                outputs=outputs,
+                effects=effects,
+                caller_memory_frame=_caller_memory_frame(
+                    row.get("caller_memory_frame"),
+                    argument_words=argument_words,
+                    required=require_call_through,
+                    context=f"factory {index}",
+                ),
+            )
+        )
 
     return ExternalInterfaceProfile(
         path=profile_path,
@@ -465,15 +542,19 @@ def load_external_interface_profile(
         sha256=sha256_file(profile_path),
         model=model,
         provenance=provenance,
-        factories=tuple(sorted(
-            factories,
-            key=lambda factory: (
-                factory.identity.dll,
-                factory.identity.kind,
-                str(factory.identity.value),
-            ),
-        )),
-        interfaces=tuple(sorted(interfaces, key=lambda interface: interface.interface_id)),
+        factories=tuple(
+            sorted(
+                factories,
+                key=lambda factory: (
+                    factory.identity.dll,
+                    factory.identity.kind,
+                    str(factory.identity.value),
+                ),
+            )
+        ),
+        interfaces=tuple(
+            sorted(interfaces, key=lambda interface: interface.interface_id)
+        ),
     )
 
 
@@ -513,6 +594,12 @@ def _method(
         argument_words=argument_words,
         known_interfaces=known_interfaces,
     )
+    caller_memory_frame = _caller_memory_frame(
+        row.get("caller_memory_frame"),
+        argument_words=argument_words,
+        required=require_call_through,
+        context=f"{interface_id} method {expected_slot}",
+    )
     return InterfaceMethod(
         interface_id=interface_id,
         name=name,
@@ -526,6 +613,19 @@ def _method(
             interface_vtable_sizes=interface_vtable_sizes,
             context=f"{interface_id} method {expected_slot}",
         ),
+        arguments=_argument_interfaces(
+            row.get(
+                "argument_interfaces",
+                [
+                    {"argument_index": 0, "interface_id": interface_id},
+                ],
+            ),
+            argument_words=argument_words,
+            known_interfaces=known_interfaces,
+            caller_memory_frame=caller_memory_frame,
+            receiver_interface_id=interface_id,
+            context=f"{interface_id} method {expected_slot}",
+        ),
         receiver_resource=_receiver_resource_contract(
             row.get("receiver_resource"),
             default_view_id=interface_id,
@@ -534,14 +634,290 @@ def _method(
             argument_words=argument_words,
             context=f"{interface_id} method {expected_slot}",
         ),
-        effects=effects,
-        caller_memory_frame=_caller_memory_frame(
-            row.get("caller_memory_frame"),
+        local_cells=_local_cell_relations(
+            row.get("local_cells", []),
             argument_words=argument_words,
-            required=require_call_through,
+            caller_memory_frame=caller_memory_frame,
             context=f"{interface_id} method {expected_slot}",
         ),
+        effects=effects,
+        caller_memory_frame=caller_memory_frame,
     )
+
+
+def _local_cell_relations(
+    value: Any,
+    *,
+    argument_words: int,
+    caller_memory_frame: InterfaceCallerMemoryFrame | None,
+    context: str,
+) -> tuple[InterfaceLocalCellRelation, ...]:
+    relations: list[InterfaceLocalCellRelation] = []
+    seen: set[int] = set()
+    memory_arguments = {
+        item.argument_index: item
+        for item in (
+            () if caller_memory_frame is None else caller_memory_frame.arguments
+        )
+    }
+    for index, raw in enumerate(_array(value, f"{context} local cells")):
+        row = _object(raw, f"{context} local cell {index}")
+        relation = parse_interface_local_cell_relation(
+            row, context=f"{context} local cell {index}"
+        )
+        argument_index = relation.argument_index
+        extent_words = relation.extent_words
+        memory = memory_arguments.get(argument_index)
+        if (
+            not 0 <= argument_index < argument_words
+            or argument_index in seen
+            or memory is None
+            or memory.role != "caller_memory"
+            or memory.extent != "enclosing_object"
+            or memory.retention != "during_call"
+            or (
+                any(variant.output_word_indices for variant in relation.variants)
+                and memory.access != "read_write"
+            )
+        ):
+            raise ExternalInterfaceProfileError(
+                f"{context} local cell {index} contradicts caller memory"
+            )
+        seen.add(argument_index)
+        relations.append(relation)
+    return tuple(sorted(relations))
+
+
+def parse_interface_local_cell_relation(
+    value: Any,
+    *,
+    context: str = "interface local-cell relation",
+) -> InterfaceLocalCellRelation:
+    """Parse the one canonical profile-owned local-cell relation.
+
+    Variants are deliberately profile facts.  Component bindings may select a
+    variant with exact call-site words, but cannot alter its footprint or
+    failure semantics.
+    """
+
+    row = _object(value, context)
+    if set(row) != {"argument_index", "extent_words", "variants"}:
+        raise ExternalInterfaceProfileError(f"{context} fields differ")
+    argument_index = row.get("argument_index")
+    extent_words = row.get("extent_words")
+    if (
+        not isinstance(argument_index, int)
+        or isinstance(argument_index, bool)
+        or argument_index < 0
+        or not isinstance(extent_words, int)
+        or isinstance(extent_words, bool)
+        or not 1 <= extent_words <= 256
+    ):
+        raise ExternalInterfaceProfileError(f"{context} geometry is invalid")
+    raw_variants = _array(row.get("variants"), f"{context} variants")
+    if not 1 <= len(raw_variants) <= 32:
+        raise ExternalInterfaceProfileError(f"{context} requires 1..32 variants")
+    variants = tuple(
+        _local_cell_variant(
+            raw_variant,
+            extent_words=extent_words,
+            context=f"{context} variant {index}",
+        )
+        for index, raw_variant in enumerate(raw_variants)
+    )
+    identities = tuple(variant.identity for variant in variants)
+    if identities != tuple(sorted(set(identities))):
+        raise ExternalInterfaceProfileError(f"{context} variant ids are not canonical")
+    if len(variants) > 1:
+        if any(not variant.discriminants for variant in variants):
+            raise ExternalInterfaceProfileError(
+                f"{context} multiple variants require discriminants"
+            )
+        for left_index, left in enumerate(variants):
+            for right in variants[left_index + 1 :]:
+                if not _local_cell_variants_are_disjoint(left, right):
+                    raise ExternalInterfaceProfileError(f"{context} variants overlap")
+    return InterfaceLocalCellRelation(
+        argument_index=argument_index,
+        extent_words=extent_words,
+        variants=variants,
+    )
+
+
+def _local_cell_variant(
+    value: Any,
+    *,
+    extent_words: int,
+    context: str,
+) -> InterfaceLocalCellVariant:
+    row = _object(value, context)
+    if set(row) != {
+        "id",
+        "discriminants",
+        "input_word_indices",
+        "output_word_indices",
+        "output_condition",
+        "failure_preserved_word_indices",
+        "failure_observed_word_indices",
+    }:
+        raise ExternalInterfaceProfileError(f"{context} fields differ")
+    identity = row.get("id")
+    if (
+        not isinstance(identity, str)
+        or not identity
+        or len(identity) > 128
+        or any(
+            not (character.islower() or character.isdigit() or character == "_")
+            for character in identity
+        )
+        or not identity[0].islower()
+    ):
+        raise ExternalInterfaceProfileError(f"{context} id is invalid")
+    inputs = _word_indices(
+        row.get("input_word_indices"),
+        context=f"{context} inputs",
+        extent_words=extent_words,
+    )
+    outputs = _word_indices(
+        row.get("output_word_indices"),
+        context=f"{context} outputs",
+        extent_words=extent_words,
+    )
+    preserved = _word_indices(
+        row.get("failure_preserved_word_indices"),
+        context=f"{context} failure-preserved words",
+        extent_words=extent_words,
+    )
+    observed = _word_indices(
+        row.get("failure_observed_word_indices"),
+        context=f"{context} failure-observed words",
+        extent_words=extent_words,
+    )
+    condition = row.get("output_condition")
+    discriminants = tuple(
+        _local_cell_discriminant(
+            item,
+            extent_words=extent_words,
+            context=f"{context} discriminant {index}",
+        )
+        for index, item in enumerate(
+            _array(row.get("discriminants"), f"{context} discriminants")
+        )
+    )
+    discriminant_indices = tuple(item.word_index for item in discriminants)
+    if (
+        not inputs
+        or condition not in {"always", "hresult_succeeded_eax"}
+        or discriminant_indices != tuple(sorted(set(discriminant_indices)))
+        or not set(discriminant_indices).issubset(inputs)
+        or not set(preserved).issubset(outputs)
+        or not set(observed).issubset(outputs)
+        or set(preserved) & set(observed)
+        or (condition == "always" and (preserved or observed))
+    ):
+        raise ExternalInterfaceProfileError(f"{context} is inconsistent")
+    return InterfaceLocalCellVariant(
+        identity=identity,
+        discriminants=discriminants,
+        input_word_indices=inputs,
+        output_word_indices=outputs,
+        output_condition=str(condition),
+        failure_preserved_word_indices=preserved,
+        failure_observed_word_indices=observed,
+    )
+
+
+def _local_cell_discriminant(
+    value: Any,
+    *,
+    extent_words: int,
+    context: str,
+) -> InterfaceLocalCellDiscriminant:
+    row = _object(value, context)
+    if set(row) != {"word_index", "mask", "value"}:
+        raise ExternalInterfaceProfileError(f"{context} fields differ")
+    word_index = row.get("word_index")
+    mask = row.get("mask")
+    selected = row.get("value")
+    if (
+        not isinstance(word_index, int)
+        or isinstance(word_index, bool)
+        or not 0 <= word_index < extent_words
+        or not isinstance(mask, int)
+        or isinstance(mask, bool)
+        or not 1 <= mask <= 0xFFFFFFFF
+        or not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or not 0 <= selected <= 0xFFFFFFFF
+        or selected & ~mask
+    ):
+        raise ExternalInterfaceProfileError(f"{context} is invalid")
+    return InterfaceLocalCellDiscriminant(word_index, mask, selected)
+
+
+def _local_cell_variants_are_disjoint(
+    left: InterfaceLocalCellVariant,
+    right: InterfaceLocalCellVariant,
+) -> bool:
+    left_by_word = {item.word_index: item for item in left.discriminants}
+    right_by_word = {item.word_index: item for item in right.discriminants}
+    return any(
+        (
+            (left_by_word[index].value ^ right_by_word[index].value)
+            & left_by_word[index].mask
+            & right_by_word[index].mask
+        )
+        != 0
+        for index in set(left_by_word) & set(right_by_word)
+    )
+
+
+def select_interface_local_cell_variant(
+    relation: InterfaceLocalCellRelation,
+    exact_initial_words: Mapping[int, int],
+    *,
+    context: str = "interface local-cell relation",
+) -> InterfaceLocalCellVariant:
+    """Select exactly one profile variant from exact call-site discriminants."""
+
+    matches = [
+        variant
+        for variant in relation.variants
+        if all(
+            discriminant.word_index in exact_initial_words
+            and (exact_initial_words[discriminant.word_index] & discriminant.mask)
+            == discriminant.value
+            for discriminant in variant.discriminants
+        )
+    ]
+    if len(matches) != 1:
+        raise ExternalInterfaceProfileError(
+            f"{context} does not select exactly one footprint variant"
+        )
+    return matches[0]
+
+
+def _word_indices(
+    value: Any,
+    *,
+    context: str,
+    extent_words: Any,
+) -> tuple[int, ...]:
+    rows = _array(value, context)
+    result = tuple(rows)
+    if (
+        not isinstance(extent_words, int)
+        or isinstance(extent_words, bool)
+        or any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or not 0 <= item < extent_words
+            for item in result
+        )
+        or result != tuple(sorted(set(result)))
+    ):
+        raise ExternalInterfaceProfileError(f"{context} are invalid")
+    return result
 
 
 def _receiver_resource_contract(
@@ -563,7 +939,10 @@ def _receiver_resource_contract(
         )
     row = _object(value, f"{context} receiver resource")
     expected_fields = {
-        "argument_index", "view_id", "required_state", "dispatch_slot",
+        "argument_index",
+        "view_id",
+        "required_state",
+        "dispatch_slot",
         "lifecycle_effect",
     }
     if set(row) != expected_fields:
@@ -625,13 +1004,11 @@ def _caller_memory_frame(
         )
     arguments: list[InterfaceMemoryArgument] = []
     seen: set[int] = set()
-    for index, raw in enumerate(_array(
-        row.get("arguments"), f"{context} caller-memory arguments"
-    )):
+    for index, raw in enumerate(
+        _array(row.get("arguments"), f"{context} caller-memory arguments")
+    ):
         argument = _object(raw, f"{context} caller-memory argument {index}")
-        if set(argument) != {
-            "argument_index", "role", "access", "extent", "retention"
-        }:
+        if set(argument) != {"argument_index", "role", "access", "extent", "retention"}:
             raise ExternalInterfaceProfileError(
                 f"{context} caller-memory argument {index} fields differ"
             )
@@ -658,13 +1035,15 @@ def _caller_memory_frame(
                 f"{context} caller-memory argument {index} is invalid"
             )
         seen.add(argument_index)
-        arguments.append(InterfaceMemoryArgument(
-            argument_index=argument_index,
-            role=str(role),
-            access=str(access),
-            extent=str(extent),
-            retention=str(retention),
-        ))
+        arguments.append(
+            InterfaceMemoryArgument(
+                argument_index=argument_index,
+                role=str(role),
+                access=str(access),
+                extent=str(extent),
+                retention=str(retention),
+            )
+        )
     return InterfaceCallerMemoryFrame(tuple(sorted(arguments)))
 
 
@@ -699,9 +1078,7 @@ def _outputs(
             )
         seen.add(argument_index)
         object_size = row.get("object_size", 4)
-        vtable_size = row.get(
-            "vtable_size", interface_vtable_sizes[interface_id]
-        )
+        vtable_size = row.get("vtable_size", interface_vtable_sizes[interface_id])
         if (
             object_size != 4
             or vtable_size != interface_vtable_sizes[interface_id]
@@ -716,6 +1093,74 @@ def _outputs(
             InterfaceOutput(argument_index, interface_id, object_size, vtable_size)
         )
     return tuple(sorted(result))
+
+
+def _argument_interfaces(
+    value: Any,
+    *,
+    argument_words: int,
+    known_interfaces: set[str],
+    caller_memory_frame: InterfaceCallerMemoryFrame | None,
+    receiver_interface_id: str,
+    context: str,
+) -> tuple[InterfaceArgument, ...]:
+    """Validate exact COM-interface identities for physical input arguments.
+
+    The caller-memory frame deliberately classifies both COM pointers and
+    opaque native handles as ``interface_resource``.  This narrower catalog
+    retains only identities that the pinned SDK AST actually names as COM
+    interfaces, allowing non-receiver resources to be realized without
+    guessing from an operator-authored component type.
+    """
+
+    frame_arguments = {
+        argument.argument_index: argument
+        for argument in (
+            () if caller_memory_frame is None else caller_memory_frame.arguments
+        )
+    }
+    result: list[InterfaceArgument] = []
+    seen: set[int] = set()
+    for index, raw in enumerate(_array(value, f"{context} argument interfaces")):
+        row = _object(raw, f"{context} argument interface {index}")
+        if set(row) != {"argument_index", "interface_id"}:
+            raise ExternalInterfaceProfileError(
+                f"{context} argument-interface fields differ"
+            )
+        argument_index = row.get("argument_index")
+        interface_id = _nonempty(
+            row.get("interface_id"), f"{context} argument interface {index} ID"
+        )
+        frame_argument = frame_arguments.get(argument_index)
+        if (
+            not isinstance(argument_index, int)
+            or isinstance(argument_index, bool)
+            or not 0 <= argument_index < argument_words
+            or argument_index in seen
+            or interface_id not in known_interfaces
+            or (
+                argument_index != 0
+                and (
+                    frame_argument is None
+                    or frame_argument.role != "interface_resource"
+                    or frame_argument.extent != "opaque_resource"
+                )
+            )
+        ):
+            raise ExternalInterfaceProfileError(
+                f"{context} argument-interface relation is invalid"
+            )
+        seen.add(argument_index)
+        result.append(InterfaceArgument(argument_index, interface_id))
+    if (
+        result != sorted(result)
+        or not result
+        or result[0] != InterfaceArgument(0, receiver_interface_id)
+    ):
+        raise ExternalInterfaceProfileError(
+            f"{context} argument-interface receiver differs from dispatch"
+        )
+    return tuple(result)
 
 
 def _abi(value: Any, context: str) -> MachineCallABI:
@@ -833,13 +1278,35 @@ def _effects(
         callback_abi = _object(callback_abi, f"{context} callback ABI")
         callback_words = callback_abi.get("argument_words")
         cleanup = callback_abi.get("stack_cleanup_bytes")
+        callback_result = callback_abi.get("result")
         if (
-            callback_abi.get("kind") != "generic_callback"
+            set(callback_abi)
+            != {
+                "kind",
+                "argument_words",
+                "stack_cleanup_bytes",
+                "nullable",
+                "result",
+            }
+            or callback_abi.get("kind") != "generic_callback"
             or not isinstance(callback_words, int)
             or isinstance(callback_words, bool)
             or not 0 <= callback_words <= 64
             or cleanup != callback_words * 4
             or not isinstance(callback_abi.get("nullable"), bool)
+            or not isinstance(callback_result, Mapping)
+            or callback_result.get("kind") not in {"void", "word"}
+            or (
+                callback_result.get("kind") == "void"
+                and set(callback_result) != {"kind"}
+            )
+            or (
+                callback_result.get("kind") == "word"
+                and (
+                    set(callback_result) != {"kind", "register"}
+                    or callback_result.get("register") != "eax"
+                )
+            )
         ):
             raise ExternalInterfaceProfileError(
                 f"{context} has an invalid callback machine ABI"
@@ -859,9 +1326,9 @@ def _effects(
         )
     parsed_callback_arguments: list[dict[str, Any]] = []
     seen_callback_arguments: set[int] = set()
-    for index, raw in enumerate(_array(
-        callback_arguments, f"{context} callback arguments"
-    )):
+    for index, raw in enumerate(
+        _array(callback_arguments, f"{context} callback arguments")
+    ):
         argument = _object(raw, f"{context} callback argument {index}")
         if set(argument) != {"argument_index", "kind", "interface_id"}:
             raise ExternalInterfaceProfileError(
@@ -883,11 +1350,13 @@ def _effects(
                 f"{context} callback argument {index} is invalid"
             )
         seen_callback_arguments.add(argument_index)
-        parsed_callback_arguments.append({
-            "argument_index": argument_index,
-            "kind": "interface_object",
-            "interface_id": interface_id,
-        })
+        parsed_callback_arguments.append(
+            {
+                "argument_index": argument_index,
+                "kind": "interface_object",
+                "interface_id": interface_id,
+            }
+        )
     return InterfaceEffectContract(
         model=SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
         memory_effect=_SAME_NATIVE_TARGET_EFFECT,
@@ -912,11 +1381,7 @@ def _effects(
 
 
 def _bounded_words(value: Any, context: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or not 0 <= value <= 64
-    ):
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 64:
         raise ExternalInterfaceProfileError(f"{context} must be between 0 and 64")
     return value
 
@@ -947,10 +1412,12 @@ __all__ = [
     "ExternalInterface",
     "ExternalInterfaceProfile",
     "ExternalInterfaceProfileError",
+    "InterfaceArgument",
     "InterfaceFactory",
     "InterfaceCallerMemoryFrame",
     "InterfaceEffectContract",
     "InterfaceMemoryArgument",
+    "InterfaceLocalCellRelation",
     "InterfaceMethod",
     "InterfaceOutput",
     "RECEIVER_RESOURCE_LIFECYCLE_EFFECTS",

@@ -20,30 +20,38 @@ def profile() -> dict[str, object]:
         "model": "x86-pe32",
         "status": "complete",
         "provenance": {"kind": "fixture"},
-        "factories": [{
-            "id": "factory",
-            "import": {"dll": "example.dll", "symbol": "CreateThing"},
-            "declaration": "CreateThing",
-            "abi_template": "pe32-stdcall-v1",
-            "argument_words": 2,
-            "out_interfaces": [{
-                "argument_index": 1,
-                "interface_id": "IThing",
-                "write_width": 4,
-            }],
-        }],
-        "interfaces": [{
-            "id": "IThing",
-            "vtable": "IThingVtbl",
-            "methods": [{
-                "name": "Release",
-                "slot": 0,
-                "offset": 0,
+        "factories": [
+            {
+                "id": "factory",
+                "import": {"dll": "example.dll", "symbol": "CreateThing"},
+                "declaration": "CreateThing",
                 "abi_template": "pe32-stdcall-v1",
-                "argument_words": 1,
-                "out_interfaces": [],
-            }],
-        }],
+                "argument_words": 2,
+                "out_interfaces": [
+                    {
+                        "argument_index": 1,
+                        "interface_id": "IThing",
+                        "write_width": 4,
+                    }
+                ],
+            }
+        ],
+        "interfaces": [
+            {
+                "id": "IThing",
+                "vtable": "IThingVtbl",
+                "methods": [
+                    {
+                        "name": "Release",
+                        "slot": 0,
+                        "offset": 0,
+                        "abi_template": "pe32-stdcall-v1",
+                        "argument_words": 1,
+                        "out_interfaces": [],
+                    }
+                ],
+            }
+        ],
     }
 
 
@@ -61,13 +69,20 @@ class ExternalInterfaceProfileTests(unittest.TestCase):
         self.assertIsNotNone(method)
         assert method is not None
         self.assertEqual(method.name, "Release")
-        self.assertEqual(method.receiver_resource.as_json(), {
-            "argument_index": 0,
-            "view_id": "IThing",
-            "required_state": "live",
-            "dispatch_slot": 0,
-            "lifecycle_effect": "may_release",
-        })
+        self.assertEqual(
+            [argument.as_json() for argument in method.arguments],
+            [{"argument_index": 0, "interface_id": "IThing"}],
+        )
+        self.assertEqual(
+            method.receiver_resource.as_json(),
+            {
+                "argument_index": 0,
+                "view_id": "IThing",
+                "required_state": "live",
+                "dispatch_slot": 0,
+                "lifecycle_effect": "may_release",
+            },
+        )
         target = method.target_json(
             profile_id=loaded.profile_id,
             profile_sha256=loaded.sha256,
@@ -132,6 +147,25 @@ class ExternalInterfaceProfileTests(unittest.TestCase):
             path.write_text(json.dumps(malformed), encoding="utf-8")
             with self.assertRaises(ExternalInterfaceProfileError):
                 load_external_interface_profile(path)
+
+    def test_rejects_untyped_or_mistyped_receiver_argument(self) -> None:
+        for argument_interfaces in (
+            [],
+            [{"argument_index": 0, "interface_id": "IOther"}],
+            [{"argument_index": 1, "interface_id": "IThing"}],
+        ):
+            malformed = profile()
+            malformed["interfaces"][0]["methods"][0]["argument_interfaces"] = (
+                argument_interfaces
+            )
+            with self.subTest(argument_interfaces=argument_interfaces):
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "profile.json"
+                    path.write_text(json.dumps(malformed), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ExternalInterfaceProfileError, "argument-interface"
+                    ):
+                        load_external_interface_profile(path)
 
     def test_rejects_incomplete_profile(self) -> None:
         malformed = profile()

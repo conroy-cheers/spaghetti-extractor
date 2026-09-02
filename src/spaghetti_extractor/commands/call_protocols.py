@@ -23,12 +23,13 @@ from ..calls.protocol_v2 import CheckedCallProtocolV2
 from ..calls.relation import CallFrameRelationReceiptV1, CallFrameRelationV1
 from ..calls.source import SourceNamingV1, render_call_header
 from ..calls.types import TargetLayoutSetV1
+from ..calls.transfer_callback import derive_transfer_callback_evidence_v1
 from ..boundary import (
     BoundaryLifecycleReceiptV1,
     BoundaryProjectionReceiptV1,
     BoundaryProjectionV1,
 )
-from ..util import sha256_file
+from ..transfer.plan import load_executable_transfer_plan
 from .common import Handler
 
 
@@ -64,6 +65,12 @@ def _source_naming(intent: CallProtocolIntentV1) -> SourceNamingV1:
 
 def _check(args: argparse.Namespace) -> dict[str, object]:
     intent = CallProtocolIntentV1.parse(_load(args.intent, "call protocol intent"))
+    transfer_plan, transfers = load_executable_transfer_plan(args.transfer_plan)
+    machine_ir_sha256 = transfer_plan["bindings"].get("machine_ir_sha256")
+    if not isinstance(machine_ir_sha256, str):
+        raise ValueError(
+            "executable transfer plan omits its exact machine-IR binding"
+        )
     graph = intent.type_graph
     layouts = TargetLayoutSetV1.parse(_load(args.layouts, "call layouts"), type_graph=graph)
     checker = IA32DialectCheckerV1(intent.abi_dialect)
@@ -86,54 +93,19 @@ def _check(args: argparse.Namespace) -> dict[str, object]:
         MachineCallEvidenceV1.parse(_load(path, "machine call evidence"))
         for path in args.machine_evidence
     )
-    if args.callback_authority is not None:
-        if args.callback_protocol_id is None or args.binary is None:
-            raise ValueError(
-                "callback authority evidence requires --callback-protocol-id and --binary"
-            )
-        from ..artifacts.io import open_artifact_reader_v3
-        from ..authority.callbacks import (
-            CALLBACK_AUTHORITY_ARTIFACT_KIND_V4,
-            CALLBACK_AUTHORITY_CODEC_V4,
+    callback_binding: dict[str, object] | None = None
+    if (
+        intent.subject.kind == "callback"
+        and args.runtime_profile
+    ):
+        direct_evidence, callback_binding = derive_transfer_callback_evidence_v1(
+            frame=frame,
+            transfer_plan=transfer_plan,
+            transfers=transfers,
+            runtime_profile_packs=args.runtime_profile,
         )
-
-        reader = open_artifact_reader_v3(args.callback_authority)
-        if reader.manifest.artifact_kind != CALLBACK_AUTHORITY_ARTIFACT_KIND_V4:
-            raise ValueError("callback evidence input is not callback-authority-v4")
-        callbacks = tuple(
-            callback
-            for source in reader.iter_records()
-            for record in (CALLBACK_AUTHORITY_CODEC_V4.read(source).value,)
-            for callback in record.callbacks
-            if record.status == "complete" and record.authorizing
-        )
-        selected = next(
-            (
-                item
-                for item in callbacks
-                if item.protocol is not None
-                and item.protocol.to_value().get("id")
-                == args.callback_protocol_id
-            ),
-            None,
-        )
-        if selected is None:
-            raise ValueError(
-                f"callback authority has no protocol {args.callback_protocol_id!r}"
-            )
-        generated_evidence = MachineCallEvidenceV1.from_pe32_callback_authority(
-            frame,
-            authority={
-                "id": selected.callback_id,
-                "status": selected.status,
-                "authorizing": selected.authorizing,
-                "entry_state": selected.entry_state.to_value(),
-                "protocol": selected.protocol.to_value(),
-            },
-            binary_sha256=sha256_file(args.binary),
-            dependency_ids=(reader.manifest.artifact_id, reader.manifest_sha256),
-        )
-        machine_evidence = (*machine_evidence, generated_evidence)
+        if direct_evidence is not None:
+            machine_evidence = (*machine_evidence, direct_evidence)
     compiler_proposal = (
         None
         if args.compiler_proposal is None
@@ -157,7 +129,7 @@ def _check(args: argparse.Namespace) -> dict[str, object]:
         type_graph=graph,
         layout_set=layouts,
         frame=frame,
-        machine_ir_sha256=sha256_file(args.machine_ir),
+        machine_ir_sha256=machine_ir_sha256,
     )
     relation_receipt = CallFrameRelationReceiptV1.check(relation)
     lifecycle = CallLifecycleV1.create(
@@ -169,6 +141,7 @@ def _check(args: argparse.Namespace) -> dict[str, object]:
         graph,
         function_type_id=intent.faithful_function_type_id,
         schema_id=intent.intent_id,
+        lifecycle=lifecycle,
     )
     boundary_layout = layout_from_call_v1(layouts, schema=boundary_schema)
     boundary_frame = checker.lower_boundary(
@@ -224,6 +197,8 @@ def _check(args: argparse.Namespace) -> dict[str, object]:
     status = "complete" if not issues else "violated"
     output = args.out.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if callback_binding is not None:
+        _write(output / "callback-machine-binding.json", callback_binding)
     _write(output / "portable-type-graph.json", graph.to_payload())
     _write(output / "target-layout-set.json", layouts.to_payload())
     _write(output / "physical-call-frame.json", frame.to_payload())
@@ -339,11 +314,10 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
     parser.add_argument("--layouts", required=True, type=Path)
     parser.add_argument("--frame", type=Path)
     parser.add_argument("--compiler-proposal", type=Path)
-    parser.add_argument("--machine-ir", required=True, type=Path)
+    parser.add_argument("--transfer-plan", required=True, type=Path)
     parser.add_argument("--interaction-contract-id", action="append", default=[])
     parser.add_argument("--machine-evidence", action="append", default=[], type=Path)
-    parser.add_argument("--callback-authority", type=Path)
-    parser.add_argument("--callback-protocol-id")
+    parser.add_argument("--runtime-profile", action="append", default=[], type=Path)
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     return _check

@@ -1,4 +1,4 @@
-"""Top-level orchestration for deterministic interpreter-native builds."""
+"""Compile selected semantic providers into one native-realization payload."""
 
 from __future__ import annotations
 
@@ -6,450 +6,501 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..artifacts.formats import (
-    INTERPRETER_NATIVE_BUILD_FORMAT,
-    NATIVE_ENGINE_PACKAGE_FORMAT,
-    NATIVE_RUNTIME_PACKAGE_FORMAT,
-    SPX_INTERPRETER_PACKAGE_FORMAT,
-)
+from ..artifacts.artifact_set import canonical_sha256_v3
 from ..pe32.recovered_executable_data import load_recovered_executable_data_contract
 from ..roundtrip_fuzz.image_io import (
     load_spx_load_image_contract,
 )
+from ..semantic_link.module_v2 import LinkedSemanticModuleV2
+from ..semantic_providers.qualification_v2 import SemanticProviderQualificationV2
+from ..semantic_providers.selection_v2 import ImplementationSelectionV2
 from ..util import sha256_file
 from . import native_build
-from .authority import CandidateAuthorityV3Receipt
+from .formats import NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT
 from .build_model import (
-    INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
-    INTERPRETER_NATIVE_BUNDLE_INDEX_FORMAT,
-    INTERPRETER_NATIVE_OBJECT_FORMAT,
-    INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
-    INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
     CandidateNativeBuildError,
-    _Artifact,
     _C_IDENTIFIER,
-    _ENGINE_LAYOUT_FILENAME,
-    _ENGINE_MANIFEST_FILENAME,
-    _INTERPRETER_MANIFEST_FILENAME,
+    _RUNTIME_STATE_LAYOUT_FILENAME,
     _PAYLOAD_FILENAME,
     _PAYLOAD_MAP_FILENAME,
     _RELOCATION_INVENTORY_FILENAME,
 )
 from .build_objects import (
     _compiler_runtime,
-    _load_native_object_graph,
-    _load_precompiled_native_objects,
     _output_binding,
     _payload_symbol_rvas,
 )
-from .build_sources import (
-    _bound_bundle_artifact,
-    _canonical_compile_flags,
-    _compile_flags,
-    _compile_units,
-    _load_native_source_bundle,
-    _native_compiler_binding,
-    _native_object_graph_row,
-    _native_row_artifacts,
-    _native_source_dependency_closure,
-    _write_native_source_bundle,
-)
 from .build_validation import (
-    _candidate_authority_manifest_binding,
-    _candidate_manifest_pe_sha256,
-    _load_package,
-    _load_region_override_package,
-    _validate_candidate_authority_package_bindings,
-    _validate_candidate_authority_v3,
-    _validate_structural_execution_v1,
-    _validate_structural_candidate_package_bindings,
-    _validate_package_closure,
-    _validate_region_override_closure,
+    _validate_linked_semantic_execution,
 )
 from .build_values import (
     _align_up,
     _file,
     _read_json_object,
-    _revalidate_package,
     _u32,
 )
-from .pe import (
-    COMPOSITION_MANIFEST_FILENAME,
-    compose_spx_pe,
-)
-from .runtime import NATIVE_RUNTIME_MANIFEST_FILENAME
 
 
-def prepare_spx_interpreter_native_object_graph(
-    *,
-    interpreter_package: Path | str,
-    native_engine_package: Path | str,
-    native_runtime_package: Path | str,
-    out_dir: Path | str,
-    region_override_package: Path | str | None = None,
-    compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str,
-) -> dict[str, Any]:
-    """Emit a deterministic per-source compile graph for Nix CA derivations."""
+def _selected_provider_object_sources(
+    *, implementation_selection: Path | str,
+    provider_qualifications: Sequence[Path | str],
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Resolve selected provider objects to their exact compiled sources."""
 
-    if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
+    selection_payload = _read_json_object(
+        Path(implementation_selection), "implementation selection"
+    )
+    selection = ImplementationSelectionV2.parse(selection_payload)
+    records = []
+    for raw_path in provider_qualifications:
+        path = Path(raw_path)
+        qualification_payload = _read_json_object(
+            path, "selected provider qualification"
+        )
+        qualification = SemanticProviderQualificationV2.parse(
+            qualification_payload
+        )
+        records.append((path, qualification))
+    qualifications = {item.provider_id: (path, item) for path, item in records}
+    if len(qualifications) != len(records):
         raise CandidateNativeBuildError(
-            "payload entry symbol is not a C identifier"
+            "selected provider qualification identities overlap"
         )
-    interpreter = _load_package(
-        interpreter_package,
-        filename=_INTERPRETER_MANIFEST_FILENAME,
-        owner="interpreter",
-        expected_format=SPX_INTERPRETER_PACKAGE_FORMAT,
-        require_roles=True,
+    expected: dict[str, dict[str, Any]] = {}
+    materialization_indexes: dict[str, dict[str, dict[str, Mapping[str, Any]]]] = {}
+    for _path, qualification in records:
+        materialization_indexes[qualification.provider_id] = {
+            "definition": {
+                str(row["definition_id"]): row
+                for row in qualification.payload["definition_materializations"]
+            },
+            "obligation": {
+                str(row["obligation_id"]): row
+                for row in qualification.payload["obligation_implementations"]
+            },
+        }
+    selected_rows: list[tuple[str, Mapping[str, Any]]] = []
+    selected_rows.extend(
+        ("definition", row)
+        for row in selection.payload["definition_selections"]
     )
-    engine = _load_package(
-        native_engine_package,
-        filename=_ENGINE_MANIFEST_FILENAME,
-        owner="native_engine",
-        expected_format=NATIVE_ENGINE_PACKAGE_FORMAT,
-        require_roles=False,
+    selected_rows.extend(
+        ("obligation", row)
+        for row in selection.payload["obligation_selections"]
     )
-    runtime = _load_package(
-        native_runtime_package,
-        filename=NATIVE_RUNTIME_MANIFEST_FILENAME,
-        owner="native_runtime",
-        expected_format=NATIVE_RUNTIME_PACKAGE_FORMAT,
-        require_roles=True,
-    )
-    _validate_package_closure(interpreter, engine, runtime)
-    region_overrides = (
-        None
-        if region_override_package is None
-        else _load_region_override_package(region_override_package)
-    )
-    if region_overrides is not None:
-        _validate_region_override_closure(interpreter, region_overrides)
-    compile_units = _compile_units(
-        interpreter, engine, runtime, entry_symbol, region_overrides
-    )
-    toolchain = native_build._select_toolchain(compiler)
-    compiler_binding = _native_compiler_binding(toolchain.compiler)
-    packages = (
-        interpreter,
-        engine,
-        runtime,
-        *((region_overrides,) if region_overrides is not None else ()),
-    )
-    package_roots = tuple(package.root for package in packages)
-    output = Path(out_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, Any]] = []
-    for index, artifact in enumerate(compile_units):
-        rows.append(
-            _native_object_graph_row(
-                index=index,
-                artifact=artifact,
-                packages=packages,
-                package_roots=package_roots,
-                compiler=toolchain.compiler,
-                compiler_binding=compiler_binding,
-                region_overrides=region_overrides is not None,
+    for subject_kind, choice in selected_rows:
+        provider_id = str(choice["provider_id"])
+        pair = qualifications.get(provider_id)
+        if pair is None:
+            raise CandidateNativeBuildError(
+                f"selected provider qualification is missing: {provider_id}"
             )
-        )
-    relocation_source = output / "payload-relocation-anchor.S"
-    relocation_source.write_text(
-        native_build._relocation_anchor_source(entry_symbol), encoding="ascii"
-    )
-    relocation_artifact = _Artifact(
-        owner="generated",
-        role="payload_relocation_anchor",
-        relative_path=relocation_source.name,
-        sha256=sha256_file(relocation_source),
-        path=relocation_source,
-    )
-    rows.append(
-        _native_object_graph_row(
-            index=len(rows),
-            artifact=relocation_artifact,
-            packages=packages,
-            package_roots=package_roots,
-            compiler=toolchain.compiler,
-            compiler_binding=compiler_binding,
-            region_overrides=region_overrides is not None,
-        )
-    )
-    bundles = []
-    for row in rows:
-        artifacts = (
-            (relocation_artifact,)
-            if row["id"]
-            == relocation_artifact.owner + "-" + relocation_artifact.role
-            else _native_row_artifacts(row=row, packages=packages)
-        )
-        bundles.append(
-            _write_native_source_bundle(
-                output=output,
-                row=row,
-                artifacts=artifacts,
+        _, qualification = pair
+        if (
+            qualification.provider_kind != choice["provider_kind"]
+            or qualification.identity != choice["qualification_sha256"]
+        ):
+            raise CandidateNativeBuildError(
+                f"selected provider qualification is stale: {provider_id}"
             )
+        if subject_kind == "definition":
+            subject_id = str(choice["definition_id"])
+            materialization = materialization_indexes[provider_id][
+                "definition"
+            ].get(subject_id)
+        elif subject_kind == "obligation":
+            subject_id = str(choice["obligation_id"])
+            materialization = materialization_indexes[provider_id][
+                "obligation"
+            ].get(subject_id)
+            if (
+                materialization is not None
+                and materialization["receipt_sha256"]
+                != choice["receipt_sha256"]
+            ):
+                materialization = None
+        if (
+            materialization is None
+            or materialization["native_symbol"] != choice["native_symbol"]
+        ):
+            raise CandidateNativeBuildError(
+                f"selected provider {subject_kind} is absent or stale: "
+                f"{subject_id}"
+            )
+        for digest in materialization["object_sha256s"]:
+            row = expected.setdefault(digest, {
+                "provider_ids": set(), "symbol_ids": set(),
+                "definition_ids": set(), "obligation_ids": set(),
+                "qualification_sha256s": set(), "provider_kinds": set(),
+            })
+            row["provider_ids"].add(provider_id)
+            row[f"{subject_kind}_ids"].add(subject_id)
+            row["qualification_sha256s"].add(qualification.identity)
+            row["provider_kinds"].add(choice["provider_kind"])
+
+    by_source: dict[str, dict[str, Any]] = {}
+    scanned_roots: set[Path] = set()
+    found_objects: set[str] = set()
+    for qualification_path, _ in records:
+        root = qualification_path.parent
+        if root in scanned_roots:
+            continue
+        scanned_roots.add(root)
+        for manifest_name in (
+            "compile-receipt.json", "provider-object-manifest.json",
+            "object-manifest.json", "native-realization-object-manifest.json",
+        ):
+            manifest_path = root / manifest_name
+            if not manifest_path.is_file():
+                continue
+            manifest = _read_json_object(
+                manifest_path, "selected provider object manifest"
+            )
+            rows = manifest.get("objects")
+            if not isinstance(rows, list):
+                raise CandidateNativeBuildError(
+                    "selected provider object manifest has no object inventory"
+                )
+            for raw in rows:
+                if not isinstance(raw, Mapping):
+                    raise CandidateNativeBuildError(
+                        "selected provider object manifest row is malformed"
+                    )
+                digest = raw.get("object_sha256", raw.get("sha256"))
+                source_sha256 = raw.get("source_sha256")
+                relative = raw.get("object", raw.get("path"))
+                if digest not in expected:
+                    continue
+                if (
+                    not isinstance(source_sha256, str)
+                    or not isinstance(relative, str)
+                ):
+                    raise CandidateNativeBuildError(
+                        "selected provider object lacks source provenance"
+                    )
+                object_path = root / relative
+                if (
+                    not object_path.is_file()
+                    or sha256_file(object_path) != digest
+                ):
+                    raise CandidateNativeBuildError(
+                        "selected provider object binding is stale"
+                    )
+                found_objects.add(digest)
+                binding = {
+                    "object_sha256": digest,
+                    "object_path": object_path,
+                    "source": raw.get("source"),
+                    "source_owner": raw.get("source_owner"),
+                    "source_role": raw.get("source_role"),
+                    "language": raw.get("language"),
+                    "flags": raw.get("flags", raw.get("compile_flags", [])),
+                    "provider_ids": sorted(expected[digest]["provider_ids"]),
+                    "symbol_ids": sorted(expected[digest]["symbol_ids"]),
+                    "definition_ids": sorted(
+                        expected[digest]["definition_ids"]
+                    ),
+                    "obligation_ids": sorted(
+                        expected[digest]["obligation_ids"]
+                    ),
+                    "qualification_sha256s": sorted(
+                        expected[digest]["qualification_sha256s"]
+                    ),
+                    "provider_kinds": sorted(
+                        expected[digest]["provider_kinds"]
+                    ),
+                }
+                previous = by_source.setdefault(source_sha256, binding)
+                if previous["object_sha256"] != digest:
+                    raise CandidateNativeBuildError(
+                        "one selected provider source maps to unequal objects"
+                    )
+    missing = sorted(set(expected) - found_objects)
+    if missing:
+        raise CandidateNativeBuildError(
+            "selected provider objects are not materialized: "
+            + ", ".join(missing)
         )
-    core = {
-        "format": INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
-        "status": "ready",
-        "executes_original_binary": False,
-        "entry_symbol": entry_symbol,
-        "compiler": compiler_binding,
-        "packages": {
-            "interpreter": interpreter.binding(),
-            "native_engine": engine.binding(),
-            "native_runtime": runtime.binding(),
-            "region_overrides": (
-                None if region_overrides is None else region_overrides.binding()
+    return by_source, set(expected)
+
+
+def _stage_provider_objects(
+    *,
+    selected_objects_by_source: Mapping[str, Mapping[str, Any]],
+    expected_selected_object_hashes: set[str],
+    realization_objects_by_source: Mapping[str, Mapping[str, Any]],
+    expected_realization_object_hashes: set[str],
+    objects: Path,
+    output: Path,
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    """Stage the exact selected and intrinsic provider object union."""
+
+    by_digest: dict[str, dict[str, Any]] = {}
+
+    def add(
+        source_sha256: str, binding: Mapping[str, Any], *, selected: bool,
+    ) -> None:
+        digest = binding.get("object_sha256")
+        object_path = binding.get("object_path")
+        if (
+            not isinstance(digest, str)
+            or not isinstance(object_path, Path)
+            or not object_path.is_file()
+            or sha256_file(object_path) != digest
+        ):
+            raise CandidateNativeBuildError(
+                "provider object binding is absent or stale"
+            )
+        row = by_digest.setdefault(digest, {
+            "bindings": [], "selected": False, "realization": False,
+        })
+        row["bindings"].append((source_sha256, dict(binding)))
+        row["selected"] = bool(row["selected"] or selected)
+        row["realization"] = bool(row["realization"] or not selected)
+
+    for source_sha256, binding in realization_objects_by_source.items():
+        add(source_sha256, binding, selected=False)
+    for source_sha256, binding in selected_objects_by_source.items():
+        add(source_sha256, binding, selected=True)
+
+    selected_hashes = {
+        digest for digest, row in by_digest.items() if row["selected"]
+    }
+    realization_hashes = {
+        digest for digest, row in by_digest.items() if row["realization"]
+    }
+    if selected_hashes != expected_selected_object_hashes:
+        raise CandidateNativeBuildError(
+            "native link provider object inventory is incomplete"
+        )
+    if realization_hashes != expected_realization_object_hashes:
+        raise CandidateNativeBuildError(
+            "native link realization object inventory is incomplete"
+        )
+
+    def metadata(digest: str, row: Mapping[str, Any]) -> dict[str, Any]:
+        bindings = row["bindings"]
+        preferred = next(
+            (binding for _source, binding in bindings
+             if binding.get("source_owner") is not None),
+            bindings[0][1],
+        )
+        provider_kinds = sorted({
+            str(kind)
+            for _source, binding in bindings
+            for kind in binding.get("provider_kinds", ())
+        })
+        owner = preferred.get("source_owner")
+        if not isinstance(owner, str) or not owner:
+            owner = (
+                "component"
+                if provider_kinds == ["qualified_portable_c"]
+                else "behavioral_c"
+            )
+        source = preferred.get("source")
+        if not isinstance(source, str) or not source:
+            source = f"provider-object/{digest}.o"
+        role = preferred.get("source_role")
+        if not isinstance(role, str) or not role:
+            role = (
+                "selected_portable_provider_object"
+                if owner in {"component", "portable_c"}
+                else f"behavioral_function:{Path(source).stem}"
+            )
+        language = preferred.get("language")
+        if not isinstance(language, str) or not language:
+            language = (
+                "assembler-with-cpp"
+                if Path(source).suffix.lower() == ".s"
+                else "c"
+            )
+        flags = preferred.get("flags", [])
+        if not isinstance(flags, list) or any(
+            not isinstance(flag, str) for flag in flags
+        ):
+            raise CandidateNativeBuildError(
+                "provider object compile flags are malformed"
+            )
+        object_paths = {
+            Path(str(binding["object_path"])) for _source, binding in bindings
+        }
+        if len({sha256_file(path) for path in object_paths}) != 1:
+            raise CandidateNativeBuildError(
+                "one provider object resolves to unequal package bytes"
+            )
+        source_hashes = sorted({
+            source_sha256 for source_sha256, _binding in bindings
+        })
+        return {
+            "source": source,
+            "owner": owner,
+            "role": role,
+            "language": language,
+            "flags": flags,
+            "object_path": sorted(object_paths, key=str)[0],
+            "source_sha256": (
+                source_hashes[0]
+                if len(source_hashes) == 1
+                else canonical_sha256_v3(source_hashes)
             ),
-        },
-        "units": rows,
-        "bundles": bundles,
-        "counts": {"compile_units": len(rows)},
-    }
-    payload = {**core, "graph_sha256": native_build._canonical_sha256(core)}
-    native_build._write_json(output / "native-object-graph.json", payload)
-    bundle_index_core = {
-        "format": INTERPRETER_NATIVE_BUNDLE_INDEX_FORMAT,
-        "status": "ready",
-        "executes_original_binary": False,
-        "bundles": bundles,
-        "counts": {"compile_units": len(bundles)},
-    }
-    native_build._write_json(
-        output / "native-object-bundles.json",
-        {
-            **bundle_index_core,
-            "index_sha256": native_build._canonical_sha256(bundle_index_core),
-        },
-    )
-    return payload
+            "provider_ids": sorted({
+                str(value) for _source, binding in bindings
+                for value in binding.get("provider_ids", ())
+            }),
+            "symbol_ids": sorted({
+                str(value) for _source, binding in bindings
+                for value in binding.get("symbol_ids", ())
+            }),
+            "definition_ids": sorted({
+                str(value) for _source, binding in bindings
+                for value in binding.get("definition_ids", ())
+            }),
+            "obligation_ids": sorted({
+                str(value) for _source, binding in bindings
+                for value in binding.get("obligation_ids", ())
+            }),
+            "qualification_sha256s": sorted({
+                str(value) for _source, binding in bindings
+                for value in binding.get("qualification_sha256s", ())
+            }),
+        }
 
-
-def compile_spx_interpreter_native_object(
-    *, graph: Path | str, unit_id: str, out_dir: Path | str
-) -> dict[str, Any]:
-    """Compile exactly one graph unit and bind the object to its checked row."""
-
-    graph_path, graph_payload = _load_native_object_graph(graph)
-    matches = [row for row in graph_payload["units"] if row.get("id") == unit_id]
-    if len(matches) != 1:
-        raise CandidateNativeBuildError(
-            f"native object graph has {len(matches)} matches for {unit_id}"
-        )
-    row = matches[0]
-    source_value = Path(str(row["source"]["location"]))
-    source = _file(
-        graph_path.parent / source_value
-        if row["source"].get("location_base") == "graph"
-        else source_value,
-        "native object source",
-    )
-    if sha256_file(source) != row["source"]["sha256"]:
-        raise CandidateNativeBuildError("native object source binding is stale")
-    compiler = _file(row["compiler"]["path"], "native object compiler")
-    if _native_compiler_binding(compiler) != row["compiler"]:
-        raise CandidateNativeBuildError("native object compiler binding is stale")
-    output = Path(out_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    object_path = output / "object.o"
-    command = [str(compiler), *row["arguments"], "-o", str(object_path)]
-    try:
-        native_build._run(
-            command,
-            phase=f"compile cached {row['source']['owner']}:{row['source']['role']}",
-            env=native_build._deterministic_environment(),
-            cwd=graph_path.parent,
-        )
-    except native_build.CandidateNativeBuildError as exc:
-        raise CandidateNativeBuildError(str(exc)) from exc
-    if not object_path.is_file():
-        raise CandidateNativeBuildError("compiler omitted cached native object")
-    core = {
-        "format": INTERPRETER_NATIVE_OBJECT_FORMAT,
-        "status": "compiled",
-        "executes_original_binary": False,
-        "unit_id": unit_id,
-        "compile_key_sha256": row["compile_key_sha256"],
-        "object": {
-            "path": object_path.name,
-            "sha256": sha256_file(object_path),
-            "size": object_path.stat().st_size,
-        },
-    }
-    payload = {**core, "object_receipt_sha256": native_build._canonical_sha256(core)}
-    native_build._write_json(output / "native-object.json", payload)
-    return payload
-
-
-def compile_spx_interpreter_native_source_bundle(
-    *,
-    source_bundle: Path | str,
-    compiler: Path | str,
-    out_dir: Path | str,
-) -> dict[str, Any]:
-    """Compile one normalized source bundle without depending on its parent graph."""
-
-    bundle_root, payload = _load_native_source_bundle(source_bundle)
-    source = _bound_bundle_artifact(
-        bundle_root, payload["source"], "native source bundle source"
-    )
-    for index, dependency in enumerate(payload["dependencies"]):
-        _bound_bundle_artifact(
-            bundle_root,
-            dependency,
-            f"native source bundle dependency {index}",
-        )
-    compiler_value = str(compiler)
-    compiler_path = _file(
-        shutil.which(compiler_value) or compiler_value,
-        "native object compiler",
-    )
-    compiler_binding = _native_compiler_binding(compiler_path)
-    if {
-        key: value for key, value in compiler_binding.items() if key != "path"
-    } != payload["compiler"]:
-        raise CandidateNativeBuildError(
-            "native source bundle compiler binding is stale"
-        )
-    roots = [
-        bundle_root / "roots" / mapping["owner"]
-        for mapping in payload["root_mappings"]
+    prepared = [
+        (digest, row, metadata(digest, row))
+        for digest, row in by_digest.items()
     ]
-    arguments = [
-        "-x",
-        payload["language"],
-        "-c",
-        str(source),
-        *sum((["-I", str(root)] for root in roots), []),
-        *_compile_flags(payload["source"]["sha256"], roots),
-    ]
-    output = Path(out_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    object_path = output / "object.o"
-    try:
-        native_build._run(
-            [str(compiler_path), *arguments, "-o", str(object_path)],
-            phase=f"compile cached source bundle {payload['unit_id']}",
-            env=native_build._deterministic_environment(),
-            cwd=bundle_root,
-        )
-    except native_build.CandidateNativeBuildError as exc:
-        raise CandidateNativeBuildError(str(exc)) from exc
-    if not object_path.is_file():
-        raise CandidateNativeBuildError(
-            "compiler omitted bundled native object"
-        )
-    core = {
-        "format": INTERPRETER_NATIVE_OBJECT_FORMAT,
-        "status": "compiled",
-        "executes_original_binary": False,
-        "unit_id": payload["unit_id"],
-        "compile_key_sha256": payload["compile_key_sha256"],
-        "source_bundle_sha256": payload["bundle_sha256"],
-        "object": {
-            "path": object_path.name,
-            "sha256": sha256_file(object_path),
-            "size": object_path.stat().st_size,
-        },
-    }
-    result = {
-        **core,
-        "object_receipt_sha256": native_build._canonical_sha256(core),
-    }
-    native_build._write_json(output / "native-object.json", result)
-    return result
+    owner_order = {"behavioral_c": 0, "shared_module_runtime": 1}
+    prepared.sort(key=lambda item: (
+        item[2]["owner"] in {"component", "portable_c"},
+        0 if item[2]["language"] == "assembler-with-cpp" else 1,
+        owner_order.get(item[2]["owner"], 2),
+        item[2]["source"],
+        item[0],
+    ))
 
-
-def assemble_spx_interpreter_native_objects(
-    *,
-    graph: Path | str,
-    object_packages: Sequence[Path | str],
-    out_dir: Path | str,
-) -> dict[str, Any]:
-    """Assemble a complete ordered object package without recompilation."""
-
-    graph_path, graph_payload = _load_native_object_graph(graph)
-    receipts: dict[str, tuple[Path, dict[str, Any]]] = {}
-    for value in object_packages:
-        root = Path(value)
-        receipt_path = root / "native-object.json" if root.is_dir() else root
-        receipt = _read_json_object(receipt_path, "native object receipt")
-        core = dict(receipt)
-        expected = core.pop("object_receipt_sha256", None)
-        if expected != native_build._canonical_sha256(core):
-            raise CandidateNativeBuildError("native object receipt self-hash is stale")
-        unit_id = str(receipt.get("unit_id"))
-        if unit_id in receipts:
-            raise CandidateNativeBuildError("duplicate native object receipt")
-        if receipt.get("format") != INTERPRETER_NATIVE_OBJECT_FORMAT:
-            raise CandidateNativeBuildError("unsupported native object receipt format")
-        receipts[unit_id] = (receipt_path.parent, receipt)
-    expected_ids = [str(row["id"]) for row in graph_payload["units"]]
-    if set(receipts) != set(expected_ids):
-        raise CandidateNativeBuildError(
-            "native object receipts do not exactly cover the compile graph"
-        )
-    output = Path(out_dir)
-    objects_dir = output / "objects"
-    objects_dir.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, Any]] = []
-    by_id = {str(row["id"]): row for row in graph_payload["units"]}
-    for index, unit_id in enumerate(expected_ids):
-        root, receipt = receipts[unit_id]
-        graph_row = by_id[unit_id]
-        if receipt.get("compile_key_sha256") != graph_row["compile_key_sha256"]:
-            raise CandidateNativeBuildError("native object compile-key binding is stale")
-        source = root / str(receipt["object"]["path"])
-        if not source.is_file() or sha256_file(source) != receipt["object"]["sha256"]:
-            raise CandidateNativeBuildError("native object artifact binding is stale")
-        target = objects_dir / f"{index:03d}.o"
-        shutil.copyfile(source, target)
-        rows.append(
-            {
-                "unit_id": unit_id,
-                "compile_key_sha256": graph_row["compile_key_sha256"],
-                "path": target.relative_to(output).as_posix(),
-                "sha256": sha256_file(target),
-                "size": target.stat().st_size,
+    staged_paths: list[Path] = []
+    staged_rows: list[dict[str, Any]] = []
+    for index, (digest, row, prepared_row) in enumerate(prepared):
+        destination = objects / f"{index:03d}-provider.o"
+        shutil.copyfile(prepared_row["object_path"], destination)
+        if sha256_file(destination) != digest:
+            raise CandidateNativeBuildError(
+                "provider object changed while staging"
+            )
+        staged_paths.append(destination)
+        object_row: dict[str, Any] = {
+            "source": {
+                "owner": prepared_row["owner"],
+                "role": prepared_row["role"],
+                "path": prepared_row["source"],
+                "sha256": prepared_row["source_sha256"],
+            },
+            "language": prepared_row["language"],
+            "object": destination.relative_to(output).as_posix(),
+            "object_sha256": digest,
+            "flags": prepared_row["flags"],
+            "cache": (
+                "selected_provider_object_package"
+                if row["selected"]
+                else "native_realization_object_package"
+            ),
+        }
+        if row["selected"]:
+            selected_provider = {
+                "provider_ids": prepared_row["provider_ids"],
+                "symbol_ids": prepared_row["symbol_ids"],
+                "qualification_sha256s": prepared_row[
+                    "qualification_sha256s"
+                ],
             }
-        )
+            if prepared_row["definition_ids"]:
+                selected_provider["definition_ids"] = prepared_row[
+                    "definition_ids"
+                ]
+            if prepared_row["obligation_ids"]:
+                selected_provider["obligation_ids"] = prepared_row[
+                    "obligation_ids"
+                ]
+            object_row["selected_provider"] = selected_provider
+        staged_rows.append(object_row)
+    return staged_paths, staged_rows
+
+
+def _native_realization_object_sources(
+    manifest_path: Path | str,
+) -> tuple[dict[str, dict[str, Any]], set[str], str]:
+    """Load exact precompiled realization infrastructure by source hash."""
+
+    path = Path(manifest_path)
+    manifest = _read_json_object(path, "native realization object manifest")
+    observed_identity = manifest.get("receipt_sha256")
     core = {
-        "format": INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
-        "status": "complete",
-        "executes_original_binary": False,
-        "graph_sha256": graph_payload["graph_sha256"],
-        "graph_artifact_sha256": sha256_file(graph_path),
-        "graph": {
-            "path": str(graph_path.parent),
-            "manifest": graph_path.name,
-            "manifest_sha256": sha256_file(graph_path),
-        },
-        "compiler": graph_payload["compiler"],
-        "packages": graph_payload["packages"],
-        "entry_symbol": graph_payload["entry_symbol"],
-        "units": graph_payload["units"],
-        "objects": rows,
-        "counts": {"objects": len(rows)},
+        key: value for key, value in manifest.items()
+        if key != "receipt_sha256"
     }
-    payload = {**core, "package_sha256": native_build._canonical_sha256(core)}
-    native_build._write_json(output / "native-object-package.json", payload)
-    return payload
+    if (
+        not isinstance(observed_identity, str)
+        or observed_identity != canonical_sha256_v3(core)
+    ):
+        raise CandidateNativeBuildError(
+            "native realization object manifest is stale"
+        )
+    rows = manifest.get("objects")
+    if not isinstance(rows, list) or not rows:
+        raise CandidateNativeBuildError(
+            "native realization object manifest has no object inventory"
+        )
+    root = path.parent
+    by_source: dict[str, dict[str, Any]] = {}
+    object_hashes: set[str] = set()
+    for raw in rows:
+        if not isinstance(raw, Mapping):
+            raise CandidateNativeBuildError(
+                "native realization object manifest row is malformed"
+            )
+        source_sha256 = raw.get("source_sha256")
+        object_sha256 = raw.get("object_sha256")
+        relative = raw.get("path")
+        if not all(
+            isinstance(value, str) and value
+            for value in (source_sha256, object_sha256, relative)
+        ):
+            raise CandidateNativeBuildError(
+                "native realization object binding is incomplete"
+            )
+        object_path = root / str(relative)
+        if (
+            not object_path.is_file()
+            or sha256_file(object_path) != object_sha256
+        ):
+            raise CandidateNativeBuildError(
+                "native realization object binding is stale"
+            )
+        binding = {
+            "object_sha256": object_sha256,
+            "object_path": object_path,
+            "source": raw.get("source"),
+            "source_owner": raw.get("source_owner"),
+            "source_role": raw.get("source_role"),
+            "language": raw.get("language"),
+            "flags": raw.get("compile_flags", []),
+        }
+        previous = by_source.setdefault(str(source_sha256), binding)
+        if previous["object_sha256"] != object_sha256:
+            raise CandidateNativeBuildError(
+                "one realization source maps to unequal objects"
+            )
+        if object_sha256 in object_hashes:
+            raise CandidateNativeBuildError(
+                "native realization object inventory is ambiguous"
+            )
+        object_hashes.add(str(object_sha256))
+    return by_source, object_hashes, observed_identity
 
 
-def build_spx_interpreter_native_candidate(
+def build_native_realization_payload(
     *,
-    interpreter_package: Path | str,
-    native_engine_package: Path | str,
-    native_runtime_package: Path | str,
-    candidate_authority: Path | str | None,
-    final_authority: Path | str | None,
-    structural_execution_receipt: Path | str | None = None,
-    machine_ir: Path | str,
-    machine_ir_manifest: Path | str,
-    fallback_coverage_receipt: Path | str | None,
-    component_runtime_package: Path | str | None,
-    region_override_package: Path | str | None = None,
+    transfer_plan: Path | str,
     load_image_contract: Path | str,
     recovered_executable_data: Path | str | None = None,
     out_dir: Path | str,
@@ -457,9 +508,12 @@ def build_spx_interpreter_native_candidate(
     candidate_filename: str,
     compiler: Path | str = "i686-w64-mingw32-gcc",
     payload_rva: int | None = None,
-    precompiled_objects: Path | str | None = None,
+    implementation_selection: Path | str,
+    provider_qualifications: Sequence[Path | str],
+    native_realization_object_manifest: Path | str,
+    linked_semantic_module: Path | str,
 ) -> dict[str, Any]:
-    """Compile and compose one explicitly classified interpreter candidate."""
+    """Compile one selected linked semantic module into a PE32 payload."""
 
     ingress_path = _file(native_ingress_plan, "native ingress plan")
     ingress_artifact_sha256 = sha256_file(ingress_path)
@@ -485,89 +539,36 @@ def build_spx_interpreter_native_candidate(
     ):
         raise CandidateNativeBuildError("candidate filename must be a loader basename")
 
-    if component_runtime_package is None:
+    structural_policy_binding = _validate_linked_semantic_execution(
+        linked_semantic_module=linked_semantic_module,
+        implementation_selection=implementation_selection,
+        transfer_plan=transfer_plan,
+    )
+    linked = LinkedSemanticModuleV2.load(
+        Path(linked_semantic_module), require_complete=True
+    )
+    if linked.semantic_object is None:
         raise CandidateNativeBuildError(
-            "structural candidates require component-runtime inputs"
+            "native realization requires a packaged semantic module V2"
         )
-    structural_policy_binding: dict[str, Any] | None = None
-    receipt: CandidateAuthorityV3Receipt | None = None
-    if structural_execution_receipt is not None:
-        structural_policy_binding = _validate_structural_execution_v1(
-            receipt=structural_execution_receipt,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-        )
-    elif candidate_authority is not None and final_authority is not None:
-        if fallback_coverage_receipt is None:
-            raise CandidateNativeBuildError(
-                "legacy candidate authority requires fallback-coverage evidence"
-            )
-        receipt = _validate_candidate_authority_v3(
-            receipt=candidate_authority,
-            final_authority=final_authority,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-            fallback_coverage_receipt=fallback_coverage_receipt,
-            component_runtime_package=component_runtime_package,
-        )
-    else:
-        raise CandidateNativeBuildError(
-            "candidate construction requires structural-executable-v1"
-        )
-
-    interpreter = _load_package(
-        interpreter_package,
-        filename=_INTERPRETER_MANIFEST_FILENAME,
-        owner="interpreter",
-        expected_format=SPX_INTERPRETER_PACKAGE_FORMAT,
-        require_roles=True,
+    resolved_external_environment = (
+        linked.semantic_object.resolved_external_environment_path
     )
-    engine = _load_package(
-        native_engine_package,
-        filename=_ENGINE_MANIFEST_FILENAME,
-        owner="native_engine",
-        expected_format=NATIVE_ENGINE_PACKAGE_FORMAT,
-        require_roles=False,
-    )
-    runtime = _load_package(
-        native_runtime_package,
-        filename=NATIVE_RUNTIME_MANIFEST_FILENAME,
-        owner="native_runtime",
-        expected_format=NATIVE_RUNTIME_PACKAGE_FORMAT,
-        require_roles=True,
-    )
-    runtime_plan = _validate_package_closure(interpreter, engine, runtime)
-    if receipt is not None:
-        _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
-    structural_binding = _validate_structural_candidate_package_bindings(
-        machine_ir=machine_ir,
-        machine_ir_manifest=machine_ir_manifest,
-        interpreter=interpreter,
-        engine=engine,
-        runtime=runtime,
-        runtime_plan=runtime_plan,
-    )
-    region_overrides = (
-        None
-        if region_override_package is None
-        else _load_region_override_package(region_override_package)
-    )
-    if region_overrides is not None:
-        _validate_region_override_closure(interpreter, region_overrides)
-    compile_units = _compile_units(
-        interpreter, engine, runtime, entry_symbol, region_overrides
+    machine_object_authority = (
+        linked.semantic_object.machine_object_authority_path
     )
 
     contract_path = _file(load_image_contract, "load-image contract")
     contract_artifact_sha256 = sha256_file(contract_path)
     contract = load_spx_load_image_contract(contract_path)
     native_build._require_pe32_contract(contract)
-    if contract.identity.pe_sha256 != _candidate_manifest_pe_sha256(
-        machine_ir_manifest
+    if (
+        contract.identity.pe_sha256
+        != structural_policy_binding["bindings"].get("pe_sha256")
     ):
         raise CandidateNativeBuildError(
-            "load-image contract binds a different PE than the v2 "
-            "candidate-authority receipt"
+            "load-image contract binds a different PE than the canonical "
+            "transfer universe"
         )
     executable_data_path: Path | None = None
     executable_data_artifact_sha256: str | None = None
@@ -580,14 +581,8 @@ def build_spx_interpreter_native_candidate(
         executable_data = load_recovered_executable_data_contract(
             executable_data_path
         )
-        interpreter_machine_ir = interpreter.payload.get("machine_ir")
-        engine_machine_ir = engine.payload.get("machine_ir")
         if (
-            not isinstance(interpreter_machine_ir, Mapping)
-            or not isinstance(engine_machine_ir, Mapping)
-            or interpreter_machine_ir.get("sha256")
-            != executable_data.machine_ir_sha256
-            or engine_machine_ir.get("sha256")
+            structural_policy_binding["bindings"].get("machine_ir_sha256")
             != executable_data.machine_ir_sha256
         ):
             raise CandidateNativeBuildError(
@@ -628,129 +623,26 @@ def build_spx_interpreter_native_candidate(
     objects.mkdir(parents=True, exist_ok=True)
     environment = native_build._deterministic_environment()
 
-    object_paths: list[Path] = []
-    object_rows: list[dict[str, Any]] = []
-    package_roots = (
-        interpreter.root,
-        engine.root,
-        runtime.root,
-        *((region_overrides.root,) if region_overrides is not None else ()),
+    (
+        selected_objects_by_source,
+        expected_selected_object_hashes,
+    ) = _selected_provider_object_sources(
+        implementation_selection=implementation_selection,
+        provider_qualifications=provider_qualifications,
     )
-    package_sequence = (
-        interpreter,
-        engine,
-        runtime,
-        *((region_overrides,) if region_overrides is not None else ()),
+    (
+        realization_objects_by_source,
+        expected_realization_object_hashes,
+        realization_object_receipt_sha256,
+    ) = _native_realization_object_sources(native_realization_object_manifest)
+    object_paths, object_rows = _stage_provider_objects(
+        selected_objects_by_source=selected_objects_by_source,
+        expected_selected_object_hashes=expected_selected_object_hashes,
+        realization_objects_by_source=realization_objects_by_source,
+        expected_realization_object_hashes=expected_realization_object_hashes,
+        objects=objects,
+        output=output,
     )
-    relocation_source = output / ".payload-relocation-anchor.S"
-    relocation_source.write_text(
-        native_build._relocation_anchor_source(entry_symbol), encoding="ascii"
-    )
-    relocation_digest = sha256_file(relocation_source)
-    precompiled_object_binding: dict[str, Any] | None = None
-    if precompiled_objects is not None:
-        precompiled_manifest = Path(precompiled_objects)
-        if precompiled_manifest.is_dir():
-            precompiled_manifest = precompiled_manifest / "native-object-package.json"
-        cached = _load_precompiled_native_objects(
-            precompiled_objects,
-            compile_units=compile_units,
-            package_roots=package_roots,
-            package_sequence=package_sequence,
-            packages={
-                "interpreter": interpreter.binding(),
-                "native_engine": engine.binding(),
-                "native_runtime": runtime.binding(),
-                "region_overrides": (
-                    None if region_overrides is None else region_overrides.binding()
-                ),
-            },
-            compiler=toolchain.compiler,
-            entry_symbol=entry_symbol,
-            relocation_digest=relocation_digest,
-        )
-        precompiled_object_binding = {
-            "artifact_sha256": sha256_file(precompiled_manifest),
-            "package_sha256": _read_json_object(
-                precompiled_manifest, "native object package"
-            )["package_sha256"],
-        }
-        for index, (source_row, cached_path) in enumerate(cached):
-            object_path = objects / f"{index:03d}-{source_row['source']['owner']}.o"
-            shutil.copyfile(cached_path, object_path)
-            object_paths.append(object_path)
-            object_rows.append(
-                {
-                    "source": {
-                        key: source_row["source"][key]
-                        for key in ("owner", "role", "path", "sha256")
-                    },
-                    "language": source_row["language"],
-                    "object": object_path.relative_to(output).as_posix(),
-                    "object_sha256": sha256_file(object_path),
-                    "flags": source_row["canonical_flags"],
-                    "cache": "content_addressed_precompiled_object",
-                }
-            )
-    else:
-        sources = [
-            *compile_units,
-            _Artifact(
-                owner="generated",
-                role="payload_relocation_anchor",
-                relative_path=relocation_source.name,
-                sha256=relocation_digest,
-                path=relocation_source,
-            ),
-        ]
-        for index, artifact in enumerate(sources):
-            object_path = objects / f"{index:03d}-{artifact.owner}.o"
-            language = (
-                "assembler-with-cpp"
-                if artifact.path.suffix.lower() == ".s"
-                else "c"
-            )
-            dependencies = _native_source_dependency_closure(
-                artifact, package_sequence
-            )
-            flags = _compile_flags(artifact.sha256, package_roots)
-            command = [
-                str(toolchain.compiler),
-                "-x",
-                language,
-                "-c",
-                str(artifact.path),
-                "-o",
-                str(object_path),
-                *sum((["-I", str(root)] for root in package_roots), []),
-                *flags,
-            ]
-            try:
-                native_build._run(
-                    command,
-                    phase=f"compile {artifact.owner}:{artifact.role}",
-                    env=environment,
-                )
-            except native_build.CandidateNativeBuildError as exc:
-                raise CandidateNativeBuildError(str(exc)) from exc
-            if not object_path.is_file():
-                raise CandidateNativeBuildError(
-                    f"compiler omitted object for {artifact.owner}:{artifact.role}"
-                )
-            object_paths.append(object_path)
-            object_rows.append(
-                {
-                    "source": artifact.payload(),
-                    "language": language,
-                    "object": object_path.relative_to(output).as_posix(),
-                    "object_sha256": sha256_file(object_path),
-                    "flags": _canonical_compile_flags(
-                        artifact.sha256,
-                        region_overrides=region_overrides is not None,
-                    ),
-                    "cache": "compiled_in_candidate_derivation",
-                }
-            )
 
     raw_payload = output / ".payload-linked.exe"
     linker_map = output / _PAYLOAD_MAP_FILENAME
@@ -773,7 +665,7 @@ def build_spx_interpreter_native_candidate(
                 *(path.relative_to(output).as_posix() for path in object_paths),
                 str(compiler_runtime),
             ],
-            phase="link freestanding interpreter payload",
+            phase="link freestanding behavioral payload",
             env=environment,
             cwd=output,
         )
@@ -804,7 +696,7 @@ def build_spx_interpreter_native_candidate(
             section_alignment=section_alignment,
             file_alignment=file_alignment,
         )
-        layout_payload, layout, layout_location = native_build._extract_engine_layout(
+        layout_payload, layout, layout_location = native_build._extract_runtime_state_layout(
             payload_pe, normalized
         )
         relocations = native_build._payload_relocation_inventory(payload_pe, normalized)
@@ -826,17 +718,12 @@ def build_spx_interpreter_native_candidate(
     except Exception as exc:
         raise CandidateNativeBuildError(str(exc)) from exc
 
-    layout_path = output / _ENGINE_LAYOUT_FILENAME
+    layout_path = output / _RUNTIME_STATE_LAYOUT_FILENAME
     layout_path.write_bytes(layout_payload)
     relocation_path = output / _RELOCATION_INVENTORY_FILENAME
     native_build._write_json(relocation_path, relocations.to_payload())
     raw_payload.unlink(missing_ok=True)
 
-    _revalidate_package(interpreter)
-    _revalidate_package(engine)
-    _revalidate_package(runtime)
-    if region_overrides is not None:
-        _revalidate_package(region_overrides)
     if sha256_file(contract_path) != contract_artifact_sha256:
         raise CandidateNativeBuildError(
             "load-image contract changed during compilation"
@@ -854,79 +741,51 @@ def build_spx_interpreter_native_candidate(
         raise CandidateNativeBuildError(
             "compiler runtime changed during compilation"
         )
-    assert component_runtime_package is not None
-    if structural_execution_receipt is not None:
-        repeated_policy = _validate_structural_execution_v1(
-            receipt=structural_execution_receipt,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-        )
-        if repeated_policy != structural_policy_binding:
-            raise CandidateNativeBuildError(
-                "structural-executable inputs changed during compilation"
-            )
-    else:
-        assert candidate_authority is not None
-        assert final_authority is not None
-        assert fallback_coverage_receipt is not None
-        assert receipt is not None
-        repeated_receipt = _validate_candidate_authority_v3(
-            receipt=candidate_authority,
-            final_authority=final_authority,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-            fallback_coverage_receipt=fallback_coverage_receipt,
-            component_runtime_package=component_runtime_package,
-        )
-        if repeated_receipt != receipt:
-            raise CandidateNativeBuildError(
-                "v3 candidate-authority inputs changed during compilation"
-            )
-    repeated_structural_binding = _validate_structural_candidate_package_bindings(
-        machine_ir=machine_ir,
-        machine_ir_manifest=machine_ir_manifest,
-        interpreter=interpreter,
-        engine=engine,
-        runtime=runtime,
-        runtime_plan=runtime_plan,
+    repeated_policy = _validate_linked_semantic_execution(
+        linked_semantic_module=linked_semantic_module,
+        implementation_selection=implementation_selection,
+        transfer_plan=transfer_plan,
     )
-    if repeated_structural_binding != structural_binding:
+    if repeated_policy != structural_policy_binding:
         raise CandidateNativeBuildError(
-            "candidate execution-scope inputs changed during compilation"
+            "structural-executable inputs changed during compilation"
         )
-    composition = compose_spx_pe(
-        load_image_contract=contract_path,
-        payload_pe=payload_path,
-        entry_rva=linked_entry_rva,
-        payload_relocation_inventory=relocations,
-        recovered_executable_data=executable_data_path,
-        out_dir=output,
-        candidate_filename=candidate_filename,
-    )
-    composition_path = output / COMPOSITION_MANIFEST_FILENAME
-    candidate_path = output / candidate_filename
-
     core: dict[str, Any] = {
-        "format": INTERPRETER_NATIVE_BUILD_FORMAT,
-        "status": "candidate-generated",
+        "format": NATIVE_REALIZATION_BUILD_MANIFEST_FORMAT,
+        "status": "linked",
         "acceptance_authority": "none",
-        "assurance": "candidate static and behavioral validation required",
+        "assurance": "composition and independent candidate observation required",
         "inputs": {
-            "candidate_authority": (
-                None
-                if candidate_authority is None or receipt is None
-                else _candidate_authority_manifest_binding(candidate_authority, receipt)
-            ),
             "structural_executable": structural_policy_binding,
-            "execution_scope": structural_binding,
-            "interpreter_package": interpreter.binding(),
-            "native_engine_package": engine.binding(),
-            "native_runtime_package": runtime.binding(),
-            "region_override_package": (
-                None if region_overrides is None else region_overrides.binding()
-            ),
-            "runtime_plan": runtime_plan.payload(),
-            "precompiled_objects": precompiled_object_binding,
+            "linked_semantic_module": {
+                "artifact_sha256": sha256_file(Path(linked_semantic_module)),
+                "receipt_sha256": linked.identity,
+                "resolved_external_environment_sha256": sha256_file(
+                    resolved_external_environment
+                ),
+                "machine_object_authority_sha256": sha256_file(
+                    machine_object_authority
+                ),
+            },
+            "selected_provider_objects": {
+                "objects": len(expected_selected_object_hashes),
+                "qualification_artifact_sha256s": sorted(
+                    {
+                        qualification_sha256
+                        for row in object_rows
+                        for qualification_sha256 in row.get(
+                            "selected_provider", {}
+                        ).get("qualification_sha256s", [])
+                    }
+                ),
+            },
+            "native_realization_objects": {
+                "artifact_sha256": sha256_file(
+                    Path(native_realization_object_manifest)
+                ),
+                "receipt_sha256": realization_object_receipt_sha256,
+                "objects": len(expected_realization_object_hashes),
+            },
             "load_image_contract": {
                 "artifact_sha256": contract_artifact_sha256,
                 "contract_sha256": contract.hashes.contract_sha256,
@@ -959,11 +818,7 @@ def build_spx_interpreter_native_candidate(
         },
         "policy": {
             "architecture": "i686-pe32",
-            "candidate_class": (
-                "structural-executable-hybrid"
-                if structural_policy_binding is not None
-                else "release-static-closed"
-            ),
+            "candidate_class": "semantic-module-native-realization-payload",
             "entry_symbol": entry_symbol,
             "image_base": contract.identity.preferred_base,
             "payload_rva": selected_rva,
@@ -978,16 +833,7 @@ def build_spx_interpreter_native_candidate(
                 if candidate_runtime_relocations
                 else "fixed-base-reference-policy"
             ),
-            "region_overrides": (
-                0
-                if region_overrides is None
-                else len(region_overrides.payload["entries"])
-            ),
-            "object_compilation": (
-                "content-addressed-per-source"
-                if precompiled_object_binding is not None
-                else "inline"
-            ),
+            "object_compilation": "content-addressed-selected-provider-objects",
         },
         "objects": object_rows,
         "commands": {
@@ -995,10 +841,9 @@ def build_spx_interpreter_native_candidate(
             "link_flags": link_flags,
         },
         "outputs": {
-            "candidate": _output_binding(candidate_path, output),
             "payload": _output_binding(payload_path, output),
             "linker_map": _output_binding(linker_map, output),
-            "engine_layout": {
+            "runtime_state_layout": {
                 **_output_binding(layout_path, output),
                 "rva": layout_location[0],
                 "section": layout_location[1],
@@ -1011,10 +856,6 @@ def build_spx_interpreter_native_candidate(
                 "payload_sha256": relocations.payload_sha256,
                 "count": len(relocations.relocations),
                 "complete": relocations.complete,
-            },
-            "composition_manifest": {
-                **_output_binding(composition_path, output),
-                "manifest_core_sha256": composition["hashes"]["manifest_core_sha256"],
             },
         },
         "qualification": {
@@ -1036,6 +877,6 @@ def build_spx_interpreter_native_candidate(
     }
     manifest = native_build._close_manifest(core)
     native_build._write_json(
-        output / INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME, manifest
+        output / "native-realization-build-manifest.json", manifest
     )
     return manifest

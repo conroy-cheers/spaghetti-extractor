@@ -28,20 +28,30 @@ from .types import PortableTypeGraphV1, TargetLayoutSetV1
 
 
 def schema_from_call_v1(
-    graph: PortableTypeGraphV1, *, function_type_id: str, schema_id: str
+    graph: PortableTypeGraphV1, *, function_type_id: str, schema_id: str,
+    lifecycle: CallLifecycleV1 | None = None,
 ) -> BoundarySchemaV1:
-    """Losslessly wrap a V1 type graph and one function as a boundary schema."""
+    """Losslessly wrap a V1 call contract as a boundary schema.
+
+    A legacy lifecycle binding is the authority that a complete root word is
+    a resource rather than an untyped scalar. Preserve that fact in the
+    canonical value instead of emitting a contradictory value-only schema.
+    Field-path resources remain unsupported by the generic ingress
+    transducer and are therefore not promoted here.
+    """
 
     function = graph.index[function_type_id]
     parameters = [
-        _value(f"arg{index}", str(type_id))
+        _value(
+            f"arg{index}", str(type_id), lifecycle=lifecycle
+        )
         for index, type_id in enumerate(function.body["parameter_type_ids"])
     ]
     result_type_id = str(function.body["result_type_id"])
     results = (
         []
         if graph.index[result_type_id].kind == "void"
-        else [_value("result0", result_type_id)]
+        else [_value("result0", result_type_id, lifecycle=lifecycle)]
     )
     return BoundarySchemaV1.create(
         schema_id=schema_id,
@@ -180,16 +190,35 @@ def lifecycle_from_call_v1(
     )
 
 
-def _value(identity: str, type_id: str) -> dict[str, object]:
+def _value(
+    identity: str, type_id: str, *, lifecycle: CallLifecycleV1 | None = None,
+) -> dict[str, object]:
+    resource_bindings = (
+        []
+        if lifecycle is None
+        else [
+            binding for binding in lifecycle.bindings
+            if binding.path.slot_id == identity and not binding.path.fields
+        ]
+    )
+    resource_metadata = {
+        (binding.resource_kind, binding.provider_domain)
+        for binding in resource_bindings
+    }
+    if len(resource_metadata) > 1:
+        raise ValueError(
+            f"legacy call slot {identity!r} has conflicting resource authority"
+        )
+    resource = next(iter(resource_metadata), None)
     return BoundaryValueV1.parse({
         "id": identity,
         "type_id": type_id,
-        "interpretation": "value",
+        "interpretation": "resource" if resource is not None else "value",
         "nullable": False,
         "access": "none",
         "extent": {"kind": "none", "bytes": None, "value_id": None},
-        "resource_kind": None,
-        "provider_domain": None,
+        "resource_kind": None if resource is None else resource[0],
+        "provider_domain": None if resource is None else resource[1],
     }, f"legacy call value {identity}").to_payload()
 
 

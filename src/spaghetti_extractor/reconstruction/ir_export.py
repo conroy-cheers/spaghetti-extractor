@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any, Callable
 
-from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
+from .machine_ir_bindings import build_machine_ir_authority_bindings
 from ..pe32.recovered_executable_data import (
     RECOVERED_EXECUTABLE_DATA_FILENAME,
     RECOVERED_EXECUTABLE_DATA_FORMAT,
@@ -138,6 +138,7 @@ def export_machine_ir_package(
         materialization_issues,
         materialized_static_recoveries,
         materialized_data_ranges,
+        stable_executable_classification,
     ) = (
         _materialize_recovered_target_cutpoints(
             binary=binary,
@@ -150,13 +151,20 @@ def export_machine_ir_package(
     materialized_target_units = target_cutpoint_materialization["counts"][
         "materialized_units"
     ]
-    (
-        prepared,
-        executable_classification,
-        classification_issues,
-        preclassified_static_recoveries,
-    ) = (
-        _classify_executable_data_before_control(
+    if stable_executable_classification is not None:
+        (
+            prepared,
+            executable_classification,
+            classification_issues,
+            preclassified_static_recoveries,
+        ) = stable_executable_classification
+    else:
+        (
+            prepared,
+            executable_classification,
+            classification_issues,
+            preclassified_static_recoveries,
+        ) = _classify_executable_data_before_control(
             binary=binary,
             units=prepared,
             static_program=static_program,
@@ -167,7 +175,6 @@ def export_machine_ir_package(
             ],
             finite_dataflow_factory=dataflow_factory,
         )
-    )
     issues = _unit_issues(prepared)
     issues.extend(materialization_issues)
     issues.extend(classification_issues)

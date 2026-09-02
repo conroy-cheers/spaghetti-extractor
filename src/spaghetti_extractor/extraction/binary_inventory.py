@@ -23,6 +23,7 @@ from .cutpoints import (
     decode_semantic_cutpoint_span,
     semantic_cutpoint_spans_for_side,
 )
+from .coff_layout import pe32_coff_executable_layout
 from .region_inventory import parse_request
 from .schema import STATIC_ANALYSIS_MODEL_ID
 
@@ -181,15 +182,19 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
     for index, waiver in enumerate(waivers):
         if not isinstance(waiver, Mapping) or set(waiver) != {
             "binary",
+            "classification",
             "id",
             "reason",
             "rva",
             "size",
+            "source",
         }:
             raise ToolkitInputError(f"binary padding waiver {index} is malformed")
         waiver_side = waiver.get("binary")
         identity = waiver.get("id")
         reason = waiver.get("reason")
+        classification = waiver.get("classification")
+        source = waiver.get("source")
         start = waiver.get("rva")
         size = waiver.get("size")
         if (
@@ -199,6 +204,10 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             or identity in waiver_ids
             or not isinstance(reason, str)
             or not reason
+            or classification not in {
+                "verified_padding", "coff_executable_data"
+            }
+            or not isinstance(source, Mapping)
             or isinstance(start, bool)
             or not isinstance(start, int)
             or start < 0
@@ -431,11 +440,11 @@ def spx_inventory_binary(
     binary = Path(binary)
     parsed = parse_pe_image(binary)
     linker_map = Path(linker_map) if linker_map is not None else None
-    functions = (
-        parse_linker_map_functions(linker_map, parsed)
-        if linker_map is not None
-        else []
-    )
+    coff_non_code: list[dict[str, Any]] = []
+    if linker_map is not None:
+        functions = parse_linker_map_functions(linker_map, parsed)
+    else:
+        functions, coff_non_code = pe32_coff_executable_layout(parsed)
     issues = (
         list(_linker_function_issues(side, functions))
         if linker_map is not None
@@ -475,14 +484,32 @@ def spx_inventory_binary(
                     "size": int(block["rva_end"]) - int(block["rva_start"]),
                 },
                 "source": {
-                    "kind": "linker_map_basic_block",
+                    "kind": function.get(
+                        "source_kind", "linker_map_basic_block"
+                    ),
                     "function": name,
                     "block_index": block_index,
+                    **(
+                        {"symbol_table_sha256": function["symbol_table_sha256"]}
+                        if "symbol_table_sha256" in function else {}
+                    ),
                 },
             })
     raw_rows = _deduplicate_code_spans(raw_rows, issues)
-    ranges = [BlockSide(*_span_key(row)) for row in raw_rows]
-    padding_waivers: list[dict[str, Any]] = []
+    for index, waiver in enumerate(coff_non_code):
+        waiver["binary"] = side
+        waiver["id"] = (
+            f"{side}-coff-data-{int(waiver['rva']):x}-"
+            f"{int(waiver['rva']) + int(waiver['size']):x}"
+        )
+    ranges = [
+        *[BlockSide(*_span_key(row)) for row in raw_rows],
+        *[
+            BlockSide(int(row["rva"]), int(row["rva"]) + int(row["size"]))
+            for row in coff_non_code
+        ],
+    ]
+    padding_waivers: list[dict[str, Any]] = list(coff_non_code)
     for section, gaps in sorted(_section_gaps(parsed, ranges).items()):
         gap_blocks, waivers = _section_gap_code_blocks(side, parsed, gaps)
         padding_waivers.extend(waivers)

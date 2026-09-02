@@ -16,6 +16,7 @@ from ...extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ...extraction.executable_classification import _capstone_mode, _instruction_report
 from ...pe32.model import BlockSide, ParsedPEImage
 from ...util import sha256_bytes
+from ...isa.x87_encoding import is_x87_instruction_encoding
 from ..model import StaticUnitContext
 from .expressions import _expr_json
 from .support import (
@@ -300,60 +301,6 @@ _ORDINARY_CHECKED_DECODER = "SpaghettiExtractor.ISA.Formal.decodeInstructionExac
 
 _ORDINARY_CHECKED_EXECUTOR = "SpaghettiExtractor.ISA.Formal.executeInstruction"
 
-_SEMANTIC_X87_SINGLETON_MNEMONICS = frozenset(
-    {
-        "wait",
-        "fld",
-        "fld1",
-        "fldz",
-        "fild",
-        "fst",
-        "fstp",
-        "fist",
-        "fistp",
-        "fisttp",
-        "fadd",
-        "faddp",
-        "fsub",
-        "fsubp",
-        "fsubr",
-        "fsubrp",
-        "fiadd",
-        "fimul",
-        "fisub",
-        "fisubr",
-        "fidiv",
-        "fidivr",
-        "fmul",
-        "fmulp",
-        "fdiv",
-        "fdivp",
-        "fdivr",
-        "fdivrp",
-        "fxch",
-        "fchs",
-        "fxam",
-        "fnstcw",
-        "fldcw",
-        "fnstsw",
-        "fcom",
-        "fcomp",
-        "ficom",
-        "ficomp",
-        "fcomi",
-        "fcomip",
-        "fucomi",
-        "fucomip",
-        "fcompi",
-        "fucompi",
-        "fsin",
-        "fcos",
-        "fclex",
-        "fnclex",
-        "fninit",
-    }
-)
-
 def _semantic_fpu_state_from_observables(
     observables: dict[str, Any],
     *,
@@ -452,12 +399,18 @@ def _semantic_x87_replay_binding(
 def _semantic_transfer_inventory_contains_x87(
     instructions: list[dict[str, Any]],
 ) -> bool:
-    return any(
-        str(instruction.get("mnemonic") or "").lower()
-        in _SEMANTIC_X87_SINGLETON_MNEMONICS
-        for instruction in instructions
-        if isinstance(instruction, dict)
-    )
+    for instruction in instructions:
+        if not isinstance(instruction, dict):
+            continue
+        encoded = instruction.get("bytes")
+        if not isinstance(encoded, str):
+            continue
+        try:
+            if is_x87_instruction_encoding(bytes.fromhex(encoded)):
+                return True
+        except ValueError:
+            continue
+    return False
 
 def _semantic_instruction_effect_schedule(
     binary: ParsedPEImage,
@@ -603,7 +556,7 @@ def _semantic_instruction_effect_schedule(
 
         instruction_class = (
             "x87_singleton_checked_replay"
-            if mnemonic in _SEMANTIC_X87_SINGLETON_MNEMONICS
+            if is_x87_instruction_encoding(instruction_bytes)
             else "ordinary_symbolic_instruction"
         )
         checked_decoder = (
@@ -1271,7 +1224,6 @@ def _semantic_stack_affine_expr(expr: Any) -> tuple[int, int] | None:
 __all__ = [
     '_ORDINARY_CHECKED_DECODER',
     '_ORDINARY_CHECKED_EXECUTOR',
-    '_SEMANTIC_X87_SINGLETON_MNEMONICS',
     '_X87_PHYSICAL_OBSERVABLE_FIELDS',
     '_X87_REPLAY_OBLIGATION_MODEL',
     '_X87_SINGLETON_CHECKED_DECODER',

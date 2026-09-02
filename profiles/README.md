@@ -17,6 +17,8 @@ profiles belong in Git history rather than this directory.
   conventions and machine argument locations.
 - `pe32-msvcrt-machine-runtime-v1.json` describes selected MinGW/MSVCRT
   machine-call boundaries used by generated runtimes.
+- `pe32-oniguruma-runtime-v1.json` describes reviewed public Oniguruma
+  machine-call boundaries shared by targets using the native library.
 - `pe32-kernel32-callable-resolvers-v1.json` describes APIs that return callable
   addresses and the lookup identities used to recover them.
 - `pe32-mingw-win32-function-extraction-v1.json` and

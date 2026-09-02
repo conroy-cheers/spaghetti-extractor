@@ -11,6 +11,93 @@
   ],
   "machine_import_signatures": [
     {
+      "import": {"dll": "msvcrt.dll", "symbol": "__wgetmainargs"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 5},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {"access": "write", "base_argument": 0, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": false},
+        {"access": "write", "base_argument": 1, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": false},
+        {"access": "write", "base_argument": 2, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": false},
+        {"access": "read", "base_argument": 4, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": false}
+      ],
+      "out_pointer_relations": [
+        {
+          "argument": 1,
+          "offset": 0,
+          "relation": "nullable_dynamic_pointer",
+          "pointee_shape": {
+            "kind": "null_terminated_pointer_vector",
+            "max_elements": 4096,
+            "element": {
+              "kind": "bounded_terminated",
+              "unit_bytes": 2,
+              "sentinel": [0, 0],
+              "max_units": 1048576
+            }
+          }
+        },
+        {
+          "argument": 2,
+          "offset": 0,
+          "relation": "nullable_dynamic_pointer",
+          "pointee_shape": {
+            "kind": "null_terminated_pointer_vector",
+            "max_elements": 4096,
+            "element": {
+              "kind": "bounded_terminated",
+              "unit_bytes": 2,
+              "sentinel": [0, 0],
+              "max_units": 1048576
+            }
+          }
+        }
+      ],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_isatty"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_setmode"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "_strdup"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 0, "offset": 0, "size": {"kind": "bounded_terminated", "source_argument": 0, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": false}
+      ],
+      "world_effect": "dynamicRanges"
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "VirtualQuery"},
       "override": true,
       "abi_template": "pe32-stdcall-v1",
@@ -277,6 +364,20 @@
       "world_effect": "none"
     },
     {
+      "import": {"dll": "msvcrt.dll", "symbol": "fputs"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 0, "offset": 0, "size": {"kind": "bounded_terminated", "source_argument": 0, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": false}
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
       "import": {"dll": "msvcrt.dll", "symbol": "fputc"},
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 2},
@@ -346,6 +447,18 @@
       "world_effect": "dynamicRanges"
     },
     {
+      "import": {"dll": "msvcrt.dll", "symbol": "isalpha"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
       "import": {"dll": "msvcrt.dll", "symbol": "putc"},
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 2},
@@ -355,6 +468,44 @@
       "memory_effect": "relationalState",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "perror"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 0, "offset": 0, "size": {"kind": "bounded_terminated", "source_argument": 0, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": true}
+      ],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "putchar"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "opaqueResources"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "puts"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "readOnly",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 0, "offset": 0, "size": {"kind": "bounded_terminated", "source_argument": 0, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": false}
+      ],
+      "world_effect": "opaqueResources"
     },
     {
       "import": {"dll": "msvcrt.dll", "symbol": "realloc"},
@@ -444,6 +595,21 @@
       ],
       "memory_effect": "relationalState",
       "memory_footprints": [],
+      "world_effect": "tlsState"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "strtol"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 3},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 0, "offset": 0, "size": {"kind": "bounded_terminated", "source_argument": 0, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": false},
+        {"access": "write", "base_argument": 1, "offset": 0, "size": {"kind": "fixed", "bytes": 4}, "nullable": true}
+      ],
       "world_effect": "tlsState"
     },
     {

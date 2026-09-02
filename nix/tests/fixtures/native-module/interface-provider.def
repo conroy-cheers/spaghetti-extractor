@@ -1,0 +1,8 @@
+LIBRARY fixture-provider.dll
+EXPORTS
+  FixtureCreate@4
+  FixtureProviderStaleCallCount@0
+  FixtureProviderTrace@0
+  FixtureProviderInvokeStaleCallback@0
+  FixtureProviderLastRecordInput@0
+  FixtureProviderLastRecordOutput@0

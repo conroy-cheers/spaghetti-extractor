@@ -510,6 +510,113 @@ class ISAConformanceUnicornTests(unittest.TestCase):
         self.assertEqual(observation.final_state.x87.registers[0], bytes(one))
 
     @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_recovers_x87_last_opcode_from_exact_decoded_instruction(self):
+        capability_issue = unicorn_x87_capability_detail()
+        if capability_issue:
+            self.skipTest(capability_issue)
+        payload = _case(case_id="x87-fld1-last-opcode")
+        payload["instruction_bytes"] = [0xD9, 0xE8]
+        payload["defined_outputs"]["x87"]["last_opcode"] = 0x7FF
+        expected_x87 = _x87_state()
+        expected_x87["last_opcode"] = 0x1E8
+        payload["expected"]["final_state"] = _state(
+            eip=0x00401002,
+            gprs=GPR_VALUES,
+            x87=expected_x87,
+        )
+        case = _corpus(payload).cases[0]
+
+        observation = run_unicorn_case(case)
+
+        self.assertEqual(observation.status, ObservationStatus.MATCH)
+        self.assertEqual(observation.final_state.x87.last_opcode, 0x1E8)
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_fninit_clears_last_opcode_instead_of_recording_its_opcode(self):
+        capability_issue = unicorn_x87_capability_detail()
+        if capability_issue:
+            self.skipTest(capability_issue)
+        payload = _case(case_id="x87-fninit-last-opcode")
+        payload["instruction_bytes"] = [0xDB, 0xE3]
+        payload["defined_outputs"]["x87"]["last_opcode"] = 0x7FF
+        payload["expected"]["final_state"] = _state(
+            eip=0x00401002,
+            gprs=GPR_VALUES,
+        )
+        case = _corpus(payload).cases[0]
+
+        observation = run_unicorn_case(case)
+
+        self.assertEqual(observation.status, ObservationStatus.MATCH)
+        self.assertEqual(observation.final_state.x87.last_opcode, 0)
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_fnstsw_preserves_saved_x87_instruction_and_data_pointers(self):
+        capability_issue = unicorn_x87_capability_detail()
+        if capability_issue:
+            self.skipTest(capability_issue)
+        initial_x87 = _x87_state()
+        initial_x87.update(
+            instruction_pointer=0x12345678,
+            data_pointer=0x9ABCDEF0,
+        )
+        expected_gprs = dict(GPR_VALUES)
+        expected_gprs["eax"] &= 0xFFFF0000
+        payload = _case(case_id="x87-fnstsw-saved-pointers")
+        payload["instruction_bytes"] = [0xDF, 0xE0]
+        payload["initial_state"] = _state(x87=initial_x87)
+        payload["defined_outputs"]["x87"]["instruction_pointer"] = 0xFFFFFFFF
+        payload["defined_outputs"]["x87"]["data_pointer"] = 0xFFFFFFFF
+        payload["expected"]["final_state"] = _state(
+            eip=0x00401002,
+            gprs=expected_gprs,
+            x87=initial_x87,
+        )
+        case = _corpus(payload).cases[0]
+
+        observation = run_unicorn_case(case)
+
+        self.assertEqual(
+            observation.status,
+            ObservationStatus.MATCH,
+            observation.detail,
+        )
+        self.assertEqual(
+            observation.final_state.x87.instruction_pointer,
+            initial_x87["instruction_pointer"],
+        )
+        self.assertEqual(
+            observation.final_state.x87.data_pointer,
+            initial_x87["data_pointer"],
+        )
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
+    def test_recovers_fop_for_x87_register_form_without_capstone_group(self):
+        capability_issue = unicorn_x87_capability_detail()
+        if capability_issue:
+            self.skipTest(capability_issue)
+        payload = _case(case_id="x87-fstp-st0-last-opcode")
+        payload["instruction_bytes"] = [0xDD, 0xD8]
+        payload["defined_outputs"]["x87"]["last_opcode"] = 0x7FF
+        expected_x87 = _x87_state()
+        expected_x87["last_opcode"] = 0x5D8
+        payload["expected"]["final_state"] = _state(
+            eip=0x00401002,
+            gprs=GPR_VALUES,
+            x87=expected_x87,
+        )
+        case = _corpus(payload).cases[0]
+
+        observation = run_unicorn_case(case)
+
+        self.assertEqual(
+            observation.status,
+            ObservationStatus.MATCH,
+            observation.detail,
+        )
+        self.assertEqual(observation.final_state.x87.last_opcode, 0x5D8)
+
+    @unittest.skipUnless(unicorn_available(), "optional Unicorn binding unavailable")
     def test_reports_a_distinguishable_divide_fault(self):
         payload = _case(case_id="divide-by-zero")
         payload["instruction_bytes"] = [0xF7, 0xF3]

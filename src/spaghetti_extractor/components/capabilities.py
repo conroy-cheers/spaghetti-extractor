@@ -10,96 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import IntEnum
 
-
-class CapabilityStatus(IntEnum):
-    OK = 0
-    FAULT = 1
-    EXPIRED = 2
-    UNSUPPORTED = 3
-    TYPE_MISMATCH = 4
+from ..semantic_objects.references import (
+    CapabilityStatus,
+    CheckedReference,
+    ReferencePermission,
+)
 
 
 class CapabilityLifecycle(IntEnum):
     UNBOUND = 0
     LIVE = 1
     EXPIRED = 2
-
-
-class ReferencePermission(IntEnum):
-    READ = 1
-    WRITE = 2
-
-
-@dataclass(frozen=True)
-class CheckedReference:
-    """Portable object-relative reference; never a machine or host pointer."""
-
-    domain: int
-    object_id: int
-    generation: int
-    offset: int
-    extent: int
-    permissions: int
-
-    @property
-    def is_null(self) -> bool:
-        return (
-            self.domain == 0
-            and self.object_id == 0
-            and self.generation == 0
-            and self.offset == 0
-            and self.extent == 0
-            and self.permissions == 0
-        )
-
-    def validate(
-        self,
-        *,
-        domain: int,
-        object_id: int,
-        generation: int,
-        extent: int,
-        required_permissions: int,
-        allow_one_past: bool = False,
-        nullable: bool = False,
-    ) -> CapabilityStatus:
-        if self.is_null:
-            return CapabilityStatus.OK if nullable else CapabilityStatus.FAULT
-        if self.domain != domain or self.object_id != object_id:
-            return CapabilityStatus.TYPE_MISMATCH
-        if self.generation != generation:
-            return CapabilityStatus.EXPIRED
-        if self.extent != extent or self.offset > extent:
-            return CapabilityStatus.FAULT
-        if self.offset == extent and not allow_one_past:
-            return CapabilityStatus.FAULT
-        if self.permissions & required_permissions != required_permissions:
-            return CapabilityStatus.TYPE_MISMATCH
-        return CapabilityStatus.OK
-
-    def derive(
-        self, delta: int, *, allow_one_past: bool = False
-    ) -> "CheckedReference":
-        if self.is_null or delta < 0:
-            raise ValueError(
-                "cannot derive from a null reference or by a negative delta"
-            )
-        offset = self.offset + delta
-        if offset > self.extent or (offset == self.extent and not allow_one_past):
-            raise ValueError("derived reference is outside its origin")
-        return replace(self, offset=offset)
-
-    def difference(self, other: "CheckedReference") -> int:
-        if (
-            self.is_null
-            or other.is_null
-            or self.domain != other.domain
-            or self.object_id != other.object_id
-            or self.generation != other.generation
-            or self.extent != other.extent
-        ):
-            raise ValueError("reference difference requires one live origin")
-        return self.offset - other.offset
 
 
 @dataclass(frozen=True)
@@ -269,7 +190,7 @@ def spx_reference_runtime_header() -> str:
 #include <stdint.h>
 
 #ifndef SPX_REF_V1_DEFINED
-typedef struct {
+typedef struct spx_ref_v1 {
   uint64_t domain;
   uint64_t object;
   uint64_t generation;
@@ -281,7 +202,10 @@ typedef struct {
 #endif
 
 #ifndef SPX_VIEW_V1_DEFINED
-typedef struct {
+typedef struct spx_view_v1 {
+  void *context;
+  uint32_t (*read_u8)(void *, uint32_t, uint8_t *);
+  uint32_t (*write_u8)(void *, uint32_t, uint8_t);
   spx_ref_v1 base;
   uint64_t extent;
   uint32_t element_width;
@@ -292,13 +216,14 @@ typedef struct {
 #define SPX_VIEW_V1_DEFINED 1
 #endif
 
-typedef enum spx_ref_status {
+typedef uint32_t spx_ref_status;
+enum {
   SPX_REF_OK = 0,
   SPX_REF_FAULT = 1,
   SPX_REF_EXPIRED = 2,
   SPX_REF_WRONG_ORIGIN = 3,
   SPX_REF_PERMISSION = 4
-} spx_ref_status;
+};
 
 spx_ref_status spx_ref_validate(
     spx_ref_v1 reference,

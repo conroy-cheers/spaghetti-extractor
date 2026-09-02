@@ -131,6 +131,40 @@ class TargetBundleLintTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "checked")
 
+    def test_accepts_operator_owned_library_provider_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_metadata(root)
+            provider = root / "intent" / "libraries" / "provider.json"
+            provider.parent.mkdir(parents=True)
+            provider.write_text("{}\n", encoding="ascii")
+            result = lint_target_bundle(
+                target_root=root,
+                target_id="fixture",
+                declared_assets=(
+                    _asset("target.json"),
+                    _asset("default.nix", "module"),
+                    _asset(
+                        "intent/libraries/provider.json",
+                        "library_provider",
+                    ),
+                ),
+                out=root.parent / f"{root.name}-lint.json",
+            )
+            self.assertEqual(result["status"], "checked")
+
+            with self.assertRaisesRegex(
+                TargetBundleLintError, "generated workspace"
+            ):
+                lint_target_bundle(
+                    target_root=root,
+                    target_id="fixture",
+                    declared_assets=(
+                        _asset("build/provider.json", "library_provider"),
+                    ),
+                    out=root.parent / f"{root.name}-lint.json",
+                )
+
     def test_rejects_malformed_or_mismatched_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

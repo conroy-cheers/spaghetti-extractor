@@ -90,6 +90,108 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(result["index"]["upper_exclusive"], 36)
         self.assertEqual(result["table"]["expression_form"], "multiply_4")
 
+    def test_guard_binds_exact_predecessor_register_output(self) -> None:
+        target_rvas = [0x1100, 0x1110]
+        selector = {"op": "reg", "name": "eax", "width": 32}
+        predecessor_value = {
+            "op": "load",
+            "width": 1,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "reg", "name": "esp", "width": 32},
+                    {"op": "const", "value": 28, "width": 32},
+                ],
+            },
+        }
+        expression = {
+            "op": "load",
+            "width": 4,
+            "address": {
+                "op": "add32",
+                "args": [
+                    {"op": "const", "value": IMAGE_BASE + TABLE_RVA, "width": 32},
+                    {
+                        "op": "mul32",
+                        "args": [selector, {"op": "const", "value": 4, "width": 32}],
+                    },
+                ],
+            },
+        }
+        predecessor = {
+            "source_unit_id": "guard",
+            "edge_kind": "fallthrough",
+            "guard": {
+                "op": "not",
+                "args": [{
+                    "op": "and_bool",
+                    "args": [
+                        {
+                            "op": "not",
+                            "args": [{
+                                "op": "eq",
+                                "args": [
+                                    {
+                                        "op": "and32",
+                                        "args": [
+                                            {"op": "const", "value": 0xFF, "width": 32},
+                                            {
+                                                "op": "sub32",
+                                                "args": [
+                                                    {
+                                                        "op": "and32",
+                                                        "args": [
+                                                            {"op": "const", "value": 0xFF, "width": 32},
+                                                            predecessor_value,
+                                                        ],
+                                                    },
+                                                    {"op": "const", "value": 1, "width": 32},
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                    {"op": "const", "value": 0, "width": 32},
+                                ],
+                            }],
+                        },
+                        {
+                            "op": "not",
+                            "args": [{
+                                "op": "ult32",
+                                "args": [
+                                    {
+                                        "op": "and32",
+                                        "args": [
+                                            {"op": "const", "value": 0xFF, "width": 32},
+                                            predecessor_value,
+                                        ],
+                                    },
+                                    {"op": "const", "value": 1, "width": 32},
+                                ],
+                            }],
+                        },
+                    ],
+                }],
+            },
+            "register_outputs": [
+                {"register": "eax", "value": predecessor_value}
+            ],
+            "instructions": [],
+        }
+
+        result = recover_static_pe32_jump_table_inventory(
+            target_expression=expression,
+            predecessor_evidence=[predecessor],
+            image_base=IMAGE_BASE,
+            sections=_sections(),
+            read_rva=_reader(_table_bytes(target_rvas)),
+            valid_target_rvas=set(target_rvas),
+        )
+
+        self.assertEqual(result["status"], "recovered")
+        self.assertEqual(result["index"]["values"], [0, 1])
+        self.assertEqual(result["target_rvas"], target_rvas)
+
     def test_recovers_immutable_byte_remapped_index(self) -> None:
         target_rvas = [0x1100, 0x1110, 0x1120]
         remap_rva = TABLE_RVA + len(target_rvas) * 4

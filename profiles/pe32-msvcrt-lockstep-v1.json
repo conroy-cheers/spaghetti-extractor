@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-external-environment-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-msvcrt-lockstep-v1",
-  "default_callback_effect": "none",
   "machine_import_call_contracts": [
     {
       "id": 0,
@@ -31,14 +30,27 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {"kind": "argument_word", "argument": 0},
-      "callback_lifetime": "until_invoked_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 0,
-        "stack_cleanup_bytes": 0,
-        "nullable": false
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "msvcrt-atexit-handler",
+        "action": "register",
+        "source": {"kind": "argument_word", "argument": 0, "sentinels": []},
+        "signature": {
+          "abi_template": "pe32-cdecl-v1",
+          "argument_words": 0,
+          "stack_cleanup_bytes": 0,
+          "result": {"kind": "void"}
+        },
+        "instance": {"kind": "registration_sequence"},
+        "previous_result": null,
+        "lifetime": {"kind": "one_shot_or_process_exit"},
+        "delivery": {"timing": "deferred", "thread": "provider_serialized"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": 1,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": null
       }
     },
     {
@@ -204,6 +216,15 @@
           "offset": 0,
           "size": {"kind": "argument", "argument": 2, "scale": 1},
           "nullable": false
+        }
+      ],
+      "memory_relations": [
+        {
+          "kind": "byte_copy",
+          "destination_argument": 0,
+          "source_argument": 1,
+          "size_argument": 2,
+          "scale": 1
         }
       ],
       "world_effect": "none"
@@ -852,6 +873,31 @@
     {
       "id": 38,
       "import": {"dll": "msvcrt.dll", "symbol": "isprint"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 1,
+      "result_register_relations": [
+        {"register": "eax", "relation": "exact"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 39,
+      "import": {"dll": "msvcrt.dll", "symbol": "___lc_codepage_func"},
+      "abi_template": "pe32-cdecl-v1",
+      "argument_words": 0,
+      "dynamic_export": {"kind": "code"},
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "none"
+    },
+    {
+      "id": 40,
+      "import": {"dll": "msvcrt.dll", "symbol": "isspace"},
       "abi_template": "pe32-cdecl-v1",
       "argument_words": 1,
       "result_register_relations": [

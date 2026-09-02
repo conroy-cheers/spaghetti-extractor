@@ -24,7 +24,15 @@ from spaghetti_extractor.libraries.v4_record_support import canonical_sha256
 from spaghetti_extractor.target_bundles.library_status_v4 import (
     build_library_status_v4,
 )
-from spaghetti_extractor.util import write_json
+from spaghetti_extractor.semantic_link.module_v2 import LinkedSemanticModuleV2
+from spaghetti_extractor.semantic_providers.qualification_v2 import (
+    build_semantic_provider_qualification_v2,
+)
+from spaghetti_extractor.semantic_providers.slices_v2 import (
+    SemanticSliceV2,
+    build_semantic_slice_v2,
+)
+from spaghetti_extractor.util import json_dumps, sha256_text, write_json
 
 
 def _fixture(root: Path):
@@ -125,7 +133,7 @@ def _fixture(root: Path):
     return implementation, island, release_root, intent, receipt
 
 
-def _component(
+def _provider(
     root: Path,
     *,
     implementation: ReusableLibraryImplementationV1,
@@ -133,32 +141,64 @@ def _component(
     receipt: CheckedLibraryIslandV1,
     receipt_sha256: str | None = None,
 ) -> Path:
-    output = root / "component"
+    output = root / "provider"
     output.mkdir()
-    core = {
-        "format": "spaghetti-extractor-generated-library-component-v1",
+    definition_id = f"semantic-definition-v2:{'8' * 64}"
+    module = LinkedSemanticModuleV2(payload={
+        "linked_semantic_module_sha256": "9" * 64,
         "status": "complete",
-        "component_id": "portable.increment",
-        "target_id": "fixture",
-        "island_id": island.island_id,
-        "implementation_id": implementation.implementation_id,
-        "unit_ids": list(island.target_unit_ids),
-        "operation_ids": list(island.operation_ids),
-        "bindings": {
-            "target_binary_sha256": "1" * 64,
-            "machine_ir_sha256": receipt.machine_ir_sha256,
-            "checked_island_receipt_sha256": (
-                receipt.receipt_sha256
-                if receipt_sha256 is None
-                else receipt_sha256
-            ),
-        },
-        "issues": [],
-        "policy": {},
-    }
+        "semantic_holes": [],
+        "definitions": [{
+            "definition_id": definition_id,
+            "symbol_id": f"original:function:{island.target_unit_ids[0]}",
+            "definition_kind": "transfer_v2",
+            "definition_sha256": "a" * 64,
+            "dependency_contract_sha256s": [],
+        }],
+        "definition_requirements": [{
+            "definition_id": definition_id,
+            "symbol_id": f"original:function:{island.target_unit_ids[0]}",
+            "allowed_provider_kinds": ["qualified_portable_c"],
+            "dependency_contract_sha256s": [],
+        }],
+        "residual_obligations": [],
+    })
+    semantic_slice = SemanticSliceV2.parse(build_semantic_slice_v2(
+        linked_semantic_module=module, definition_ids=[definition_id]
+    ))
+    facets = [{
+        "name": name,
+        "status": "checked",
+        "receipt_sha256": "b" * 64,
+    } for name in (
+        "compile", "contextual_refinement", "induction", "lifecycle",
+        "native_objects", "object_binding", "ownership", "relations",
+        "services", "source",
+    )]
+    provenance_sha256 = (
+        sha256_text(json_dumps(receipt.to_payload()) + "\n")
+        if receipt_sha256 is None else receipt_sha256
+    )
+    payload = build_semantic_provider_qualification_v2(
+        semantic_slice=semantic_slice,
+        provider_id="fixture.library.increment.portable-c",
+        provider_kind="qualified_portable_c",
+        provider_artifact_sha256="c" * 64,
+        facets=facets,
+        definition_materializations=[{
+            "definition_id": definition_id,
+            "native_symbol": "portable_increment",
+            "source_sha256s": ["d" * 64],
+            "object_sha256s": ["e" * 64],
+        }],
+        tool_sha256s=["f" * 64],
+        dependencies=[
+            "provider-provenance:checked-library-island:"
+            + provenance_sha256
+        ],
+    )
     write_json(
-        output / "library-component.json",
-        {**core, "package_sha256": canonical_sha256(core)},
+        output / "semantic-provider-qualification.json", payload,
     )
     return output
 
@@ -194,15 +234,15 @@ class LibraryStatusV4Tests(unittest.TestCase):
             {issue["code"] for issue in result["selections"][0]["issues"]},
             {
                 "checked_island_receipt_missing",
-                "generated_library_component_missing",
+                "library_semantic_provider_missing",
             },
         )
 
-    def test_exact_checked_component_makes_adoption_ready(self) -> None:
+    def test_exact_checked_provider_makes_adoption_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             implementation, island, releases, intent, receipt = _fixture(root)
-            component = _component(
+            provider = _provider(
                 root,
                 implementation=implementation,
                 island=island,
@@ -213,18 +253,18 @@ class LibraryStatusV4Tests(unittest.TestCase):
                 release_hypotheses=releases,
                 adoption_intents=(intent,),
                 checked_islands=(receipt,),
-                generated_components=(component,),
+                provider_qualifications=(provider,),
                 implementations=(implementation,),
                 out=root / "status.json",
             )
         self.assertEqual(result["adoption_status"], "ready")
         self.assertEqual(result["counts"]["ready_adoptions"], 1)
 
-    def test_stale_generated_component_is_violated_at_the_intent(self) -> None:
+    def test_stale_semantic_provider_is_violated_at_the_intent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             implementation, island, releases, intent, receipt = _fixture(root)
-            component = _component(
+            provider = _provider(
                 root,
                 implementation=implementation,
                 island=island,
@@ -236,14 +276,14 @@ class LibraryStatusV4Tests(unittest.TestCase):
                 release_hypotheses=releases,
                 adoption_intents=(intent,),
                 checked_islands=(receipt,),
-                generated_components=(component,),
+                provider_qualifications=(provider,),
                 implementations=(implementation,),
                 out=root / "status.json",
             )
         self.assertEqual(result["adoption_status"], "violated")
         self.assertEqual(
             result["selections"][0]["issues"][0]["code"],
-            "generated_library_component_stale",
+            "library_semantic_provider_stale",
         )
 
 

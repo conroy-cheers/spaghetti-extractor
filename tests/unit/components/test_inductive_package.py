@@ -25,7 +25,6 @@ from .test_inductive_relation import _interface, _operation, _register
 def _semantic_contract() -> dict[str, object]:
     interface = _interface()
     core: dict[str, object] = {
-        "format": "spaghetti-extractor-component-semantic-contract-v1",
         "status": "satisfied",
         "component_id": "countdown-component",
         "bindings": {

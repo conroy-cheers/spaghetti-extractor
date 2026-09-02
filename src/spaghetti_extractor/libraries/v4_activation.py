@@ -1,31 +1,23 @@
 """Fail-closed activation of one recognized library island.
 
-Identity matching is proposal evidence.  This checker is the authority boundary:
-it rebinds an operator intent to the exact island, checks every structural
-crossing, consumes canonical external-site and indirect-target authority, and
-requires one qualified reusable implementation covering every operation.
+Identity matching is proposal evidence.  This checker rebinds an operator
+intent to the exact island and checks every structural crossing directly
+against executable-transfer-plan-v2 and resolved-external-environment-v1.
+No parallel external-site or indirect-target authority graph is accepted.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping
+import json
 from pathlib import Path
 from typing import Any
 
-from ..artifacts.formats import (
-    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
-)
-from ..artifacts.io import open_artifact_reader_v3
-from ..authority.target_certificate_records import (
-    INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
-    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
-    IndirectTargetCertificateV3,
-)
-from ..external.site_authority import read_canonical_external_sites
-from ..abi.matching import read_abi_match_resolution
+from ..external.resolved import ResolvedExternalEnvironmentV1
+from ..semantic_link.module_v2_codec import LinkedSemanticModuleV2
+from ..transfer.plan import load_executable_transfer_plan
+from ..util import sha256_file
 from .abi_catalog import CATALOG_SEARCH_INDEX_CODEC_V3, CatalogSearchIndexV3
-from .matching_support import load_machine_package
 from .v4_adoption_records import (
     CHECKED_LIBRARY_ISLAND_CODEC_V1,
     LIBRARY_ADOPTION_INTENT_CODEC_V1,
@@ -61,23 +53,6 @@ def _issue(
     )
 
 
-def _abi_id(payload: Mapping[str, Any]) -> str | None:
-    direct = payload.get("abi_profile_id")
-    if isinstance(direct, str) and direct:
-        return direct
-    contract = payload.get("machine_contract")
-    if isinstance(contract, Mapping):
-        template = contract.get("abi_template")
-        if isinstance(template, str) and template:
-            return template
-    envelope = payload.get("abi_envelope")
-    if isinstance(envelope, Mapping):
-        identity = envelope.get("id")
-        if isinstance(identity, str) and identity:
-            return identity
-    return None
-
-
 def _edge_id(
     *, kind: str, direction: str, source: str, target: str, abi_id: str | None
 ) -> str:
@@ -94,24 +69,29 @@ def _edge_id(
 
 
 def _direct_crossings(
-    machine: Any, island_ids: set[str]
+    transfers: tuple[Any, ...], island_ids: set[str]
 ) -> tuple[tuple[str, str, str, str, str, str | None], ...]:
-    starts = {unit.start: unit for unit in machine.units}
+    starts = {transfer.rva_start: transfer for transfer in transfers}
     edges: dict[str, tuple[str, str, str, str | None]] = {}
-    for unit in machine.units:
-        control = unit.payload.get("control")
-        if not isinstance(control, Mapping):
+    for transfer in transfers:
+        if not transfer.actions:
             continue
-        targets = control.get("direct_targets")
-        if not isinstance(targets, list):
-            continue
-        source_inside = unit.identity in island_ids
-        kind_value = control.get("kind")
-        kind = "call" if isinstance(kind_value, str) and "call" in kind_value else "control"
-        abi_id = _abi_id(control) if kind == "call" else None
-        for target in targets:
-            if isinstance(target, bool) or not isinstance(target, int):
-                continue
+        outcome = transfer.actions[-1]
+        control_targets = (
+            outcome.args[:1]
+            if outcome.op in {"outcome_fallthrough", "outcome_jump"}
+            else outcome.args[1:3] if outcome.op == "outcome_branch" else ()
+        )
+        targets = [
+            *(('control', target, None) for target in control_targets),
+            *(
+                ('call', call.target_rva, None)
+                for call in transfer.calls
+                if call.kind == "internal_call"
+            ),
+        ]
+        source_inside = transfer.identity in island_ids
+        for kind, target, abi_id in targets:
             destination = starts.get(target)
             destination_inside = destination is not None and destination.identity in island_ids
             if source_inside == destination_inside:
@@ -123,67 +103,95 @@ def _direct_crossings(
             edge = _edge_id(
                 kind=kind,
                 direction=direction,
-                source=unit.identity,
+                source=transfer.identity,
                 target=destination_id,
                 abi_id=abi_id,
             )
-            edges[edge] = (kind, direction, unit.identity, destination_id, abi_id)
+            edges[edge] = (
+                kind, direction, transfer.identity, destination_id, abi_id
+            )
     return tuple(
         (edge_id, kind, direction, source, target, abi_id)
         for edge_id, (kind, direction, source, target, abi_id) in sorted(edges.items())
     )
 
 
-def _external_sites(
-    root: Path | str,
-) -> tuple[dict[str, tuple[Any, ...]], str]:
-    reader = open_artifact_reader_v3(root)
-    if reader.manifest.artifact_kind != CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3:
-        raise ValueError("library boundary requires canonical-external-sites-v3")
-    by_unit: dict[str, list[Any]] = defaultdict(list)
-    for site in read_canonical_external_sites(root).values():
-        by_unit[site.unit_id].append(site)
-    return (
-        {
-            unit_id: tuple(sorted(rows, key=lambda item: item.site_id))
-            for unit_id, rows in by_unit.items()
-        },
-        reader.manifest_sha256,
-    )
+def _external_identity_key(
+    *, dll: object, symbol: object, ordinal: object
+) -> tuple[str, str, int | None] | None:
+    if (
+        not isinstance(dll, str)
+        or not dll
+        or (symbol is None) == (ordinal is None)
+        or (symbol is not None and (not isinstance(symbol, str) or not symbol))
+        or (
+            ordinal is not None
+            and (
+                not isinstance(ordinal, int)
+                or isinstance(ordinal, bool)
+                or ordinal < 0
+            )
+        )
+    ):
+        return None
+    return (dll.lower(), "" if symbol is None else symbol, ordinal)
 
 
-def _target_certificates(
-    root: Path | str,
-) -> tuple[dict[str, tuple[IndirectTargetCertificateV3, ...]], str]:
-    reader = open_artifact_reader_v3(root)
-    if reader.manifest.artifact_kind != INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3:
-        raise ValueError("library boundary requires indirect-target-certificates-v3")
-    result = {}
-    for record in reader.iter_records():
-        unit = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(record).value
-        result[unit.source_unit_id] = unit.certificates
-    return result, reader.manifest_sha256
+def _resolved_external_contracts(
+    environment: ResolvedExternalEnvironmentV1,
+) -> dict[tuple[str, str, int | None], Mapping[str, Any]]:
+    result: dict[tuple[str, str, int | None], Mapping[str, Any]] = {}
+    for raw in environment.payload["machine_import_contracts"]:
+        if not isinstance(raw, Mapping) or not isinstance(
+            raw.get("identity"), Mapping
+        ):
+            raise ValueError("resolved machine-import contract is malformed")
+        identity = raw["identity"]
+        key = _external_identity_key(
+            dll=identity.get("dll"),
+            symbol=identity.get("symbol"),
+            ordinal=identity.get("ordinal"),
+        )
+        if (
+            key is None
+            or key in result
+            or not isinstance(raw.get("contract"), Mapping)
+            or not isinstance(raw.get("boundary"), Mapping)
+        ):
+            raise ValueError(
+                "resolved machine-import contracts are incomplete or duplicated"
+            )
+        result[key] = raw
+    return result
 
 
-def _external_event_count(unit: Any) -> int:
-    semantics = unit.payload.get("semantics")
-    events = semantics.get("external_events") if isinstance(semantics, Mapping) else None
-    return len(events) if isinstance(events, list) else 0
+def _finite_route_index(
+    transfer_payload: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    rows = transfer_payload.get("finite_control_routes")
+    if not isinstance(rows, list):
+        raise ValueError("transfer plan finite-control routes are malformed")
+    result: dict[str, Mapping[str, Any]] = {}
+    for raw in rows:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("unit_id"), str):
+            raise ValueError("transfer plan finite-control route is malformed")
+        unit_id = str(raw["unit_id"])
+        if unit_id in result:
+            raise ValueError("transfer plan finite-control routes are duplicated")
+        result[unit_id] = raw
+    return result
 
 
 def check_library_island_v1(
     *,
     target_id: str,
-    machine_ir: Path | str,
+    linked_semantic_module: LinkedSemanticModuleV2 | Path | str,
     release_hypotheses: Path | str,
     island_id: str,
     adoption_intent: LibraryAdoptionIntentV1 | Path | str,
     implementation: ReusableLibraryImplementationV1 | Path | str,
     catalog_search_index: CatalogSearchIndexV3 | Path | str,
-    canonical_external_sites: Path | str,
-    target_certificates: Path | str,
     out: Path | str,
-    abi_match_resolution: Path | str | None = None,
 ) -> CheckedLibraryIslandV1:
     """Check one adoption without executing either the target or candidate."""
 
@@ -209,19 +217,35 @@ def check_library_island_v1(
         if isinstance(catalog_search_index, CatalogSearchIndexV3)
         else CATALOG_SEARCH_INDEX_CODEC_V3.read(catalog_search_index)
     )
-    abi_resolution = (
-        None
-        if abi_match_resolution is None
-        else read_abi_match_resolution(abi_match_resolution)
+    linked = (
+        linked_semantic_module
+        if isinstance(linked_semantic_module, LinkedSemanticModuleV2)
+        else LinkedSemanticModuleV2.load(Path(linked_semantic_module))
     )
-    abi_bindings = {
-        str(row.get("match_id")): row
-        for row in (() if abi_resolution is None else abi_resolution["bindings"])
-        if isinstance(row, Mapping)
-    }
-    machine = load_machine_package(Path(machine_ir))
-    sites_by_unit, external_manifest_sha256 = _external_sites(canonical_external_sites)
-    certificates_by_unit, target_manifest_sha256 = _target_certificates(target_certificates)
+    transfer_path = linked.require_member("transfer_plan")
+    resolved_external_environment = linked.require_member(
+        "resolved_external_environment"
+    )
+    transfer_payload, transfers = load_executable_transfer_plan(
+        transfer_path, require_complete=True
+    )
+    transfer_bindings = transfer_payload["bindings"]
+    transfers_by_id = {item.identity: item for item in transfers}
+    environment = (
+        resolved_external_environment
+        if isinstance(
+            resolved_external_environment, ResolvedExternalEnvironmentV1
+        )
+        else ResolvedExternalEnvironmentV1.parse(
+            json.loads(
+                Path(resolved_external_environment).read_text(encoding="utf-8")
+            )
+        )
+    )
+    if environment.payload["status"] != "complete":
+        raise ValueError("library boundary requires a complete resolved environment")
+    external_contracts = _resolved_external_contracts(environment)
+    finite_routes = _finite_route_index(transfer_payload)
     issues = [issue for issue in island.issues if issue.family == "identity"]
 
     if intent.target_id != target_id or island.target_id != target_id:
@@ -264,8 +288,29 @@ def check_library_island_v1(
                 f"intent:{intent.intent_id}",
             )
         )
+    if release.target_binary_sha256 != transfer_bindings["pe_sha256"]:
+        issues.append(
+            _issue(
+                "identity",
+                "violated",
+                "library_transfer_plan_target_stale",
+                "recognized library island belongs to another PE",
+                f"island:{island.island_id}",
+            )
+        )
+    environment_bindings = environment.payload["bindings"]
+    if environment_bindings["module_pe_sha256"] != transfer_bindings["pe_sha256"]:
+        issues.append(
+            _issue(
+                "identity",
+                "violated",
+                "library_resolved_environment_target_stale",
+                "resolved environment belongs to another PE",
+                f"island:{island.island_id}",
+            )
+        )
 
-    missing_units = sorted(set(island.target_unit_ids) - set(machine.by_id))
+    missing_units = sorted(set(island.target_unit_ids) - set(transfers_by_id))
     if missing_units:
         issues.append(
             _issue(
@@ -277,32 +322,15 @@ def check_library_island_v1(
             )
         )
     island_ids = set(island.target_unit_ids)
-    direct_crossings = () if missing_units else _direct_crossings(machine, island_ids)
+    direct_crossings = (
+        () if missing_units else _direct_crossings(transfers, island_ids)
+    )
     boundary_ids = {
         edge_id for edge_id, _kind, _direction, _source, _target, _abi in direct_crossings
     }
     catalog_functions = {row.function_id: row for row in catalog.functions}
-    catalog_abi_by_unit = {
-        unit_id: (
-            (
-                binding.get("profile", {}).get("id")
-                if isinstance(binding.get("profile"), Mapping)
-                else None
-            )
-            if (binding := abi_bindings.get(match.match_id)) is not None
-            and binding.get("status") == "complete"
-            else catalog_functions[match.catalog_function_id].abi_profile_id
-            if abi_resolution is None
-            else None
-        )
-        for release_island in release.islands
-        for match in release_island.matches
-        if match.catalog_function_id in catalog_functions
-        for unit_id in match.target_unit_ids
-    }
     for edge_id, kind, _direction, _source, target, abi_id in direct_crossings:
-        inferred_abi = abi_id or catalog_abi_by_unit.get(target)
-        if kind == "call" and inferred_abi is None:
+        if kind == "call" and abi_id is None:
             issues.append(
                 _issue(
                     "boundary",
@@ -314,77 +342,78 @@ def check_library_island_v1(
             )
 
     for unit_id in sorted(island_ids - set(missing_units)):
-        unit = machine.by_id[unit_id]
-        expected_events = _external_event_count(unit)
-        sites = sites_by_unit.get(unit_id, ())
-        event_indexes = {site.event_index for site in sites}
-        for event_index in range(expected_events):
-            if event_index not in event_indexes:
+        transfer = transfers_by_id[unit_id]
+        for call in transfer.calls:
+            if call.kind != "external_call":
+                continue
+            key = _external_identity_key(
+                dll=call.dll, symbol=call.symbol, ordinal=call.ordinal
+            )
+            edge_id = stable_id(
+                "library-external-call-v1",
+                {
+                    "unit_id": unit_id,
+                    "event_index": call.call_index,
+                    "dll": call.dll,
+                    "symbol": call.symbol,
+                    "ordinal": call.ordinal,
+                },
+            )
+            boundary_ids.add(edge_id)
+            if key is None or key not in external_contracts:
                 issues.append(
                     _issue(
                         "boundary",
                         "incomplete",
-                        "canonical_external_site_missing",
-                        "an exact external event has no canonical site authority",
-                        f"unit:{unit_id}/event:{event_index}",
-                    )
-                )
-        for site in sites:
-            boundary_ids.add(site.site_id)
-            if not site.authorizing or site.status != "complete" or site.contract is None:
-                issues.append(
-                    _issue(
-                        "boundary",
-                        "violated" if site.status == "violated" else "incomplete",
-                        "canonical_external_site_not_complete",
-                        "external crossing requires a complete canonical machine contract",
-                        f"external-site:{site.site_id}",
+                        "resolved_external_contract_missing",
+                        "external crossing has no checked resolved-environment contract",
+                        f"unit:{unit_id}/event:{call.call_index}",
                     )
                 )
 
-        control = unit.payload.get("control")
-        has_indirect = isinstance(control, Mapping) and control.get("has_indirect_target") is True
-        certificates = certificates_by_unit.get(unit_id, ())
-        if has_indirect and not certificates:
+        has_indirect = (
+            bool(transfer.actions)
+            and transfer.actions[-1].op == "outcome_indirect"
+        )
+        route = finite_routes.get(unit_id)
+        if has_indirect and route is None:
             issues.append(
                 _issue(
                     "boundary",
                     "incomplete",
-                    "indirect_target_certificate_missing",
-                    "indirect island exit lacks a checked finite target certificate",
+                    "finite_control_route_missing",
+                    "indirect island exit lacks a checked finite transfer route",
                     f"unit:{unit_id}",
                 )
             )
-        for certificate in certificates:
-            boundary_ids.add(certificate.certificate_id)
-            if not certificate.authorizing or certificate.status != "complete":
-                issues.append(
-                    _issue(
-                        "boundary",
-                        "violated" if certificate.status == "violated" else "incomplete",
-                        "indirect_target_certificate_not_complete",
-                        "indirect island exit does not have complete target authority",
-                        f"indirect-exit:{certificate.exit_id}",
-                    )
-                )
+        elif route is not None:
+            boundary_ids.add(str(route["route_inventory_sha256"]))
 
-    for source_unit_id, certificates in sorted(certificates_by_unit.items()):
-        if source_unit_id in island_ids:
+    island_rvas = {transfers_by_id[unit_id].rva_start for unit_id in island_ids}
+    for source in transfers:
+        if source.identity in island_ids or not source.actions:
             continue
-        for certificate in certificates:
-            if not set(certificate.target_unit_ids).intersection(island_ids):
-                continue
-            boundary_ids.add(certificate.certificate_id)
-            if not certificate.authorizing or certificate.status != "complete":
-                issues.append(
-                    _issue(
-                        "boundary",
-                        "violated" if certificate.status == "violated" else "incomplete",
-                        "inbound_indirect_target_not_complete",
-                        "an inbound indirect transfer to the island is not fully checked",
-                        f"indirect-exit:{certificate.exit_id}",
-                    )
+        if source.actions[-1].op != "outcome_indirect":
+            continue
+        route = finite_routes.get(source.identity)
+        if route is None:
+            issues.append(
+                _issue(
+                    "boundary",
+                    "incomplete",
+                    "inbound_indirect_universe_unresolved",
+                    "an external indirect transfer has no finite route proving it cannot enter the island",
+                    f"unit:{source.identity}",
                 )
+            )
+            continue
+        targets = {
+            int(row["target_rva"])
+            for row in route["routes"]
+            if isinstance(row, Mapping) and isinstance(row.get("target_rva"), int)
+        }
+        if targets & island_rvas:
+            boundary_ids.add(str(route["route_inventory_sha256"]))
 
     implementation_operations = {
         mapping.operation_id
@@ -446,41 +475,13 @@ def check_library_island_v1(
                     f"catalog-function:{function_id}",
                 )
             )
-        elif abi_resolution is not None:
-            matching_bindings = [
-                abi_bindings.get(match.match_id)
-                for match in island.matches
-                if match.catalog_function_id == function_id
-            ]
-            complete = [
-                row
-                for row in matching_bindings
-                if isinstance(row, Mapping)
-                and row.get("status") == "complete"
-                and isinstance(row.get("profile"), Mapping)
-            ]
-            if len(complete) != 1:
-                statuses = sorted(
-                    str(row.get("status"))
-                    for row in matching_bindings
-                    if isinstance(row, Mapping)
-                )
-                issues.append(
-                    _issue(
-                        "boundary",
-                        "violated" if "violated" in statuses else "incomplete",
-                        "catalog_operation_physical_abi_unresolved",
-                        "recognized operation lacks one complete canonical physical ABI binding",
-                        f"catalog-function:{function_id}",
-                    )
-                )
-        elif function.abi_profile_id is None:
+        else:
             issues.append(
                 _issue(
                     "boundary",
                     "incomplete",
-                    "catalog_operation_abi_missing",
-                    "recognized operation lacks a machine-level ABI profile",
+                    "target_operation_physical_abi_unresolved",
+                    "recognized operation lacks physical ABI authority from the linked semantic module",
                     f"catalog-function:{function_id}",
                 )
             )
@@ -488,7 +489,7 @@ def check_library_island_v1(
     receipt = CheckedLibraryIslandV1.create(
         target_id=target_id,
         target_binary_sha256=release.target_binary_sha256,
-        machine_ir_sha256=machine.ir_sha256,
+        machine_ir_sha256=str(transfer_bindings["machine_ir_sha256"]),
         island_id=island.island_id,
         hypotheses_sha256=release.hypotheses_sha256,
         implementation_id=checked_implementation.implementation_id,
@@ -498,19 +499,15 @@ def check_library_island_v1(
         checked_operation_ids=island.operation_ids,
         checked_boundary_edge_ids=boundary_ids,
         dependency_sha256s=(
-            machine.ir_sha256,
+            sha256_file(transfer_path),
+            str(transfer_bindings["machine_ir_sha256"]),
             catalog.index_sha256,
             checked_implementation.implementation_sha256,
             implementation_pack_sha256
             or checked_implementation.implementation_sha256,
             intent.intent_sha256,
-            external_manifest_sha256,
-            target_manifest_sha256,
-            *(
-                ()
-                if abi_resolution is None
-                else (str(abi_resolution["resolution_sha256"]),)
-            ),
+            environment.identity,
+            str(transfer_bindings["finite_control_routes_sha256"]),
         ),
         issues=issues,
     )

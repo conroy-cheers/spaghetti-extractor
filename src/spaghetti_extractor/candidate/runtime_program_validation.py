@@ -1,4 +1,4 @@
-"""Interpreter program validation for native runtime planning."""
+"""Transfer-plan metadata validation for shared module runtime planning."""
 
 from __future__ import annotations
 
@@ -6,17 +6,18 @@ import json
 import re
 from typing import Any, Mapping
 
-from ..artifacts.formats import SPX_INTERPRETER_PROGRAM_FORMAT
 from ..util import sha256_bytes
-from .interpreter_model import (
-    SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS,
+from ..transfer.model import _Transfer
+from ..transfer.formats import TRANSFER_DEFINEDNESS_USE_FORMAT
+from ..transfer.model import (
+    TRANSFER_DEFINEDNESS_USE_FIELDS,
 )
 from .runtime_model import (
-    DEFINEDNESS_USE_FORMAT,
     NativeUndefinedPolicy,
     CandidateRuntimeError,
-    _InterpreterTransferBinding,
+    _TransferBinding,
     _MACHINE_IR_INPUT_MODE,
+    _TRANSFER_PLAN_INPUT_MODE,
 )
 from .runtime_values import (
     _required_count,
@@ -28,108 +29,156 @@ from .runtime_values import (
 )
 
 
-def _validate_program_manifest(
-    payload: dict[str, Any], state_machine_sha256: str
+def validate_transfer_plan_runtime_metadata(
+    payload: Mapping[str, Any], transfers: tuple[_Transfer, ...]
 ) -> tuple[
     tuple[int, ...],
-    tuple[_InterpreterTransferBinding, ...],
+    tuple[_TransferBinding, ...],
     tuple[NativeUndefinedPolicy, ...],
     str | None,
 ]:
-    if payload.get("format") != SPX_INTERPRETER_PROGRAM_FORMAT:
-        raise CandidateRuntimeError("interpreter program has an unsupported format")
-    if payload.get("state_machine_sha256") != state_machine_sha256:
-        raise CandidateRuntimeError(
-            "interpreter package and program bind different state machines"
-        )
-    if payload.get("status") != "ready" or payload.get("blockers") != []:
-        raise CandidateRuntimeError("interpreter program is not runnable")
-    _validate_complete_semantic_coverage(payload, label="interpreter program")
-    transfers = _required_list(payload.get("transfers"), "interpreter transfers")
-    rvas: list[int] = []
-    bindings: list[_InterpreterTransferBinding] = []
-    for index, raw in enumerate(transfers):
-        transfer = _required_object(raw, f"interpreter transfer {index}")
-        unit_id = _required_string(
-            transfer.get("id"), f"interpreter transfer {index} id"
-        )
-        _required_sha256(
-            transfer.get("contract_sha256"),
-            f"interpreter transfer {index} contract SHA-256",
-        )
-        source_digest = transfer.get("source_span_sha256")
-        if source_digest is None:
-            source_digest = transfer.get("instruction_bytes_sha256")
-        _required_sha256(
-            source_digest,
-            f"interpreter transfer {index} source-span SHA-256",
-        )
-        rva = _required_u32(
-            transfer.get("rva_start"), f"interpreter transfer {index} RVA"
-        )
-        rvas.append(rva)
-        bindings.append(_InterpreterTransferBinding(unit_id=unit_id, rva=rva))
+    """Project runtime-only inventory from an already validated transfer plan."""
+
+    rvas = tuple(row.rva_start for row in transfers)
     if not rvas:
-        raise CandidateRuntimeError("interpreter transfer table is empty")
-    if (
-        rvas != sorted(rvas)
-        or len(set(rvas)) != len(rvas)
-        or len({binding.unit_id for binding in bindings}) != len(bindings)
-    ):
-        raise CandidateRuntimeError(
-            "interpreter transfer table must be strictly sorted and unique"
-        )
-    counts = _required_object(payload.get("counts"), "interpreter counts")
-    if _required_count(counts.get("transfers"), "interpreter transfer count") != len(rvas):
-        raise CandidateRuntimeError(
-            "interpreter transfer count does not match its inventory"
-        )
-    if (
-        _required_count(
-            counts.get("input_transfers"), "interpreter input-transfer count"
-        )
-        != len(rvas)
-        or _required_count(
-            counts.get("blocked_transfers"), "interpreter blocked-transfer count"
-        )
-        != 0
-    ):
-        raise CandidateRuntimeError(
-            "interpreter transfer scope does not match its inventory"
-        )
-    capability = _required_object(payload.get("capability"), "interpreter capability")
-    word_ops = _required_list(capability.get("word_ops"), "interpreter word ops")
-    has_undefined = any(op in {"undefined_bv", "undefined_flag"} for op in word_ops)
-    policies, metadata_sha256 = _validate_definedness_use(
-        payload,
-        state_machine_sha256=state_machine_sha256,
-        transfer_rows=transfers,
-        transfer_ids={
-            _required_string(
-                _required_object(raw, f"interpreter transfer {index}").get("id"),
-                f"interpreter transfer {index} id",
-            )
-            for index, raw in enumerate(transfers)
-        },
-        required=has_undefined,
+        raise CandidateRuntimeError("executable transfer plan has no transfers")
+    bindings = tuple(
+        _TransferBinding(unit_id=row.identity, rva=row.rva_start)
+        for row in transfers
     )
-    return tuple(rvas), tuple(bindings), policies, metadata_sha256
-
-
-def _validate_complete_semantic_coverage(
-    payload: Mapping[str, Any],
-    *,
-    label: str,
-) -> None:
-    coverage = _required_object(payload.get("semantic_coverage"), f"{label} coverage")
+    diagnostics = _required_object(
+        payload.get("diagnostics"), "transfer-plan diagnostics"
+    )
+    definedness = _required_object(
+        diagnostics.get("definedness"), "transfer-plan definedness evidence"
+    )
     if (
-        coverage.get("status") != "complete"
-        or coverage.get("acceptance_authority") is not False
-        or payload.get("execution_policy") != "complete_transfer_inventory_v1"
+        definedness.get("format")
+        != "spaghetti-extractor-definedness-noninterference-v4"
+        or definedness.get("status") != "complete"
+        or definedness.get("proof_authority") is not False
     ):
         raise CandidateRuntimeError(
-            f"{label} does not require complete semantic coverage"
+            "transfer-plan definedness evidence is incomplete"
         )
+    evidence_sha = _required_sha256(
+        definedness.get("evidence_sha256"), "transfer-plan definedness evidence SHA-256"
+    )
+    evidence_body = dict(definedness)
+    del evidence_body["evidence_sha256"]
+    if evidence_sha != sha256_bytes(
+        json.dumps(
+            evidence_body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    ):
+        raise CandidateRuntimeError("transfer-plan definedness evidence is stale")
+    raw_slots = _required_list(
+        definedness.get("slots"), "transfer-plan definedness slots"
+    )
+    policies: list[NativeUndefinedPolicy] = []
+    seen: set[int] = set()
+    for index, raw in enumerate(raw_slots):
+        slot = _required_object(raw, f"transfer-plan definedness slot {index}")
+        slot_id = _required_u32(slot.get("slot"), "definedness slot")
+        if slot_id in seen:
+            raise CandidateRuntimeError("transfer-plan definedness slots are duplicated")
+        seen.add(slot_id)
+        undefined_id = _required_string(slot.get("undefined_id"), "undefined ID")
+        classification = _required_string(
+            slot.get("classification"), "undefined classification"
+        )
+        choice = slot.get("choice_source")
+        choice_kind = "unsupported"
+        input_location = None
+        if classification in {
+            "unconstrained_noninterfering",
+            "unconstrained_conditionally_noninterfering",
+        }:
+            checked = _required_object(choice, "noninterfering choice source")
+            if checked.get("kind") != "noninterfering_zero":
+                raise CandidateRuntimeError("noninterfering slot lacks its zero choice")
+            choice_kind = "noninterfering_zero"
+        elif classification == "synchronized_behavior_relevant":
+            checked = _required_object(choice, "synchronized choice source")
+            if (
+                checked.get("format")
+                != "spaghetti-extractor-definedness-choice-source-v4"
+                or checked.get("kind") != "related_machine_input"
+                or checked.get("slot") != slot_id
+                or checked.get("undefined_id") != undefined_id
+                or checked.get("profile")
+                != "ia32-bsr-zero-preserves-destination-v1"
+                or checked.get("instruction_model")
+                != "sanitized_typed_machine_ir_v2"
+            ):
+                raise CandidateRuntimeError(
+                    "synchronized undefined slot has invalid machine-input evidence"
+                )
+            _required_u32(
+                checked.get("instruction_rva"),
+                "synchronized undefined instruction RVA",
+            )
+            _required_sha256(
+                checked.get("instruction_sha256"),
+                "synchronized undefined instruction SHA-256",
+            )
+            input_expression = _required_object(
+                checked.get("input_expression"),
+                "synchronized undefined input expression",
+            )
+            input_expression_sha256 = _required_sha256(
+                checked.get("input_expression_sha256"),
+                "synchronized undefined input-expression SHA-256",
+            )
+            if input_expression_sha256 != sha256_bytes(
+                json.dumps(
+                    input_expression,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("ascii")
+            ):
+                raise CandidateRuntimeError(
+                    "synchronized undefined slot input expression digest differs"
+                )
+            location = _required_object(
+                checked.get("location"),
+                "synchronized undefined input location",
+            )
+            if set(location) != {"family", "name"} or location.get("family") != "register":
+                raise CandidateRuntimeError(
+                    "synchronized undefined slot lacks a register input"
+                )
+            location_name = location.get("name")
+            if not isinstance(location_name, str) or location_name not in {
+                "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"
+            }:
+                raise CandidateRuntimeError(
+                    "synchronized undefined slot lacks a register input"
+                )
+            choice_kind = "related_machine_input"
+            input_location = location_name
+        obligations = _required_list(
+            slot.get("proof_obligations"), "definedness proof obligations"
+        )
+        occurrences = _required_list(
+            slot.get("occurrences"), "definedness occurrences"
+        )
+        policies.append(NativeUndefinedPolicy(
+            slot=slot_id,
+            undefined_id=undefined_id,
+            classification=classification,
+            witness_policy=(
+                slot.get("witness_policy")
+                if isinstance(slot.get("witness_policy"), str) else None
+            ),
+            choice_kind=choice_kind,
+            input_location=input_location,
+            obligation_count=len(obligations),
+            use_count=len(occurrences),
+        ))
+    policies.sort(key=lambda row: row.slot)
+    return rvas, bindings, tuple(policies), evidence_sha
 
 
 def _semantic_input_binding(
@@ -138,15 +187,24 @@ def _semantic_input_binding(
     mode = payload.get("input_mode")
     state_machine = payload.get("state_machine")
     machine_ir = payload.get("machine_ir")
-    if (
-        mode != _MACHINE_IR_INPUT_MODE
-        or state_machine is not None
-        or machine_ir is None
-    ):
-        raise CandidateRuntimeError(
-            f"{label} must bind strict machine IR"
+    transfer_plan = payload.get("executable_transfer_plan")
+    if mode == _MACHINE_IR_INPUT_MODE:
+        if state_machine is not None or machine_ir is None or transfer_plan is not None:
+            raise CandidateRuntimeError(f"{label} has malformed machine-IR binding")
+        return str(mode), _required_object(machine_ir, f"{label} machine_ir")
+    if mode == _TRANSFER_PLAN_INPUT_MODE:
+        if state_machine is not None or machine_ir is not None or transfer_plan is None:
+            raise CandidateRuntimeError(f"{label} has malformed transfer-plan binding")
+        transfer = _required_object(
+            transfer_plan, f"{label} executable transfer plan"
         )
-    return str(mode), _required_object(machine_ir, f"{label} machine_ir")
+        return str(mode), {
+            "sha256": _required_sha256(
+                transfer.get("machine_ir_sha256"),
+                f"{label} transfer-plan machine-IR SHA-256",
+            )
+        }
+    raise CandidateRuntimeError(f"{label} has an unsupported semantic input mode")
 
 
 def _validate_typed_x87_operations(rows: list[Any]) -> None:
@@ -238,23 +296,23 @@ def _validate_definedness_use(
     if raw_metadata is None:
         if required:
             raise CandidateRuntimeError(
-                "interpreter program uses undefined_bv/undefined_flag but has no "
-                f"complete {DEFINEDNESS_USE_FORMAT} metadata"
+                "executable transfer plan uses undefined_bv/undefined_flag but has no "
+                f"complete {TRANSFER_DEFINEDNESS_USE_FORMAT} metadata"
             )
         return (), None
-    metadata = _required_object(raw_metadata, "interpreter definedness_use")
-    if set(metadata) != SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS:
+    metadata = _required_object(raw_metadata, "transfer definedness_use")
+    if set(metadata) != TRANSFER_DEFINEDNESS_USE_FIELDS:
         raise CandidateRuntimeError(
-            "interpreter definedness_use fields do not match the v1 schema"
+            "transfer definedness_use fields do not match the v1 schema"
         )
     if (
-        metadata.get("format") != DEFINEDNESS_USE_FORMAT
+        metadata.get("format") != TRANSFER_DEFINEDNESS_USE_FORMAT
         or metadata.get("status") != "complete"
         or metadata.get("proof_authority") is not False
         or metadata.get("state_machine_sha256") != state_machine_sha256
     ):
         raise CandidateRuntimeError(
-            "interpreter definedness_use metadata is not complete and hash-bound"
+            "transfer definedness_use metadata is not complete and hash-bound"
         )
     _required_sha256(
         metadata.get("definedness_evidence_sha256"),
@@ -270,7 +328,7 @@ def _validate_definedness_use(
     )
     if metadata.get("transfer_inventory_sha256") != transfer_digest:
         raise CandidateRuntimeError(
-            "interpreter definedness_use transfer inventory SHA-256 mismatch"
+            "definedness-use transfer inventory SHA-256 mismatch"
         )
     metadata_digest = _required_sha256(
         metadata.get("metadata_sha256"), "definedness metadata SHA-256"
@@ -290,16 +348,16 @@ def _validate_definedness_use(
     undefined_node_count = _required_count(
         metadata.get("undefined_node_count"), "definedness undefined-node count"
     )
-    counts = _required_object(payload.get("counts"), "interpreter counts")
+    counts = _required_object(payload.get("counts"), "transfer-plan counts")
     if "undefined_nodes" not in counts:
         raise CandidateRuntimeError(
-            "interpreter counts omit undefined_nodes required for completeness"
+            "transfer-plan counts omit undefined_nodes required for completeness"
         )
-    if _required_count(counts.get("undefined_nodes"), "interpreter undefined-node count") != (
+    if _required_count(counts.get("undefined_nodes"), "transfer undefined-node count") != (
         undefined_node_count
     ):
         raise CandidateRuntimeError(
-            "definedness metadata does not cover the interpreter undefined-node count"
+            "definedness metadata does not cover the transfer undefined-node count"
         )
     raw_slots = _required_list(metadata.get("slots"), "definedness slots")
     evidence_slot_count = _required_count(
@@ -539,7 +597,7 @@ def _validate_definedness_use(
                 )
             if transfer_id not in transfer_ids:
                 raise CandidateRuntimeError(
-                    "definedness use references an unknown interpreter transfer"
+                    "definedness use references an unknown executable transfer"
                 )
             if use.get("op") not in {"undefined_bv", "undefined_flag"}:
                 raise CandidateRuntimeError(
@@ -565,6 +623,6 @@ def _validate_definedness_use(
         )
     if use_count != undefined_node_count or required != (undefined_node_count != 0):
         raise CandidateRuntimeError(
-            "definedness metadata is incomplete for the interpreter undefined nodes"
+            "definedness metadata is incomplete for the transfer undefined nodes"
         )
     return tuple(sorted(policies, key=lambda item: item.slot)), metadata_digest

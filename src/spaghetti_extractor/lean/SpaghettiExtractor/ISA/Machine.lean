@@ -22,6 +22,7 @@ deriving Repr, DecidableEq
 
 inductive X87UnaryOperation where
   | negate
+  | absolute
   | sine
   | cosine
 deriving Repr, DecidableEq

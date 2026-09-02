@@ -19,8 +19,8 @@ from ..util import write_json
 from .inductive_receipts import build_inductive_machine_receipt
 from .inductive_relation import InductiveCutpointRelationV1
 from .inductive_source import InductiveSourcePlanV1
-from .interface_ir import PortableComponentInterfaceV2
-from .semantic_contract import ComponentSemanticContractV1
+from .interface_ir import ProofKernelComponentInterface
+from .semantic_contract import ProofKernelSemanticContract
 
 
 INDUCTIVE_DECLARATION_V1 = "spaghetti-extractor-inductive-declaration-v1"
@@ -198,10 +198,10 @@ def materialize_inductive_package(
 
     declaration_payload = _load(declaration, "inductive declaration")
     authored = InductiveDeclarationV1.parse(declaration_payload)
-    portable = PortableComponentInterfaceV2.parse(
+    portable = ProofKernelComponentInterface.parse(
         _load(interface, "portable component interface")
     )
-    semantic = ComponentSemanticContractV1.parse(
+    semantic = ProofKernelSemanticContract.parse(
         _load(semantic_contract, "component semantic contract")
     )
     if semantic.status != "satisfied":

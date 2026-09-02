@@ -1,0 +1,1042 @@
+{
+  "effects": [
+    {
+      "id": "directdraw_created",
+      "kind": "resource",
+      "operation": "initialize",
+      "target": null
+    },
+    {
+      "id": "primary_surface_created",
+      "kind": "resource",
+      "operation": "initialize",
+      "target": null
+    },
+    {
+      "id": "backbuffer_created",
+      "kind": "resource",
+      "operation": "initialize",
+      "target": null
+    },
+    {
+      "id": "clipper_created",
+      "kind": "resource",
+      "operation": "initialize",
+      "target": null
+    },
+    {
+      "id": "error_shown",
+      "kind": "observable",
+      "operation": "initialize",
+      "target": {
+        "fields": [],
+        "root": "result",
+        "value_id": "status"
+      }
+    },
+    {
+      "id": "window_released",
+      "kind": "resource",
+      "operation": "initialize",
+      "target": {
+        "fields": [],
+        "root": "parameter",
+        "value_id": "window"
+      }
+    }
+  ],
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "id": "directdraw-init",
+  "intent_sha256": "e0284ceb8add99a49ebeacb20761d78d184a3bfb7eaa22bde48ef7286d20766a",
+  "operations": [
+    {
+      "allowed_service_ids": [
+        "directdraw_create",
+        "set_cooperative_level",
+        "get_caps",
+        "create_primary_surface",
+        "create_backbuffer",
+        "create_clipper",
+        "set_clipper_window",
+        "attach_clipper",
+        "hide_window",
+        "message_box",
+        "destroy_window"
+      ],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "initialize",
+      "lifecycle_additional_roots": {
+        "state": []
+      },
+      "lifecycle_bindings": [
+        {
+          "condition": null,
+          "id": "parameter.window",
+          "interaction_contract_id": null,
+          "path": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "window"
+          },
+          "provider_domain": "component-environment.directdraw-init",
+          "resource_kind": "window_handle",
+          "service_id": null,
+          "transition": "borrow_shared"
+        }
+      ],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "window",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "window"
+          }
+        },
+        {
+          "source_id": "status",
+          "target": {
+            "fields": [],
+            "root": "result",
+            "value_id": "status"
+          }
+        }
+      ],
+      "signature_id": "operation.initialize",
+      "source_values": [
+        {
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "id": "window",
+          "interpretation": "resource",
+          "nullable": false,
+          "provider_domain": "component-environment.directdraw-init",
+          "resource_kind": "window_handle",
+          "type_id": "window"
+        },
+        {
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "id": "status",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "status"
+        }
+      ]
+    }
+  ],
+  "protocol": {
+    "initial_state": "ready",
+    "states": [
+      "ready"
+    ]
+  },
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "component.directdraw-init",
+    "schema_sha256": "92cf63d56ffd43c55f9afc1ac9e7ac1906b7d6374e1ca36f2fccc94a1c50cda3",
+    "signatures": [
+      {
+        "function_type_id": "operation.initialize.function",
+        "id": "operation.initialize",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "window",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "status"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.attach_clipper.function",
+        "id": "service.attach_clipper",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_surface",
+            "type_id": "surface"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0001",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_clipper",
+            "type_id": "clipper"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.create_backbuffer.function",
+        "id": "service.create_backbuffer",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          },
+          {
+            "access": "write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "created",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_surface",
+            "type_id": "surface"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.create_clipper.function",
+        "id": "service.create_clipper",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          },
+          {
+            "access": "write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "created",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_clipper",
+            "type_id": "clipper"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.create_primary_surface.function",
+        "id": "service.create_primary_surface",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          },
+          {
+            "access": "write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "created",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_surface",
+            "type_id": "surface"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.destroy_window.function",
+        "id": "service.destroy_window",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          }
+        ],
+        "results": []
+      },
+      {
+        "function_type_id": "service.directdraw_create.function",
+        "id": "service.directdraw_create",
+        "parameters": [
+          {
+            "access": "write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "created",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.get_caps.function",
+        "id": "service.get_caps",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "capabilities",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "capabilities"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.hide_window.function",
+        "id": "service.hide_window",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          }
+        ],
+        "results": []
+      },
+      {
+        "function_type_id": "service.message_box.function",
+        "id": "service.message_box",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0001",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "message_kind"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "result",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "status"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.set_clipper_window.function",
+        "id": "service.set_clipper_window",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_clipper",
+            "type_id": "clipper"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0001",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "status",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "hresult"
+          }
+        ]
+      },
+      {
+        "function_type_id": "service.set_cooperative_level.function",
+        "id": "service.set_cooperative_level",
+        "parameters": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0000",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "directdraw_object",
+            "type_id": "directdraw"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0001",
+            "interpretation": "resource",
+            "nullable": false,
+            "provider_domain": "component-environment.directdraw-init",
+            "resource_kind": "window_handle",
+            "type_id": "window"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "argument-0002",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "status"
+          }
+        ],
+        "results": [
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "result",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "status"
+          }
+        ]
+      }
+    ],
+    "types": [
+      {
+        "id": "capabilities",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "clipper",
+        "kind": "opaque",
+        "nominal_id": "directdraw-init.clipper"
+      },
+      {
+        "id": "directdraw",
+        "kind": "opaque",
+        "nominal_id": "directdraw-init.directdraw"
+      },
+      {
+        "enumerators": [],
+        "id": "hresult",
+        "kind": "enum",
+        "underlying_type_id": "hresult-underlying"
+      },
+      {
+        "id": "hresult-underlying",
+        "kind": "integer",
+        "signed": true,
+        "width_bits": 32
+      },
+      {
+        "enumerators": [
+          {
+            "id": "backbuffer-create-failure",
+            "value": 4
+          },
+          {
+            "id": "clipper-attach-failure",
+            "value": 7
+          },
+          {
+            "id": "clipper-create-failure",
+            "value": 5
+          },
+          {
+            "id": "clipper-window-failure",
+            "value": 6
+          },
+          {
+            "id": "cooperative-level-failure",
+            "value": 2
+          },
+          {
+            "id": "directdraw-create-failure",
+            "value": 1
+          },
+          {
+            "id": "primary-surface-create-failure",
+            "value": 3
+          }
+        ],
+        "id": "message_kind",
+        "kind": "enum",
+        "underlying_type_id": "status-underlying"
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "operation.initialize.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "window"
+        ],
+        "result_type_id": "status",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.attach_clipper.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "surface",
+          "clipper"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.create_backbuffer.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw",
+          "surface"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.create_clipper.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw",
+          "clipper"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.create_primary_surface.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw",
+          "surface"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.destroy_window.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "window"
+        ],
+        "result_type_id": "unit",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.directdraw_create.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.get_caps.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw"
+        ],
+        "result_type_id": "capabilities",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.hide_window.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "window"
+        ],
+        "result_type_id": "unit",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.message_box.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "window",
+          "message_kind"
+        ],
+        "result_type_id": "status",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.set_clipper_window.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "clipper",
+          "window"
+        ],
+        "result_type_id": "hresult",
+        "variadic": false
+      },
+      {
+        "calling_convention": "cdecl",
+        "id": "service.set_cooperative_level.function",
+        "kind": "function",
+        "parameter_type_ids": [
+          "directdraw",
+          "window",
+          "status"
+        ],
+        "result_type_id": "status",
+        "variadic": false
+      },
+      {
+        "enumerators": [],
+        "id": "status",
+        "kind": "enum",
+        "underlying_type_id": "status-underlying"
+      },
+      {
+        "id": "status-underlying",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "surface",
+        "kind": "opaque",
+        "nominal_id": "directdraw-init.surface"
+      },
+      {
+        "id": "unit",
+        "kind": "void"
+      },
+      {
+        "id": "window",
+        "kind": "opaque",
+        "nominal_id": "directdraw-init.window"
+      }
+    ]
+  },
+  "services": [
+    {
+      "effect_ids": [
+        "directdraw_created"
+      ],
+      "id": "directdraw_create",
+      "interaction_contract_id": "component-service.directdraw-init.directdraw_create",
+      "signature_id": "service.directdraw_create"
+    },
+    {
+      "effect_ids": [],
+      "id": "set_cooperative_level",
+      "interaction_contract_id": "component-service.directdraw-init.set_cooperative_level",
+      "signature_id": "service.set_cooperative_level"
+    },
+    {
+      "effect_ids": [],
+      "id": "get_caps",
+      "interaction_contract_id": "component-service.directdraw-init.get_caps",
+      "signature_id": "service.get_caps"
+    },
+    {
+      "effect_ids": [
+        "primary_surface_created"
+      ],
+      "id": "create_primary_surface",
+      "interaction_contract_id": "component-service.directdraw-init.create_primary_surface",
+      "signature_id": "service.create_primary_surface"
+    },
+    {
+      "effect_ids": [
+        "backbuffer_created"
+      ],
+      "id": "create_backbuffer",
+      "interaction_contract_id": "component-service.directdraw-init.create_backbuffer",
+      "signature_id": "service.create_backbuffer"
+    },
+    {
+      "effect_ids": [
+        "clipper_created"
+      ],
+      "id": "create_clipper",
+      "interaction_contract_id": "component-service.directdraw-init.create_clipper",
+      "signature_id": "service.create_clipper"
+    },
+    {
+      "effect_ids": [],
+      "id": "set_clipper_window",
+      "interaction_contract_id": "component-service.directdraw-init.set_clipper_window",
+      "signature_id": "service.set_clipper_window"
+    },
+    {
+      "effect_ids": [],
+      "id": "attach_clipper",
+      "interaction_contract_id": "component-service.directdraw-init.attach_clipper",
+      "signature_id": "service.attach_clipper"
+    },
+    {
+      "effect_ids": [],
+      "id": "hide_window",
+      "interaction_contract_id": "component-service.directdraw-init.hide_window",
+      "signature_id": "service.hide_window"
+    },
+    {
+      "effect_ids": [
+        "error_shown"
+      ],
+      "id": "message_box",
+      "interaction_contract_id": "component-service.directdraw-init.message_box",
+      "signature_id": "service.message_box"
+    },
+    {
+      "effect_ids": [
+        "window_released"
+      ],
+      "id": "destroy_window",
+      "interaction_contract_id": "component-service.directdraw-init.destroy_window",
+      "signature_id": "service.destroy_window"
+    }
+  ],
+  "state": [
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "clipper_mode",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "capability_mode",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "directdraw_initialized",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "video_memory_capability",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    }
+  ],
+  "status": "complete"
+}

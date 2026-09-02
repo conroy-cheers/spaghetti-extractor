@@ -16,7 +16,7 @@ from ..libraries.v4_adoption_records import (
     ReusableLibraryImplementationV1,
 )
 from ..libraries.v4_behavior_manifest import (
-    read_library_behavior_pack_declaration_v1,
+    read_library_behavior_pack_declaration,
 )
 from ..libraries.abi_catalog import CATALOG_SEARCH_INDEX_CODEC_V3
 from ..libraries.v4_record_support import canonical_sha256
@@ -25,8 +25,10 @@ from ..libraries.v4_identity_records import (
     LibraryIslandHypothesisV4,
     LibraryReleaseHypothesesV4,
 )
-from ..abi.matching import read_abi_match_resolution
-from ..util import write_json
+from ..semantic_providers.qualification_v2 import (
+    SemanticProviderQualificationV2,
+)
+from ..util import json_dumps, sha256_file, sha256_text, write_json
 
 
 def _issue(status: str, code: str, location: str) -> dict[str, object]:
@@ -100,16 +102,18 @@ def _next_action(issue: dict[str, object]) -> str:
             "operation in the island"
         ),
         "checked_island_receipt_missing": "build the selected island authority check",
-        "generated_library_component_missing": (
-            "build the selected island check to generate and validate its ordinary component"
+        "library_semantic_provider_missing": (
+            "build the selected island check and direct semantic-provider qualification"
         ),
-        "generated_library_component_incomplete": (
-            "inspect the generated component issues and complete its reusable machine mapping"
+        "library_semantic_provider_incomplete": (
+            "inspect the direct provider blockers and complete its contextual refinement"
         ),
-        "generated_library_component_unbound": "regenerate the checked island and component",
+        "library_semantic_provider_unbound": (
+            "regenerate the checked island and direct provider"
+        ),
         "checked_island_receipt_stale": "regenerate the checked island from current hypotheses",
-        "generated_library_component_stale": (
-            "regenerate the component from the current checked island and behavior pack"
+        "library_semantic_provider_stale": (
+            "regenerate the direct provider from the current island and behavior pack"
         ),
     }
     if isinstance(code, str) and code in actions:
@@ -131,7 +135,8 @@ def _selected_artifact_issues(
     release: LibraryReleaseHypothesesV4,
     island: LibraryIslandHypothesisV4,
     receipt: CheckedLibraryIslandV1 | None,
-    component: dict[str, object] | None,
+    provider: SemanticProviderQualificationV2 | None,
+    expected_provenance: frozenset[str],
 ) -> list[dict[str, object]]:
     issues: list[dict[str, object]] = []
     location = f"intent:{intent.intent_id}"
@@ -152,35 +157,27 @@ def _selected_artifact_issues(
             issues.append(_issue("violated", "checked_island_receipt_stale", location))
         elif receipt.status != "complete":
             issues.extend(issue.to_payload() for issue in receipt.issues)
-    if component is None:
-        issues.append(_issue("incomplete", "generated_library_component_missing", location))
+    if provider is None:
+        issues.append(_issue("incomplete", "library_semantic_provider_missing", location))
     elif receipt is None:
-        issues.append(_issue("incomplete", "generated_library_component_unbound", location))
-    elif component.get("status") != "complete":
-        component_issues = component.get("issues")
-        if isinstance(component_issues, list) and component_issues:
-            issues.extend(dict(row) for row in component_issues if isinstance(row, dict))
+        issues.append(_issue("incomplete", "library_semantic_provider_unbound", location))
+    elif provider.payload.get("status") != "complete":
+        provider_issues = provider.payload.get("blockers")
+        if isinstance(provider_issues, list) and provider_issues:
+            issues.extend(dict(row) for row in provider_issues if isinstance(row, dict))
         else:
             issues.append(
-                _issue("incomplete", "generated_library_component_incomplete", location)
+                _issue("incomplete", "library_semantic_provider_incomplete", location)
             )
     else:
-        bindings = component.get("bindings")
-        expected_component = (
-            component.get("target_id") == target_id
-            and component.get("island_id") == island.island_id
-            and component.get("implementation_id") == intent.implementation_id
-            and component.get("unit_ids") == list(island.target_unit_ids)
-            and component.get("operation_ids") == list(island.operation_ids)
-            and isinstance(bindings, dict)
-            and bindings.get("target_binary_sha256")
-            == release.target_binary_sha256
-            and bindings.get("machine_ir_sha256") == receipt.machine_ir_sha256
-            and bindings.get("checked_island_receipt_sha256")
-            == receipt.receipt_sha256
+        dependencies = frozenset(str(item) for item in provider.payload["dependencies"])
+        receipt_dependency = (
+            "provider-provenance:checked-library-island:"
+            + sha256_text(json_dumps(receipt.to_payload()) + "\n")
         )
-        if not expected_component:
-            issues.append(_issue("violated", "generated_library_component_stale", location))
+        required = expected_provenance | {receipt_dependency}
+        if not required.issubset(dependencies):
+            issues.append(_issue("violated", "library_semantic_provider_stale", location))
     return issues
 
 
@@ -225,7 +222,7 @@ def _load_implementations(
                 value
                 if isinstance(value, ReusableLibraryImplementationV1)
                 else (
-                    read_library_behavior_pack_declaration_v1(value).implementation
+                    read_library_behavior_pack_declaration(value).implementation
                     if Path(value).is_dir()
                     else REUSABLE_LIBRARY_IMPLEMENTATION_CODEC_V1.read(value)
                 )
@@ -236,31 +233,55 @@ def _load_implementations(
     )
 
 
-def _load_generated_components(
+def _load_provider_qualifications(
     values: Iterable[Path | str],
-) -> dict[str, dict[str, object]]:
-    result: dict[str, dict[str, object]] = {}
+) -> dict[tuple[str, ...], SemanticProviderQualificationV2]:
+    result: dict[tuple[str, ...], SemanticProviderQualificationV2] = {}
     for value in values:
         path = Path(value)
         if path.is_dir():
-            path /= "library-component.json"
+            path /= "semantic-provider-qualification.json"
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            provider = SemanticProviderQualificationV2.parse(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
         except (OSError, ValueError) as error:
-            raise ValueError(f"cannot read generated library component: {error}") from error
-        if not isinstance(payload, dict):
-            raise ValueError("generated library component must be an object")
-        core = dict(payload)
-        if (
-            core.pop("package_sha256", None) != canonical_sha256(core)
-            or payload.get("format")
-            != "spaghetti-extractor-generated-library-component-v1"
-        ):
-            raise ValueError("generated library component binding is stale")
-        island_id = payload.get("island_id")
-        if not isinstance(island_id, str) or island_id in result:
-            raise ValueError("generated library component island ID is invalid")
-        result[island_id] = payload
+            raise ValueError(f"cannot read library semantic provider: {error}") from error
+        units = []
+        for definition in provider.semantic_slice.payload["definitions"]:
+            symbol_id = str(definition["symbol_id"])
+            prefix = "original:function:"
+            if not symbol_id.startswith(prefix):
+                raise ValueError("library semantic provider owns a non-function symbol")
+            units.append(symbol_id[len(prefix):])
+        key = tuple(sorted(units))
+        if not key or key in result:
+            raise ValueError("library semantic-provider unit ownership is ambiguous")
+        result[key] = provider
+    return result
+
+
+def _implementation_provenance(
+    values: Iterable[Path | str],
+) -> dict[str, frozenset[str]]:
+    result: dict[str, frozenset[str]] = {}
+    for value in values:
+        if isinstance(value, ReusableLibraryImplementationV1):
+            continue
+        root = Path(value)
+        if not root.is_dir() or not (root / "behavior-pack.json").is_file():
+            continue
+        declaration = read_library_behavior_pack_declaration(root)
+        implementation_id = declaration.implementation.implementation_id
+        dependencies = frozenset({
+            "provider-provenance:library-behavior-pack:"
+            + sha256_file(root / "behavior-pack.json"),
+            "provider-provenance:library-source-qualification:"
+            + sha256_file(root / "source-qualification-v1.json"),
+        })
+        if implementation_id in result:
+            raise ValueError("reusable library implementation provenance is duplicated")
+        result[implementation_id] = dependencies
     return result
 
 
@@ -269,10 +290,9 @@ def build_library_status_v4(
     target_id: str,
     release_hypotheses: Path | str,
     catalog_search_index: Path | str | None = None,
-    abi_match_resolution: Path | str | None = None,
     adoption_intents: Iterable[LibraryAdoptionIntentV1 | Path | str] = (),
     checked_islands: Iterable[CheckedLibraryIslandV1 | Path | str] = (),
-    generated_components: Iterable[Path | str] = (),
+    provider_qualifications: Iterable[Path | str] = (),
     implementations: Iterable[ReusableLibraryImplementationV1 | Path | str] = (),
     out: Path | str,
 ) -> dict[str, object]:
@@ -285,16 +305,6 @@ def build_library_status_v4(
     catalog_functions = (
         {} if catalog is None else {row.function_id: row for row in catalog.functions}
     )
-    abi_resolution = (
-        None
-        if abi_match_resolution is None
-        else read_abi_match_resolution(abi_match_resolution)
-    )
-    abi_binding_by_match = {
-        str(row.get("match_id")): row
-        for row in (() if abi_resolution is None else abi_resolution["bindings"])
-        if isinstance(row, dict)
-    }
     if catalog is not None and any(
         release.catalog_search_index_sha256 != catalog.index_sha256
         for release in releases
@@ -302,8 +312,12 @@ def build_library_status_v4(
         raise ValueError("library status catalog search index is stale")
     intents = _load_intents(adoption_intents)
     receipts = _load_receipts(checked_islands)
-    components_by_island = _load_generated_components(generated_components)
-    implementation_rows = _load_implementations(implementations)
+    providers_by_units = _load_provider_qualifications(provider_qualifications)
+    implementation_values = tuple(implementations)
+    implementation_rows = _load_implementations(implementation_values)
+    implementation_provenance = _implementation_provenance(
+        implementation_values
+    )
     implementations_by_id = {
         implementation.implementation_id: implementation
         for implementation in implementation_rows
@@ -348,7 +362,13 @@ def build_library_status_v4(
     for intent in intents:
         release_island = islands.get(intent.island_id)
         receipt = receipt_by_island.get(intent.island_id)
-        generated_component = components_by_island.get(intent.island_id)
+        provider = (
+            None
+            if release_island is None
+            else providers_by_units.get(
+                tuple(sorted(release_island[1].target_unit_ids))
+            )
+        )
         issues: list[dict[str, object]] = []
         if intent.target_id != target_id:
             issues.append(
@@ -397,7 +417,10 @@ def build_library_status_v4(
                         release=release,
                         island=selected_island,
                         receipt=receipt,
-                        component=generated_component,
+                        provider=provider,
+                        expected_provenance=implementation_provenance.get(
+                            intent.implementation_id, frozenset()
+                        ),
                     )
                 )
         selection_status = (
@@ -423,48 +446,32 @@ def build_library_status_v4(
         selection_blockers.extend(issues)
     hypothesis_rows = []
     blockers = list(violations) + selection_blockers
-    if abi_resolution is not None:
-        blockers.extend(
-            {
-                **dict(issue),
-                "family": "boundary",
-                "location": (
-                    "abi:"
-                    f"{issue.get('catalog_undecorated_symbol') or '/'.join(issue.get('catalog_symbols', [])) or 'unknown'}:"
-                    f"{issue.get('subject_id')}"
-                    if issue.get("subject_id") is not None
-                    else f"abi-match:{issue.get('match_id', 'unknown')}"
-                ),
-            }
-            for issue in abi_resolution.get("issues", [])
-            if isinstance(issue, dict)
-        )
     for release in releases:
         for release_issue in release.issues:
             blockers.append(release_issue.to_payload())
         for island in release.islands:
             intent = intent_by_island.get(island.island_id)
             receipt = receipt_by_island.get(island.island_id)
-            generated_component = components_by_island.get(island.island_id)
+            provider = providers_by_units.get(tuple(sorted(island.target_unit_ids)))
             effective = receipt if receipt is not None else island
             issues = [issue.to_payload() for issue in effective.issues]
             if (
                 intent is not None
                 and intent.mode == "adopt"
-                and generated_component is not None
-                and generated_component.get("status") != "complete"
+                and provider is not None
+                and provider.payload.get("status") != "complete"
             ):
                 issues.extend(
                     dict(issue)
-                    for issue in generated_component.get("issues", [])
+                    for issue in provider.payload.get("blockers", [])
                     if isinstance(issue, dict)
                 )
             blockers.extend(issues)
             implementation_status = effective.implementation_status
             if intent is not None and intent.mode == "adopt":
                 if (
-                    generated_component is None
-                    or generated_component.get("status") != "complete"
+                    provider is None
+                    or provider.payload.get("status") != "complete"
                 ):
                     implementation_status = "incomplete"
             overall_status = (
@@ -500,14 +507,6 @@ def build_library_status_v4(
                         "symbols": list(function.symbols),
                         "operation_id": function.operation_id,
                         "abi_profile_id": function.abi_profile_id,
-                        "physical_abi": next(
-                            (
-                                abi_binding_by_match.get(match.match_id)
-                                for match in island.matches
-                                if match.catalog_function_id == function.function_id
-                            ),
-                            None,
-                        ),
                     }
                 )
             hypothesis_rows.append(
@@ -529,7 +528,9 @@ def build_library_status_v4(
                     "implementation_status": implementation_status,
                     "status": overall_status,
                     "adoption": None if intent is None else intent.to_payload(),
-                    "generated_component": generated_component,
+                    "semantic_provider": (
+                        None if provider is None else provider.payload
+                    ),
                     "issues": issues,
                 }
             )
@@ -575,18 +576,6 @@ def build_library_status_v4(
             "adoption_intents": len(intents),
             "ready_adoptions": sum(row["status"] == "ready" for row in selections),
             "primary_blockers": len(unique_blockers),
-            "physical_abi_complete": sum(
-                row.get("status") == "complete"
-                for row in abi_binding_by_match.values()
-            ),
-            "physical_abi_incomplete": sum(
-                row.get("status") == "incomplete"
-                for row in abi_binding_by_match.values()
-            ),
-            "physical_abi_violated": sum(
-                row.get("status") == "violated"
-                for row in abi_binding_by_match.values()
-            ),
         },
         "islands": sorted(hypothesis_rows, key=lambda row: str(row["id"])),
         "selections": sorted(selections, key=lambda row: str(row["intent_id"])),

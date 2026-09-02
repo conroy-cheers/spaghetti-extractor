@@ -23,8 +23,12 @@ from .kernel_qualification import (
     build_isa_kernel_qualification_from_reports,
     serialize_kernel_qualification,
 )
+from .qualification_certificate import (
+    build_isa_kernel_qualification_certificate_v1,
+)
 from .semantic_forms import lean_semantic_form_id
 from ..errors import ToolkitInputError
+from ..qualified_platform.formats import ISA_SEMANTIC_KERNEL_BINDING_FORMAT
 from ..util import sha256_file, write_json
 
 
@@ -43,7 +47,7 @@ def _read_json(path: Path, context: str) -> Mapping[str, Any]:
 
 def load_isa_semantic_kernel_binding(path: Path) -> SemanticKernelBinding:
     payload = _read_json(path, "ISA semantic-kernel binding")
-    if payload.get("format") != "spaghetti-extractor-isa-semantic-kernel-binding-v1":
+    if payload.get("format") != ISA_SEMANTIC_KERNEL_BINDING_FORMAT:
         raise ToolkitInputError("unsupported ISA semantic-kernel binding format")
     try:
         return SemanticKernelBinding(
@@ -204,6 +208,7 @@ def build_isa_kernel_qualification(
     out: Path,
     crosswalk_out: Path | None = None,
     generated_corpus: Path | None = None,
+    certificate_out: Path | None = None,
 ) -> dict[str, Any]:
     corpus_payload = _read_json(corpus, "ISA executor corpus")
     typed_corpus = parse_isa_conformance_corpus(corpus_payload)
@@ -261,9 +266,19 @@ def build_isa_kernel_qualification(
         ),
         oracle_suite=OracleSuiteBinding(tuple(backends)),
     )
-    write_json(out, serialize_kernel_qualification(qualification))
+    qualification_payload = serialize_kernel_qualification(qualification)
+    write_json(out, qualification_payload)
     if crosswalk_out is not None:
         write_json(crosswalk_out, crosswalk)
+    if certificate_out is not None:
+        write_json(
+            certificate_out,
+            build_isa_kernel_qualification_certificate_v1(
+                qualification=qualification,
+                qualification_payload=qualification_payload,
+                qualification_content_sha256=sha256_file(out),
+            ),
+        )
     return {
         "format": "spaghetti-extractor-isa-kernel-qualification-result-v1",
         "status": qualification.status.value,
@@ -271,6 +286,9 @@ def build_isa_kernel_qualification(
         "sha256": sha256_file(out),
         "crosswalk_out": str(crosswalk_out) if crosswalk_out is not None else None,
         "counts": dict(qualification.counts),
+        "certificate_out": (
+            str(certificate_out) if certificate_out is not None else None
+        ),
         "proof_authority": False,
     }
 

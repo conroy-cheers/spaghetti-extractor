@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+from ..artifacts.artifact_set import canonical_sha256_v3
 from ..artifacts.formats import (
     PHYSICAL_CALL_FRAME_V2_FORMAT,
     PHYSICAL_CALL_FRAME_V3_FORMAT,
@@ -43,6 +44,29 @@ REPRESENTATIONS = frozenset(
     {"identity", "zero_extend", "sign_extend", "truncate", "bitcast", "x87_storage", "unspecified"}
 )
 OUTCOMES = frozenset({"normal", "no_return", "exceptional", "nonlocal"})
+
+
+def physical_frame_abi_sha256_v1(value: object) -> str:
+    """Identify only the caller-visible physical ABI of a call frame.
+
+    A frame's content identity also binds its semantic schema, subject, and
+    direction.  Those facts intentionally differ at the two ends of a PE
+    import edge.  Cross-module compatibility and export-alias coalescing need
+    the narrower identity of the bytes, registers, and stack discipline that
+    actually cross that edge.
+    """
+
+    if not isinstance(value, Mapping):
+        raise CallProtocolError("physical call frame is malformed")
+    transport = value.get("transport")
+    if not isinstance(transport, Mapping):
+        raise CallProtocolError("physical call transport is malformed")
+    physical = {
+        key: item
+        for key, item in transport.items()
+        if key not in {"format", "id", "subject", "transfer_kind"}
+    }
+    return canonical_sha256_v3(physical)
 
 
 @dataclass(frozen=True)
@@ -567,4 +591,5 @@ __all__ = [
     "PhysicalCallFrameV2",
     "PhysicalCallFrameV3",
     "StackDisciplineV2",
+    "physical_frame_abi_sha256_v1",
 ]

@@ -10,7 +10,10 @@ let
       ../native/Cargo.toml
       ../native/Cargo.lock
       ../native/pyproject.toml
-      ../native/src
+      ../native/src/lib.rs
+      ../native/src/abi_solver.rs
+      ../native/src/artifact_json.rs
+      ../native/src/library_index.rs
     ];
   };
 in
@@ -22,7 +25,7 @@ pythonPackages.buildPythonPackage {
 
   cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
     src = nativeSource;
-    hash = "sha256-Wzqhu6aLDeArZ97RQ+m4i2zgwfyCuXU61XTU/LFHN4o=";
+    hash = "sha256-8E341iDvt56FJkPd++kDB1gudXwBzesWWvMwP5zBTbY=";
   };
 
   build-system = [
