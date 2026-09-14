@@ -66,6 +66,7 @@ class _Translator:
             "view_extent",
             "ref_offset",
             "byte_read",
+            "borrowed_interior",
         }:
             return self._atom(
                 "observation:" + canonical_sha256_v3(value.to_payload()), value.sort

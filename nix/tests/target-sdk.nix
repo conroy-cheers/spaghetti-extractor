@@ -79,22 +79,124 @@ let
     mkImplementationSelection "minimal" "portable";
   nativeRealizationFixture = pkgs.runCommand
     "minimal-sdk-native-realization-v2"
-    { nativeBuildInputs = [ pkgs.coreutils ]; } ''
+    { nativeBuildInputs = [ sdk.validation.pythonEnv ]; } ''
       mkdir -p "$out"
       cp ${artifact} "$out/fixture.exe"
-      candidate_sha256="$(sha256sum "$out/fixture.exe" | cut -d ' ' -f 1)"
-      cat > "$out/native-realization.json" <<JSON
-      {
-        "format": "spaghetti-extractor-native-realization-v2",
-        "status": "complete",
-        "ready_for_observation": true,
-        "blockers": [],
-        "candidate": {
-          "filename": "fixture.exe",
-          "sha256": "$candidate_sha256"
-        }
+      export PYTHONPATH=${../../.}/src:${../../.}
+      python3 - "$out/fixture.exe" "$out/native-realization.json" <<'PY'
+      import sys
+      from pathlib import Path
+
+      from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+      from spaghetti_extractor.native_realization.receipt_v2 import NativeRealizationV2
+      from spaghetti_extractor.util import sha256_file, write_json
+
+      candidate = Path(sys.argv[1])
+      portable_dispatch = {
+          "format": "spaghetti-extractor-portable-dispatch-link-receipt-v1",
+          "status": "complete",
+          "activation_authorized": True,
+          "bindings": {
+              "implementation_selection_sha256": "2" * 64,
+              "payload_sha256": "1" * 64,
+              "linker_map_sha256": "2" * 64,
+          },
+          "registry": None,
+          "entries": [],
+          "policy": {
+              "strong_module_registry_required_when_portable": True,
+              "one_strong_implementation_symbol_per_entry": True,
+              "exact_selected_object_membership_required": True,
+              "contextual_bisimulation_authority_required": True,
+              "weak_or_duplicate_fallback_forbidden": True,
+              "source_only_authority": False,
+          },
+          "blockers": [],
       }
-      JSON
+      portable_dispatch["receipt_sha256"] = canonical_sha256_v3(portable_dispatch)
+      realization = {
+          "format": "spaghetti-extractor-native-realization-v2",
+          "status": "complete",
+          "ready_for_observation": True,
+          "bindings": {
+              "linked_semantic_module_sha256": "1" * 64,
+              "implementation_selection_sha256": "2" * 64,
+              "qualified_platform_sha256": "3" * 64,
+              "original_module_interface_sha256": "4" * 64,
+          },
+          "providers": [{
+              "provider_id": "generated.fixture",
+              "provider_kind": "generated_behavioral_c",
+              "qualification_sha256": "5" * 64,
+              "artifact_sha256": "6" * 64,
+              "semantic_slice_sha256": "7" * 64,
+              "tool_sha256s": ["8" * 64],
+              "definition_ids": ["definition:fixture"],
+              "obligation_ids": [],
+          }],
+          "definitions": [{
+              "definition_id": "definition:fixture",
+              "symbol_id": "original:function:fixture",
+              "provider_id": "generated.fixture",
+              "provider_kind": "generated_behavioral_c",
+              "qualification_sha256": "5" * 64,
+              "native_symbol": "spx_fixture",
+              "address": {"kind": "linked_rva", "rva": 4096},
+              "implementation_rva": 4096,
+              "bridge_class_id": None,
+          }],
+          "obligations": [],
+          "native_objects": [{
+              "object_sha256": "9" * 64,
+              "role": "generated_behavioral_c",
+              "provider_ids": ["generated.fixture"],
+              "definition_ids": ["definition:fixture"],
+              "obligation_ids": [],
+              "section_ids": [],
+          }],
+          "bridges": [],
+          "runtime": {
+              "qualification_sha256": "a" * 64,
+              "tls_layout_sha256": "b" * 64,
+              "private_stack_size": 1048576,
+              "support_import_ids": [],
+              "required_symbols": [{
+                  "symbol": "spx_fixture",
+                  "rva": 4096,
+                  "role": "entry",
+              }],
+              "obligation_receipt_sha256s": [],
+          },
+          "link": {
+              "payload_sha256": "1" * 64,
+              "linker_map_sha256": "2" * 64,
+              "relocation_inventory_sha256": "c" * 64,
+              "section_table_sha256": "d" * 64,
+              "entry_symbols": ["spx_fixture"],
+          },
+          "portable_dispatch_link_receipt": portable_dispatch,
+          "loader_surface": {
+              "entry_rva": 4096,
+              "exports_sha256": "e" * 64,
+              "imports_sha256": "f" * 64,
+              "tls_sha256": "0" * 64,
+              "base_relocations_sha256": "1" * 64,
+              "resources_sha256": None,
+              "load_config_sha256": None,
+          },
+          "candidate": {
+              "filename": candidate.name,
+              "sha256": sha256_file(candidate),
+              "size": candidate.stat().st_size,
+              "module_interface_sha256": "2" * 64,
+          },
+          "pinned_code_layout_requirements": [],
+          "blockers": [],
+      }
+      realization["native_realization_sha256"] = canonical_sha256_v3(realization)
+      NativeRealizationV2.parse(realization)
+      write_json(Path(sys.argv[2]), realization)
+      PY
     '';
   realization = {
     derivation = nativeRealizationFixture;
@@ -157,6 +259,7 @@ let
       liftUnitIndex.example = {
         kind = "component";
         label = "Example";
+        entryRvas = [ 4096 ];
         members = [ ];
         hasSource = true;
         hasEvidence = true;
@@ -181,6 +284,8 @@ let
       };
       bundle = artifact;
     };
+    portableSemanticProvidersByComponent.example.derivation = artifact;
+    libraryCatalogConfigured = false;
     nativeRealizations.default = realization;
     nativeRealizations.minimal = realization;
     calls = {
@@ -273,8 +378,10 @@ let
   analysisWorkflow = workflow // {
     hasComponents = false;
     components = null;
-    configurationIds = [ ];
-    nativeRealizations = { };
+    configurationIds = [ "faithful" ];
+    nativeRealizations.faithful = realization;
+    semanticImplementationSelections.faithful.derivation =
+      defaultImplementationSelection;
   };
   analysisTarget = sdk.target.pe32Bundle {
     targetRoot = ../../tests/fixtures/minimal-analysis-target-bundle;
@@ -286,7 +393,7 @@ let
     minimal-analysis-consumer = analysisTarget;
   };
 in
-assert sdk.format == "spaghetti-extractor-target-sdk-v4";
+assert sdk.format == "spaghetti-extractor-target-sdk-v5";
 assert builtins.isFunction sdk.environment.pe32;
 assert builtins.isFunction sdk.workflow.pe32Project;
 assert builtins.isFunction sdk.candidate.nativeRealizationV2;
@@ -297,6 +404,7 @@ assert pe32WorkflowArguments ? externalEnvironment;
 assert pe32WorkflowArguments ? lifting;
 assert pe32WorkflowArguments ? backend;
 assert pe32WorkflowArguments ? analysisLimits;
+assert pe32WorkflowArguments ? proofSmtSolver;
 assert !(pe32WorkflowArguments ? externalProfile);
 assert !(pe32WorkflowArguments ? machineImportProfiles);
 assert !(pe32WorkflowArguments ? callProtocols);
@@ -314,35 +422,55 @@ assert registry.minimal-sdk-consumer.artifacts.components.semantic-slices-v2.exa
 assert registry.minimal-sdk-consumer.artifacts.candidate.native-realizations.default ==
   nativeRealizationFixture;
 assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
-assert registry.minimal-sdk-consumer.operator.components.units.example.status == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.interface == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.bindingIntent == artifact;
-assert registry.minimal-sdk-consumer.operator.components.configurations.default.selection == defaultImplementationSelection;
+assert registry.minimal-sdk-consumer.operator.components.units.example.qualification == artifact;
+assert !(registry.minimal-sdk-consumer.operator.components ? configurations);
 assert registry.minimal-sdk-consumer.operator.project.semanticModule == semanticModuleFixture;
-assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;
-assert registry.minimal-sdk-consumer.operator.candidate.materializedStatus ==
-  registry.minimal-sdk-consumer.operator.candidate.statuses.default;
-assert registry.minimal-sdk-consumer.artifacts.diagnostics.candidate-status ==
-  registry.minimal-sdk-consumer.operator.candidate.materializedStatus;
-assert registry.minimal-sdk-consumer.checks.candidate-status ==
-  registry.minimal-sdk-consumer.operator.candidate.materializedStatus;
+assert registry.minimal-sdk-consumer.operator.candidate.configurations.default.selection ==
+  defaultImplementationSelection;
+assert registry.minimal-sdk-consumer.operatorIndex.format ==
+  "spaghetti-extractor-operator-index-v1";
+assert registry.minimal-sdk-consumer.operatorIndex.components.units.example.entryRvas ==
+  [ 4096 ];
+assert registry.minimal-sdk-consumer.operatorIndex.libraries == null;
+assert !(registry.minimal-sdk-consumer.operator ? libraries);
+assert !(registry.minimal-sdk-consumer.artifacts ? libraries);
+assert builtins.attrNames registry.minimal-sdk-consumer.operator == [
+  "boundaries"
+  "candidate"
+  "components"
+  "project"
+];
+assert builtins.attrNames registry.minimal-sdk-consumer.operator.components == [
+  "proposals"
+  "units"
+];
+assert registry.minimal-sdk-consumer.operatorIndex.candidate.configurations.default.products == [
+  "realization"
+  "selection"
+];
 assert target.operator.project.status.drvPath == changedTarget.operator.project.status.drvPath;
 assert target.operator.project.status.drvPath == failingTarget.operator.project.status.drvPath;
 assert target.operator.project.status.drvPath == testChangedTarget.operator.project.status.drvPath;
-assert target.operator.candidate.statuses.default.drvPath !=
-  changedTarget.operator.candidate.statuses.default.drvPath;
-assert target.operator.candidate.statuses.default.drvPath ==
-  testChangedTarget.operator.candidate.statuses.default.drvPath;
-assert target.operator.candidate.statuses.minimal.drvPath ==
-  testChangedTarget.operator.candidate.statuses.minimal.drvPath;
-assert target.operator.candidate.statuses.default.drvPath ==
-  failingTarget.operator.candidate.statuses.default.drvPath;
+assert target.operator.candidate.configurations.default.selection.drvPath !=
+  changedTarget.operator.candidate.configurations.default.selection.drvPath;
+assert target.operator.candidate.configurations.default.selection.drvPath ==
+  testChangedTarget.operator.candidate.configurations.default.selection.drvPath;
+assert target.operator.candidate.configurations.minimal.selection.drvPath ==
+  testChangedTarget.operator.candidate.configurations.minimal.selection.drvPath;
+assert target.operator.candidate.configurations.default.selection.drvPath ==
+  failingTarget.operator.candidate.configurations.default.selection.drvPath;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
 assert registry.minimal-analysis-consumer.defaultConfiguration == null;
-assert registry.minimal-analysis-consumer.operatorIndex.hasComponents == false;
 assert registry.minimal-analysis-consumer.operator.components.units == { };
 assert registry.minimal-analysis-consumer.operator.components.proposals ==
   workflow.analysis.componentProposals;
+assert registry.minimal-analysis-consumer.operatorIndex.defaultConfiguration ==
+  "faithful";
+assert registry.minimal-analysis-consumer.operatorIndex.components.units == { };
+assert registry.minimal-analysis-consumer.operatorIndex.libraries == null;
+assert !(registry.minimal-analysis-consumer.artifacts ? libraries);
 assert registry.minimal-analysis-consumer.default.implementationSelection == null;
 assert registry.minimal-analysis-consumer.acceptanceChecks.component-intent != null;
 pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
@@ -362,11 +490,11 @@ pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
     path = failingTarget.operator.project.status;
   }
   {
-    name = "changed-candidate-status";
-    path = changedTarget.operator.candidate.statuses.default;
+    name = "changed-candidate-selection";
+    path = changedTarget.operator.candidate.configurations.default.selection;
   }
   {
-    name = "test-metadata-changed-candidate-status";
-    path = testChangedTarget.operator.candidate.statuses.minimal;
+    name = "test-metadata-changed-candidate-selection";
+    path = testChangedTarget.operator.candidate.configurations.minimal.selection;
   }
 ]

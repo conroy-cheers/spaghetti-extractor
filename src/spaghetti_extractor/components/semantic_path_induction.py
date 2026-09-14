@@ -104,6 +104,8 @@ def build_inductive_segment_models(
 ) -> dict[str, object]:
     """Symbolically execute every exact finite segment between cutpoints."""
 
+    if any('exit_projection' in row for row in operation.get('parameters', [])):
+        raise SemanticPathError('parameter exit transport requires contextual machine-state checking')
     relation.validate_for(interface, source_plan, machine_receipt)
     operation_id = _text(operation.get("operation_id"), "operation id")
     if operation_id != source_plan.operation_id:

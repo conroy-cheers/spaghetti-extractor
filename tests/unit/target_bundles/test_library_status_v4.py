@@ -171,7 +171,7 @@ def _provider(
         "status": "checked",
         "receipt_sha256": "b" * 64,
     } for name in (
-        "compile", "contextual_refinement", "induction", "lifecycle",
+        "bisimulation", "compile", "contextual_refinement", "lifecycle",
         "native_objects", "object_binding", "ownership", "relations",
         "services", "source",
     )]

@@ -1,0 +1,28 @@
+#include "portable-component-implementation.h"
+#include "../network.h"
+#include "../consumer-view-helpers.h"
+extern uint32_t network_cleanup(void *,const spx_view_v5 *,const spx_view_v5 *,const spx_view_v5 *,const spx_view_v5 *,const spx_view_v5 *);
+extern uint32_t network_send_message(void *,uint32_t,uint32_t,uint32_t,const spx_view_v5 *);
+static spx_view_v5 view(spx_runtime *rt,spx_component_view_context *context,uint32_t address,
+    uint32_t extent,uint32_t permissions,const char *selector){
+ spx_machine_reference_v1 ref={0};
+ network_require(rt->resolve_reference(rt->context,address,1U,permissions,selector,0U,0U,&ref)==SPX_BOUNDARY_OK,"consumer live view admission");
+ if(!extent)extent=(uint32_t)(ref.extent-ref.offset);
+ network_require(ref.offset<=ref.extent && extent<=ref.extent-ref.offset,"consumer view extent");
+ *context=(spx_component_view_context){rt,address,extent,permissions};
+ return (spx_view_v5){.context=context,.read_u8=spx_component_view_read,
+  .write_u8=(permissions&2U)?spx_component_view_write:0,
+  .base={ref.domain,ref.object,ref.generation,ref.offset,ref.extent,ref.permissions},
+  .extent=extent,.element_width=1U,.access_context=context,.read=spx_component_view_read_span,
+  .write=(permissions&2U)?spx_component_view_write_span:0};
+}
+network_result network_run_@ROLE@(spx_runtime *rt,void *service,spx_machine_state *state,uint32_t mode){
+ uint32_t text_address=@TEXT_ADDRESS@;
+ spx_component_view_context contexts[6];
+ spx_view_v5 text=view(rt,&contexts[0],text_address,0U,3U,"cleanup.scratch");
+ spx_view_v5 notice=view(rt,&contexts[1],4263788U,4U,1U,"image:metapad:section:2");
+ spx_view_v5 window=view(rt,&contexts[2],4260180U,4U,1U,"image:metapad:section:2");
+ spx_view_v5 edit=view(rt,&contexts[3],4260184U,4U,1U,"image:metapad:section:2");
+ spx_view_v5 caption=view(rt,&contexts[4],4252580U,500U,1U,"image:metapad:section:1");
+ @CALL@
+}

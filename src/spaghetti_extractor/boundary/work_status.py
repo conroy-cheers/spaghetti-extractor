@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..components.formats import COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT
 from ..errors import ToolkitInputError
-from ..operator.work_status import write_operator_work_status_v1
+from ..operator.work_status import write_operator_work_status_v2
 from ..util import sha256_file
 
 
@@ -22,62 +21,9 @@ def _object(path: Path, context: str) -> Mapping[str, Any]:
     return value
 
 
-def parse_component_work_package_inspection_v1(
-    value: object,
-) -> dict[str, Any]:
-    """Validate the configured-component inspection projection."""
-
-    if not isinstance(value, Mapping):
-        raise ToolkitInputError("component work-package inspection must be an object")
-    payload = dict(value)
-    if set(payload) != {
-        "format", "status", "subject", "component_id",
-        "proof_classification", "semantic_slice_sha256", "operations",
-        "faithful_c_slices", "requirements", "issues", "authority",
-    }:
-        raise ToolkitInputError(
-            "component work-package inspection fields are incomplete"
-        )
-    if payload.get("format") != COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT:
-        raise ToolkitInputError("component work-package inspection format is unsupported")
-    if payload.get("status") not in {"complete", "incomplete"}:
-        raise ToolkitInputError("component work-package inspection status is unsupported")
-    if payload.get("authority") is not False:
-        raise ToolkitInputError("component work-package inspection cannot authorize")
-    subject = payload.get("subject")
-    component_id = payload.get("component_id")
-    if (
-        not isinstance(subject, str) or not subject.startswith("component:")
-        or not isinstance(component_id, str) or not component_id
-        or subject != f"component:{component_id}"
-    ):
-        raise ToolkitInputError("component work-package inspection identity is stale")
-    if payload.get("proof_classification") not in {
-        "machine_overlay", "encapsulated_owned",
-    }:
-        raise ToolkitInputError(
-            "component work-package inspection proof classification is unsupported"
-        )
-    digest = payload.get("semantic_slice_sha256")
-    if (
-        not isinstance(digest, str) or len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise ToolkitInputError("component work-package inspection slice is malformed")
-    for field in ("operations", "faithful_c_slices", "issues"):
-        if not isinstance(payload.get(field), list):
-            raise ToolkitInputError(
-                f"component work-package inspection {field} must be an array"
-            )
-    if not isinstance(payload.get("requirements"), Mapping):
-        raise ToolkitInputError(
-            "component work-package inspection requirements must be an object"
-        )
-    return payload
-
-
 def write_operator_boundary_status(
     *,
+    target_id: str,
     packages: Mapping[str, Path],
     kinds: Mapping[str, str],
     out: Path,
@@ -115,47 +61,48 @@ def write_operator_boundary_status(
             if isinstance(raw_blockers, list)
             else ["boundary status contains a malformed blocker inventory"]
         )
-        blocker_rows = [
-            dict(blocker)
-            if isinstance(blocker, Mapping)
-            else {
+        blocker_rows = []
+        for blocker in blockers:
+            row = dict(blocker) if isinstance(blocker, Mapping) else {
                 "code": "boundary_status_blocker",
                 "detail": str(blocker),
             }
-            for blocker in blockers
-        ]
-        bindings = [{
-            "artifact": status_name,
-            "format": status.get("format"),
-            "sha256": sha256_file(status_path),
-        }]
-        protocol_path = package / "checked-call-protocol.json"
-        if protocol_path.is_file():
-            protocol = _object(protocol_path, f"{subject} checked protocol")
-            bindings.append({
-                "artifact": "checked-call-protocol.json",
-                "format": protocol.get("format"),
-                "sha256": sha256_file(protocol_path),
+            location = next((
+                row.get(field)
+                for field in (
+                    "subject", "operation_id", "symbol_id", "site_id", "rva",
+                    "detail",
+                )
+                if row.get(field) is not None
+            ), None)
+            blocker_rows.append({
+                "family": str(row.get("family") or kind.replace("_", "-")),
+                "code": str(row.get("code") or "boundary_status_blocker"),
+                "location": None if location is None else str(location),
             })
-        slice_path = package / "semantic-slice-v2.json"
-        if slice_path.is_file():
-            semantic_slice = _object(slice_path, f"{subject} semantic slice")
-            bindings.append({
-                "artifact": "semantic-slice-v2.json",
-                "format": semantic_slice.get("format"),
-                "sha256": sha256_file(slice_path),
-            })
+        status_format = status.get("format")
+        if not isinstance(status_format, str) or not status_format:
+            raise ToolkitInputError(f"{subject} boundary status format is malformed")
         subjects.append({
             "subject": subject,
+            "kind": kind,
             "state": state,
-            "authority": authoritative,
-            "bindings": bindings,
+            "authority": "held" if authoritative else (
+                "missing" if kind == "checked_protocol" else "not-applicable"
+            ),
+            "stage": blocker_rows[0]["family"] if blocker_rows else None,
+            "sources": [{
+                "role": "boundary-status",
+                "format": status_format,
+                "sha256": sha256_file(status_path),
+            }],
             "blockers": blocker_rows,
-            "dependencies": [],
-            "ranked_next_action": (
+            "next_action": (
                 None
                 if authoritative
-                else "author component C and run contextual refinement"
+                else "run the component qualification check"
+                if kind == "component" and state == "complete"
+                else "resolve the first component development blocker"
                 if kind == "component"
                 else "supply and check machine-bound boundary evidence"
                 if state == "complete"
@@ -164,13 +111,14 @@ def write_operator_boundary_status(
         })
     output = Path(out)
     output.mkdir(parents=True, exist_ok=True)
-    return write_operator_work_status_v1(
+    return write_operator_work_status_v2(
+        target_id=target_id,
+        scope="boundary",
         subjects=subjects,
         out=output / "boundary-status.json",
     )
 
 
 __all__ = [
-    "parse_component_work_package_inspection_v1",
     "write_operator_boundary_status",
 ]

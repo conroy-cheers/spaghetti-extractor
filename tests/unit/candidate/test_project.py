@@ -38,6 +38,33 @@ from spaghetti_extractor.roundtrip_fuzz.image_io import write_spx_load_image_con
 from spaghetti_extractor.errors import ToolkitInputError
 
 
+def _empty_portable_dispatch_receipt(
+    *, selection_sha256: str, payload_sha256: str, linker_map_sha256: str,
+) -> dict[str, object]:
+    core: dict[str, object] = {
+        "format": "spaghetti-extractor-portable-dispatch-link-receipt-v1",
+        "status": "complete",
+        "activation_authorized": True,
+        "bindings": {
+            "implementation_selection_sha256": selection_sha256,
+            "payload_sha256": payload_sha256,
+            "linker_map_sha256": linker_map_sha256,
+        },
+        "registry": None,
+        "entries": [],
+        "policy": {
+            "strong_module_registry_required_when_portable": True,
+            "one_strong_implementation_symbol_per_entry": True,
+            "exact_selected_object_membership_required": True,
+            "contextual_bisimulation_authority_required": True,
+            "weak_or_duplicate_fallback_forbidden": True,
+            "source_only_authority": False,
+        },
+        "blockers": [],
+    }
+    return {**core, "receipt_sha256": canonical_sha256_v3(core)}
+
+
 def _native_realization_payload(
     filename: str, candidate_sha256: str, *, pinned: bool = False,
 ) -> dict[str, object]:
@@ -101,6 +128,11 @@ def _native_realization_payload(
             "section_table_sha256": "e" * 64,
             "entry_symbols": ["fixture_entry"],
         },
+        "portable_dispatch_link_receipt": _empty_portable_dispatch_receipt(
+            selection_sha256="2" * 64,
+            payload_sha256="b" * 64,
+            linker_map_sha256="c" * 64,
+        ),
         "loader_surface": {
             "entry_rva": 4096,
             "exports_sha256": "f" * 64,

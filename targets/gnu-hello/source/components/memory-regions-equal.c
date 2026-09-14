@@ -5,7 +5,9 @@ uint8_t gnu_hello_memory_regions_equal(
     const spx_view_v1 *left,
     const spx_view_v1 *right,
     uint32_t count) {
-  uint32_t comparison = context->services->compare_memory(
+  uint32_t comparison;
+  SPX_PROOF_BEGIN(compare);
+  comparison = context->services->compare_memory(
       context->services->context, left, right, count);
   return comparison == UINT32_C(0) ? UINT32_C(1) : UINT32_C(0);
 }

@@ -142,3 +142,23 @@ def _exact(value: Mapping[str, object], fields: set[str], context: str) -> None:
             f"{context} fields differ: missing={sorted(fields-set(value))!r}, "
             f"extra={sorted(set(value)-fields)!r}"
         )
+
+
+def parse_fault_outcomes(value: object, context: str) -> tuple[dict[str, object], ...]:
+    """Explicit scalar error values; other values retain the normal projection."""
+    rows = _array(value, context)
+    if not rows:
+        raise ComponentMachineBindingError(f"{context} must not be empty")
+    result = []
+    for raw in rows:
+        row = _object(raw, context)
+        _exact(row, {"logical_value", "kind"}, context)
+        word = _uint(row["logical_value"], f"{context} logical value")
+        if (word > 0xFFFFFFFF or not isinstance(row["kind"], str)
+                or row["kind"] not in {"memory_fault", "external_fault"}):
+            raise ComponentMachineBindingError(f"{context} value or fault kind is unsupported")
+        result.append({"logical_value": word, "kind": row["kind"]})
+    values = [row["logical_value"] for row in result]
+    if values != sorted(set(values)):
+        raise ComponentMachineBindingError(f"{context} values must be sorted and unique")
+    return tuple(result)

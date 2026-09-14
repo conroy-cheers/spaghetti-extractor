@@ -1,0 +1,118 @@
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static void require(int condition,const char *message) {
+ if(!condition){fprintf(stderr,"CONTRACT MISMATCH: %s\n",message);exit(42);}
+}
+#define __CPROVER_assert(c,m) require((c),(m))
+@NATIVE_ALLOCATOR@
+#include "overlay.c"
+static uint32_t stack_words[64],events[32],event_count,allocation_mode;
+static unsigned char image_memory[0x37000];
+static void *physical(uint32_t address){return address>=0x400000U && address<0x437000U ? image_memory+(address-0x400000U):(void *)(uintptr_t)address;}
+static uint32_t scratch_address,scratch_extent;
+static spx_machine_reference_v1 issued_scratch;
+static uint32_t word(uint32_t p){uint32_t v;memcpy(&v,physical(p),4);return v;}
+static void put(uint32_t p,uint32_t v){memcpy(physical(p),&v,4);}
+static int contains(uint32_t start,uint32_t size,uint32_t address,uint32_t width){
+ return address>=start && width<=size && address-start<=size-width;
+}
+static uint32_t read_memory(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){
+ (void)opaque;uint32_t value=0;*fault=0;
+ int ok=contains(0x400000U,0x37000U,address,width)||contains((uint32_t)(uintptr_t)stack_words,sizeof stack_words,address,width);
+ for(uint32_t i=0;i<spx_native_context_value.external_range_count;i++){
+  spx_native_external_range *r=&spx_native_context_value.external_ranges[i];
+  ok|=r->size && contains(r->start,r->size,address,width);
+ }
+ if(!ok || (width!=1 && width!=2 && width!=4)){*fault=1;return 0;}
+ memcpy(&value,physical(address),width);return value;
+}
+static void write_memory(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){
+ (void)read_memory(opaque,address,width,fault);if(!*fault)memcpy(physical(address),&value,width);
+}
+static const struct image_rule {const char *selector;uint32_t base,extent,permissions;uint64_t object;} image_rules[]={
+ {"image:metapad:section:1",0x40e000U,7168U,1U,4496566811832720474ULL},
+ {"image:metapad:section:2",0x410000U,18272U,3U,2134217653344611032ULL}
+};
+static spx_boundary_status resolve_view(void *opaque,uint32_t address,uint32_t width,uint32_t permissions,const char *selector,uint32_t nullable,uint32_t one_past,spx_machine_reference_v1 *ref){
+ for(unsigned i=0;i<2;i++){
+  const struct image_rule *r=&image_rules[i];
+  if(selector && strcmp(selector,r->selector)==0){
+   if((permissions&r->permissions)!=permissions || !contains(r->base,r->extent,address,width))return SPX_BOUNDARY_UNSUPPORTED;
+   *ref=(spx_machine_reference_v1){1,r->object,1,address-r->base,r->extent,r->permissions};return SPX_BOUNDARY_OK;
+  }
+ }
+ spx_boundary_status status=spx_native_resolve_reference(opaque,address,width,permissions,selector,nullable,one_past,ref);
+ if(status==SPX_BOUNDARY_OK && address && address==scratch_address)issued_scratch=*ref;
+ return status;
+}
+static spx_boundary_status realize_view(void *opaque,const spx_machine_reference_v1 *ref,uint32_t permissions,uint32_t nullable,uint32_t one_past,uint32_t *address){
+ if(ref->domain==1U){
+  for(unsigned i=0;i<2;i++){
+   const struct image_rule *r=&image_rules[i];
+   if(ref->object==r->object && ref->generation==1U && ref->extent==r->extent && ref->permissions==r->permissions &&
+       (permissions&r->permissions)==permissions && (ref->offset<r->extent || (one_past && ref->offset==r->extent))){
+    *address=r->base+(uint32_t)ref->offset;return SPX_BOUNDARY_OK;
+   }
+  }
+  return SPX_BOUNDARY_UNSUPPORTED;
+ }
+ return spx_native_realize_reference(opaque,ref,permissions,nullable,one_past,address);
+}
+spx_call_status spx_invoke_call(spx_runtime *runtime,const spx_call_event *event,const spx_machine_state *input,spx_machine_state *output){
+ (void)runtime;uint32_t a=word(input->esp),b=word(input->esp+4U);*output=*input;
+ require(event_count<32U,"event capacity");
+ if(event->kind==SPX_CALL_INDIRECT){
+  require(event->target_rva==(uint32_t)(uintptr_t)lstrlenA,"actual length target");
+  events[event_count++]=1;output->eax=(uint32_t)lstrlenA((char *)(uintptr_t)a);output->esp+=4U;
+ }else if(event->symbol && strcmp(event->symbol,"GlobalAlloc")==0){
+  events[event_count++]=2;require(a==64U,"actual zeroed allocation flags");
+  HGLOBAL block=allocation_mode ? NULL:GlobalAlloc(a,b);scratch_address=(uint32_t)(uintptr_t)block;scratch_extent=block?b:0;
+  if(block)require(spx_native_add_external_range(scratch_address,b,21969U,1U,7U,1U)==SPX_CALL_OK,"native scratch registration");
+  output->eax=scratch_address;output->esp+=8U;
+ }else if(event->symbol && strcmp(event->symbol,"lstrcpyA")==0){
+  events[event_count++]=3;output->eax=(uint32_t)(uintptr_t)lstrcpyA((char *)(uintptr_t)a,(char *)(uintptr_t)b);output->esp+=8U;
+ }else if(event->symbol && strcmp(event->symbol,"GlobalFree")==0){
+  events[event_count++]=4;HGLOBAL result=GlobalFree((HGLOBAL)(uintptr_t)a);output->eax=(uint32_t)(uintptr_t)result;output->esp+=4U;
+  require(result==NULL,"actual release succeeds in this finite run");
+  if(a)require(spx_native_release_external_range(a,22067U)==SPX_CALL_OK,"native successful release registration");
+ }else if(event->symbol && strcmp(event->symbol,"SetFocus")==0){
+  events[event_count++]=5;require(a==0U,"scoped null focus target");output->eax=(uint32_t)(uintptr_t)SetFocus(NULL);output->esp+=4U;
+ }else {fprintf(stderr,"unexpected service kind %u\n",event->kind);return SPX_CALL_UNIMPLEMENTED;}
+ return SPX_CALL_OK;
+}
+spx_view_v5 spx_component_logical_resource_text_get(void *opaque,uint32_t id){
+ (void)opaque;(void)id;require(0,"notice-suppressed fixture must not request resource text");return (spx_view_v5){0};
+}
+static void run(const char *input,const char *expected,uint32_t removed,uint32_t fail_allocate){
+ memset(&spx_native_context_value,0,sizeof spx_native_context_value);memset(stack_words,0x5a,sizeof stack_words);
+ unsigned n=(unsigned)strlen(input)+1U;char *text=GlobalAlloc(64U,n);require(text!=NULL,"input allocation");memcpy(text,input,n);
+ require(spx_native_add_external_range((uint32_t)(uintptr_t)text,n,100U,1U,7U,1U)==SPX_CALL_OK,"input native registration");
+ put(4263788U,1U);put(4260180U,0U);put(4260184U,0U);put(4251992U,(uint32_t)(uintptr_t)lstrlenA);
+ event_count=0;allocation_mode=fail_allocate;scratch_address=0;scratch_extent=0;issued_scratch=(spx_machine_reference_v1){0};
+ spx_runtime runtime={.context=&spx_native_context_value,.image_base=0x400000U,.read=read_memory,.write=write_memory,.resolve_reference=resolve_view,.realize_reference=realize_view};
+ spx_machine_state state={0};state.edi=(uint32_t)(uintptr_t)text;state.esp=(uint32_t)(uintptr_t)&stack_words[32];put(state.esp,0x12345678U);
+ spx_step_result result=spx_component_text_cleanup_000055b7(&runtime,&state);
+ if(fail_allocate && input[0]){
+  require(result.kind==SPX_MEMORY_FAULT && event_count==3U,"null scratch write becomes original memory fault outcome");
+  require(memcmp(text,input,n)==0,"fault preserves text contents");
+ }else{
+  require(result.kind==SPX_RETURN && state.eax==removed,"complete cleanup result");
+  require(strcmp(text,expected)==0,"complete cleanup current contents");
+  const uint32_t unchanged[]={1,2,1,4},changed[]={1,2,1,3,4,5};
+  const uint32_t *wanted=removed?changed:unchanged;uint32_t count=removed?6U:4U;
+  require(event_count==count && memcmp(events,wanted,count*4U)==0,"complete service outcome order");
+  require(state.esp==(uint32_t)(uintptr_t)&stack_words[33],"native return stack transport");
+  if(scratch_address){uint32_t dead;require(spx_native_realize_reference(&spx_native_context_value,&issued_scratch,1U,0U,0U,&dead)==SPX_BOUNDARY_EXPIRED,"returned scratch origin expired after release");}
+ }
+ require(GlobalFree(text)==NULL,"input release");
+}
+int main(void){
+ require(sizeof(void *)==4,"PE32 adapter fixture");
+ memset(image_memory,0,sizeof image_memory);
+ run("","",0,0);run("ab","ab",0,0);run("abc\r\r\ndef","abc\r\ndef",1,0);
+ run("\r\r\n\r\r\n","\r\n\r\n",2,0);run("","",0,1);run("abc","abc",0,1);
+ puts("complete cleanup adapter: six cases, actual allocation/copy/release/length/focus, current references and fault outcome checked");
+ return 0;
+}

@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: operator
 {
   pkgs,
   pythonEnv,
@@ -19,6 +20,30 @@ let
   suiteId = suitePayload.suite_id or null;
   caseIds = map (row: row.id) suitePayload.cases;
   wine = pkgs.wineWow64Packages.stableFull;
+  executionGate = import ./ca-json-receipt-gate.nix {
+    inherit pkgs pythonEnv;
+    name = "${namePrefix}-${id}-native-realization-execution-gate";
+    kind = "native-realization-execution";
+    artifact = "${nativeRealization}/native-realization.json";
+    artifactName = "native-realization.json";
+    expectedFormat = "spaghetti-extractor-native-realization-v2";
+    allowedStatuses = [ "complete" ];
+    pythonModules = [ "spaghetti_extractor.native_realization.receipt_v2" ];
+    phaseRole = "candidate";
+    inputs.native_realization = nativeRealization;
+    program = ''
+      from spaghetti_extractor.native_realization.receipt_v2 import (
+          NativeRealizationV2,
+      )
+
+      realization = NativeRealizationV2.load(artifact_path)
+      if (
+          realization.payload["ready_for_observation"] is not True
+          or realization.payload["blockers"]
+      ):
+          fail("native realization is not ready for execution")
+    '';
+  };
   checkedRuntimeData = pkgs.runCommand "${namePrefix}-${id}-runtime-data-v1" {
     nativeBuildInputs = [ pkgs.coreutils pkgs.findutils ];
     __contentAddressed = true;
@@ -72,23 +97,20 @@ let
     ];
   };
   aggregate = pkgs.runCommand "${namePrefix}-${id}-candidate-test-receipt-v1" {
-    nativeBuildInputs = [ pkgs.jq pkgs.coreutils ];
+    nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils ];
     preferLocalBuild = false;
     allowSubstitutes = true;
     __contentAddressed = true;
   } ''
     set -euo pipefail
-    execution_gate=${nativeRealization}/native-realization.json
-    jq -e '
-      .format == "spaghetti-extractor-native-realization-v2" and
-      .status == "complete" and .ready_for_observation and
-      (.blockers | length) == 0
-    ' "$execution_gate" >/dev/null
+    execution_gate=${executionGate.receipt}
     test -f ${suiteResult.aggregate}/candidate-test-report.json
     test -s ${candidateBinary}
     mkdir -p "$out"
     ln -s ${suiteResult.aggregate} "$out/test-results"
     candidate_sha256="$(sha256sum ${candidateBinary} | cut -d ' ' -f 1)"
+    expected_candidate_sha256="$(jq -r '.candidate.sha256' "$execution_gate")"
+    test "$candidate_sha256" = "$expected_candidate_sha256"
     native_realization_sha256="$(sha256sum "$execution_gate" | cut -d ' ' -f 1)"
     report_sha256="$(sha256sum ${suiteResult.aggregate}/candidate-test-report.json | cut -d ' ' -f 1)"
     suite_sha256="$(sha256sum ${suite} | cut -d ' ' -f 1)"

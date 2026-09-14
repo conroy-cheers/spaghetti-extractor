@@ -17,11 +17,13 @@ void gnu_hello_program_name_selection(
     spx_program_name_selection_context_v2 *context,
     const spx_view_v1 *program,
     const spx_view_v1 *wrapper_prefix) {
-  spx_ref_v1 selected = program->base;
+  spx_ref_v1 selected;
   spx_ref_v1 separator;
   spx_ref_v1 basename;
   int64_t separator_offset = 0;
 
+  SPX_PROOF_BEGIN(select);
+  selected = program->base;
   separator = context->services->find_last_character(
       context->services->context, program, UINT8_C(47));
   if (ref_is_null(separator) ||

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+import hashlib
+from typing import Callable, Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..boundary._canonical import BoundaryModelError, array, object_
@@ -13,9 +14,14 @@ from ..external.resolved import (
     resolved_interface_method_index_v1,
 )
 from ..transfer.model import _Transfer
+from ..transfer.behavioral_c_render import behavioral_c_dispatch_abi_declarations
 from ..transfer.values import _c_string
 from .component_c_v5 import _parameter_type, _result_type
+from .machine_overlay_result_views import result_view_runtime_helpers, nullable_input_view_lines
+from .machine_overlay_state_views import state_view_result_lines
 from .interface_package_v5 import CompiledComponentInterfaceV5
+from .machine_storage import register_relative_address
+from .machine_overlay_logical_views_v5 import VIEW_CONTEXT_DECLARATION, bounded_view_argument_lines
 from .machine_overlay_external_v5 import (
     _checked_service_argument_transducers,
     _external_service_runtime_helpers,
@@ -30,6 +36,8 @@ from .machine_overlay_boundaries_v5 import (
     state_export_lines as _state_export_lines,
     state_import_lines as _state_import_lines,
     state_projection_index as _state_projection_index,
+    checked_result_fault_outcomes,
+    result_fault_outcome_lines,
 )
 from .normalized_component import (
     NormalizedComponentContract,
@@ -48,10 +56,54 @@ from .machine_overlay_services_v5 import (
     _uint,
 )
 
+
 @dataclass(frozen=True)
 class ComponentMachineOverlayV1:
     source: str
     entries: tuple[Mapping[str, object], ...]
+
+
+def _common_owned_boundary_exit(exits, *, owned_units, transfer_index):
+    """Find one observable outgoing edge, excluding owned internal branches.
+
+    This only chooses an adapter outcome. Contextual checking still proves the
+    C body reaches it with equivalent state, effects and progress.
+    """
+    owned = [transfer_index.get(identity) for identity in owned_units]
+    if any(item is None for item in owned):
+        return None
+    owned_rvas = {item.rva_start for item in owned}
+    if len(owned_rvas) != len(owned):
+        return None
+    outcomes = set()
+    for item in exits:
+        if item.identity not in owned_units or not item.actions:
+            return None
+        terminal = item.actions[-1]
+        if terminal.op == 'outcome_branch' and len(terminal.args) == 3:
+            targets, kind = terminal.args[1:], 'SPX_BRANCH'
+        elif terminal.op in {'outcome_jump', 'outcome_fallthrough'} and len(terminal.args) == 1:
+            targets = terminal.args
+            kind = 'SPX_JUMP' if terminal.op == 'outcome_jump' else 'SPX_FALLTHROUGH'
+        else:
+            return None
+        if any(type(target) is not int or not 0 <= target <= 0xffffffff for target in targets):
+            return None
+        outgoing = {target for target in targets if target not in owned_rvas}
+        if len(outgoing) != 1:
+            return None
+        outcomes.add((kind, next(iter(outgoing))))
+    return next(iter(outcomes)) if len(outcomes) == 1 else None
+
+
+ExternalServiceThunkRendererV1 = Callable[
+    [
+        CompiledComponentInterfaceV5,
+        Mapping[str, object],
+        Mapping[str, str],
+    ],
+    Sequence[str],
+]
 
 
 def _binding_authority_selectors(
@@ -240,8 +292,10 @@ def render_component_dispatch_registry_v1(
     ]
     return "\n".join(
         [
-            '#include "behavioral-c.h"',
+            '#include "state-machine-runtime.h"',
             "#include <stdint.h>",
+            "",
+            *behavioral_c_dispatch_abi_declarations(),
             "",
             *declarations,
             "",
@@ -279,6 +333,8 @@ def render_component_machine_overlay_v5(
     resolved_external_environment: Mapping[str, object] | None = None,
     code_capabilities: Mapping[str, Mapping[str, object]] | None = None,
     proof_classification: str = "machine_overlay",
+    external_service_thunk_renderer: ExternalServiceThunkRendererV1 | None = None,
+    emit_proof_local_view_codec: bool = True,
 ) -> ComponentMachineOverlayV1:
     """Render fail-closed adapters directly from the checked V5 contract.
 
@@ -290,10 +346,20 @@ def render_component_machine_overlay_v5(
     """
 
     interface = bundle.interface
+    if type(emit_proof_local_view_codec) is not bool:
+        raise BoundaryModelError("proof local-view codec selection must be boolean")
+    render_external_service_thunk = (
+        _external_service_thunk
+        if external_service_thunk_renderer is None
+        else external_service_thunk_renderer
+    )
     if proof_classification not in {"machine_overlay", "encapsulated_owned"}:
         raise BoundaryModelError("component overlay proof classification is invalid")
     if proof_classification == "encapsulated_owned" and not interface.state:
         raise BoundaryModelError("encapsulated-owned overlay requires persistent state")
+    shared_state_views = any(item.value.interpretation == "view" for item in interface.state)
+    if proof_classification == "encapsulated_owned" and shared_state_views:
+        raise BoundaryModelError("shared state views cannot persist a borrowed operation runtime")
     transfer_index = {item.identity: item for item in transfers}
     if len(transfer_index) != len(transfers):
         raise BoundaryModelError("component overlay transfer inventory is duplicated")
@@ -323,6 +389,14 @@ def render_component_machine_overlay_v5(
         ].parameters
         if value.interpretation == "view"
     ]
+    legacy_view_parameters = [value for value in view_parameters if not value.nullable]
+    for value in view_parameters:
+        if value.nullable:
+            pointer = bundle.intent.schema.type_index[value.type_id]
+            element = bundle.intent.schema.type_index.get(pointer.body.get("pointee_type_id"))
+            if (pointer.kind != "pointer" or element is None or element.kind != "integer"
+                    or element.body.get("width_bits") != 8):
+                raise BoundaryModelError("nullable input views require byte elements")
     has_views = any(
         projection.get("kind") in {"view", "bytes_view"}
         for semantics in contract.machine_semantics
@@ -368,7 +442,8 @@ def render_component_machine_overlay_v5(
         "typedef struct spx_component_service_context_v1 {",
         "  spx_runtime *runtime;",
         "  spx_machine_state *state;",
-        "  uint32_t *fault;",
+        "  uint32_t *memory_fault;",
+        "  uint32_t *service_fault;",
         "  struct { uint32_t physical_word; uint32_t target_rva; } callback_result;",
         "} spx_component_service_context_v1;",
         "",
@@ -388,21 +463,31 @@ def render_component_machine_overlay_v5(
         "}",
         "",
     ]
-    if has_views:
+    if has_views and legacy_view_parameters:
         lines.extend(
             _view_runtime_helpers(
                 need_read=any(
-                    value.access in {"read", "read_write"} for value in view_parameters
+                    value.access in {"read", "read_write"} for value in legacy_view_parameters
                 ),
                 need_write=any(
-                    value.access in {"write", "read_write"} for value in view_parameters
+                    value.access in {"write", "read_write"} for value in legacy_view_parameters
                 ),
             )
         )
     if has_atomics:
         lines.extend(_atomic_runtime_helpers())
-    if has_external_services or interface.state:
+    if has_external_services or any(item.value.interpretation != "view" for item in interface.state):
         lines.extend(_external_service_runtime_helpers())
+    nullable_view_inputs = any(value.nullable for value in view_parameters)
+    input_reference_outputs = any('exit_projection' in row
+        for semantics in semantic_index.values()
+        for row in semantics.machine_projection.get('operation', {}).get('parameters', []))
+    if nullable_view_inputs or shared_state_views or any(value.interpretation == 'view' for service in interface.services
+           for value in bundle.intent.schema.signature_index[service.signature_id].results):
+        lines.extend(result_view_runtime_helpers(proof_codec_symbol=
+            f"__CPROVER_spx_{component}_local_view_codec"
+            if external_service_thunk_renderer is not None and emit_proof_local_view_codec else None,
+            input_view_decoder=nullable_view_inputs, input_reference_encoder=input_reference_outputs))
     if proof_classification == "encapsulated_owned":
         lines.extend(
             [
@@ -439,12 +524,14 @@ def render_component_machine_overlay_v5(
         if entry is None or any(item is None for item in exit_transfers):
             raise BoundaryModelError("component overlay unit binding is stale")
         checked_exits = tuple(item for item in exit_transfers if item is not None)
+        common_exit = _common_owned_boundary_exit(checked_exits,
+            owned_units=owned_units, transfer_index=transfer_index)
         if len(checked_exits) > 1 and any(
             not item.actions or item.actions[-1].op != "outcome_return"
             for item in checked_exits
-        ):
+        ) and common_exit is None:
             raise BoundaryModelError(
-                "component overlay multiple exits lack terminal-return equivalence"
+                "component overlay multiple exits lack terminal-return or common-boundary equivalence"
             )
         exit_transfer = min(checked_exits, key=lambda item: item.rva_start)
         if tuple(semantics.entry_rvas) != (entry.rva_start,):
@@ -465,19 +552,33 @@ def render_component_machine_overlay_v5(
             lines.append("")
         for service in service_bindings:
             if service["provider_kind"] in {"external_call", "interface_method"}:
-                lines.extend(
-                    _external_service_thunk(
+                rendered_thunk = tuple(
+                    render_external_service_thunk(
                         bundle,
                         service,
                         authority_selectors_by_operation[operation_id],
                     )
                 )
+                if not rendered_thunk or any(
+                    not isinstance(line, str) for line in rendered_thunk
+                ):
+                    raise BoundaryModelError(
+                        "component external-service renderer returned malformed C"
+                    )
+                lines.extend(rendered_thunk)
         parameters = _projection_index(
             projection.get("parameters"), "component overlay parameters"
         )
-        results = _projection_index(
+        result_bindings = _value_binding_index(
             projection.get("results"), "component overlay results"
         )
+        results = {
+            identity: object_(
+                binding.get("projection"),
+                f"component overlay result {identity} projection",
+            )
+            for identity, binding in result_bindings.items()
+        }
         state_projections = _state_projection_index(
             projection.get("state"), "component overlay state"
         )
@@ -489,6 +590,10 @@ def render_component_machine_overlay_v5(
             )
         if tuple(sorted(results)) != tuple(sorted(expected_results)):
             raise BoundaryModelError("component overlay result projection is not total")
+        fault_outcomes = checked_result_fault_outcomes(signature, result_bindings, types)
+        from .machine_overlay_result_views import (checked_parameter_exit_transports,
+            parameter_exit_snapshots, parameter_exit_encoding, parameter_exit_stores)
+        parameter_exits = checked_parameter_exit_transports(bundle, signature, projection)
         if set(state_projections) != {item.value.identity for item in interface.state}:
             raise BoundaryModelError("component overlay state projection is not total")
         symbol = f"spx_component_{component}_{entry.rva_start:08x}"
@@ -509,7 +614,9 @@ def render_component_machine_overlay_v5(
                     else []
                 ),
                 "  (void)rt;",
-                "  (void)spx_component_read;",
+                # Keep the unused-helper reference unevaluated; it must not
+                # introduce another target for runtime read function pointers.
+                "  (void)sizeof(&spx_component_read);",
                 "  if (state == 0)",
                 "    return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
             ]
@@ -522,6 +629,7 @@ def render_component_machine_overlay_v5(
                 context_expression=context_pointer,
                 runtime_expression="rt",
                 state_expression="state",
+                memory_fault_expression="&memory_fault",
                 fault_expression="&service_fault",
             )
         )
@@ -559,6 +667,7 @@ def render_component_machine_overlay_v5(
                 "atomic_object",
                 "callback_handle",
                 "resource",
+                "record_view",
             }:
                 continue
             c_type = _scalar_type(types[value.type_id], types)
@@ -588,6 +697,16 @@ def render_component_machine_overlay_v5(
                 lines.extend(resource_lines)
                 arguments_by_id[value.identity] = resource_name
                 continue
+            if parameter_projection.get("kind") == "record_view":
+                record_lines, record_name = _record_parameter_lines(
+                    types=types,
+                    value=value,
+                    projection=parameter_projection,
+                    name=name,
+                )
+                lines.extend(record_lines)
+                arguments_by_id[value.identity] = record_name
+                continue
             if parameter_projection.get("kind") not in {"view", "bytes_view"}:
                 if parameter_projection.get("kind") == "atomic_object":
                     lines.extend(
@@ -616,18 +735,25 @@ def render_component_machine_overlay_v5(
             f"{context_pointer}"
             f"{''.join(', ' + arguments_by_id[value.identity] for value in signature.parameters)})"
         )
+        lines.extend(parameter_exit_snapshots(parameter_exits))
         if signature.results:
             if len(signature.results) != 1:
                 raise BoundaryModelError(
-                    "component overlay currently requires at most one scalar result"
+                    "component overlay currently requires at most one result"
                 )
             result_value = signature.results[0]
             result_type = _result_type(types, signature)
             lines.append(f"  {result_type} logical_result = {call};")
             lines.append(
+                "  if (memory_fault != 0U) return "
+                "(spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };"
+            )
+            lines.append(
                 "  if (service_fault != 0U) return "
                 "(spx_step_result){ SPX_EXTERNAL_FAULT, 0U, 0U };"
             )
+            lines.extend(result_fault_outcome_lines(fault_outcomes))
+            lines.extend(parameter_exit_encoding(parameter_exits))
             if proof_classification == "machine_overlay":
                 lines.extend(
                     _state_export_lines(
@@ -637,9 +763,31 @@ def render_component_machine_overlay_v5(
                         runtime_expression="rt",
                     )
                 )
+            result_projection = results[result_value.identity]
+            if result_projection.get("kind") == "view":
+                if any(result_bindings[result_value.identity].get(field) is not None for field in ("encoding", "decoding")):
+                    raise BoundaryModelError("shared state result view cannot use scalar codecs")
+                lines.extend(state_view_result_lines(
+                    bundle=bundle, value=result_value, projection=result_projection,
+                    state_projections=state_projections, runtime="rt",
+                ))
+                result_projection = result_projection["base"]
+            elif result_projection.get("kind") in {"register", "stack"}:
+                lines.extend(
+                    _logical_result_word_lines(
+                        logical_type=types[result_value.type_id],
+                        types=types,
+                    )
+                )
             lines.extend(
                 _projection_result(
-                    results[result_value.identity],
+                    result_projection,
+                    encoding=result_bindings[result_value.identity].get("encoding"),
+                    decoding=result_bindings[result_value.identity].get("decoding"),
+                    parameter_kinds={
+                        value.identity: parameters[value.identity].get("kind")
+                        for value in signature.parameters
+                    },
                     exit_transfer=exit_transfer,
                     exit_rva=exit_transfer.rva_start,
                 )
@@ -647,9 +795,14 @@ def render_component_machine_overlay_v5(
         else:
             lines.append(f"  {call};")
             lines.append(
+                "  if (memory_fault != 0U) return "
+                "(spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };"
+            )
+            lines.append(
                 "  if (service_fault != 0U) return "
                 "(spx_step_result){ SPX_EXTERNAL_FAULT, 0U, 0U };"
             )
+            lines.extend(parameter_exit_encoding(parameter_exits))
             if proof_classification == "machine_overlay":
                 lines.extend(
                     _state_export_lines(
@@ -659,12 +812,61 @@ def render_component_machine_overlay_v5(
                         runtime_expression="rt",
                     )
                 )
+        lines.extend(parameter_exit_stores(parameter_exits))
         result_projection_kinds = {value.get("kind") for value in results.values()}
+        if len(checked_exits) > 1 and result_projection_kinds & {"control_condition", "finite_control_target"}:
+            raise BoundaryModelError("component overlay multiple control-result exits require an explicit outcome relation")
         if not result_projection_kinds & {"control_condition", "finite_control_target"}:
-            lines.append(
-                "  return (spx_step_result){ SPX_FALLTHROUGH, "
-                f"0x{exit_transfer.rva_start:08x}U, 0U }};"
-            )
+            if all(
+                item.actions and item.actions[-1].op == "outcome_return"
+                for item in checked_exits
+            ):
+                # Logical C has already computed the operation's postcondition.
+                # Consume the compiler-generated cdecl return epilogue here so
+                # the adapter exposes the same terminal state.  Falling into
+                # that exact epilogue after publishing a logical result can
+                # clobber it (for example, a trailing cmov in ascii-to-lower).
+                lines.extend(
+                    [
+                        "  if (rt == 0 || rt->read == 0 ||",
+                        "      state->esp > UINT32_MAX - UINT32_C(4))",
+                        "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+                        "  uint32_t return_address = rt->read(",
+                        "      rt->context, state->esp, UINT32_C(4), &memory_fault);",
+                        "  if (memory_fault != UINT32_C(0))",
+                        "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+                        "  state->esp += UINT32_C(4);",
+                        f"  state->original_rva = UINT32_C({exit_transfer.rva_start});",
+                        "  return (spx_step_result){ SPX_RETURN, 0U, return_address };",
+                    ]
+                )
+            elif common_exit is not None and (len(checked_exits) > 1 or common_exit[0] == 'SPX_BRANCH'):
+                kind, target = common_exit
+                lines.append(f"  return (spx_step_result){{ {kind}, UINT32_C({target}), 0U }};")
+            else:
+                terminal = exit_transfer.actions[-1] if exit_transfer.actions else None
+                if terminal is not None and terminal.op in {
+                    "outcome_fallthrough",
+                    "outcome_jump",
+                }:
+                    if len(terminal.args) != 1 or not isinstance(terminal.args[0], int):
+                        raise BoundaryModelError(
+                            "component overlay unconditional exit is malformed"
+                        )
+                    kind = (
+                        "SPX_FALLTHROUGH"
+                        if terminal.op == "outcome_fallthrough"
+                        else "SPX_JUMP"
+                    )
+                    lines.append(
+                        f"  return (spx_step_result){{ {kind}, "
+                        f"UINT32_C({terminal.args[0]}), 0U }};"
+                    )
+                else:
+                    lines.append(
+                        "  return (spx_step_result){ SPX_FALLTHROUGH, "
+                        f"0x{exit_transfer.rva_start:08x}U, 0U }};"
+                    )
         lines.extend(["}", ""])
         logical_symbol = _logical_operation_symbol(interface.identity, operation_id)
         lines.extend(
@@ -675,6 +877,11 @@ def render_component_machine_overlay_v5(
                 source_symbol=operation_symbols[operation_id],
                 logical_symbol=logical_symbol,
                 service_bindings=service_bindings,
+                parameter_projections=parameters,
+                authority_selectors=authority_selectors_by_operation[operation_id],
+                state_projections=state_projections if proof_classification == "machine_overlay" else None,
+                result_projections=results,
+                fault_outcomes=fault_outcomes,
             )
         )
         entries.append(
@@ -688,6 +895,7 @@ def render_component_machine_overlay_v5(
                 "symbol": symbol,
                 "logical_symbol": logical_symbol,
                 "logical_abi_sha256": _signature_abi_sha256(bundle, signature),
+                "object_authority_selectors": dict(authority_selectors_by_operation[operation_id]),
                 "service_bindings": [
                     {
                         key: value
@@ -703,22 +911,21 @@ def render_component_machine_overlay_v5(
     return ComponentMachineOverlayV1("\n".join(lines).rstrip() + "\n", tuple(entries))
 
 
+def render_bound_proof_overlay(*, expected_sha256, requires_local_view_codec, **arguments):
+    """Reconstruct a retained overlay using only known, exactly bound variants.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    Older overlays included an unused cut codec. Both variants may be imported
+    when the checked plan has no local-view cuts; a plan that needs the codec
+    has only one admissible variant. No bytes or evidence hashes are normalized.
+    """
+    if type(requires_local_view_codec) is not bool:
+        raise BoundaryModelError("proof local-view codec requirement must be boolean")
+    for enabled in ((True,) if requires_local_view_codec else (False, True)):
+        overlay = render_component_machine_overlay_v5(
+            **arguments, emit_proof_local_view_codec=enabled)
+        if hashlib.sha256(overlay.source.encode("ascii")).hexdigest() == expected_sha256:
+            return overlay
+    raise BoundaryModelError("proof overlay differs from the checked bytes")
 
 
 def _logical_operation_thunk(
@@ -729,6 +936,11 @@ def _logical_operation_thunk(
     source_symbol: str,
     logical_symbol: str,
     service_bindings: Sequence[Mapping[str, object]],
+    parameter_projections: Mapping[str, Mapping[str, object]] | None = None,
+    authority_selectors: Mapping[str, str] | None = None,
+    state_projections: Mapping[str, Mapping[str, object]] | None = None,
+    result_projections: Mapping[str, Mapping[str, object]] | None = None,
+    fault_outcomes: Sequence[Mapping[str, object]] = (),
 ) -> list[str]:
     signature = bundle.intent.schema.signature_index[operation.signature_id]
     types = bundle.intent.schema.type_index
@@ -737,9 +949,35 @@ def _logical_operation_thunk(
         f"{_parameter_type(types, item)} logical_{_c_identifier(item.identity)}"
         for item in signature.parameters
     ]
-    arguments = ", ".join(
-        f"logical_{_c_identifier(item.identity)}" for item in signature.parameters
-    )
+    argument_lines: list[str] = []
+    argument_expressions: list[str] = []
+    for item in signature.parameters:
+        name = f"logical_{_c_identifier(item.identity)}"
+        extent = getattr(item, "extent")
+        if getattr(item, "interpretation") != "view" or extent.get("kind") not in {
+            "fixed",
+            "value",
+        }:
+            argument_expressions.append(name)
+            continue
+        bounded_pointer = f"{name}_argument"
+        extent_expression = (
+            f"UINT64_C({int(extent['bytes'])})"
+            if extent["kind"] == "fixed"
+            else f"(uint64_t)logical_{_c_identifier(str(extent['value_id']))}"
+        )
+        argument_lines.extend(
+            bounded_view_argument_lines(
+                name=name, extent=extent_expression, access=item.access,
+                selector=_authority_selector_expression(
+                    (parameter_projections or {}).get(item.identity, {}),
+                    authority_selectors or {},
+                ),
+                zero_result=_zero_result_expression(result_type),
+            )
+        )
+        argument_expressions.append(bounded_pointer)
+    arguments = ", ".join(argument_expressions)
     call = f"{source_symbol}(&logical_context{', ' if arguments else ''}{arguments})"
     zero = _zero_result_expression(result_type)
     lines = [
@@ -749,7 +987,9 @@ def _logical_operation_thunk(
         f"  spx_{component}_context_v5 logical_context = {{0}};",
         f"  if (caller == 0 || caller->runtime == 0 || caller->state == 0) {zero}",
     ]
-    if bundle.interface.state:
+    shared = bool(bundle.interface.state) and state_projections is not None and len(bundle.intent.protocol_states) == 1 and all(
+        item.initial is None and item.value.interpretation == "view" for item in bundle.interface.state)
+    if bundle.interface.state and not shared:
         lines.extend(
             [
                 "  (void)logical_context;",
@@ -757,7 +997,7 @@ def _logical_operation_thunk(
                     f"  (void)logical_{_c_identifier(item.identity)};"
                     for item in signature.parameters
                 ),
-                "  if (caller->fault != 0) *caller->fault = UINT32_C(1);",
+                "  if (caller->service_fault != 0) *caller->service_fault = UINT32_C(1);",
                 f"  {zero}",
                 "}",
                 "",
@@ -772,10 +1012,34 @@ def _logical_operation_thunk(
             context_expression="&logical_context",
             runtime_expression="caller->runtime",
             state_expression="caller->state",
-            fault_expression="caller->fault",
+            memory_fault_expression="caller->memory_fault",
+            fault_expression="caller->service_fault",
         )
     )
-    lines.append(f"  {'return ' if result_type != 'void' else ''}{call};")
+    lines.extend(argument_lines)
+    if shared:
+        from .machine_overlay_state_views import state_view_import_lines, state_view_export_lines
+        failure = "{ if (caller->memory_fault != 0) *caller->memory_fault = UINT32_C(1); " + zero + " }"
+        for item in bundle.interface.state:
+            row = state_projections[item.value.identity]
+            lines.extend(state_view_import_lines(bundle=bundle, item=item, row=row,
+                selector=_authority_selector_expression(row["entry"], authority_selectors or {}),
+                context="logical_context", runtime="caller->runtime", failure=failure))
+        lines.append(f"  {result_type + ' logical_result = ' if result_type != 'void' else ''}{call};")
+        lines.extend(result_fault_outcome_lines(fault_outcomes, caller="caller"))
+        lines.extend(state_view_export_lines(bundle=bundle, state_projections=state_projections,
+            context="logical_context", runtime="caller->runtime", failure=failure))
+        if signature.results and signature.results[0].interpretation == "view":
+            lines.extend(state_view_result_lines(bundle=bundle, value=signature.results[0],
+                projection=(result_projections or {})[signature.results[0].identity],
+                state_projections=state_projections, runtime="caller->runtime", failure=failure))
+        lines.append("  return logical_result;" if result_type != "void" else "  return;")
+    elif fault_outcomes:
+        lines.append(f"  {result_type} logical_result = {call};")
+        lines.extend(result_fault_outcome_lines(fault_outcomes, caller="caller"))
+        lines.append("  return logical_result;")
+    else:
+        lines.append(f"  {'return ' if result_type != 'void' else ''}{call};")
     lines.extend(["}", ""])
     return lines
 
@@ -783,13 +1047,64 @@ def _logical_operation_thunk(
 def _zero_result_expression(result_type: str) -> str:
     if result_type == "void":
         return "return;"
-    if result_type.startswith("spx_ref_"):
+    if result_type.startswith("spx_") and "*" not in result_type:
         return f"return ({result_type}){{0}};"
     return f"return ({result_type})0;"
 
 
-
-
+def _record_parameter_lines(
+    *,
+    types: Mapping[str, object],
+    value: object,
+    projection: Mapping[str, object],
+    name: str,
+) -> tuple[list[str], str]:
+    logical_type = types[getattr(value, "type_id")]
+    if getattr(value, "interpretation") != "value" or logical_type.kind != "record":
+        raise BoundaryModelError(
+            "component record-view projection requires a logical record value"
+        )
+    raw_fields = projection.get("fields")
+    if not isinstance(raw_fields, list):
+        raise BoundaryModelError("component record-view fields are malformed")
+    projection_by_id = {
+        str(object_(item, "component record-view field").get("id")): object_(
+            object_(item, "component record-view field").get("projection"),
+            "component record-view field projection",
+        )
+        for item in raw_fields
+    }
+    schema_fields = tuple(logical_type.body["fields"])
+    schema_ids = tuple(str(item["id"]) for item in schema_fields)
+    if set(projection_by_id) != set(schema_ids) or len(projection_by_id) != len(
+        raw_fields
+    ):
+        raise BoundaryModelError(
+            "component record-view projection is not total over logical fields"
+        )
+    lines = [f"  spx_{_c_identifier(logical_type.identity)}_v2 {name} = {{"]
+    for field in schema_fields:
+        field_id = str(field["id"])
+        field_type = types[str(field["type_id"])]
+        if field_type.kind not in {"bool", "integer", "enum", "pointer"}:
+            raise BoundaryModelError(
+                "component record-view fields must be scalar machine words"
+            )
+        field_projection = projection_by_id[field_id]
+        if (
+            field_projection.get("kind")
+            not in {"register", "stack", "static_slot", "constant"}
+            or field_projection.get("width") != 32
+        ):
+            raise BoundaryModelError(
+                "component record-view field projection must be one machine word"
+            )
+        field_c_type = _scalar_type(field_type, types)
+        lines.append(
+            f"    .{_c_identifier(field_id)} = ({field_c_type})({_projection_read(field_projection)}),"
+        )
+    lines.append("  };")
+    return lines, name
 
 
 def _projection_index(value: object, context: str) -> dict[str, Mapping[str, object]]:
@@ -798,11 +1113,35 @@ def _projection_index(value: object, context: str) -> dict[str, Mapping[str, obj
     result: dict[str, Mapping[str, object]] = {}
     for index, item in enumerate(value):
         row = object_(item, f"{context} {index}")
+        if "fault_outcomes" in row:
+            raise BoundaryModelError("fault outcomes are only supported on results")
         identity = str(row.get("id", ""))
         projection = object_(row.get("projection"), f"{context} projection {index}")
         if not identity or identity in result:
             raise BoundaryModelError(f"{context} identities are invalid or duplicated")
         result[identity] = projection
+    return result
+
+
+def _value_binding_index(
+    value: object, context: str
+) -> dict[str, Mapping[str, object]]:
+    if not isinstance(value, list):
+        raise BoundaryModelError(f"{context} must be an array")
+    result: dict[str, Mapping[str, object]] = {}
+    for index, item in enumerate(value):
+        row = object_(item, f"{context} {index}")
+        identity = str(row.get("id", ""))
+        object_(row.get("projection"), f"{context} projection {index}")
+        if not identity or identity in result:
+            raise BoundaryModelError(f"{context} identities are invalid or duplicated")
+        if set(row) - {"id", "projection", "decoding", "encoding", "fault_outcomes"}:
+            raise BoundaryModelError(f"{context} {identity} has unsupported fields")
+        if row.get("decoding") is not None and row.get("encoding") is None:
+            raise BoundaryModelError(
+                f"{context} {identity} has a decoding but no inverse encoding"
+            )
+        result[identity] = row
     return result
 
 
@@ -821,9 +1160,11 @@ def _projection_read(value: Mapping[str, object]) -> str:
         width = _width(value.get("width"))
         rva = _uint(value.get("rva"), "component overlay static-slot RVA")
         return (
-            f"spx_component_read(rt, UINT32_C({rva}), "
+            f"spx_component_read(rt, rt->image_base + UINT32_C({rva}), "
             f"UINT32_C({width // 8}), &memory_fault)"
         )
+    if kind == "offset":
+        return register_relative_address(value, state="(*state)", phase="entry")
     if kind == "constant":
         return f"UINT32_C({_uint(value.get('value'), 'component overlay constant')})"
     raise BoundaryModelError(f"component overlay projection {kind!r} is unsupported")
@@ -867,6 +1208,9 @@ def _view_projection_lines(
 ) -> list[str]:
     base = object_(projection.get("base"), "component overlay view base")
     address = _projection_read(base)
+    if getattr(value, "nullable", False):
+        return nullable_input_view_lines(value=value, projection=projection, name=name,
+            address=address, selector=_authority_selector_expression(projection, authority_selectors))
     extent_id = projection.get("extent_id")
     raw_requested = projection.get("requested_extent")
     raw_extent = projection.get("extent")
@@ -934,12 +1278,7 @@ def _view_projection_lines(
 
 def _view_runtime_helpers(*, need_read: bool, need_write: bool) -> list[str]:
     lines = [
-        "typedef struct spx_component_view_context {",
-        "  spx_runtime *runtime;",
-        "  uint32_t address;",
-        "  uint64_t extent;",
-        "  uint32_t permissions;",
-        "} spx_component_view_context;",
+        *VIEW_CONTEXT_DECLARATION.splitlines(),
         "",
     ]
     if need_read:
@@ -1069,14 +1408,45 @@ def _atomic_runtime_helpers() -> list[str]:
 
 
 def _projection_result(
-    value: Mapping[str, object], *, exit_transfer: _Transfer, exit_rva: int
+    value: Mapping[str, object],
+    *,
+    encoding: object,
+    decoding: object,
+    parameter_kinds: Mapping[str, object],
+    exit_transfer: _Transfer,
+    exit_rva: int,
 ) -> list[str]:
     kind = value.get("kind")
+    encoded_result = _result_encoding_expression(
+        encoding,
+        parameter_kinds=parameter_kinds,
+        projected_value="logical_result_word",
+    )
+    if decoding is not None and encoding is None:
+        raise BoundaryModelError(
+            "component overlay result decoding has no inverse encoding"
+        )
     if kind == "register":
         register = _register(value.get("register"))
         width = _width(value.get("width"))
         mask = 0xFFFFFFFF if width == 32 else (1 << width) - 1
-        return [f"  state->{register} = ((uint32_t)logical_result) & UINT32_C({mask});"]
+        cast_result = f"({encoded_result})"
+        return [f"  state->{register} = ((uint32_t){cast_result}) & UINT32_C({mask});"]
+    if kind == "stack":
+        if value.get("at") != "exit":
+            raise BoundaryModelError("component stack result requires an exit projection")
+        width = _width(value.get("width"))
+        address = register_relative_address({"kind": "offset", "at": "exit",
+            "base": {"kind": "register", "register": "esp", "width": 32, "at": "exit"},
+            "offset_bytes": value["offset"]}, state="(*state)", phase="exit")
+        return [
+            "  if (rt == 0 || rt->write == 0)",
+            "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+            f"  rt->write(rt->context, (uint32_t)({address}), UINT32_C({width // 8}),",
+            f"      (uint32_t)({encoded_result}), &memory_fault);",
+            "  if (memory_fault != 0U)",
+            "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+        ]
     if kind == "callback_handle":
         source = object_(value.get("source"), "component callback result source")
         if (
@@ -1122,13 +1492,141 @@ def _projection_result(
             "  switch ((uint32_t)logical_result) {",
             *(
                 f"    case UINT32_C({logical}): return (spx_step_result)"
-                f"{{ SPX_JUMP, UINT32_C({target}), 0U }};"
+                f"{{ SPX_INDIRECT_JUMP, 0U, "
+                f"rt->image_base + UINT32_C({target}) }};"
                 for logical, target in targets
             ),
             "    default: return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
             "  }",
         ]
     raise BoundaryModelError("component overlay result projection is unsupported")
+
+
+def _result_encoding_expression(
+    value: object,
+    *,
+    parameter_kinds: Mapping[str, object],
+    projected_value: str = "logical_result",
+) -> str:
+    """Render the declared logical-result to machine-word codec.
+
+    ``projected_value`` denotes the Portable-C result on the encoding side.
+    Result codecs may depend on operation parameters, but never on hidden
+    component state.  Byte reads are intentionally unsupported here: an
+    adapter result representation must be a pure value transformation.
+    """
+
+    if value is None:
+        return projected_value
+    row = object_(value, "component overlay result encoding")
+    op = row.get("op")
+    if op == "projected_value":
+        return projected_value
+    if op == "const":
+        raw = _uint(row.get("value"), "component overlay encoding constant")
+        return f"UINT32_C({raw & 0xFFFFFFFF})"
+    if op == "parameter":
+        identity = str(row.get("name", ""))
+        name = _c_identifier(identity)
+        if identity not in parameter_kinds or parameter_kinds[identity] in {
+            "view",
+            "bytes_view",
+            "resource",
+            "callback_handle",
+            "atomic_object",
+        }:
+            raise BoundaryModelError(
+                "component overlay result encoding references a non-scalar parameter"
+            )
+        return f"argument_{name}"
+    if op in {"bytes_address", "byte_extent"}:
+        identity = str(row.get("name", ""))
+        name = _c_identifier(identity)
+        if parameter_kinds.get(identity) not in {"view", "bytes_view"}:
+            raise BoundaryModelError(
+                "component overlay result encoding references a non-view parameter"
+            )
+        field = "base.object" if op == "bytes_address" else "extent"
+        return f"((uint32_t)(argument_{name}_view.{field}))"
+    if op in {"state_input", "byte_read"}:
+        raise BoundaryModelError(
+            "component overlay result encoding is not a pure parameter transformation"
+        )
+    args = row.get("args")
+    if not isinstance(args, list):
+        raise BoundaryModelError("component overlay result encoding has no arguments")
+    rendered = [
+        _result_encoding_expression(
+            item,
+            parameter_kinds=parameter_kinds,
+            projected_value=projected_value,
+        )
+        for item in args
+    ]
+    binary = {
+        "add32": "+",
+        "sub32": "-",
+        "and32": "&",
+        "or32": "|",
+        "xor32": "^",
+        "eq": "==",
+        "ult32": "<",
+        "ule32": "<=",
+        "and": "&&",
+        "or": "||",
+    }
+    if op in binary and len(rendered) == 2:
+        return f"(({rendered[0]}) {binary[op]} ({rendered[1]}))"
+    if op == "not" and len(rendered) == 1:
+        return f"(!({rendered[0]}))"
+    if op == "ite" and len(rendered) == 3:
+        return f"(({rendered[0]}) ? ({rendered[1]}) : ({rendered[2]}))"
+    raise BoundaryModelError("component overlay result encoding is unsupported")
+
+
+def _logical_result_word_lines(
+    *,
+    value_name: str = "logical_result",
+    logical_type: object,
+    types: Mapping[str, object],
+) -> list[str]:
+    """Render a defined, conversion-checkable IA-32 result bit pattern."""
+
+    value = logical_type
+    while getattr(value, "kind", None) == "enum":
+        body = getattr(value, "body", {})
+        underlying = (
+            body.get("underlying_type_id") if isinstance(body, Mapping) else None
+        )
+        if not isinstance(underlying, str) or underlying not in types:
+            raise BoundaryModelError(
+                "component overlay enum result has no underlying type"
+            )
+        value = types[underlying]
+    body = getattr(value, "body", {})
+    width = body.get("width_bits") if isinstance(body, Mapping) else None
+    signed = body.get("signed") if isinstance(body, Mapping) else None
+    if getattr(value, "kind", None) not in {"integer", "bool"}:
+        raise BoundaryModelError("component overlay register result is not scalar")
+    if getattr(value, "kind", None) == "bool":
+        width, signed = 8, False
+    if width not in {8, 16, 32} or not isinstance(signed, bool):
+        raise BoundaryModelError(
+            "component overlay register result width is unsupported"
+        )
+    if not signed:
+        return [f"  uint32_t logical_result_word = (uint32_t){value_name};"]
+    # Avoid a direct negative signed-to-unsigned cast: CBMC's conversion check
+    # quite reasonably asks us to make the intended two's-complement encoding
+    # explicit.  +(1) before negation keeps INT_MIN defined.
+    return [
+        "  uint32_t logical_result_word;",
+        f"  if ({value_name} < 0)",
+        "    logical_result_word = UINT32_C(0) -",
+        f"        ((uint32_t)(-({value_name} + 1)) + UINT32_C(1));",
+        "  else",
+        f"    logical_result_word = (uint32_t){value_name};",
+    ]
 
 
 def _scalar_type(value: object, types: Mapping[str, object]) -> str:
@@ -1172,12 +1670,9 @@ def _width(value: object) -> int:
     return result
 
 
-
-
-
-
 __all__ = [
     "ComponentMachineOverlayV1",
+    "ExternalServiceThunkRendererV1",
     "render_component_dispatch_registry_v1",
     "render_component_machine_overlay_v5",
 ]

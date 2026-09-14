@@ -23,6 +23,7 @@ from spaghetti_extractor.components.inductive_receipts import (
 )
 from spaghetti_extractor.components.inductive_refinement import (
     _render_expression,
+    _write_cbmc_stdint,
     check_inductive_source_refinement,
 )
 from spaghetti_extractor.components.inductive_relation import (
@@ -91,6 +92,19 @@ uint32_t countdown_finish(
   return state->n;
 }
 """
+
+
+class CbmcStdintTests(unittest.TestCase):
+    def test_signed_integer_constant_macros_are_not_left_as_functions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            header = Path(temporary) / "stdint.h"
+            _write_cbmc_stdint(header)
+            rendered = header.read_text(encoding="ascii")
+
+        self.assertIn("#define INT8_C(x) x\n", rendered)
+        self.assertIn("#define INT16_C(x) x\n", rendered)
+        self.assertIn("#define INT32_C(x) x\n", rendered)
+        self.assertIn("#define INT64_C(x) x##LL\n", rendered)
 
 
 def _proof_declaration(*, noninductive: bool = False) -> dict[str, object]:

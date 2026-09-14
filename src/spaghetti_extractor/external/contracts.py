@@ -9,6 +9,9 @@ explicit so the static completeness gate can reject them.
 
 from __future__ import annotations
 
+from .range_ownership import RangeOwnershipError, validate_range_ownership_relations
+from .range_allocation import RangeAllocationError, validate_range_allocation_relations
+
 import copy
 import json
 from dataclasses import dataclass
@@ -24,6 +27,9 @@ from ..external.service_protocols import (
     CheckedExternalServiceProtocolError,
     parse_checked_external_service_protocol_v1,
 )
+from .range_release import RangeRelease, RangeReleaseError, machine_range_release
+from .argument_domains import checked_argument_domain
+from ..artifacts.artifact_set import canonical_sha256_v3
 from ..errors import ToolkitInputError
 
 
@@ -35,6 +41,27 @@ _REGISTERS = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"})
 _VARIADIC_FORWARDING_KIND = "exact_raw_caller_stack_suffix_v1"
 class CheckedExternalSiteContractError(ToolkitInputError):
     """An external site is missing an exact, executable machine contract."""
+
+
+def require_machine_import_effects(
+    value: Mapping[str, Any], *, context: str,
+) -> tuple[str, str]:
+    """Keep physical ABI declarations separate from semantic effect contracts.
+
+    This checks presence, not the adequacy of a declared effect model. Its
+    consumer must still check footprints, callbacks, outcomes and realization.
+    In particular, absence must never be converted to the semantic claim none.
+    """
+    effects = []
+    for field in ("memory_effect", "world_effect"):
+        effect = value.get(field)
+        if not isinstance(effect, str) or not effect.strip():
+            raise CheckedExternalSiteContractError(
+                f"{context} lacks an explicit {field}; an ABI-only declaration "
+                "does not supply a semantic effect contract"
+            )
+        effects.append(effect)
+    return effects[0], effects[1]
 
 
 def _uint(value: Any, context: str, *, maximum: int = 0xFFFFFFFF) -> int:
@@ -296,19 +323,16 @@ class CheckedCallbackAdapter:
         }
 
 
-@dataclass(frozen=True)
-class CheckedExternalSiteContract:
+@dataclass(frozen=True, kw_only=True)
+class CheckedExternalContractBehavior:
+    """The common profile behavior carried by each exact external site."""
+
     identity: ExternalSiteIdentity
-    transfer_kind: str
-    disposition: str
     profile_disposition: str
     abi_template: str
     arity_kind: str
     argument_words: int
     raw_caller_stack_suffix_forwarding: Any | None
-    argument_base_offset: int
-    arguments: tuple[Any, ...]
-    stack_arguments: tuple[CheckedStackArgument, ...]
     contract_id: str
     profile_binding: Any
     result_register_relations: tuple[Any, ...]
@@ -317,10 +341,11 @@ class CheckedExternalSiteContract:
     world_effect: str
     world_effect_argument: int | None
     callback_effect: str
-    callback_adapter: CheckedCallbackAdapter | None
+    argument_domain: tuple[Any, ...] = ()
     out_pointer_relations: tuple[Any, ...] = ()
     out_interface_relations: tuple[Any, ...] = ()
     external_service_protocol: Any | None = None
+    world_effect_release: RangeRelease | None = None
 
     @property
     def minimum_argument_words(self) -> int:
@@ -340,6 +365,59 @@ class CheckedExternalSiteContract:
             ),
         }
 
+    def profile_effect_payload(self) -> dict[str, Any]:
+        """Return the normalized profile fields consumed by runtime effect rules."""
+
+        return {
+            "id": self.contract_id,
+            "arity": self.arity_payload(),
+            "argument_words": self.argument_words,
+            **({"argument_domain": list(self.argument_domain)} if self.argument_domain else {}),
+            "result_register_relations": list(self.result_register_relations),
+            "memory_effect": self.memory_effect,
+            "memory_footprints": list(self.memory_footprints),
+            "world_effect": self.world_effect,
+            **(
+                {"world_effect_argument": self.world_effect_argument}
+                if self.world_effect_argument is not None
+                else {}
+            ),
+            **({"world_effect_release": self.world_effect_release.payload()}
+               if self.world_effect_release is not None else {}),
+            "callback_effect": self.callback_effect,
+            "out_pointer_relations": list(self.out_pointer_relations),
+            "out_interface_relations": list(self.out_interface_relations),
+            "external_service_protocol": _json(
+                self.external_service_protocol, "external service protocol"
+            ),
+        }
+
+    def identity_sha256(self) -> str:
+        """Bind profile behavior without conflating independent physical sites.
+
+        This is the native range-rule identity, not a proof of call effects or
+        callback provenance. Site arguments and callback domains remain bound
+        by the containing checked site and its execution closure.
+        """
+        return canonical_sha256_v3({
+            "identity": self.identity.payload(),
+            "profile_binding": self.profile_binding,
+            "abi_template": self.abi_template,
+            "arity": self.arity_payload(),
+            "profile_disposition": self.profile_disposition,
+            "effect_contract": self.profile_effect_payload(),
+        })
+
+
+@dataclass(frozen=True)
+class CheckedExternalSiteContract(CheckedExternalContractBehavior):
+    transfer_kind: str
+    disposition: str
+    argument_base_offset: int
+    arguments: tuple[Any, ...]
+    stack_arguments: tuple[CheckedStackArgument, ...]
+    callback_adapter: CheckedCallbackAdapter | None
+
     def payload(self, *, copy_json: bool = True) -> dict[str, Any]:
         def value(item: Any, context: str) -> Any:
             return _json(item, context) if copy_json else item
@@ -353,6 +431,8 @@ class CheckedExternalSiteContract:
             "abi_template": self.abi_template,
             "arity": self.arity_payload(),
             "argument_base_offset": self.argument_base_offset,
+            **({"argument_domain": [value(item, "argument domain") for item in self.argument_domain]}
+               if self.argument_domain else {}),
             "arguments": [value(item, "argument") for item in self.arguments],
             "stack_arguments": [
                 item.payload(copy_json=copy_json)
@@ -375,6 +455,8 @@ class CheckedExternalSiteContract:
                 if self.world_effect_argument is not None
                 else {}
             ),
+            **({"world_effect_release": self.world_effect_release.payload()}
+               if self.world_effect_release is not None else {}),
             "callback_effect": self.callback_effect,
             "callback_adapter": (
                 None
@@ -390,30 +472,6 @@ class CheckedExternalSiteContract:
                 for item in self.out_interface_relations
             ],
             "external_service_protocol": value(
-                self.external_service_protocol, "external service protocol"
-            ),
-        }
-
-    def profile_effect_payload(self) -> dict[str, Any]:
-        """Return the normalized profile fields consumed by runtime effect rules."""
-
-        return {
-            "id": self.contract_id,
-            "arity": self.arity_payload(),
-            "argument_words": self.argument_words,
-            "result_register_relations": list(self.result_register_relations),
-            "memory_effect": self.memory_effect,
-            "memory_footprints": list(self.memory_footprints),
-            "world_effect": self.world_effect,
-            **(
-                {"world_effect_argument": self.world_effect_argument}
-                if self.world_effect_argument is not None
-                else {}
-            ),
-            "callback_effect": self.callback_effect,
-            "out_pointer_relations": list(self.out_pointer_relations),
-            "out_interface_relations": list(self.out_interface_relations),
-            "external_service_protocol": _json(
                 self.external_service_protocol, "external service protocol"
             ),
         }
@@ -626,6 +684,24 @@ def parse_checked_external_site_contract(
             raise CheckedExternalSiteContractError(f"{context} result register is unsupported")
     memory_effect = _string(value.get("memory_effect"), f"{context} memory effect")
     world_effect = _string(value.get("world_effect"), f"{context} world effect")
+    from .terminated_reads import checked_terminated_read, checked_terminated_write
+    try:
+        checked_terminated_read(value, argument_words=argument_words)
+        checked_terminated_write(value, argument_words=argument_words)
+    except ValueError as exc:
+        raise CheckedExternalSiteContractError(f"{context}: {exc}") from exc
+    try:
+        release = machine_range_release(value, argument_words=argument_words, context=context)
+    except RangeReleaseError as exc:
+        raise CheckedExternalSiteContractError(str(exc)) from exc
+    try:
+        validate_range_ownership_relations(value, argument_words=argument_words, context=context)
+    except RangeOwnershipError as exc:
+        raise CheckedExternalSiteContractError(str(exc)) from exc
+    try:
+        validate_range_allocation_relations(value, argument_words=argument_words, context=context)
+    except RangeAllocationError as exc:
+        raise CheckedExternalSiteContractError(str(exc)) from exc
     raw_world_effect_argument = value.get("world_effect_argument")
     if world_effect == "dynamicRangeRelease":
         world_effect_argument = _uint(
@@ -681,6 +757,8 @@ def parse_checked_external_site_contract(
         arity_kind=arity_kind,
         argument_words=argument_words,
         raw_caller_stack_suffix_forwarding=raw_suffix_forwarding,
+        argument_domain=checked_argument_domain(value.get("argument_domain", []),
+                                                argument_words=argument_words, context=context),
         argument_base_offset=argument_base_offset,
         arguments=normalized_arguments,
         stack_arguments=tuple(normalized_stack),
@@ -693,6 +771,7 @@ def parse_checked_external_site_contract(
         memory_footprints=tuple(_metadata(item) for item in memory_footprints),
         world_effect=world_effect,
         world_effect_argument=world_effect_argument,
+        world_effect_release=release,
         callback_effect=str(callback_effect),
         callback_adapter=parsed_callback,
         out_pointer_relations=tuple(_metadata(item) for item in out_pointers),
@@ -927,8 +1006,10 @@ def checked_external_site_contract_from_authority(
             "memory_footprints": copy.deepcopy(
                 machine.get("memory_footprints", [])
             ),
+            "argument_domain": copy.deepcopy(machine.get("argument_domain", [])),
             "world_effect": world_effect,
             "world_effect_argument": machine.get("world_effect_argument"),
+            "world_effect_release": machine.get("world_effect_release"),
             "callback_effect": callback_effect,
             "callback_adapter": callback_adapter,
             "out_pointer_relations": copy.deepcopy(
@@ -1232,8 +1313,10 @@ def checked_external_site_contract_from_event(
         "result_register_relations": _metadata(choose("result_register_relations", [])),
         "memory_effect": choose("memory_effect"),
         "memory_footprints": _metadata(choose("memory_footprints", [])),
+        "argument_domain": _metadata(choose("argument_domain", [])),
         "world_effect": choose("world_effect"),
         "world_effect_argument": choose("world_effect_argument"),
+        "world_effect_release": choose("world_effect_release"),
         "callback_effect": callback_effect,
         "callback_adapter": callback_adapter,
         "out_pointer_relations": _metadata(choose("out_pointer_relations", [])),
@@ -1290,7 +1373,10 @@ def _resolved_event_machine_contract(
         ),
         "memory_effect": contract.get("memory_effect"),
         "memory_footprints": copy.deepcopy(contract.get("memory_footprints", [])),
+        "argument_domain": copy.deepcopy(contract.get("argument_domain", [])),
         "world_effect": contract.get("world_effect"),
+        "world_effect_argument": contract.get("world_effect_argument"),
+        "world_effect_release": copy.deepcopy(contract.get("world_effect_release")),
         "callback_effect": contract.get("callback_effect"),
         "out_pointer_relations": copy.deepcopy(
             contract.get("out_pointer_relations", [])
@@ -1366,6 +1452,11 @@ def require_profile_match(
         profile_words = arity.get("words")
     else:
         profile_words = profile_contract.get("argument_words")
+    try:
+        profile_release = machine_range_release(profile_contract, argument_words=profile_words,
+                                                context=context)
+    except RangeReleaseError as exc:
+        raise CheckedExternalSiteContractError(str(exc)) from exc
     expected_binding = {
         "profile_id": profile_id,
         "profile_sha256": profile_sha256,
@@ -1380,13 +1471,17 @@ def require_profile_match(
         "result_register_relations": _metadata(profile_contract.get("result_register_relations", [])),
         "memory_effect": profile_contract.get("memory_effect"),
         "memory_footprints": _metadata(profile_contract.get("memory_footprints", [])),
+        "argument_domain": _metadata(profile_contract.get("argument_domain", [])),
         "world_effect": profile_contract.get("world_effect"),
+        "world_effect_argument": profile_contract.get("world_effect_argument"),
+        "world_effect_release": profile_release.payload() if profile_release is not None else None,
         "callback_effect": (
             profile_contract.get("callback_effect")
             if profile_contract.get("callback_effect") is not None
             else "explicit"
-            if profile_contract.get("world_effect") == "callbackRegistration"
-            else None
+            if (profile_contract.get("world_effect") == "callbackRegistration" or
+                profile_contract.get("callback_protocol") is not None)
+            else "none"
         ),
         "out_pointer_relations": _metadata(profile_contract.get("out_pointer_relations", [])),
         "out_interface_relations": _metadata(profile_contract.get("out_interface_relations", [])),
@@ -1403,7 +1498,11 @@ def require_profile_match(
         "result_register_relations": list(contract.result_register_relations),
         "memory_effect": contract.memory_effect,
         "memory_footprints": list(contract.memory_footprints),
+        "argument_domain": list(contract.argument_domain),
         "world_effect": contract.world_effect,
+        "world_effect_argument": contract.world_effect_argument,
+        "world_effect_release": (contract.world_effect_release.payload()
+                                 if contract.world_effect_release is not None else None),
         "callback_effect": contract.callback_effect,
         "out_pointer_relations": list(contract.out_pointer_relations),
         "out_interface_relations": list(contract.out_interface_relations),

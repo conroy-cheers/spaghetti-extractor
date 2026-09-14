@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from tests.unit.isa.bochs._support import *
 
+TESTKIT = {"fixtures": ("bochs-conformance",)}
+
 
 @unittest.skipUnless(
     _REAL_BOCHS_RUNNER is not None,

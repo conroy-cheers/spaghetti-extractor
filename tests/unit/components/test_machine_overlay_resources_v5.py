@@ -151,7 +151,8 @@ def _component_overlay(
 
 
 def _external_contract(
-    identity: dict[str, object], *, abi_template: str, argument_words: int
+    identity: dict[str, object], *, abi_template: str, argument_words: int,
+    memory_effect: str, world_effect: str,
 ) -> dict[str, object]:
     return {
         "import_kind": "ordinary",
@@ -168,6 +169,8 @@ def _external_contract(
                 "id": "fixture-contract",
                 "abi_template": abi_template,
                 "argument_words": argument_words,
+                "memory_effect": memory_effect,
+                "world_effect": world_effect,
                 "result_register_relations": [],
             },
         },
@@ -449,7 +452,8 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
             (),
         )
         external = _external_contract(
-            identity, abi_template="pe32-stdcall-v1", argument_words=3
+            identity, abi_template="pe32-stdcall-v1", argument_words=3,
+            memory_effect="argumentRanges", world_effect="opaqueResources",
         )
         external["contract"]["payload"].update(
             {
@@ -615,6 +619,27 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
             (),
             ((0, 4, 0), (4, 4, 0)),
         )
+        memory_call = _Call(
+            "internal_call",
+            0x2B9C,
+            0,
+            None,
+            0,
+            0x2BA1,
+            None,
+            None,
+            None,
+            (),
+            (),
+            (),
+            ((0, 4, 0), (4, 4, 0), (8, 4, 0)),
+        )
+        service_calls = {
+            call_unit: (call,),
+            "semantic-transfer:original-cutpoint-00002b94-00002ba1": (
+                memory_call,
+            ),
+        }
         site = {
             "id": site_id,
             "status": "complete",
@@ -634,12 +659,13 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
                 exit_a: (_Action("outcome_return", (0,)),),
                 exit_b: (_Action("outcome_return", (0,)),),
             },
-            call_by_unit={call_unit: (call,)},
+            call_by_unit=service_calls,
             resolved_external_environment=_resolved_environment(
                 _external_contract(
                     dict(site["identity"]),
                     abi_template="pe32-cdecl-v1",
                     argument_words=2,
+                    memory_effect="readOnly", world_effect="none",
                 )
             ),
             authority_selectors={
@@ -653,14 +679,16 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
             object_authority_rule_ids=("external:process-argv",),
         )
         source = rendered.source
-        self.assertIn("UINT32_C(4391072)", source)
+        self.assertGreaterEqual(
+            source.count("rt->image_base + UINT32_C(196768)"), 4
+        )
         self.assertIn("component_state_program_name_old_word", source)
         self.assertIn("component_state_program_name_new_word", source)
         self.assertIn("component_state_restore_fault", source)
         self.assertIn("service_result_reference", source)
         self.assertGreaterEqual(source.count('"external:process-argv"'), 3)
         self.assertIn("call_output.eax, UINT32_C(1), UINT32_C(1)", source)
-        self.assertIn("SPX_FALLTHROUGH, 0x00002bceU", source)
+        self.assertIn("SPX_RETURN, 0U, return_address", source)
         self.assertNotIn("static spx_program_name_selection_context", source)
 
         with self.assertRaisesRegex(BoundaryModelError, "selector is unresolved"):
@@ -670,12 +698,13 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
                     exit_a: (_Action("outcome_return", (0,)),),
                     exit_b: (_Action("outcome_return", (0,)),),
                 },
-                call_by_unit={call_unit: (call,)},
+                call_by_unit=service_calls,
                 resolved_external_environment=_resolved_environment(
                     _external_contract(
                         dict(site["identity"]),
                         abi_template="pe32-cdecl-v1",
                         argument_words=2,
+                        memory_effect="readOnly", world_effect="none",
                     )
                 ),
                 authority_selectors={
@@ -752,6 +781,7 @@ class ComponentMachineOverlayResourceV5Tests(unittest.TestCase):
                     dict(site["identity"]),
                     abi_template="pe32-stdcall-v1",
                     argument_words=1,
+                    memory_effect="none", world_effect="callbackRegistration",
                 )
             ),
             code_capabilities={capability_id: capability},

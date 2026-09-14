@@ -5,7 +5,7 @@
   ],
   "format": "spaghetti-extractor-component-interface-intent-v1",
   "id": "fixture-interface-stale",
-  "intent_sha256": "0b0087e898abb731a279a167b45324bee2a691186edac12106047c5089a6e9aa",
+  "intent_sha256": "db252f85b35c80e7f838baf0bfca3bc47c2eb9b1603a2d840e1f11405e24d0b2",
   "operations": [{
     "allowed_service_ids": ["create", "fill_record", "release"],
     "checked_interaction_contract_ids": [],
@@ -35,7 +35,7 @@
   "schema": {
     "format": "spaghetti-extractor-boundary-schema-v1",
     "schema_id": "component.fixture-interface-stale",
-    "schema_sha256": "dd2c2531c4f034602313fccd21b7f314c946fcc20986a1e14955c997009cf25e",
+    "schema_sha256": "13396157af78c8f35b5498f0d7bebed9615fde3aca2277c8ead88651806b402f",
     "signatures": [
       {
         "function_type_id": "operation.exercise.function",
@@ -84,7 +84,7 @@
           "extent": {"bytes": null, "kind": "none", "value_id": null},
           "id": "object",
           "interpretation": "resource",
-          "nullable": false,
+          "nullable": true,
           "provider_domain": "component-environment.fixture",
           "resource_kind": "fixture_object",
           "type_id": "fixture"
@@ -132,7 +132,7 @@
           "extent": {"bytes": null, "kind": "none", "value_id": null},
           "id": "object",
           "interpretation": "resource",
-          "nullable": false,
+          "nullable": true,
           "provider_domain": "component-environment.fixture",
           "resource_kind": "fixture_object",
           "type_id": "fixture"

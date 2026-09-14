@@ -4,7 +4,8 @@ import time
 import unittest
 from dataclasses import replace
 
-from spaghetti_extractor.testkit import ImpactIndex, TestRecord, build_suite_plan
+from spaghetti_extractor.testkit import ImpactIndex, TestRecord
+from spaghetti_extractor.testkit.planning import build_suite_plan
 
 
 def _test(

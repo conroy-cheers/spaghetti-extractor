@@ -242,6 +242,20 @@
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 1},
       "disposition": "returns"
+    },
+    {
+      "id": "user32.dll!SetWindowTextA:abi-only",
+      "import": {"dll": "user32.dll", "symbol": "SetWindowTextA"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns"
+    },
+    {
+      "id": "user32.dll!SetWindowTextW:abi-only",
+      "import": {"dll": "user32.dll", "symbol": "SetWindowTextW"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns"
     }
   ]
 }

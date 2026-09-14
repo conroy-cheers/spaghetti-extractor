@@ -30,6 +30,7 @@ from .machine_binding_schema import (
     _uint,
     _unique,
     _width,
+    parse_fault_outcomes,
 )
 from .value_codec import (
     ValueCodecError,
@@ -99,6 +100,27 @@ class MachineProjectionV1:
                 raise ComponentMachineBindingError(f"{context} stack offset is invalid")
             _width(row["width"], context)
             _phase(row["at"], context)
+        elif kind == "service_output":
+            _exact(
+                row,
+                {"kind", "call_index", "output_index", "fallback"},
+                context,
+            )
+            for field in ("call_index", "output_index"):
+                if (
+                    not isinstance(row[field], int)
+                    or isinstance(row[field], bool)
+                    or row[field] < 0
+                    or row[field] > 255
+                ):
+                    raise ComponentMachineBindingError(
+                        f"{context} {field.replace('_', ' ')} is invalid"
+                    )
+            fallback = cls.parse(row["fallback"], f"{context} fallback")
+            if fallback.kind not in {"register", "stack", "static_slot"}:
+                raise ComponentMachineBindingError(
+                    f"{context} fallback must be a concrete word projection"
+                )
         elif kind == "static_slot":
             _exact(row, {"kind", "rva", "width", "at"}, context)
             _uint(row["rva"], f"{context} RVA")
@@ -133,6 +155,7 @@ class MachineProjectionV1:
                     "selector_parameter_id",
                     "target_inventory_sha256",
                     "routes",
+                    *({"proof_evidence"} if "proof_evidence" in row else set()),
                 },
                 context,
             )
@@ -190,6 +213,134 @@ class MachineProjectionV1:
             if len({row[0] for row in parsed_routes}) != len(parsed_routes):
                 raise ComponentMachineBindingError(
                     f"{context} selector values must be unique"
+                )
+            if "proof_evidence" not in row:
+                return cls(kind, json.loads(json.dumps(row)))
+            evidence = _object(
+                row["proof_evidence"], f"{context} proof evidence"
+            )
+            _exact(
+                evidence,
+                {
+                    "unit_id",
+                    "source_rva",
+                    "source_unit_ir_sha256",
+                    "outcome_expression_sha256",
+                    "index_expression_sha256",
+                    "selector_domain_sha256",
+                    "index_provenance",
+                    "pe_sha256",
+                    "image_base",
+                    "image_size",
+                    "table",
+                    "routes",
+                    "route_inventory_sha256",
+                },
+                f"{context} proof evidence",
+            )
+            index_provenance = _object(
+                evidence["index_provenance"],
+                f"{context} proof evidence index provenance",
+            )
+            if index_provenance.get("kind") != "direct_index":
+                raise ComponentMachineBindingError(
+                    f"{context} remapped finite-control selectors lack a proof model"
+                )
+            _exact(
+                index_provenance,
+                {"kind"},
+                f"{context} proof evidence index provenance",
+            )
+            for field in (
+                "source_unit_ir_sha256",
+                "outcome_expression_sha256",
+                "index_expression_sha256",
+                "selector_domain_sha256",
+                "pe_sha256",
+                "route_inventory_sha256",
+            ):
+                _digest(evidence[field], f"{context} proof evidence {field}")
+            if (
+                evidence["unit_id"] != row["unit_id"]
+                or evidence["route_inventory_sha256"]
+                != row["target_inventory_sha256"]
+            ):
+                raise ComponentMachineBindingError(
+                    f"{context} proof evidence names another route inventory"
+                )
+            _uint(evidence["source_rva"], f"{context} proof source RVA")
+            image_base = _uint(
+                evidence["image_base"], f"{context} proof image base"
+            )
+            image_size = _uint(
+                evidence["image_size"], f"{context} proof image size"
+            )
+            if image_size == 0 or image_base + image_size > 0x100000000:
+                raise ComponentMachineBindingError(
+                    f"{context} proof image geometry is malformed"
+                )
+            evidence_routes = _array(
+                evidence["routes"], f"{context} proof routes"
+            )
+            evidence_projection: list[tuple[int, int, int]] = []
+            for index, raw_evidence_route in enumerate(evidence_routes):
+                evidence_route = _object(
+                    raw_evidence_route, f"{context} proof route {index}"
+                )
+                _exact(
+                    evidence_route,
+                    {
+                        "selector_value",
+                        "entry_address",
+                        "entry_rva",
+                        "bytes_le",
+                        "target_rva",
+                        "target_address",
+                    },
+                    f"{context} proof route {index}",
+                )
+                raw_bytes = _array(
+                    evidence_route["bytes_le"],
+                    f"{context} proof route {index} bytes",
+                )
+                if len(raw_bytes) != 4 or any(
+                    not isinstance(byte, int)
+                    or isinstance(byte, bool)
+                    or byte < 0
+                    or byte > 255
+                    for byte in raw_bytes
+                ):
+                    raise ComponentMachineBindingError(
+                        f"{context} proof route {index} bytes are malformed"
+                    )
+                evidence_projection.append(
+                    (
+                        _uint(
+                            evidence_route["selector_value"],
+                            f"{context} proof route {index} selector",
+                        ),
+                        _uint(
+                            evidence_route["target_rva"],
+                            f"{context} proof route {index} target RVA",
+                        ),
+                        _uint(
+                            evidence_route["target_address"],
+                            f"{context} proof route {index} target address",
+                        ),
+                    )
+                )
+            if evidence_projection != [
+                (selector, target_rva, target_address)
+                for selector, _logical, target_rva, target_address in parsed_routes
+            ]:
+                raise ComponentMachineBindingError(
+                    f"{context} proof routes differ from semantic routes"
+                )
+            evidence_core = dict(evidence)
+            evidence_digest = evidence_core.pop("route_inventory_sha256")
+            if evidence_digest != canonical_sha256_v3(evidence_core):
+                raise ComponentMachineBindingError(
+                    f"{context} proof evidence digest is stale"
                 )
         elif kind == "resource":
             _exact(row, {"kind", "resource_kind", "source"}, context)
@@ -332,11 +483,19 @@ class LogicalMachineValueV1:
     identity: str
     projection: MachineProjectionV1
     decoding: Mapping[str, object] | None = None
+    encoding: Mapping[str, object] | None = None
+    fault_outcomes: tuple[Mapping[str, object], ...] = ()
+    exit_projection: MachineProjectionV1 | None = None
 
     @classmethod
     def parse(cls, value: object, context: str) -> "LogicalMachineValueV1":
         row = _object(value, context)
-        if set(row) not in ({"id", "projection"}, {"id", "projection", "decoding"}):
+        if set(row) - {"fault_outcomes", "exit_projection"} not in (
+            {"id", "projection"},
+            {"id", "projection", "decoding"},
+            {"id", "projection", "encoding"},
+            {"id", "projection", "decoding", "encoding"},
+        ):
             raise ComponentMachineBindingError(
                 f"{context} fields differ from the supported value binding"
             )
@@ -353,16 +512,55 @@ class LogicalMachineValueV1:
                 raise ComponentMachineBindingError(
                     f"{context} decoding must produce a word"
                 )
+        encoding = row.get("encoding")
+        parsed_encoding = None
+        if encoding is not None:
+            try:
+                parsed_encoding, sort = parse_value_codec_expression(
+                    encoding, f"{context} encoding"
+                )
+            except ValueCodecError as exc:
+                raise ComponentMachineBindingError(str(exc)) from exc
+            if sort != "word":
+                raise ComponentMachineBindingError(
+                    f"{context} encoding must produce a word"
+                )
+        fault_outcomes = parse_fault_outcomes(row["fault_outcomes"], f"{context} fault outcomes") if "fault_outcomes" in row else ()
+        projection = MachineProjectionV1.parse(row["projection"], f"{context} projection")
+        exit_projection = None
+        if 'exit_projection' in row:
+            exit_projection = MachineProjectionV1.parse(row['exit_projection'], f'{context} parameter exit')
+            target = exit_projection.payload
+            if (target.get('kind') != 'register' or target.get('at') != 'exit' or
+                    target.get('width') != 32 or target.get('register') not in
+                    {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi'} or
+                    parsed_encoding is not None or parsed_decoding is not None or fault_outcomes):
+                raise ComponentMachineBindingError(f'{context} parameter exit requires an unencoded general register')
+            from .machine_overlay_result_views import checked_nullable_input_projection
+            checked_nullable_input_projection(projection.payload)
+        if fault_outcomes and (projection.kind not in {"register", "stack"} or projection.payload["at"] != "exit"
+                               or projection.payload["width"] != 32
+                               or parsed_decoding is not None or parsed_encoding is not None):
+            raise ComponentMachineBindingError(f"{context} fault outcomes require an unencoded exit word")
         return cls(
             _identifier(row["id"], f"{context} id"),
-            MachineProjectionV1.parse(row["projection"], f"{context} projection"),
+            projection,
             parsed_decoding,
+            parsed_encoding,
+            fault_outcomes,
+            exit_projection,
         )
 
     def to_payload(self) -> dict[str, object]:
         result = {"id": self.identity, "projection": self.projection.to_payload()}
         if self.decoding is not None:
             result["decoding"] = copy_value_codec_expression(self.decoding)
+        if self.encoding is not None:
+            result["encoding"] = copy_value_codec_expression(self.encoding)
+        if self.fault_outcomes:
+            result["fault_outcomes"] = [dict(row) for row in self.fault_outcomes]
+        if self.exit_projection is not None:
+            result['exit_projection'] = self.exit_projection.to_payload()
         return result
 
 
@@ -397,6 +595,18 @@ class MachineEffectReferenceV1:
     family: str
     index: int
     fact_sha256: str
+
+    @classmethod
+    def parse_rows(cls, value: object, context: str) -> tuple["MachineEffectReferenceV1", ...]:
+        rows = tuple(cls.parse(item, f"{context} {index}")
+                     for index, item in enumerate(_array(value, context)))
+        # A logical effect can occur at several instructions or branches. Its
+        # identity alone cannot distinguish the referenced machine facts.
+        keys = [(row.effect_id, row.unit_id, row.family, row.index) for row in rows]
+        if keys != sorted(set(keys)):
+            raise ComponentMachineBindingError(
+                f"{context} fact references must be unique and canonically ordered")
+        return rows
 
     @property
     def identity(self) -> str:
@@ -497,6 +707,12 @@ class OperationMachineBindingV1:
     @classmethod
     def parse(cls, value: object, context: str) -> "OperationMachineBindingV1":
         row = _object(value, context)
+        if any("fault_outcomes" in item for item in _array(row.get("parameters"), f"{context} parameters")
+               if isinstance(item, Mapping)):
+            raise ComponentMachineBindingError(f"{context} fault outcomes are only supported on results")
+        if any('exit_projection' in item for item in _array(row.get('results'), f'{context} results')
+               if isinstance(item, Mapping)):
+            raise ComponentMachineBindingError(f'{context} exit projections are only supported on parameters')
         _exact(
             row,
             {
@@ -531,9 +747,7 @@ class OperationMachineBindingV1:
             preserved_state_ids=_identifiers(
                 row["preserved_state_ids"], f"{context} preserved state"
             ),
-            effects=_rows(
-                MachineEffectReferenceV1.parse, row["effects"], f"{context} effect"
-            ),
+            effects=MachineEffectReferenceV1.parse_rows(row["effects"], f"{context} effect"),
             callback_operation_ids=_identifiers(
                 row["callback_operation_ids"], f"{context} callback"
             ),
@@ -579,6 +793,25 @@ def _validate_argument_transducers(value: object, context: str) -> None:
                 transducer["parameter_index"],
                 f"{transducer_context} parameter",
             )
+            continue
+        if transducer_kind == "record_field":
+            _exact(
+                transducer,
+                {"kind", "parameter_index", "field_id"},
+                transducer_context,
+            )
+            _uint(
+                transducer["parameter_index"],
+                f"{transducer_context} parameter",
+            )
+            _identifier(
+                transducer["field_id"],
+                f"{transducer_context} field",
+            )
+            continue
+        if transducer_kind == "aggregate_result":
+            _exact(transducer, {"kind", "cell_id"}, transducer_context)
+            _identifier(transducer["cell_id"], f"{transducer_context} cell id")
             continue
         if transducer_kind == "finite_word_map":
             try:
@@ -669,6 +902,23 @@ def _validate_argument_transducers(value: object, context: str) -> None:
 
 def _validate_service_result_projection(value: object, context: str) -> None:
     row = _object(value, context)
+    if row.get("kind") == "local_cell_record":
+        _exact(row, {"kind", "cell_id", "fields"}, context)
+        _identifier(row["cell_id"], f"{context} cell id")
+        fields = _array(row["fields"], f"{context} fields")
+        identities: list[str] = []
+        for index, raw_field in enumerate(fields):
+            field = _object(raw_field, f"{context} field {index}")
+            _exact(field, {"id", "word_index"}, f"{context} field {index}")
+            identities.append(
+                _identifier(field["id"], f"{context} field {index} id")
+            )
+            _uint(field["word_index"], f"{context} field {index} word")
+        if not identities or len(identities) != len(set(identities)):
+            raise ComponentMachineBindingError(
+                f"{context} fields are empty or duplicated"
+            )
+        return
     if row.get("kind") != "local_cell_word":
         MachineProjectionV1.parse(value, context)
         return
@@ -743,13 +993,13 @@ class ServiceMachineBindingV1:
                     f"{context} captured external target",
                 )
                 if (
-                    target.kind not in {"register", "stack"}
+                    target.kind not in {"register", "stack", "static_slot"}
                     or target.payload.get("width") != 32
                     or target.payload.get("at") != "entry"
                 ):
                     raise ComponentMachineBindingError(
                         f"{context} captured external target must be a "
-                        "32-bit entry register or stack projection"
+                        "32-bit entry register, stack or image-slot projection"
                     )
             if "argument_authority_selectors" in provider:
                 for index, selector in enumerate(

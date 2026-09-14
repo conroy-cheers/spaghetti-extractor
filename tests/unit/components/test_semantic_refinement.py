@@ -16,6 +16,9 @@ from spaghetti_extractor.components.machine_binding import (
 )
 from spaghetti_extractor.components.interface_ir import ProofKernelComponentInterface
 from spaghetti_extractor.components.refinement import check_component_refinement
+from spaghetti_extractor.components.refinement_harness import (
+    _operation_result_c_type,
+)
 from spaghetti_extractor.components.semantic_arithmetic import (
     simplify_logical_arithmetic,
 )
@@ -74,6 +77,36 @@ class SemanticRefinementTests(
     SemanticRefinementStateMixin,
     unittest.TestCase,
 ):
+    def test_v5_enum_result_uses_its_public_underlying_c_type(self) -> None:
+        interface = ProofKernelComponentInterface.parse({
+            "id": "selector_dispatch",
+            "types": [
+                {"id": "selector", "kind": "scalar", "c_type": "uint8_t"},
+                {"id": "route", "kind": "enum", "c_type": "uint32_t"},
+            ],
+            "state": [],
+            "operations": [{
+                "id": "select",
+                "kind": "operation",
+                "parameters": [{"id": "selector", "type_id": "selector"}],
+                "results": [{"id": "route", "type_id": "route"}],
+                "effect_ids": [],
+                "allowed_service_ids": [],
+                "pre_states": ["ready"],
+                "post_states": ["ready"],
+            }],
+            "effects": [],
+            "services": [],
+            "protocol": {"states": ["ready"], "initial_state": "ready"},
+        })
+
+        operation = interface.operations[0]
+        self.assertEqual(interface.operation_c_result(operation), "spx_route_v2")
+        self.assertEqual(
+            _operation_result_c_type(interface, operation),
+            "uint32_t",
+        )
+
     def test_constant_unsigned_predicate_selects_only_reachable_ite_arm(self) -> None:
         condition = simplify_logical_arithmetic(
             {
@@ -415,6 +448,40 @@ class SemanticRefinementTests(
             {path["trace"][0]["service_id"] for path in model["paths"]},
             {"choose"},
         )
+
+    def test_external_service_reports_abi_only_effect_contract_as_incomplete(self) -> None:
+        from tests.unit.components.test_machine_overlay_v5 import _external_contract, _resolved_environment
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = self._service_fixture(root)
+            binding = json.loads((root / "binding.json").read_text())
+            identity = {"dll": "test.dll", "symbol": "choose", "ordinal": None}
+            binding["services"][0]["provider"] = {
+                "kind": "external_call", "identity": identity,
+                "events": [{"unit_id": "unit:call", "event_index": 0}],
+            }
+            binding["binding_sha256"] = canonical_sha256_v3({
+                key: value for key, value in binding.items() if key != "binding_sha256"})
+            for missing in (None, "memory_effect", "world_effect"):
+                row = _external_contract(identity, abi_template="pe32-cdecl-v1", argument_words=1)
+                row["contract"]["payload"]["result_register_relations"] = [{"register": "eax", "relation": "exact"}]
+                if missing is not None:
+                    del row["contract"]["payload"][missing]
+                contract = build_proof_kernel_semantic_contract(
+                    interface=paths["interface"], binding=binding,
+                    machine_ir=paths["machine"], machine_ir_manifest=paths["manifest"],
+                    resolved_external_environment=_resolved_environment(row))
+                issues = [issue for issue in contract["issues"]
+                          if issue["code"] == "bound_external_call_effect_contract_missing"]
+                with self.subTest(missing=missing):
+                    if missing is None:
+                        self.assertEqual(issues, [])
+                    else:
+                        self.assertEqual(contract["status"], "incomplete", contract["issues"])
+                        self.assertEqual(len(issues), 1)
+                        self.assertEqual(issues[0]["service_id"], "choose")
+                        self.assertIn(missing, issues[0]["detail"])
 
     def test_byte_view_service_binding_preserves_logical_view_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

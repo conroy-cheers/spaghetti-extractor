@@ -561,6 +561,18 @@ def _fixture_interface_transfer_rows(
     stale_target_cell = add(base, -20)
     stale_result_cell = add(base, -24)
 
+    def finish_operation(
+        finish: dict[str, object], result: dict[str, object]
+    ) -> None:
+        """Model the shared cdecl epilogue and its distinct EAX result."""
+
+        finish["register_writes"] = [
+            {"register": "esi", "value": load(saved_esi)},
+            {"register": "eax", "value": result},
+            {"register": "esp", "value": add(base, 4)},
+        ]
+        finish["outcome"] = {"kind": "return", "value": load(base)}
+
     def method_target(receiver: dict[str, object], slot: int) -> dict[str, object]:
         return load(add(load(receiver), slot * 4))
 
@@ -614,11 +626,7 @@ def _fixture_interface_transfer_rows(
         )
         finish = row(4, "return")
         result = load(result_cell)
-        finish["register_writes"] = [
-            {"register": "esi", "value": load(saved_esi)},
-            {"register": "eax", "value": result},
-        ]
-        finish["outcome"] = {"kind": "return", "value": result}
+        finish_operation(finish, result)
         return [setup, factory, enumerate_call, release, finish]
 
     if record:
@@ -632,11 +640,7 @@ def _fixture_interface_transfer_rows(
         )
         finish = row(4, "return")
         result = load(add(stale_record_cell, 4))
-        finish["register_writes"] = [
-            {"register": "esi", "value": load(saved_esi)},
-            {"register": "eax", "value": result},
-        ]
-        finish["outcome"] = {"kind": "return", "value": result}
+        finish_operation(finish, result)
         return [setup, factory, fill_record, release, finish]
 
     if stale:
@@ -662,11 +666,7 @@ def _fixture_interface_transfer_rows(
             "op": "xor32",
             "args": [load(add(stale_record_cell, 4)), load(stale_result_cell)],
         }
-        finish["register_writes"] = [
-            {"register": "esi", "value": load(saved_esi)},
-            {"register": "eax", "value": result},
-        ]
-        finish["outcome"] = {"kind": "return", "value": result}
+        finish_operation(finish, result)
         return [setup, factory, fill_record, release, stale_get, finish]
 
     nested = load(nested_cell)
@@ -697,11 +697,7 @@ def _fixture_interface_transfer_rows(
     )
     finish = row(7, "return")
     result = load(result_cell)
-    finish["register_writes"] = [
-        {"register": "esi", "value": load(saved_esi)},
-        {"register": "eax", "value": result},
-    ]
-    finish["outcome"] = {"kind": "return", "value": result}
+    finish_operation(finish, result)
     return [
         setup, factory, clone, set_value, get_value,
         release_nested, release_root, finish,

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import unittest
+from types import SimpleNamespace
 
 from spaghetti_extractor.components.semantic_induction import (
     SemanticInductionError,
     build_inductive_machine_shape,
     build_inductive_segment_inventory,
 )
+from spaghetti_extractor.components.semantic_contract_transfer import _operation_units
 
 
 def _unit(identity: str, rva: int, edges: list[tuple[int, object]]) -> dict[str, object]:
@@ -55,6 +57,58 @@ def _operation() -> dict[str, object]:
 
 
 class SemanticInductionTests(unittest.TestCase):
+    @staticmethod
+    def _early_exit_loop():
+        condition = {"op": "parameter", "name": "continue"}
+        return {"operation_id": "scan", "entry_unit_ids": ["entry"], "exit_unit_ids": ["entry", "step"],
+            "units": [_unit("entry", 0x1000, [(0x2000, condition), (0x1010, {"op": "not", "args": [condition]})]),
+                      _unit("step", 0x1010, [(0x1010, condition), (0x2000, {"op": "not", "args": [condition]})])]}
+
+    def test_exit_blocks_retain_internal_entry_and_back_edges(self):
+        operation = self._early_exit_loop()
+        shape = build_inductive_machine_shape(operation)
+        self.assertTrue(shape['requires_induction'])
+        self.assertEqual([(row['source_unit_id'], row['target_unit_id']) for row in shape['control_edges']],
+                         [('entry', 'step'), ('step', 'step')])
+        self.assertEqual(shape['cyclic_sccs'][0]['member_unit_ids'], ['step'])
+        # The superseded path builder must not silently stop at the header.
+        with self.assertRaisesRegex(SemanticInductionError, 'contextual cut checking'):
+            build_inductive_segment_inventory(operation, cutpoint_unit_ids=['step'])
+
+    def test_owned_closure_separates_continuation_and_requires_total_reachability(self):
+        operation = self._early_exit_loop()
+        selected = {row['id']: row for row in operation['units']}
+        selected['context'] = _unit('context', 0x2000, [(0x3000, {'op': 'true'})])
+        binding = SimpleNamespace(entry_unit_ids=['entry'], exit_unit_ids=['entry', 'step'], continuation_unit_ids=['context'])
+        self.assertIsNone(_operation_units(binding, selected))
+        checked = _operation_units(binding, selected, owned_unit_ids=['entry', 'step'])
+        self.assertEqual([row['id'] for row in checked], ['entry', 'step'])
+        for owned in ([], ['entry'], ['entry', 'step', 'context'], ['entry', 'step', 'missing'], ['entry', 'step', 'step']):
+            with self.subTest(owned=owned):
+                self.assertIsNone(_operation_units(binding, selected, owned_unit_ids=owned))
+        selected['orphan'] = _unit('orphan', 0x4000, [(0x1010, {'op': 'true'})])
+        self.assertIsNone(_operation_units(binding, selected, owned_unit_ids=['entry', 'step', 'orphan']))
+        binding.exit_unit_ids = ['step']
+        self.assertIsNone(_operation_units(binding, selected, owned_unit_ids=['entry', 'step']))
+
+    def test_exit_label_cannot_hide_an_internal_cycle_or_an_undeclared_exit(self):
+        operation = self._early_exit_loop()
+        operation['exit_unit_ids'] = ['step']
+        with self.assertRaisesRegex(SemanticInductionError, 'leaves the operation'):
+            build_inductive_machine_shape(operation)
+        operation = self._early_exit_loop()
+        operation['units'][1] = _unit('step', 0x1010, [(0x1010, {'op': 'true'})])
+        with self.assertRaisesRegex(SemanticInductionError, 'no outgoing boundary edge'):
+            build_inductive_machine_shape(operation)
+
+    def test_owned_closure_retains_nonowned_exact_return_epilogue(self):
+        selected = {'body': _unit('body', 0x1000, [(0x1010, {'op': 'true'})]),
+                    'epilogue': _unit('epilogue', 0x1010, [])}
+        binding = SimpleNamespace(entry_unit_ids=['body'], exit_unit_ids=['epilogue'], continuation_unit_ids=[])
+        checked = _operation_units(binding, selected, owned_unit_ids=['body'])
+        self.assertEqual(checked, _operation_units(binding, selected))
+        self.assertEqual([row['id'] for row in checked], ['body', 'epilogue'])
+
     def test_derives_exact_cyclic_scc_and_condensation(self) -> None:
         shape = build_inductive_machine_shape(_operation())
         self.assertTrue(shape["requires_induction"])

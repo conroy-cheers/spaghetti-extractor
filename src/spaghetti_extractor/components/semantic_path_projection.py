@@ -788,7 +788,12 @@ def _logical_load_is_authorized(
 
 
 def _result_binding(value: Mapping[str, object], context: str) -> dict[str, object]:
-    if set(value) not in ({"id", "projection"}, {"id", "projection", "decoding"}):
+    if set(value) not in (
+        {"id", "projection"},
+        {"id", "projection", "decoding"},
+        {"id", "projection", "encoding"},
+        {"id", "projection", "decoding", "encoding"},
+    ):
         raise SemanticPathError(f"{context} fields differ")
     decoding = value.get("decoding")
     if decoding is not None and not isinstance(decoding, Mapping):

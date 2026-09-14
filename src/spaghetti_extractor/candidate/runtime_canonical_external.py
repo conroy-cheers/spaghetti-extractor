@@ -7,7 +7,8 @@ from typing import Any, Iterable, Mapping
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..external.contracts import CheckedExternalSiteContract
-from ..transfer.model import _Call, _Transfer
+from ..transfer.model import _Call, _Transfer, TransferPlanError
+from ..transfer.call_sites import external_tail_call
 from .module_runtime_plan import (
     NativeCodeCapabilityBinding,
     NativeCodeCapabilityRegistration,
@@ -149,18 +150,10 @@ def _external_sites(
         tuple[_Call, CheckedExternalSiteContract, str, str]
     ] = []
     for transfer in transfers:
-        tail_call: _Call | None = None
-        if transfer.actions and transfer.actions[-1].op == "outcome_external":
-            external_routes = tuple(
-                call for call in transfer.calls
-                if call.kind in {"external_call", "indirect_call"}
-            )
-            if len(external_routes) > 1:
-                raise CanonicalRuntimeError(
-                    "external-tail transfer has more than one native route"
-                )
-            if external_routes:
-                tail_call = external_routes[0]
+        try:
+            tail_call = external_tail_call(transfer)
+        except TransferPlanError as exc:
+            raise CanonicalRuntimeError(str(exc)) from exc
         routed_calls: list[
             tuple[
                 _Call,

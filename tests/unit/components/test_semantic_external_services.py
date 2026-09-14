@@ -383,6 +383,8 @@ class SemanticExternalServiceTests(unittest.TestCase):
                     "id": "fixture-contract",
                     "abi_template": "pe32-stdcall-v1",
                     "argument_words": 3,
+                    "memory_effect": "argumentRanges",
+                    "world_effect": "opaqueResources",
                     "out_interface_relations": [relation],
                     "result_register_relations": [
                         {"register": "eax", "relation": "exact"},

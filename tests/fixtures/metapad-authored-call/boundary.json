@@ -1,0 +1,14 @@
+{
+  "operation_id": "cleanup",
+  "source": "cleanup.c",
+  "entry": {
+    "position": "before",
+    "text": "      spx_view_v5 message = context->services->resource_text(context->services->context, 31U);\n"
+  },
+  "exits": {
+    "next": {
+      "position": "after",
+      "text": "      spx_view_v5 message = context->services->resource_text(context->services->context, 31U);\n"
+    }
+  }
+}

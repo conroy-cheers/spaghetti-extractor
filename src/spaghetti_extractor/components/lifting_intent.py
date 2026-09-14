@@ -158,7 +158,7 @@ class ComponentLiftingIntentV1:
 def _component(value: Mapping[str, object], index: int) -> Mapping[str, object]:
     row = object_(value, f"component lifting component {index}")
     allowed = {
-        "id", "label", "source", "relation_intent", "induction_intent",
+        "id", "label", "source", "relation_intent", "bisimulation_intent",
         "proof_classification",
     }
     if not set(row) <= allowed or not {"id", "label"} <= set(row):
@@ -176,7 +176,7 @@ def _component(value: Mapping[str, object], index: int) -> Mapping[str, object]:
                 "component lifting proof classification is unsupported"
             )
         result["proof_classification"] = classification
-    for field in ("relation_intent", "induction_intent"):
+    for field in ("relation_intent", "bisimulation_intent"):
         if field in row:
             result[field] = _relative(row[field], f"component {field}")
     return canonical(result)

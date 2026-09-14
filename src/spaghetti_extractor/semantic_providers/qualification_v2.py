@@ -18,7 +18,8 @@ from typing import Any, Mapping, Sequence
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..util import write_json
 from .formats import SEMANTIC_PROVIDER_QUALIFICATION_V2_FORMAT
-from .slices_v2 import SemanticSliceV2
+from .slices_v2 import SemanticSliceV2, SemanticSliceV2Error
+from .exact_context import validate_exact_context
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -38,7 +39,7 @@ _REQUIRED_FACETS = {
     }),
     "pinned_binary": frozenset({"native_objects", "pinned_layout"}),
     "qualified_portable_c": frozenset({
-        "compile", "contextual_refinement", "induction", "lifecycle",
+        "bisimulation", "compile", "contextual_refinement", "lifecycle",
         "native_objects", "object_binding", "ownership", "relations",
         "services", "source",
     }),
@@ -226,7 +227,7 @@ class SemanticProviderQualificationV2:
     @classmethod
     def parse(cls, value: object) -> "SemanticProviderQualificationV2":
         payload = dict(_mapping(value, "semantic-provider qualification V2"))
-        if set(payload) != _FIELDS:
+        if set(payload) - {"exact_context"} != _FIELDS:
             _fail("semantic-provider qualification V2 fields are incomplete")
         if payload.get("format") != SEMANTIC_PROVIDER_QUALIFICATION_V2_FORMAT:
             _fail("semantic-provider qualification V2 format is unsupported")
@@ -247,6 +248,13 @@ class SemanticProviderQualificationV2:
         ):
             _fail("semantic-provider V2 identity or kind is malformed")
         semantic_slice = SemanticSliceV2.parse(payload.get("semantic_slice"))
+        if "exact_context" in payload:
+            if provider_kind != "qualified_portable_c":
+                _fail("only portable providers may require exact context")
+            try:
+                validate_exact_context(payload["exact_context"], semantic_slice)
+            except SemanticSliceV2Error as exc:
+                _fail(f"provider exact context is invalid: {exc}")
         bindings = _mapping(payload.get("bindings"), "provider V2 bindings")
         if set(bindings) != {
             "semantic_slice_sha256", "provider_artifact_sha256",
@@ -395,6 +403,7 @@ def build_semantic_provider_qualification_v2(
     obligation_implementations: Sequence[Mapping[str, Any]] = (),
     tool_sha256s: Sequence[str] = (), dependencies: Sequence[str] = (),
     blockers: Sequence[Mapping[str, Any]] = (),
+    exact_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_facets = sorted(
         (dict(row) for row in facets), key=lambda row: str(row.get("name"))
@@ -430,6 +439,7 @@ def build_semantic_provider_qualification_v2(
         "obligation_implementations": obligations,
         "tool_sha256s": normalized_tools,
         "dependencies": sorted(set(dependencies)),
+        **({"exact_context": dict(exact_context)} if exact_context is not None else {}),
         "blockers": derived_blockers,
     }
     payload = {**core, "qualification_sha256": canonical_sha256_v3(core)}

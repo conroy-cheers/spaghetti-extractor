@@ -5,11 +5,9 @@ import unittest
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.formats import (
-    COMPONENT_ADOPTION_INTENT_V1_FORMAT,
     COMPONENT_WORK_PACKAGE_V6_FORMAT,
 )
 from spaghetti_extractor.components.work_package_v6 import (
-    ComponentAdoptionIntentV1,
     ComponentWorkPackageV6,
     ComponentWorkPackageV6Error,
     _machine_review_frontier,
@@ -118,29 +116,6 @@ def _payload() -> dict[str, object]:
 
 
 class ComponentWorkPackageV6Tests(unittest.TestCase):
-    def test_seed_adoption_intent_is_canonical_and_digest_free(self) -> None:
-        intent = ComponentAdoptionIntentV1.for_seed(
-            0x401000, ["single-entry", "function-like", "single-entry"]
-        )
-        self.assertEqual(intent.payload["format"], COMPONENT_ADOPTION_INTENT_V1_FORMAT)
-        self.assertEqual(intent.payload["component_id"], "component-00401000")
-        self.assertEqual(
-            intent.payload["proposal_kinds"], ["function-like", "single-entry"]
-        )
-        self.assertFalse(any(key.endswith("_sha256") for key in intent.payload))
-
-    def test_seed_adoption_intent_rejects_noncanonical_entries(self) -> None:
-        payload = dict(ComponentAdoptionIntentV1.for_seed(0x401000, []).payload)
-        payload["operations"] = [{
-            "id": "operation",
-            "symbol": "fixture",
-            "entry_rvas": [0x401010, 0x401000],
-        }]
-        with self.assertRaisesRegex(
-            ComponentWorkPackageV6Error, "operation is malformed"
-        ):
-            ComponentAdoptionIntentV1.parse(payload)
-
     def test_package_is_non_authorizing_and_owns_only_slice_definitions(self) -> None:
         package = ComponentWorkPackageV6.parse(_payload())
         self.assertFalse(package.payload["authority"])

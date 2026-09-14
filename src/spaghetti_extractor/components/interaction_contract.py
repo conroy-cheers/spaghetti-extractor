@@ -42,6 +42,7 @@ _EXPRESSION_OPS = frozenset(
         "ule",
         "ref_is_null",
         "same_origin",
+        "borrowed_interior",
         "ref_offset",
         "ref_remaining",
         "view_extent",
@@ -235,6 +236,7 @@ def _validate_contract_expression(
         "ult": 2,
         "ule": 2,
         "same_origin": 2,
+        "borrowed_interior": 2,
     }[op]
     if len(arguments) != arity:
         raise InteractionContractError(f"{context} has the wrong arity")

@@ -6,10 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+from spaghetti_extractor.transfer.plan import load_executable_transfer_plan, TransferPlanError
+
 from spaghetti_extractor.components.interface_ir import (
     ProofKernelComponentInterface,
 )
 from spaghetti_extractor.components.semantic_contract import (
+    ComponentSemanticContractError,
     load_transfer_v2_refinement_universe,
 )
 from spaghetti_extractor.components.semantic_paths import (
@@ -115,6 +119,43 @@ class CanonicalTransferRefinementTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [first["id"]])
         self.assertEqual(len(universe.transfer_payload["transfers"]), 2)
         self.assertFalse(projection_created)
+
+    def test_selected_region_can_exclude_an_unlowered_unrelated_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = transfer_row()
+            second = {**copy.deepcopy(first), "id": "semantic-transfer:unlowered", "status": "incomplete",
+                "original": {"rva_start": 0x2000, "rva_end": 0x2003, "size": 3}}
+            machine = root / "machine-ir.jsonl"
+            machine.write_text("".join(json.dumps(as_machine_ir_unit(row)) + "\n" for row in (first, second)))
+            path = write_fixture_transfer_plan(machine)
+            original = json.loads(path.read_text())
+            for phase in ("semantic_qualification", "semantic_lowering"):
+                value = copy.deepcopy(original)
+                value["semantic_blockers"][0]["failure_phase"] = phase
+                value["plan_sha256"] = canonical_sha256_v3({k: v for k, v in value.items() if k != "plan_sha256"})
+                path.write_text(json.dumps(value))
+                universe = load_transfer_v2_refinement_universe(transfer_plan=path, required_unit_ids=[first["id"]])
+                self.assertEqual(set(universe.units), {first["id"]})
+                self.assertEqual(universe.transfer_payload["status"], "incomplete")
+                with self.assertRaises(TransferPlanError):
+                    load_executable_transfer_plan(path, require_complete=True)
+                with self.assertRaises(ComponentSemanticContractError):
+                    load_transfer_v2_refinement_universe(transfer_plan=path, required_unit_ids=[second["id"]])
+            for field, replacement in (("transfer_id", first["id"]), ("transfer_id", "unknown"),
+                                       ("failure_phase", "identity_validation"), ("rva_start", 0x1000)):
+                with self.subTest(field=field, replacement=replacement):
+                    value = copy.deepcopy(original)
+                    value["semantic_blockers"][0][field] = replacement
+                    value["plan_sha256"] = canonical_sha256_v3({k: v for k, v in value.items() if k != "plan_sha256"})
+                    path.write_text(json.dumps(value))
+                    with self.assertRaises(ComponentSemanticContractError):
+                        load_transfer_v2_refinement_universe(transfer_plan=path, required_unit_ids=[first["id"]])
+            second["original"] = {**first["original"]}
+            machine.write_text("".join(json.dumps(as_machine_ir_unit(row)) + "\n" for row in (first, second)))
+            overlap = write_fixture_transfer_plan(machine)
+            with self.assertRaisesRegex(ComponentSemanticContractError, "overlapping"):
+                load_transfer_v2_refinement_universe(transfer_plan=overlap, required_unit_ids=[first["id"]])
 
     def test_refinement_universe_keeps_transfer_v2_as_only_executable_body(
         self,

@@ -63,7 +63,7 @@ class TargetMetadata:
         _required_optional_keys(
             path_row,
             {"nix", "components"},
-            {"libraries"},
+            {"component_sources", "libraries"},
             "target paths",
         )
         component_path = path_row.get("components")
@@ -75,6 +75,20 @@ class TargetMetadata:
                 (
                     "components",
                     _relative_path(component_path, "target path components"),
+                )
+            )
+        component_source_path = path_row.get("component_sources")
+        if component_source_path is not None:
+            if component_path is None:
+                raise TargetMetadataError(
+                    "component source path requires a component intent path"
+                )
+            path_items.append(
+                (
+                    "component_sources",
+                    _relative_path(
+                        component_source_path, "target path component sources"
+                    ),
                 )
             )
         library_path = path_row.get("libraries")

@@ -45,6 +45,7 @@ let
   workbench = import ../boundary-workbench.nix {
     inherit pkgs pythonEnv;
     namePrefix = "spaghetti-extractor-boundary-fixture";
+    targetId = "fixture";
     suppliedPackages.${subject} = package;
     boundaryIntents.${subject} = intent;
     componentPackages.${componentSubject} = componentPackage;
@@ -55,30 +56,25 @@ pkgs.runCommand "spaghetti-extractor-boundary-workbench-check" {
 } ''
   set -euo pipefail
   jq -e --arg subject ${pkgs.lib.escapeShellArg subject} '
-    .format == "spaghetti-extractor-operator-work-status-v1" and
-    .status == "complete" and .authority == false and
-    .counts.subjects == 2 and .counts.authoritative == 0 and
+    .format == "spaghetti-extractor-operator-work-status-v2" and
+    .target_id == "fixture" and .scope == "boundary" and
+    .status == "complete" and
+    .counts.subjects == 2 and .counts.authority_held == 0 and
     ([.subjects[].subject] | contains([$subject])) and
     ([.subjects[] | select(.subject == "component:fixture")][0] |
-      .state == "complete" and .authority == false and
-      .ranked_next_action == "author component C and run contextual refinement")
+      .state == "complete" and .authority == "not-applicable" and
+      .next_action == "run the component qualification check")
   ' ${workbench.status}/boundary-status.json >/dev/null
-  jq -e --arg subject ${pkgs.lib.escapeShellArg subject} '
-    .subject == $subject and .status == "complete"
-  ' ${workbench.subjects.${subject}.inspection}/call-inspection.json >/dev/null
-  cmp ${intent} ${workbench.subjects.${subject}.intentTemplate}/call-intent.json
   jq -e '
-    .format == "spaghetti-extractor-component-work-package-inspection-v1" and
-    .status == "complete" and .component_id == "fixture" and
+    .format == "spaghetti-extractor-boundary-check-result-v1" and
+    .status == "complete"
+  ' ${workbench.subjects.${subject}.source}/boundary-status.json >/dev/null
+  cmp ${intent} ${workbench.subjects.${subject}.intent}
+  jq -e '
+    .format == "spaghetti-extractor-component-work-package-v6" and
+    .status == "ready" and .component_id == "fixture" and
     .authority == false
-  ' ${workbench.subjects.${componentSubject}.inspection}/component-inspection.json \
-    >/dev/null
-  jq -e '
-    .format == "spaghetti-extractor-component-adoption-intent-v1" and
-    .component_id == "fixture" and
-    ([paths(scalars) as $path | $path[-1] | tostring |
-      select(endswith("_sha256"))] | length) == 0
-  ' ${workbench.subjects.${componentSubject}.intentTemplate}/component-adoption-intent.json \
+  ' ${workbench.subjects.${componentSubject}.source}/component-work-package-v6.json \
     >/dev/null
   touch "$out"
 ''

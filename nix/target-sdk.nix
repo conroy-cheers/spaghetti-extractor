@@ -38,6 +38,8 @@ let
     inherit (context) pythonEnv;
   };
   behavioralCPackage = callWith ./behavioral-c-package.nix candidateCommon;
+  componentExactCSliceV1 = callWith ./component-exact-c-slice-v1.nix
+    candidateCommon;
   generatedBehavioralCProviderV2 = callWith ./generated-behavioral-c-provider-v2.nix {
     inherit pkgs;
     pythonEnv = context.transferPythonEnv;
@@ -83,6 +85,12 @@ let
       "spaghetti_extractor.util"
     ];
     name = "spaghetti-extractor-project-status-python-closure";
+  };
+  nativeRealizationGatePythonSource = import ./python-module-closure.nix {
+    phaseRole = "candidate";
+    inherit pkgs;
+    modules = [ "spaghetti_extractor.native_realization.receipt_v2" ];
+    name = "spaghetti-extractor-native-realization-gate-python-closure";
   };
   exactAttrs =
     value: names:
@@ -132,12 +140,27 @@ let
         "nix"
       ]
       || exactAttrs paths [
+        "component_sources"
+        "components"
+        "nix"
+      ]
+      || exactAttrs paths [
+        "components"
+        "libraries"
+        "nix"
+      ]
+      || exactAttrs paths [
+        "component_sources"
         "components"
         "libraries"
         "nix"
       ];
     assert relativePath paths.nix;
     assert paths.components == null || relativePath paths.components;
+    assert
+      !(paths ? component_sources)
+      || paths.component_sources == null
+      || (paths.components != null && relativePath paths.component_sources);
     assert !(paths ? libraries) || paths.libraries == null || relativePath paths.libraries;
     assert exactAttrs workflow [ "default_configuration" ];
     assert workflow.default_configuration == null || identifier workflow.default_configuration;
@@ -295,6 +318,7 @@ let
         maxUnits = 512;
         maxCandidatesPerSeed = 12;
       },
+      proofSmtSolver ? null,
       namePrefix ? "spaghetti-extractor-${targetId}",
     }:
     let
@@ -389,7 +413,6 @@ let
           if builtins.pathExists path then path else null;
       componentInterfaceRoot = componentSubroot "interfaces-v5";
       componentBindingIntentRoot = componentSubroot "bindings-v5";
-      componentInductionRoot = componentSubroot "induction";
       componentRelationRoot = componentSubroot "relations";
       libraryConfiguration = lifting.libraries;
       libraryCatalogPacks = libraryConfiguration.packs or [ ];
@@ -453,7 +476,7 @@ let
         machineIr = "${analysis.machineIr}/machine-ir.jsonl";
         inherit namePrefix;
       };
-      libraryRecognition = callWith ./library-recognition.nix analysisCommon {
+      libraryRecognition = if !libraryCatalogConfigured then null else callWith ./library-recognition.nix analysisCommon {
         inherit
           original
           namePrefix
@@ -466,7 +489,21 @@ let
         catalogLock = libraryCatalogLock;
         implementations = effectiveLibraryImplementations;
       };
-      linkedLibraries = callWith ./linked-libraries.nix analysisCommon {
+      linkedLibraries = if !libraryCatalogConfigured then {
+        artifactIndex = null;
+        catalogSearchIndex = null;
+        generatedCatalogLock = null;
+        effectiveCatalogLock = null;
+        targetSignatureGraph = null;
+        releaseHypotheses = null;
+        checkedIslands = { };
+        providerBindings = { };
+        providerSemanticSlices = { };
+        providerInputs = { };
+        checks = { };
+        implementations = { };
+        adoptionIntents = { };
+      } else callWith ./linked-libraries.nix analysisCommon {
         inherit
           original
           namePrefix
@@ -481,7 +518,7 @@ let
         implementations = effectiveLibraryImplementations;
         adoptionIntents = libraryAdoptionIntents;
       };
-      libraryOperator = import ./library-status.nix {
+      libraryOperator = if !libraryCatalogConfigured then null else import ./library-status.nix {
         inherit pkgs;
         pythonEnv = context.pythonEnv;
         pythonSource = context.sources.fullSource;
@@ -508,12 +545,16 @@ let
       );
       calls = boundaryWorkbench {
         namePrefix = "${namePrefix}-boundaries";
+        inherit targetId;
         checkedProtocols = rawCalls.subjects;
         suppliedPackages = suppliedBoundaryPackages;
         boundaryIntents = externalEnvironment.boundaryIntents;
         rawAssetInventory = rawCalls.assetInventory;
         componentPackages = if hasComponents
           then components.boundarySubjects else { };
+        componentChecks = if !hasComponents then { } else lib.mapAttrs'
+          (id: provider: lib.nameValuePair "component:${id}" provider.derivation)
+          portableSemanticProvidersByComponent;
       };
       moduleInterface = pe32ModuleInterface {
         inherit original namePrefix;
@@ -566,6 +607,12 @@ let
         inherit namePrefix;
         layoutIntent = behavioralCLayoutIntent;
       };
+      behavioralCReviewSource = behavioralCPackage {
+        semanticObject = semanticObject.artifact;
+        inherit namePrefix;
+        layoutIntent = behavioralCLayoutIntent;
+        reviewOnly = true;
+      };
       components =
         if !hasComponents then
           null
@@ -575,10 +622,9 @@ let
             interfaceRoot = componentInterfaceRoot;
             sourceRoot = componentSourceRoot;
             bindingIntentRoot = componentBindingIntentRoot;
-            inductionRoot = componentInductionRoot;
             relationRoot = componentRelationRoot;
             inherit namePrefix;
-            behavioralCPackage = behavioralCSource;
+            behavioralCPackage = behavioralCReviewSource;
             linkedSemanticModule = linkedSemanticModule.linkedSemanticModule;
           };
       componentConfigurationIds =
@@ -609,7 +655,28 @@ let
       portableSemanticProvidersByComponent = builtins.listToAttrs (map (
         componentId: {
           name = componentId;
-          value = portableCWorkPackageProviderV2 ({
+          value =
+            let
+              bisimulationIntent =
+                components.bisimulationIntents.${componentId} or null;
+              providerComponents = lib.mapAttrs
+                (providerComponentId: providerComponent:
+                  providerComponent // {
+                    qualification =
+                      portableSemanticProvidersByComponent.${providerComponentId}.qualification;
+                    contextualRefinement =
+                      portableSemanticProvidersByComponent.${providerComponentId}.contextualRefinement;
+                  })
+                components.directProviderComponentsByConsumer.${componentId};
+              exactCSlice = (componentExactCSliceV1 {
+                  inherit componentId bisimulationIntent namePrefix;
+                  transferPlan = transferPlan.plan;
+                  bindingIntent = components.bindingIntentPaths.${componentId};
+                  dependencyBindingIntents = lib.mapAttrs
+                    (_: value: value.bindingIntent) providerComponents;
+                }).exactCSlice;
+            in portableCWorkPackageProviderV2 ({
+            smtSolver = proofSmtSolver;
             semanticSlice = components.v6SemanticSlices.${componentId}.semanticSlice;
             bindingIntent = components.bindingIntentPaths.${componentId};
             interfacePackage = components.v5Interfaces.${componentId}.derivation;
@@ -620,9 +687,9 @@ let
             semanticObject = semanticObject.derivation;
             providerEntryUnits = components.providerEntryUnits;
             providerComponents =
-              components.directProviderComponentsByConsumer.${componentId};
+              providerComponents;
             relationIntent = components.relationIntents.${componentId} or null;
-            inductionIntent = components.inductionIntents.${componentId} or null;
+            inherit bisimulationIntent exactCSlice;
             interactionContractCatalog =
               "${context.sources.profileSource}/interaction-contracts-v1.json";
             providerId = "${targetId}.${componentId}.portable-c";
@@ -636,11 +703,20 @@ let
       ) components.directV6ProviderIds);
       portableSemanticProvidersByLibrary = lib.mapAttrs (
         selectionId: providerInput:
-        portableCWorkPackageProviderV2 {
+        let
+          exactCSlice = (componentExactCSliceV1 {
+            componentId = selectionId;
+            transferPlan = transferPlan.plan;
+            bindingIntent = providerInput.bindingIntent;
+            namePrefix = "${namePrefix}-library";
+          }).exactCSlice;
+        in portableCWorkPackageProviderV2 {
+          smtSolver = proofSmtSolver;
           semanticSlice = providerInput.semanticSlice;
           bindingIntent = providerInput.bindingIntent;
           interfacePackage = providerInput.interfacePackage;
           sourcePackage = providerInput.sourcePackage;
+          inherit exactCSlice;
           transferPlan = transferPlan.plan;
           resolvedExternalEnvironment =
             "${resolvedEnvironment.derivation}/resolved-external-environment.json";
@@ -782,6 +858,9 @@ let
           nativeRealization = nativeRealizations.${configurationId}.derivation;
         };
     in
+    assert lib.assertMsg (
+      libraryCatalogConfigured || libraryAdoptionIntents == { }
+    ) "library adoption intents require a configured catalog";
     {
       inherit
         analysis
@@ -1114,7 +1193,7 @@ let
                 sha256: $sha256
               }' > "$out/target-input-identity.json"
           '';
-      standardArtifacts = {
+      standardArtifacts = lib.filterAttrs (_: value: value != null) {
         identity = targetInputIdentity;
         input = inputs;
         inherit profiles;
@@ -1127,7 +1206,8 @@ let
           reconstruction-plan = workflow.analysis.reconstructionPlan;
           component-proposals = workflow.analysis.componentProposals;
         };
-        libraries = lib.filterAttrs (_: value: value != null) {
+        libraries = if !workflow.libraryCatalogConfigured then null else
+          lib.filterAttrs (_: value: value != null) {
           artifact-index = workflow.linkedLibraries.artifactIndex;
           catalog-lock = workflow.linkedLibraries.generatedCatalogLock;
           catalog-search-index = workflow.linkedLibraries.catalogSearchIndex;
@@ -1137,8 +1217,8 @@ let
           provider-bindings = workflow.linkedLibraries.providerBindings;
           semantic-slices = workflow.linkedLibraries.providerSemanticSlices;
           semantic-providers = workflow.portableSemanticProvidersByLibrary;
-          status = workflow.libraryOperator.status;
-        };
+          status = if workflow.libraryOperator == null then null else workflow.libraryOperator.status;
+          };
         boundaries = {
           status = workflow.calls.status;
           subjects = workflow.calls.subjects;
@@ -1160,9 +1240,6 @@ let
         };
         diagnostics = {
           target-ownership = ownership;
-        }
-        // lib.optionalAttrs hasComponents {
-          candidate-status = defaultCandidateStatusReport;
         };
         candidate = {
           module-interface = workflow.moduleInterface;
@@ -1248,13 +1325,6 @@ let
           }) workflow.components.v6WorkPackages);
         default-semantic-implementation-selection =
           workflow.semanticImplementationSelections.${defaultConfiguration}.derivation;
-        # Status is a non-authorizing projection, but the ordinary default
-        # view must be materialized by the regression workflow.  Otherwise a
-        # read-only operator command has to evaluate and realize the full
-        # structural/component graph merely to discover blockers that the
-        # regression already checked.  Explicit non-default configurations
-        # remain on-demand operator work.
-        candidate-status = defaultCandidateStatusReport;
       };
       componentIntentRequired =
         pkgs.runCommand "spaghetti-extractor-${metadata.id}-component-intent-required"
@@ -1294,29 +1364,49 @@ let
           { }
         else
           lib.mapAttrs (
-            id: interface:
-            {
-              build = interface.derivation;
-              interface = interface.derivation;
-            }
+            id: _index:
+            (lib.optionalAttrs (builtins.hasAttr id workflow.components.v5Interfaces) {
+              interface = workflow.components.v5Interfaces.${id}.derivation;
+            })
             // lib.optionalAttrs (builtins.hasAttr id workflow.components.bindingIntentPaths) {
               bindingIntent = workflow.components.bindingIntentPaths.${id};
             }
+            // lib.optionalAttrs (builtins.hasAttr id workflow.components.sourcePackages) {
+              sourcePackage = workflow.components.sourcePackages.${id};
+              sourceCheck = (import ./component-source-check.nix {
+                inherit pkgs;
+                pythonEnv = context.pythonEnv;
+                namePrefix = "spaghetti-extractor-${metadata.id}";
+                targetId = metadata.id;
+                componentId = id;
+                interfacePackage = workflow.components.v5Interfaces.${id}.derivation;
+                sourcePackage = workflow.components.sourcePackages.${id};
+              }).derivation;
+              sourceContractCheck = (import ./component-source-check.nix {
+                inherit pkgs;
+                pythonEnv = context.pythonEnv;
+                namePrefix = "spaghetti-extractor-${metadata.id}";
+                targetId = metadata.id;
+                componentId = id;
+                interfacePackage = workflow.components.v5Interfaces.${id}.derivation;
+                sourcePackage = workflow.components.sourcePackages.${id};
+                localContracts = true;
+              }).derivation;
+            }
+            // lib.optionalAttrs (builtins.hasAttr id workflow.components.v6SemanticSlices) {
+              semanticSlice = workflow.components.v6SemanticSlices.${id}.derivation;
+            }
             // lib.optionalAttrs (builtins.hasAttr id workflow.components.v6WorkPackages) {
               workPackage = workflow.components.v6WorkPackages.${id}.derivation;
-              semanticSlice = workflow.components.v6SemanticSlices.${id}.derivation;
-              status = workflow.components.v6WorkPackages.${id}.derivation;
             }
-          ) workflow.components.v5Interfaces;
-      componentConfigurations =
-        if !hasComponents then
-          { }
-        else
-          lib.mapAttrs (id: _index: {
-            selection = workflow.semanticImplementationSelections.${id}.derivation;
-            status = candidateStatusReports.${id};
-            check = checkedCandidateBuilds.${id};
-          }) workflow.components.configurationIndex;
+            // lib.optionalAttrs (builtins.hasAttr id workflow.portableSemanticProvidersByComponent) {
+              qualification = workflow.portableSemanticProvidersByComponent.${id}.derivation;
+            }
+          ) (lib.filterAttrs (_: value: value.kind == "component") workflow.components.liftUnitIndex);
+      candidateConfigurations = lib.genAttrs configurationIds (id: {
+        selection = workflow.semanticImplementationSelections.${id}.derivation;
+        realization = checkedCandidateBuilds.${id};
+      });
       candidateTestAggregate =
         if candidateTests == { } then
           null
@@ -1340,10 +1430,10 @@ let
       projectStatusPhase = import ./ca-python-json-phase.nix {
         inherit pkgs;
         pythonEnv = context.pythonEnv;
-        name = "spaghetti-extractor-${metadata.id}-semantic-module-work-status-v1";
+        name = "spaghetti-extractor-${metadata.id}-semantic-module-work-status-v2";
         kind = "semantic-module-work-status";
         artifactName = "project-status.json";
-        expectedFormat = "spaghetti-extractor-operator-work-status-v1";
+        expectedFormat = "spaghetti-extractor-operator-work-status-v2";
         allowedStatuses = [
           "complete"
           "incomplete"
@@ -1367,67 +1457,34 @@ let
         '';
       };
       projectStatus = projectStatusPhase.derivation;
-      mkCandidateStatus =
-        configurationId:
-        (import ./ca-python-json-phase.nix {
-          inherit pkgs;
-          pythonEnv = context.pythonEnv;
-          name = "spaghetti-extractor-${metadata.id}-${configurationId}-semantic-module-work-status-v1";
-          kind = "semantic-module-work-status";
-          artifactName = "project-status.json";
-          expectedFormat = "spaghetti-extractor-operator-work-status-v1";
-          allowedStatuses = [
-            "complete"
-            "incomplete"
-            "violated"
-          ];
-          pythonModules = [ "spaghetti_extractor.target_bundles.project_status" ];
-          phaseRole = "operator";
-          pythonSource = projectStatusPythonSource;
-          inputs = {
-            linked_semantic_module =
-              "${workflow.linkedSemanticModule.derivation}/linked-semantic-module.json";
-            implementation_selection = "${
-              workflow.semanticImplementationSelections.${configurationId}.derivation
-            }/implementation-selection.json";
-          };
-          program = ''
-            from spaghetti_extractor.target_bundles.project_status import (
-                build_project_status,
-            )
-
-            build_project_status(
-                linked_semantic_module=inputs["linked_semantic_module"],
-                implementation_selection=inputs["implementation_selection"],
-                target_id=${builtins.toJSON metadata.id},
-                configuration_id=${builtins.toJSON configurationId},
-                out=output,
-            )
-          '';
-        }).derivation;
-      candidateStatusReports = builtins.listToAttrs (
-        map (configurationId: {
-          name = configurationId;
-          value = mkCandidateStatus configurationId;
-        }) configurationIds
-      );
-      defaultCandidateStatusReport =
-        if !hasComponents then null else candidateStatusReports.${defaultConfiguration};
       checkedCandidateBuilds = lib.mapAttrs (
         configurationId: realization:
         pkgs.runCommand "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
           {
-            nativeBuildInputs = [ pkgs.jq ];
+            nativeBuildInputs = [ context.pythonEnv pkgs.jq pkgs.coreutils ];
             __contentAddressed = true;
           }
           ''
             set -euo pipefail
             test -s ${targetInputIdentity}/target-input-identity.json
-            jq -e '
-              .format == "spaghetti-extractor-native-realization-v2" and
-              .status == "complete" and .ready_for_observation and
-              (.blockers | length) == 0
-            ' ${realization.derivation}/native-realization.json >/dev/null
+            export PYTHONPATH=${nativeRealizationGatePythonSource.pythonPath}
+            ${context.pythonEnv}/bin/python3 - \
+              ${realization.derivation}/native-realization.json <<'PY'
+            import sys
+            from pathlib import Path
+
+            from spaghetti_extractor.native_realization.receipt_v2 import (
+                NativeRealizationV2,
+            )
+
+            realization = NativeRealizationV2.load(Path(sys.argv[1]))
+            if (
+                realization.payload["status"] != "complete"
+                or realization.payload["ready_for_observation"] is not True
+                or realization.payload["blockers"]
+            ):
+                raise SystemExit("native realization is not executable")
+            PY
             expected_candidate_sha256="$(jq -r \
               '.candidate.sha256' \
               ${realization.derivation}/native-realization.json)"
@@ -1440,9 +1497,6 @@ let
               "$out/target-input-identity.json"
           ''
       ) workflow.nativeRealizations;
-      componentModeChecks = lib.mapAttrs (configurationId: _configuration: {
-        selected = checkedCandidateBuilds.${configurationId};
-      }) workflow.components.configurationIndex;
       checkedCandidateTests = lib.mapAttrs (
         id: test:
         pkgs.linkFarm "spaghetti-extractor-${metadata.id}-${id}-checked-candidate-test" [
@@ -1456,101 +1510,123 @@ let
           }
         ]
       ) candidateTests;
+      operatorProject = {
+        analysis = projectAnalysis;
+        status = projectStatus;
+        semanticModule = workflow.linkedSemanticModule.derivation;
+        regressionCheck = bundle.defaultCheck;
+        acceptanceCheck = bundle.acceptanceCheck;
+      };
+      operatorComponents = {
+        proposals = workflow.analysis.componentProposals;
+        units = componentUnits;
+      };
+      operatorBoundaries = {
+        inherit (workflow.calls) status check;
+        subjects = lib.mapAttrs (_: value: builtins.removeAttrs value [ "kind" ])
+          workflow.calls.subjects;
+      };
+      operatorLibraries = if !workflow.libraryCatalogConfigured then null else {
+        status = workflow.libraryOperator.status;
+        check = workflow.libraryOperator.check;
+        catalogSearchIndex = workflow.linkedLibraries.catalogSearchIndex;
+        targetSignatureGraph = workflow.linkedLibraries.targetSignatureGraph;
+        releaseHypotheses = workflow.linkedLibraries.releaseHypotheses;
+        selections = lib.mapAttrs (_: check: { inherit check; }) workflow.linkedLibraries.checks;
+      };
+      operatorCandidate = {
+        configurations = candidateConfigurations;
+        testSuites = checkedCandidateTests;
+      } // lib.optionalAttrs (candidateTestAggregate != null) {
+        allTests = candidateTestAggregate;
+      };
+      operatorDefaultConfiguration =
+        if defaultConfiguration == null then "faithful" else defaultConfiguration;
+      candidateConfigurationIndex = lib.genAttrs configurationIds (id:
+        let
+          row = if id == "faithful" then null else workflow.components.configurationIndex.${id};
+        in {
+          label = if id == "faithful" then "Faithful machine baseline" else row.label;
+          mode = if id == "faithful" then "faithful" else row.mode;
+          selectedComponentIds = if id == "faithful" then [ ] else
+            builtins.sort builtins.lessThan row.selectedComponentIds;
+          products = builtins.attrNames candidateConfigurations.${id};
+        }
+      );
       operatorIndex = {
+        format = "spaghetti-extractor-operator-index-v1";
         targetId = metadata.id;
-        inherit defaultConfiguration hasComponents;
+        defaultConfiguration = operatorDefaultConfiguration;
+        project.products = builtins.attrNames operatorProject;
         components = {
-          units =
-            if hasComponents then
-              builtins.mapAttrs (_: value: {
-                interface = value.interface;
-                schema = value.schema;
-              }) workflow.components.v5Interfaces
-            else
-              { };
-          v5Interfaces =
-            if hasComponents then
-              builtins.mapAttrs (_: value: {
-                interface = value.interface;
-                schema = value.schema;
-              }) workflow.components.v5Interfaces
-            else
-              { };
-          configurations = if hasComponents then workflow.components.configurationIndex else { };
+          products = [ "proposals" ];
+          units = if !hasComponents then { } else lib.mapAttrs
+            (id: value: {
+              inherit (value) label entryRvas;
+              products = builtins.attrNames componentUnits.${id};
+            }) (lib.filterAttrs (_: value: value.kind == "component") workflow.components.liftUnitIndex);
         };
         candidate = {
-          configurations = configurationIds;
+          products = builtins.attrNames (builtins.removeAttrs operatorCandidate [ "configurations" "testSuites" ]);
+          configurations = candidateConfigurationIndex;
           testSuites = candidateTestIndex;
         };
-        libraries = {
-          configured = workflow.libraryCatalogConfigured;
-          selections = builtins.attrNames workflow.linkedLibraries.checks;
+        libraries = if operatorLibraries == null then null else {
+          products = builtins.attrNames (builtins.removeAttrs operatorLibraries [ "selections" ]);
+          selections = lib.mapAttrs (_: value: {
+            products = builtins.attrNames value;
+          }) operatorLibraries.selections;
         };
         boundaries = {
-          configured = workflow.calls.configured;
-          subjects = lib.mapAttrs (_: value: {
-            kind = value.kind or "call";
-            inspectionArtifact = value.inspectionArtifact or "call-inspection.json";
-            intentArtifact = value.intentArtifact or "call-intent.json";
-            checkArtifact = value.checkArtifact or null;
+          products = builtins.attrNames (builtins.removeAttrs operatorBoundaries [ "subjects" ]);
+          subjects = lib.mapAttrs (subject: value: {
+            inherit (value) kind;
+            products = builtins.attrNames operatorBoundaries.subjects.${subject};
           }) workflow.calls.subjects;
         };
       };
       operator = {
-        index = operatorIndex;
-        project = {
-          analysis = projectAnalysis;
-          status = projectStatus;
-          semanticModule = workflow.linkedSemanticModule.derivation;
-          regressionCheck = bundle.defaultCheck;
-          acceptanceCheck = bundle.acceptanceCheck;
-        }
-        // lib.optionalAttrs hasProject {
-          workflow = project;
-          intent = project.projectIntent;
-          loadPlan = project.loadPlan;
-          imageWorkflows = project.imageWorkflows;
-          nativeRealizations = project.nativeRealizations;
-          observedLoadGraph = project.observedLoadGraph;
-          completion = project.completion;
-        };
-        components = {
-          proposals = workflow.analysis.componentProposals;
-          units = componentUnits;
-          configurations = componentConfigurations;
-          interfacesV5 = if hasComponents then workflow.components.v5Interfaces else { };
-          bindingIntentsV1 = if hasComponents then workflow.components.bindingIntentPaths else { };
-          semanticSlicesV2 = if hasComponents then workflow.components.v6SemanticSlices else { };
-          workPackagesV6 = if hasComponents then workflow.components.v6WorkPackages else { };
-        };
-        libraries = {
-          status = workflow.libraryOperator.status;
-          check = workflow.libraryOperator.check;
-          checks = workflow.linkedLibraries.checks;
-          catalogSearchIndex = workflow.linkedLibraries.catalogSearchIndex;
-          targetSignatureGraph = workflow.linkedLibraries.targetSignatureGraph;
-          releaseHypotheses = workflow.linkedLibraries.releaseHypotheses;
-          checkedIslands = workflow.linkedLibraries.checkedIslands;
-          providerBindings = workflow.linkedLibraries.providerBindings;
-          semanticSlices = workflow.linkedLibraries.providerSemanticSlices;
-          semanticProviders = workflow.portableSemanticProvidersByLibrary;
-        };
-        boundaries = {
-          inherit (workflow.calls) status subjects check;
-        };
-        candidate = {
-          builds = checkedCandidateBuilds;
-          checks = componentModeChecks;
-          statuses = candidateStatusReports;
-          materializedStatus = defaultCandidateStatusReport;
-          tests = checkedCandidateTests;
-          allTests = candidateTestAggregate;
-          selections = workflow.semanticImplementationSelections or { };
-          nativeRealizations = workflow.nativeRealizations or { };
-        };
+        project = operatorProject;
+        components = operatorComponents;
+        boundaries = operatorBoundaries;
+        candidate = operatorCandidate;
+      } // lib.optionalAttrs (operatorLibraries != null) {
+        libraries = operatorLibraries;
       };
+      _operatorProductsConsistent =
+        operatorIndex.project.products == builtins.attrNames operator.project
+        && operatorIndex.components.products
+          == builtins.attrNames (builtins.removeAttrs operator.components [ "units" ])
+        && builtins.all (id:
+          operatorIndex.components.units.${id}.products
+            == builtins.attrNames operator.components.units.${id}
+        ) (builtins.attrNames operatorIndex.components.units)
+        && operatorIndex.boundaries.products
+          == builtins.attrNames (builtins.removeAttrs operator.boundaries [ "subjects" ])
+        && builtins.all (subject:
+          operatorIndex.boundaries.subjects.${subject}.products
+            == builtins.attrNames operator.boundaries.subjects.${subject}
+        ) (builtins.attrNames operatorIndex.boundaries.subjects)
+        && operatorIndex.candidate.products
+          == builtins.attrNames (builtins.removeAttrs operator.candidate [ "configurations" "testSuites" ])
+        && builtins.attrNames operatorIndex.candidate.testSuites
+          == builtins.attrNames operator.candidate.testSuites
+        && builtins.all (id:
+          operatorIndex.candidate.configurations.${id}.products
+            == builtins.attrNames operator.candidate.configurations.${id}
+        ) (builtins.attrNames operatorIndex.candidate.configurations)
+        && (
+          if operatorIndex.libraries == null then !(operator ? libraries) else
+          operatorIndex.libraries.products
+            == builtins.attrNames (builtins.removeAttrs operator.libraries [ "selections" ])
+          && builtins.all (id:
+            operatorIndex.libraries.selections.${id}.products
+              == builtins.attrNames operator.libraries.selections.${id}
+          ) (builtins.attrNames operatorIndex.libraries.selections)
+        );
     in
     assert metadata.format or null == "spaghetti-extractor-target-bundle-v3";
+    assert _operatorProductsConsistent;
     assert lib.assertMsg (
       !hasProject
       || project._type == "spaghetti-extractor-pe32-project-workflow-v1"
@@ -1599,7 +1675,7 @@ let
     };
 in
 {
-  format = "spaghetti-extractor-target-sdk-v4";
+  format = "spaghetti-extractor-target-sdk-v5";
   inherit (context) package fixtures;
   inherit (context) sources kernels tools;
   profiles = context.sources.profileSource;

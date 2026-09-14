@@ -60,7 +60,7 @@ def checked_captured_external_target_guard(
 
     projection = MachineProjectionV1.parse(value, "captured external target projection")
     if (
-        projection.kind not in {"register", "stack"}
+        projection.kind not in {"register", "stack", "static_slot"}
         or projection.payload.get("width") != 32
         or projection.payload.get("at") != "entry"
         or machine_event.get("kind") != "indirect_call"

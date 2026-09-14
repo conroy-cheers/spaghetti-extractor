@@ -1,0 +1,129 @@
+{
+  "profile": "local-text-cleanup-tail-v1",
+  "runtime_revision": 1,
+  "graph_index": 0,
+  "entry_cut": "entry",
+  "regions": [
+    "entry",
+    "iteration"
+  ],
+  "begin": {
+    "position": "before",
+    "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+  },
+  "source_locals": {
+    "input": "input",
+    "output": "output",
+    "removed": "removed",
+    "scratch": "scratch"
+  },
+  "parameter_roles": {
+    "context": "context",
+    "text": "text",
+    "suppress_notice": "suppress_notice",
+    "main_window": "main_window",
+    "edit_window": "edit_window",
+    "caption": "caption"
+  },
+  "entry_rva": 22029,
+  "image_base": 4194304,
+  "image_size": 225280,
+  "views": {
+    "notice": {
+      "address": 4263788,
+      "extent": 4
+    },
+    "window": {
+      "address": 4260180,
+      "extent": 4
+    },
+    "edit": {
+      "address": 4260184,
+      "extent": 4
+    },
+    "caption": {
+      "address": 4252580,
+      "extent": 500
+    }
+  },
+  "calls": {
+    "copy": {
+      "entry": 22058,
+      "instruction": 22060,
+      "successor": 22066
+    },
+    "release": {
+      "entry": 22066,
+      "instruction": 22067,
+      "successor": 22073
+    },
+    "resource_text": {
+      "entry": 22086,
+      "instruction": 22095,
+      "successor": 22100
+    },
+    "message": {
+      "entry": 22100,
+      "instruction": 22108,
+      "successor": 22114
+    },
+    "focus": {
+      "entry": 22114,
+      "instruction": 22120,
+      "successor": 22126
+    }
+  },
+  "supplier_call": {
+    "region_index": 0,
+    "entry_rva": 22086,
+    "instruction_rva": 22095,
+    "return_rva": 22100,
+    "stack_delta": -12,
+    "service_id": "resource_text",
+    "stack_words": [
+      {
+        "offset": -12,
+        "writable": true,
+        "exit": {
+          "kind": "constant",
+          "value": 31
+        }
+      },
+      {
+        "offset": -8,
+        "writable": true,
+        "exit": {
+          "kind": "constant",
+          "value": 4252580
+        }
+      },
+      {
+        "offset": -4,
+        "writable": true,
+        "exit": {
+          "kind": "constant",
+          "value": 48
+        }
+      },
+      {
+        "offset": 0,
+        "writable": false,
+        "exit": {
+          "kind": "preserved"
+        }
+      }
+    ],
+    "result_reference": {
+      "domain": 1,
+      "object": 2134217653344611032,
+      "generation": 1,
+      "offset": 15648,
+      "extent": 18272,
+      "permissions": 3
+    },
+    "private_stack": {
+      "low": -44,
+      "high": 4
+    }
+  }
+}

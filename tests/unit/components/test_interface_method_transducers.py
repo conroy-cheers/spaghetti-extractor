@@ -16,6 +16,7 @@ from spaghetti_extractor.components.machine_binding_schema import (
     ComponentMachineBindingError,
 )
 from spaghetti_extractor.components.machine_overlay_external_v5 import (
+    _checked_service_argument_transducers,
     _external_logical_word_lines,
     _external_service_runtime_helpers,
     _external_service_thunk,
@@ -53,6 +54,68 @@ def _stack_word(index: int) -> dict[str, object]:
 
 
 class InterfaceMethodTransducerTests(unittest.TestCase):
+    def test_record_field_transducers_must_cover_the_logical_value_once(self) -> None:
+        signature = SimpleNamespace(
+            parameters=(
+                SimpleNamespace(
+                    type_id="record",
+                    interpretation="value",
+                    access="none",
+                    nullable=False,
+                ),
+            )
+        )
+        types = {
+            "u32": SimpleNamespace(
+                identity="u32",
+                kind="integer",
+                body={"width_bits": 32, "signed": False},
+            ),
+            "record": SimpleNamespace(
+                identity="record",
+                kind="record",
+                body={
+                    "fields": (
+                        {"id": "low", "type_id": "u32", "bit_width": None},
+                        {"id": "high", "type_id": "u32", "bit_width": None},
+                    )
+                },
+            ),
+        }
+        transducers = [
+            {"kind": "record_field", "parameter_index": 0, "field_id": "low"},
+            {"kind": "record_field", "parameter_index": 0, "field_id": "high"},
+        ]
+        normalized, outputs, inputs = _checked_service_argument_transducers(
+            signature=signature,
+            types=types,
+            argument_words=2,
+            value=transducers,
+            relation_values=[],
+            local_cell_values=[],
+            argument_interface_values=[],
+            caller_memory_frame=None,
+            profile_sha256=None,
+            context="record fixture",
+        )
+        self.assertEqual(normalized, transducers)
+        self.assertEqual(outputs, [])
+        self.assertEqual(inputs, [])
+
+        with self.assertRaisesRegex(BoundaryModelError, "not total"):
+            _checked_service_argument_transducers(
+                signature=signature,
+                types=types,
+                argument_words=1,
+                value=transducers[:1],
+                relation_values=[],
+                local_cell_values=[],
+                argument_interface_values=[],
+                caller_memory_frame=None,
+                profile_sha256=None,
+                context="record fixture",
+            )
+
     def test_opaque_resource_projection_round_trips_one_checked_word(self) -> None:
         value = SimpleNamespace(
             interpretation="resource",
@@ -86,7 +149,8 @@ class InterfaceMethodTransducerTests(unittest.TestCase):
         parameter_source = "\n".join(parameter_lines)
         self.assertEqual(parameter_name, "argument_window")
         self.assertIn(
-            "spx_component_read(rt, UINT32_C(215412), UINT32_C(4), &memory_fault)",
+            "spx_component_read(rt, rt->image_base + UINT32_C(215412), "
+            "UINT32_C(4), &memory_fault)",
             parameter_source,
         )
         self.assertIn(f"UINT32_C({type_tag}), UINT32_C(1)", parameter_source)
@@ -338,6 +402,8 @@ class InterfaceMethodTransducerTests(unittest.TestCase):
                 {
                     "service_id": "hide",
                     "provider_kind": "external_call",
+                    "external_effect_contract": {"memory_effect": "none", "world_effect": "none"},
+                    "external_contract_identity_sha256": "b" * 64,
                     "symbol": "fixture_hide",
                     "argument_offsets": [0, 4],
                     "events": [
@@ -619,7 +685,8 @@ typedef struct spx_resource_v5 {{
 typedef struct spx_component_service_context_v1 {{
   spx_runtime *runtime;
   spx_machine_state *state;
-  uint32_t *fault;
+  uint32_t *memory_fault;
+  uint32_t *service_fault;
   struct {{ uint32_t physical_word; uint32_t target_rva; }} callback_result;
 }} spx_component_service_context_v1;
 static uint32_t spx_component_read(
@@ -630,6 +697,7 @@ static uint32_t spx_component_read(
 {"\n".join(_external_service_runtime_helpers())}
 {source}
 static uint32_t memory_words[1024];
+static uint32_t physical_word_override = UINT32_C(256);
 static uint32_t fixture_read(
     void *opaque, uint32_t address, uint32_t width, uint32_t *fault) {{
   (void)opaque;
@@ -656,7 +724,7 @@ static spx_boundary_status fixture_realize(
   (void)opaque; (void)profile; (void)interface_id; (void)nullable;
   if (resource->type_tag != 1U || resource->generation != 2U ||
       resource->identity != UINT64_C(3)) return SPX_BOUNDARY_TYPE_MISMATCH;
-  *physical_word = UINT32_C(256);
+  *physical_word = physical_word_override;
   return SPX_BOUNDARY_OK;
 }}
 spx_call_status spx_invoke_call(
@@ -681,7 +749,7 @@ spx_call_status spx_invoke_call(
 int main(void) {{
   spx_runtime runtime = {{0}};
   spx_machine_state state = {{0}};
-  uint32_t fault = 0U;
+  uint32_t memory_fault = 0U, service_fault = 0U;
   uint32_t sentinels[6] = {{11U, 12U, 13U, 14U, 15U, 16U}};
   runtime.read = fixture_read;
   runtime.write = fixture_write;
@@ -694,15 +762,21 @@ int main(void) {{
   for (uint32_t index = 0U; index < 6U; ++index)
     memory_words[(UINT32_C(2024) / 4U) + index] = sentinels[index];
   spx_component_service_context_v1 context = {{
-    &runtime, &state, &fault, {{0U, 0U}}
+    &runtime, &state, &memory_fault, &service_fault, {{0U, 0U}}
   }};
   spx_resource_v5 receiver = {{1U, 2U, UINT64_C(3)}};
   if (fixture_get(&context, receiver, UINT32_C(2)) !=
-          UINT32_C(0x12345678) || fault != 0U)
+          UINT32_C(0x12345678) || memory_fault != 0U || service_fault != 0U)
     return 1;
   for (uint32_t index = 0U; index < 6U; ++index)
     if (memory_words[(UINT32_C(2024) / 4U) + index] != sentinels[index])
       return 2;
+  physical_word_override = UINT32_MAX - UINT32_C(1);
+  memory_fault = UINT32_C(0);
+  service_fault = UINT32_C(0);
+  if (fixture_get(&context, receiver, UINT32_C(2)) != UINT32_C(0) ||
+      memory_fault != UINT32_C(1) || service_fault != UINT32_C(0))
+    return 3;
   return 0;
 }}
 """

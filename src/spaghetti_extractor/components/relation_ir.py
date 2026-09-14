@@ -211,6 +211,7 @@ _UNARY = frozenset(
         "ref_remaining",
         "view_address",
         "view_extent",
+        "view_has_zero",
         "ref_is_null",
         "bitcast",
         "x87_decode",
@@ -230,6 +231,7 @@ _BINARY = frozenset(
         "and",
         "or",
         "same_origin",
+        "borrowed_interior",
         "pointer_difference",
         "derive_ref",
     }
@@ -292,8 +294,10 @@ class RelationExpressionV1:
             raise CheckedRelationIRError(
                 f"{context} operation {self.op!r} has unsupported attributes"
             )
-        if self.op in {"true", "false", "not", "and", "or", "eq", "ult", "ule", "same_origin", "ref_is_null"} and self.sort != BOOL_SORT:
+        if self.op in {"true", "false", "not", "and", "or", "eq", "ult", "ule", "same_origin", "borrowed_interior", "ref_is_null", "view_has_zero"} and self.sort != BOOL_SORT:
             raise CheckedRelationIRError(f"{context} Boolean operation has non-Boolean result")
+        if self.op == "view_has_zero" and self.arguments[0].sort.kind != "view":
+            raise CheckedRelationIRError(f"{context} current-memory predicate requires a view")
         if self.op in {"not"} and self.arguments[0].sort != BOOL_SORT:
             raise CheckedRelationIRError(f"{context} Boolean operand has the wrong sort")
         if self.op in {"and", "or"} and any(item.sort != BOOL_SORT for item in self.arguments):
@@ -404,6 +408,13 @@ class RelationExpressionV1:
             or self.arguments[1].sort.kind not in {"reference", "view"}
         ):
             raise CheckedRelationIRError(f"{context} origin comparison operands are incompatible")
+        if self.op == "borrowed_interior" and (
+            self.arguments[0].sort.kind != "reference"
+            or self.arguments[1].sort.kind not in {"reference", "view"}
+        ):
+            raise CheckedRelationIRError(
+                f"{context} borrowed-interior operands are incompatible"
+            )
         if self.op == "pointer_difference" and (
             self.sort.kind != "bitvector"
             or self.arguments[0].sort != self.arguments[1].sort

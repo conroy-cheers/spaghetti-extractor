@@ -363,10 +363,11 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             ROOT / "nix" / "candidate-test-suite.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("spaghetti-extractor-native-realization-v2", module)
+        self.assertIn("NativeRealizationV2.load", module)
+        self.assertIn("spaghetti_extractor.native_realization.receipt_v2", module)
         self.assertNotIn("spaghetti-extractor-native-realization-v1", module)
-        self.assertIn(".status == \"complete\"", module)
-        self.assertIn(".ready_for_observation", module)
+        self.assertIn('allowedStatuses = [ "complete" ]', module)
+        self.assertIn('realization.payload["ready_for_observation"]', module)
         self.assertIn("native_realization_required_before_execution", module)
         self.assertIn("xvfb-run -a", module)
         self.assertIn("WINEDEBUG=-all", module)
@@ -555,8 +556,10 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         for forbidden in ("machineIr", "machineIrManifest"):
             self.assertNotIn(forbidden, phase)
         self.assertIn("SemanticSliceV2", refinement)
-        self.assertIn("check_component_refinement", refinement)
-        self.assertIn("_check_inductive_refinement_v5", refinement)
+        self.assertIn("check_bisimulation_refinement", refinement)
+        self.assertIn("build_contextual_refinement_v2", refinement)
+        self.assertNotIn("check_component_refinement", refinement)
+        self.assertNotIn("_check_inductive_refinement_v5", refinement)
         self.assertNotIn("component-implementation-v4.json", refinement)
 
     def test_native_guest_dispatch_uses_shared_content_addressed_domains(

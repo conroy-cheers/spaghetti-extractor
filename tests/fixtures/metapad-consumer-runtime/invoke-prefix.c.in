@@ -1,0 +1,14 @@
+ if(event->kind==SPX_CALL_INTERNAL_DIRECT){
+  require(event->target_rva==0x55b7U,"actual cleanup target");
+  require(event->instruction_rva==0x5c2fU || event->instruction_rva==0xb19cU,"actual consumer call edge");
+  events[event_count++]=7U;
+  output->esp-=4U;put(output->esp,event->return_rva);
+  spx_step_result result=spx_component_text_cleanup_000055b7(runtime,output);
+  if(result.kind==SPX_MEMORY_FAULT)return SPX_CALL_MEMORY_FAULT;
+  require(result.kind==SPX_RETURN && result.value==event->return_rva && output->esp==input->esp,"cleanup call return transport");
+  return SPX_CALL_OK;
+ }
+ if(event->symbol && strcmp(event->symbol,"SendMessageA")==0){
+  require(event->instruction_rva==0xb1afU,"actual UI call edge");
+  output->eax=deliver_message(a,b,word(input->esp+8U),word(input->esp+12U));output->esp+=16U;return SPX_CALL_OK;
+ }

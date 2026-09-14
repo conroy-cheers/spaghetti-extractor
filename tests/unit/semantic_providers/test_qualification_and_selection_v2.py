@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import copy
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+from spaghetti_extractor.semantic_providers.exact_context import (
+    build_exact_context, exact_context_blockers, validate_proof_exact_context,
+)
+from spaghetti_extractor.semantic_providers.slices_v2 import SemanticSliceV2Error
 
 from spaghetti_extractor.semantic_link.module_v2 import LinkedSemanticModuleV2
 from spaghetti_extractor.semantic_providers.qualification_v2 import (
@@ -72,7 +82,7 @@ def _facets(kind: str) -> list[dict[str, str]]:
         ],
         "pinned_binary": ["native_objects", "pinned_layout"],
         "qualified_portable_c": [
-            "compile", "contextual_refinement", "induction", "lifecycle",
+            "bisimulation", "compile", "contextual_refinement", "lifecycle",
             "native_objects", "object_binding", "ownership", "relations",
             "services", "source",
         ],
@@ -358,6 +368,150 @@ class ImplementationSelectionV2Tests(unittest.TestCase):
             ImplementationSelectionV2Error, "self hash is stale"
         ):
             ImplementationSelectionV2.parse(payload)
+
+
+class ExactContextSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.context_id = f"semantic-definition-v2:{'5' * 64}"
+        self.module = _module()
+        self.module.payload["definitions"].append({
+            **self.module.payload["definitions"][0],
+            "definition_id": self.context_id, "symbol_id": "original:function:continuation",
+        })
+        self.module.payload["definition_requirements"].append({
+            **self.module.payload["definition_requirements"][0],
+            "definition_id": self.context_id, "symbol_id": "original:function:continuation",
+        })
+        self.plan = {"operations": [{"continuation": {"unit_ids": ["continuation"]}}]}
+        self.context = build_exact_context(
+            proof_plan=self.plan, linked=self.module, owned=_definition_slice(self.module),
+        )
+        payload = dict(_definition_qualification(
+            self.module, kind="qualified_portable_c", provider_id="portable.body",
+        ).payload)
+        payload["exact_context"] = self.context
+        self.portable = self.reparse(payload)
+        self.runtime = _runtime_qualification(self.module)
+
+    @staticmethod
+    def reparse(payload):
+        payload["qualification_sha256"] = canonical_sha256_v3({
+            key: value for key, value in payload.items() if key != "qualification_sha256"
+        })
+        return SemanticProviderQualificationV2.parse(payload)
+
+    def context_provider(self, kind="generated_behavioral_c"):
+        return SemanticProviderQualificationV2.parse(build_semantic_provider_qualification_v2(
+            semantic_slice=SemanticSliceV2.parse(self.context),
+            provider_id="context.provider", provider_kind=kind,
+            provider_artifact_sha256=_A, facets=_facets(kind), tool_sha256s=[_B],
+            definition_materializations=[{
+                "definition_id": self.context_id, "native_symbol": "spx_context",
+                "source_sha256s": [_C], "object_sha256s": [_D],
+            }],
+        ))
+
+    def select(self, context=None, module=None, mode="hybrid"):
+        return build_implementation_selection_v2(
+            linked_semantic_module=module or self.module,
+            qualifications=[self.portable, self.runtime, *([context] if context else [])],
+            definition_choices={
+                _DEFINITION_ID: self.portable.provider_id,
+                **({self.context_id: context.provider_id} if context else {}),
+            },
+            obligation_choices={_OBLIGATION_ID: self.runtime.provider_id}, mode=mode,
+        )
+
+    def test_generated_context_is_required_by_final_choices(self):
+        self.assertEqual(self.select(self.context_provider())["status"], "complete")
+        replaced = self.select(self.context_provider("qualified_portable_c"))
+        self.assertIn("provider_exact_context_replaced", {row["code"] for row in replaced["blockers"]})
+        missing = self.select()
+        self.assertIn("provider_exact_context_selection_missing", {row["code"] for row in missing["blockers"]})
+        self.assertEqual(self.select(self.context_provider(), mode="portable")["status"], "incomplete")
+
+    def test_context_change_invalidates_but_unrelated_analysis_does_not(self):
+        generated = self.context_provider()
+        changed = copy.deepcopy(self.module)
+        changed.payload["linked_semantic_module_sha256"] = _D
+        self.assertEqual(self.select(generated, module=changed)["status"], "complete")
+        changed.payload["definitions"][1]["definition_sha256"] = _E
+        result = self.select(generated, module=changed)
+        self.assertIn("provider_exact_context_stale", {row["code"] for row in result["blockers"]})
+
+    def test_unselected_conditional_provider_does_not_reserve_context(self):
+        body = _definition_qualification(self.module)
+        context = self.context_provider("qualified_portable_c")
+        result = build_implementation_selection_v2(
+            linked_semantic_module=self.module,
+            qualifications=[body, context, self.portable, self.runtime],
+            definition_choices={_DEFINITION_ID: body.provider_id, self.context_id: context.provider_id},
+            obligation_choices={_OBLIGATION_ID: self.runtime.provider_id}, mode="hybrid",
+        )
+        self.assertEqual(result["status"], "complete")
+
+    def test_context_cannot_be_owned_or_missing_or_require_a_service(self):
+        for context in (_definition_slice(self.module).payload, _obligation_slice(self.module).payload):
+            payload = copy.deepcopy(self.portable.payload)
+            payload["exact_context"] = context
+            with self.assertRaisesRegex(SemanticProviderQualificationV2Error, "unowned generated"):
+                self.reparse(payload)
+        for linked in (None, _module()):
+            with self.assertRaises(SemanticSliceV2Error):
+                build_exact_context(proof_plan=self.plan, linked=linked, owned=_definition_slice(self.module))
+        payload = copy.deepcopy(self.portable.payload)
+        payload["provider_kind"] = "generated_behavioral_c"
+        with self.assertRaisesRegex(SemanticProviderQualificationV2Error, "only portable"):
+            self.reparse(payload)
+
+    def test_context_selected_qualification_and_native_symbol_are_bound(self):
+        context = self.context_provider()
+        selection = self.select(context)
+        choices = copy.deepcopy(selection["definition_selections"])
+        next(row for row in choices if row["definition_id"] == self.context_id)["native_symbol"] = "wrong"
+        result = exact_context_blockers(
+            qualifications=[self.portable, self.runtime, context], definition_selections=choices,
+        )
+        self.assertEqual(result[0]["code"], "provider_exact_context_qualification_mismatch")
+
+    def test_dispatch_context_inventory_must_match_the_actual_proof(self):
+        validate_proof_exact_context(proof_plan=self.plan, qualification=self.portable)
+        stripped = copy.deepcopy(self.portable.payload)
+        del stripped["exact_context"]
+        with self.assertRaisesRegex(SemanticSliceV2Error, "omits its proof"):
+            validate_proof_exact_context(proof_plan=self.plan, qualification=self.reparse(stripped))
+        for plan in ({"operations": []}, {"operations": [{"continuation": {"unit_ids": ["different"]}}]}):
+            with self.assertRaises(SemanticSliceV2Error):
+                validate_proof_exact_context(proof_plan=plan, qualification=self.portable)
+
+    def test_native_consumers_recheck_rehashed_selection_with_blockers_removed(self):
+        from spaghetti_extractor.candidate.build_workflow import _selected_provider_object_sources
+        from spaghetti_extractor.candidate.build_model import CandidateNativeBuildError
+        from spaghetti_extractor.native_realization.receipt_v2 import write_native_realization_v2, NativeRealizationV2Error
+
+        context = self.context_provider("qualified_portable_c")
+        selection = self.select(context)
+        selection.update(status="complete", ready_for_realization=True, blockers=[])
+        selection["selection_sha256"] = canonical_sha256_v3({
+            key: value for key, value in selection.items() if key != "selection_sha256"
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selection_path = root / "selection.json"
+            selection_path.write_text(json.dumps(selection))
+            paths = []
+            for index, qualification in enumerate([self.portable, self.runtime, context]):
+                path = root / f"qualification-{index}.json"
+                path.write_text(json.dumps(qualification.payload))
+                paths.append(path)
+            with self.assertRaisesRegex(CandidateNativeBuildError, "exact context is unsatisfied"):
+                _selected_provider_object_sources(implementation_selection=selection_path, provider_qualifications=paths)
+            with patch.object(LinkedSemanticModuleV2, "load", return_value=self.module):
+                with self.assertRaisesRegex(NativeRealizationV2Error, "exact context is unsatisfied"):
+                    write_native_realization_v2(
+                        linked_semantic_module=root / "linked.json", implementation_selection=selection_path,
+                        provider_qualifications=paths, candidate_module=root / "unused.exe", out=root / "receipt.json",
+                    )
 
 
 if __name__ == "__main__":

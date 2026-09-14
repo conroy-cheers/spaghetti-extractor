@@ -1,0 +1,251 @@
+{
+  "scope": "Extracted spatial and private-cell clauses; not regional proof evidence or standalone C. Public imports must validate complete current regional evidence.",
+  "contracts": {
+    "entry": {
+      "calls": {
+        "allocate": {
+          "entry": 21965,
+          "instruction": 21969,
+          "successor": 21975
+        },
+        "length_after": {
+          "entry": 21975,
+          "instruction": 21979,
+          "successor": 21981
+        },
+        "length_before": {
+          "entry": 21960,
+          "instruction": 21963,
+          "successor": 21965
+        }
+      },
+      "entry_cut": "entry",
+      "entry_rva": 21943,
+      "exit_cut": "loop",
+      "exit_rva": 22022,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "length_pointer": 4251992,
+      "parameter_roles": {
+        "caption": "caption",
+        "context": "context",
+        "edit_window": "edit_window",
+        "main_window": "main_window",
+        "suppress_notice": "suppress_notice",
+        "text": "text"
+      },
+      "profile": "local-text-cleanup-entry-v1",
+      "regions": [
+        "entry",
+        "prefix_iter"
+      ],
+      "runtime_revision": 1,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      }
+    },
+    "loop": {
+      "begin": {
+        "position": "before",
+        "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+      },
+      "clobbers": [
+        "eax",
+        "edx",
+        "esi",
+        "ecx",
+        "cf",
+        "zf",
+        "sf",
+        "of",
+        "pf",
+        "eflags"
+      ],
+      "entry_cut": "loop",
+      "entry_rva": 22022,
+      "exit_cut": "tail",
+      "exit_rva": 22029,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "private_cells": [
+        {
+          "name": "removed",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "b",
+          "offset": 7,
+          "width": 1
+        },
+        {
+          "name": "c",
+          "offset": 6,
+          "width": 1
+        }
+      ],
+      "private_extent": 8,
+      "profile": "local-byte-compaction-step-v1",
+      "regions": [
+        "loop",
+        "copy",
+        "advance"
+      ],
+      "registers": {
+        "input": "esi",
+        "output": "ecx",
+        "scratch": "ebx",
+        "text": "edi"
+      },
+      "runtime_revision": 3,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      },
+      "stack_offsets": {
+        "ebp": 8,
+        "esp": -16
+      },
+      "text_parameter": "text"
+    },
+    "tail": {
+      "begin": {
+        "position": "before",
+        "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+      },
+      "calls": {
+        "copy": {
+          "entry": 22058,
+          "instruction": 22060,
+          "successor": 22066
+        },
+        "focus": {
+          "entry": 22114,
+          "instruction": 22120,
+          "successor": 22126
+        },
+        "message": {
+          "entry": 22100,
+          "instruction": 22108,
+          "successor": 22114
+        },
+        "release": {
+          "entry": 22066,
+          "instruction": 22067,
+          "successor": 22073
+        },
+        "resource_text": {
+          "entry": 22086,
+          "instruction": 22095,
+          "successor": 22100
+        }
+      },
+      "entry_cut": "tail",
+      "entry_rva": 22029,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "image_size": 225280,
+      "parameter_roles": {
+        "caption": "caption",
+        "context": "context",
+        "edit_window": "edit_window",
+        "main_window": "main_window",
+        "suppress_notice": "suppress_notice",
+        "text": "text"
+      },
+      "profile": "local-text-cleanup-tail-v1",
+      "regions": [
+        "tail",
+        "tail_iteration"
+      ],
+      "runtime_revision": 1,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      },
+      "supplier_call": {
+        "entry_rva": 22086,
+        "instruction_rva": 22095,
+        "private_stack": {
+          "high": 4,
+          "low": -44
+        },
+        "region_index": 0,
+        "result_reference": {
+          "domain": 1,
+          "extent": 18272,
+          "generation": 1,
+          "object": 2134217653344611032,
+          "offset": 15648,
+          "permissions": 3
+        },
+        "return_rva": 22100,
+        "service_id": "resource_text",
+        "stack_delta": -12,
+        "stack_words": [
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 31
+            },
+            "offset": -12,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 4252580
+            },
+            "offset": -8,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 48
+            },
+            "offset": -4,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "preserved"
+            },
+            "offset": 0,
+            "writable": false
+          }
+        ]
+      },
+      "views": {
+        "caption": {
+          "address": 4252580,
+          "extent": 500
+        },
+        "edit": {
+          "address": 4260184,
+          "extent": 4
+        },
+        "notice": {
+          "address": 4263788,
+          "extent": 4
+        },
+        "window": {
+          "address": 4260180,
+          "extent": 4
+        }
+      }
+    }
+  },
+  "model_excerpts": {
+    "entry": "void check_iteration(void){\n uint32_t text_address,text_extent,length,scratch_address,stack,probe;\n uint32_t target; length_target=target; __CPROVER_assume(length_target!=0U);\n __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296) && length<text_extent);\n __CPROVER_assume(__CPROVER_uninterpreted_readonly_byte(text_address+length)==0U);\n uint32_t scratch_extent=scratch_address ? length+1U : 0U;\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);\n __CPROVER_assume(stack>=40U && (uint64_t)stack+4U<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)stack+4U<=text_address || (uint64_t)text_address+text_extent<=stack-40U);\n __CPROVER_assume((uint64_t)stack+4U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-40U);\n __CPROVER_assume((uint64_t)stack+4U<=4251992U || stack-40U>=UINT64_C(4251996));\n __CPROVER_assume((uint64_t)text_address+text_extent<=4251992U || text_address>=UINT64_C(4251996));\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=4251992U || scratch_address>=UINT64_C(4251996));\n fresh_address=scratch_address;fresh_extent=scratch_extent;\n struct spx_mutable_world left=\nstate.esp==stack-28U && state.ebp==stack-4U && state.edi==text_address && state.ebx==scratch_address\nstruct machine {struct environment *env; uint32_t entry; uint32_t word_0; uint32_t word_1; uint32_t word_2; uint32_t word_3; uint32_t word_4; uint32_t word_5; uint32_t word_6; uint32_t word_7; uint32_t word_8; uint32_t word_9; uint32_t word_10;};\nstatic uint32_t machine_read(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){\n struct machine *m=opaque;*fault=0U;\n if(address==4251992U && width==4U)return length_target;\n  if(address==m->entry-40U && width==4U)return m->word_0;\n if(address==m->entry-36U && width==4U)return m->word_1;\n if(address==m->entry-32U && width==4U)return m->word_2;\n if(address==m->entry-28U && width==4U)return m->word_3;\n if(address==m->entry-24U && width==4U)return m->word_4;\n if(address==m->entry-20U && width==4U)return m->word_5;\n if(address==m->entry-16U && width==4U)return m->word_6;\n if(address==m->entry-12U && width==4U)return m->word_7;\n if(address==m->entry-8U && width==4U)return m->word_8;\n if(address==m->entry-4U && width==4U)return m->word_9;\n if(address==m->entry+0U && width==4U)return m->word_10;\n if(width!=1U || address<m->env->text || (uint64_t)address>=(uint64_t)m->env->text+m->env->extent){*fault=1U;return 0U;}\n return spx_mutable_byte(m->env->world,address);\n}\nstatic void machine_write(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){\n struct machine *m=opaque;*fault=0U;\n  if(address==m->entry-40U && width==4U){m->word_0=value;return;}\n if(address==m->entry-36U && width==4U){m->word_1=value;return;}\n if(address==m->entry-32U && width==4U){m->word_2=value;return;}\n if(address==m->entry-28U && width==4U){m->word_3=value;return;}\n if(address==m->entry-24U && width==4U){m->word_4=value;return;}\n if(address==m->entry-20U && width==4U){m->word_5=value;return;}\n if(address==m->entry-16U && width==4U){m->word_6=value;return;}\n if(address==m->entry-12U && width==4U){m->word_7=value;return;}\n if(address==m->entry-8U && width==4U){m->word_8=value;return;}\n if(address==m->entry-4U && width==4U){m->word_9=value;return;}\n __CPROVER_assert(m->env->allocated,\"entry-write-requires-allocation\");\n if(width!=1U || address<m->env->scratch || (uint64_t)address>=(uint64_t)m->env->scratch+fresh_extent){*fault=1U;return;}\n spx_mutable_event(m->env->world,address,1U,value,0U,0U);\n}\nmemory.word_9==initial.ebp && memory.word_4==initial.ebx && memory.word_3==initial.esi && memory.word_10==return_word\n",
+    "loop": "void check_iteration(void){\n uint32_t text_address,text_extent,scratch_address,scratch_extent,stack,input,output,removed,probe;\n __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));\n __CPROVER_assume((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U));\n __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);\n __CPROVER_assume(input<text_extent && output<=input && removed==input-output);\n __CPROVER_assume((scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && (__CPROVER_uninterpreted_readonly_byte(text_address+scratch_extent-1U))==0U));\n __CPROVER_assume(!(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (__CPROVER_uninterpreted_readonly_byte(probe))==0U);\n __CPROVER_assume(scratch_extent || input==0U || ((uint64_t)input+1U<text_extent && (__CPROVER_uninterpreted_readonly_byte(text_address+input))==13U && (__CPROVER_uninterpreted_readonly_byte(text_address+input+1U))==10U));\n __CPROVER_assume(stack>=16U && (uint64_t)stack+9U<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)stack+8U<=text_address || (uint64_t)text_address+text_extent<=stack);\n __CPROVER_assume((uint64_t)stack+8U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack);\n struct spx_mutable_world left=\ninitial.esp=stack-16U;initial.ebp=stack+8U;\nstruct machine_memory {struct spx_mutable_world *world;uint32_t text,text_extent,scratch,scratch_extent,stack;uint32_t private_removed;uint8_t private_b;uint8_t private_c;};\nstatic uint32_t machine_read(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){\n struct machine_memory *m=opaque;*fault=0U;\n if(address==m->stack+0U && width==4U)return m->private_removed;\n if(address==m->stack+7U && width==1U)return m->private_b;\n if(address==m->stack+6U && width==1U)return m->private_c;\n __CPROVER_assert(width==1U,\"loop-text-read-width\");\n if(address<m->text || (uint64_t)address>=(uint64_t)m->text+m->text_extent){*fault=1U;return 0U;}\n return spx_mutable_byte(m->world,address);\n}\nstatic void machine_write(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){\n struct machine_memory *m=opaque;*fault=0U;\n if(address==m->stack+0U && width==4U){m->private_removed=(uint32_t)value;return;}\n if(address==m->stack+7U && width==1U){m->private_b=(uint8_t)value;return;}\n if(address==m->stack+6U && width==1U){m->private_c=(uint8_t)value;return;}\n __CPROVER_assert(width==1U,\"loop-scratch-write-width\");\n if(address<m->scratch || (uint64_t)address>=(uint64_t)m->scratch+m->scratch_extent){*fault=1U;return;}\n spx_mutable_event(m->world,address,1U,value,0U,0U);\n}\n",
+    "tail": "void check_iteration(void){\n uint32_t text_address,text_extent,scratch_address,scratch_extent,stack,input,output,removed,arbitrary_probe;probe=arbitrary_probe;\n initial_scratch=scratch_address;initial_extent=scratch_extent;initial_output=output;\n __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));\n __CPROVER_assume((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U));\n __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);\n __CPROVER_assume(input<text_extent && output<=input && removed==input-output);\n __CPROVER_assume((scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && (current_byte(text_address+scratch_extent-1U))==0U));\n __CPROVER_assume(!(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (current_byte(probe))==0U);\n __CPROVER_assume(scratch_extent || input==0U || ((uint64_t)input+1U<text_extent && (current_byte(text_address+input))==13U && (current_byte(text_address+input+1U))==10U));\n __CPROVER_assume(stack>=60U && (uint64_t)stack+16U<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)stack+16U<=text_address || (uint64_t)text_address+text_extent<=stack-60U);\n __CPROVER_assume((uint64_t)stack+16U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-60U);\n __CPROVER_assume((uint64_t)stack+16U<=4194304U || stack-60U>=4419584U);\n __CPROVER_assume((uint64_t)text_address+text_extent<=4194304U || text_address>=4419584U);\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=4194304U || scratch_address>=4419584U);\n struct spx_mutable_world left=\ninitial.esp=stack-16U;initial.ebp=stack+8U;\nstruct machine {struct environment *env;uint32_t stack;uint32_t word_0; uint32_t word_1; uint32_t word_2; uint32_t word_3; uint32_t word_4; uint32_t word_5; uint32_t word_6; uint32_t word_7; uint32_t word_8; uint32_t word_9; uint32_t word_10; uint32_t word_11; uint32_t word_12; uint32_t word_13; uint32_t word_14; uint32_t word_15; uint32_t word_16; uint32_t word_17; uint32_t word_18;};\nstatic uint32_t machine_read(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){\n struct machine *m=opaque;struct environment *e=m->env;*fault=0U;\n if(address==m->stack-60 && width==4U)return m->word_0;\n if(address==m->stack-56 && width==4U)return m->word_1;\n if(address==m->stack-52 && width==4U)return m->word_2;\n if(address==m->stack-48 && width==4U)return m->word_3;\n if(address==m->stack-44 && width==4U)return m->word_4;\n if(address==m->stack-40 && width==4U)return m->word_5;\n if(address==m->stack-36 && width==4U)return m->word_6;\n if(address==m->stack-32 && width==4U)return m->word_7;\n if(address==m->stack-28 && width==4U)return m->word_8;\n if(address==m->stack-24 && width==4U)return m->word_9;\n if(address==m->stack-20 && width==4U)return m->word_10;\n if(address==m->stack-16 && width==4U)return m->word_11;\n if(address==m->stack-12 && width==4U)return m->word_12;\n if(address==m->stack-8 && width==4U)return m->word_13;\n if(address==m->stack-4 && width==4U)return m->word_14;\n if(address==m->stack+0 && width==4U)return m->word_15;\n if(address==m->stack+4 && width==4U)return m->word_16;\n if(address==m->stack+8 && width==4U)return m->word_17;\n if(address==m->stack+12 && width==4U)return m->word_18;\n if(address==SUPPRESS || address==WINDOW || address==EDIT){\n  __CPROVER_assert(width==4U,\"tail-global-word-width\");\n  uint32_t result=0;for(uint32_t i=0;i<4U;++i)result|=(uint32_t)spx_mutable_byte(e->world,address+i)<<(8U*i);return result;\n }\n if(width!=1U || address<e->text || (uint64_t)address>=(uint64_t)e->text+e->text_extent){*fault=1U;return 0U;}\n return spx_mutable_byte(e->world,address);\n}\nstatic void machine_write(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){\n struct machine *m=opaque;struct environment *e=m->env;*fault=0U;\n if(address==m->stack-60 && width==4U){m->word_0=value;return;}\n if(address==m->stack-56 && width==4U){m->word_1=value;return;}\n if(address==m->stack-52 && width==4U){m->word_2=value;return;}\n if(address==m->stack-48 && width==4U){m->word_3=value;return;}\n if(address==m->stack-44 && width==4U){m->word_4=value;return;}\n if(address==m->stack-40 && width==4U){m->word_5=value;return;}\n if(address==m->stack-36 && width==4U){m->word_6=value;return;}\n if(address==m->stack-32 && width==4U){m->word_7=value;return;}\n if(address==m->stack-28 && width==4U){m->word_8=value;return;}\n if(address==m->stack-24 && width==4U){m->word_9=value;return;}\n if(address==m->stack-20 && width==4U){m->word_10=value;return;}\n if(address==m->stack-16 && width==4U){m->word_11=value;return;}\n if(address==m->stack-12 && width==4U){m->word_12=value;return;}\n if(address==m->stack-8 && width==4U){m->word_13=value;return;}\n if(address==m->stack-4 && width==4U){m->word_14=value;return;}\n if(address==m->stack+0 && width==4U){m->word_15=value;return;}\n if(address==m->stack+4 && width==4U){m->word_16=value;return;}\n __CPROVER_assert(!e->released,\"tail-no-use-after-release\");\n if(width!=1U || address<e->scratch || (uint64_t)address>=(uint64_t)e->scratch+e->scratch_extent){*fault=1U;return;}\n spx_mutable_event(e->world,address,1U,value,0U,0U);\n}\nsaved_esi=memory.word_11,saved_ebx=memory.word_12,saved_ebp=memory.word_17,return_word=memory.word_18\nstate.esp==stack+16U && state.esi==saved_esi && state.ebx==saved_ebx && state.ebp==saved_ebp && step.value==return_word\n"
+  }
+}

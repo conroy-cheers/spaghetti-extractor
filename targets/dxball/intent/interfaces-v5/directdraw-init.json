@@ -47,7 +47,7 @@
   ],
   "format": "spaghetti-extractor-component-interface-intent-v1",
   "id": "directdraw-init",
-  "intent_sha256": "e0284ceb8add99a49ebeacb20761d78d184a3bfb7eaa22bde48ef7286d20766a",
+  "intent_sha256": "359b5960cedff63ecf16caee6f5b6efe10bf1e2569c0c782514dd944c1e28d34",
   "operations": [
     {
       "allowed_service_ids": [
@@ -978,6 +978,23 @@
           "kind": "none",
           "value_id": null
         },
+        "id": "backbuffer_word",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
         "id": "clipper_mode",
         "interpretation": "value",
         "nullable": false,
@@ -995,7 +1012,58 @@
           "kind": "none",
           "value_id": null
         },
+        "id": "clipper_word",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
         "id": "capability_mode",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "directdraw_word",
+        "interpretation": "value",
+        "nullable": false,
+        "provider_domain": null,
+        "resource_kind": null,
+        "type_id": "status"
+      }
+    },
+    {
+      "initial": 0,
+      "value": {
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "id": "primary_word",
         "interpretation": "value",
         "nullable": false,
         "provider_domain": null,

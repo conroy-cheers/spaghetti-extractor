@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from ..components.capabilities import spx_portable_reference_runtime_v5_source
 from .runtime_model import (
     INTERFACE_METHOD_TARGET_TAG,
     SharedModuleRuntimePlan,
@@ -12,6 +13,10 @@ from .runtime_model import (
     interface_method_target_catalog,
     loader_target_catalog,
 )
+from .runtime_allocation_bindings import allocation_object_selectors
+from .runtime_range_release import release_tables
+from .runtime_range_ownership import ownership_fields
+from .runtime_memory_access import range_predicates_source, thread_environment_predicate_source
 from .runtime_render_core import _native_runtime_source_core
 from .runtime_render_entry import _native_runtime_source_entry
 
@@ -74,71 +79,6 @@ uint32_t spx_native_runtime_guest_seh_chain_head(uint32_t *head);
 uint32_t spx_native_runtime_set_guest_seh_chain_head(uint32_t head);
 
 #endif
-'''
-
-
-def _portable_component_reference_runtime() -> str:
-    """Reviewed shared implementation of the portable component reference ABI."""
-
-    return r'''
-typedef struct spx_ref_v5 {
-  uint32_t domain;
-  uint32_t object;
-  uint32_t generation;
-  uint64_t offset;
-  uint64_t extent;
-  uint32_t permissions;
-} spx_ref_v5;
-
-typedef struct spx_view_v5 {
-  void *context;
-  uint32_t (*read_u8)(void *, uint64_t, uint8_t *);
-  uint32_t (*write_u8)(void *, uint64_t, uint8_t);
-  spx_ref_v5 base;
-  uint64_t extent;
-} spx_view_v5;
-
-static uint32_t spx_component_ref_is_null(spx_ref_v5 value) {
-  return value.domain == 0U && value.object == 0U &&
-      value.generation == 0U && value.offset == 0U &&
-      value.extent == 0U && value.permissions == 0U;
-}
-
-uint32_t spx_ref_derive(
-    spx_ref_v5 reference, uint64_t delta, uint32_t allow_one_past,
-    spx_ref_v5 *result) {
-  uint64_t offset;
-  if (result == 0 || spx_component_ref_is_null(reference) ||
-      UINT64_MAX - reference.offset < delta)
-    return 1U;
-  offset = reference.offset + delta;
-  if (offset > reference.extent ||
-      (offset == reference.extent && allow_one_past == 0U))
-    return 1U;
-  *result = reference;
-  result->offset = offset;
-  return 0U;
-}
-
-uint32_t spx_ref_difference(
-    spx_ref_v5 left, spx_ref_v5 right, int64_t *result) {
-  if (result == 0 || spx_component_ref_is_null(left) ||
-      spx_component_ref_is_null(right) || left.domain != right.domain ||
-      left.object != right.object || left.generation != right.generation ||
-      left.extent != right.extent || left.offset > INT64_MAX ||
-      right.offset > INT64_MAX)
-    return 1U;
-  *result = (int64_t)left.offset - (int64_t)right.offset;
-  return 0U;
-}
-
-uint32_t spx_view_read_u8(
-    const spx_view_v5 *view, uint64_t index, uint8_t *result) {
-  if (view == 0 || result == 0 || view->read_u8 == 0 ||
-      index >= view->extent)
-    return 1U;
-  return view->read_u8(view->context, index, result) == 0U ? 0U : 1U;
-}
 '''
 
 
@@ -300,32 +240,6 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
             ),
         )
     ) or "  { 0U, 0U, 0U },"
-    implementation_rows = "\n".join(
-        "  {{ 0x{rva:08x}U, {class_code}U, {entry_rva}, {replacement}, {cluster} }},".format(
-            rva=dispatch.rva,
-            class_code=dispatch.class_code,
-            entry_rva=(
-                "0U"
-                if dispatch.component_entry_rva is None
-                else f"0x{dispatch.component_entry_rva:08x}U"
-            ),
-            replacement=(
-                "0"
-                if dispatch.replacement_id is None
-                else json.dumps(dispatch.replacement_id, ensure_ascii=True)
-            ),
-            cluster=(
-                "0"
-                if dispatch.cluster_id is None
-                else json.dumps(dispatch.cluster_id, ensure_ascii=True)
-            ),
-        )
-        for dispatch in plan.implementation_dispatches
-    )
-    portable_dispatch_count = sum(
-        dispatch.implementation_class == "selected_portable_component"
-        for dispatch in plan.implementation_dispatches
-    )
     recovered_data_rows = "\n".join(
         f"  {{ 0x{start:08x}U, 0x{end:08x}U }},"
         for start, end in plan.recovered_executable_data_ranges
@@ -338,7 +252,7 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
     object_authority_rows = "\n".join(
         "  {{ {identity}, UINT64_C({domain}), UINT64_C({object_id}), "
         "UINT64_C({generation}), {extent}U, {permissions}U, "
-        "{locator}U, {offset}U, 0x{subject_rva:08x}U, {interior}U }},".format(
+        "{locator}U, {offset}U, 0x{subject_rva:08x}U, {interior}U, {extent_mode}U }},".format(
             identity=json.dumps(rule.identity, ensure_ascii=True),
             domain=rule.domain,
             object_id=rule.object_id,
@@ -349,9 +263,10 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
             offset=rule.locator_offset,
             subject_rva=rule.locator_subject_rva,
             interior=1 if rule.interior_pointers else 0,
+            extent_mode=rule.extent_mode_code,
         )
         for rule in plan.object_authority_rules
-    ) or "  { 0, UINT64_C(0), UINT64_C(0), UINT64_C(0), 0U, 0U, 0U, 0U, 0U, 0U },"
+    ) or "  { 0, UINT64_C(0), UINT64_C(0), UINT64_C(0), 0U, 0U, 0U, 0U, 0U, 0U, 0U },"
     register_codes = {
         name: index
         for index, name in enumerate(
@@ -379,17 +294,14 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
         "product": 3,
         "bounded_zero_run": 4,
     }
-    dynamic_object_selectors = {
-        rule.locator_subject_rva: index + 1
-        for index, rule in enumerate(plan.object_authority_rules)
-        if (
-            rule.locator_kind in {"external_allocation", "resource"}
-            and rule.locator_subject_rva != 0
-        )
-    }
+    dynamic_object_selectors, allocation_groups = allocation_object_selectors(
+        plan.object_authority_rules, plan.external_range_rules,
+    )
     authorized_external_site_rows = "\n".join(
         f"  0x{rva:08x}U," for rva in plan.authorized_external_site_rvas
     ) or "  0U,"
+    release_fields, release_declaration = release_tables(plan.external_range_rules)
+    ownership_rows, ownership_family_count = ownership_fields(plan.external_range_rules)
     external_range_rows = "\n".join(
         "  {{ 0x{rva:08x}U, 0x{target_iat_rva:08x}U, {target_catalog_index}U, "
         "{interface_class_index}U, {action}U, {argument_base_offset}U, "
@@ -399,7 +311,9 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
         "{termination_unit_bytes}U, {termination_zero_units}U, "
         "{termination_max_units}U, "
         "{pointee_offset}U, {max_elements}U, {element_unit_bytes}U, "
-        "{element_max_units}U, {object_rule_selector}U }},".format(
+        "{element_max_units}U, {object_rule_selector}U, "
+        "{release_success}U, {release_guard_start}U, {release_guard_count}U, "
+        "{allocation_group_selector}U, {ownership_family}U, {ownership_owner_argument}U }},".format(
             rva=rule.instruction_rva,
             target_iat_rva=rule.target_iat_rva or 0,
             target_catalog_index=rule.target_catalog_index or 0,
@@ -423,6 +337,12 @@ def _native_runtime_source(plan: SharedModuleRuntimePlan) -> str:
             element_unit_bytes=rule.element_unit_bytes,
             element_max_units=rule.element_max_units,
             object_rule_selector=dynamic_object_selectors.get(index + 1, 0),
+            release_success=release_fields[index][0],
+            release_guard_start=release_fields[index][1],
+            release_guard_count=release_fields[index][2],
+            allocation_group_selector=allocation_groups.get(index + 1, index + 1),
+            ownership_family=ownership_rows[index][0],
+            ownership_owner_argument=ownership_rows[index][1],
         )
         for index, rule in enumerate(plan.external_range_rules)
     ) or (
@@ -559,20 +479,6 @@ static const spx_native_interface_method spx_native_interface_methods[] = {{
 }};
 static const uint32_t spx_native_interface_method_count = {len(interface_targets)}U;
 
-typedef struct spx_native_implementation_dispatch {{
-  uint32_t rva, implementation_class;
-  uint32_t component_entry_rva;
-  const char *replacement_id, *cluster_id;
-}} spx_native_implementation_dispatch;
-static const spx_native_implementation_dispatch
-spx_native_implementation_dispatches[] = {{
-{implementation_rows}
-}};
-static const uint32_t spx_native_implementation_dispatch_count =
-    {len(plan.implementation_dispatches)}U;
-static const uint32_t spx_native_portable_dispatch_count =
-    {portable_dispatch_count}U;
-
 typedef struct spx_native_noncode_range {{
   uint32_t rva_start, rva_end;
 }} spx_native_noncode_range;
@@ -593,7 +499,7 @@ typedef struct spx_native_object_authority_rule {{
   const char *identity;
   uint64_t domain, object_id, generation;
   uint32_t extent, permissions, locator_kind, locator_offset;
-  uint32_t locator_subject_rva, interior_pointers;
+  uint32_t locator_subject_rva, interior_pointers, extent_mode;
 }} spx_native_object_authority_rule;
 static const spx_native_object_authority_rule
 spx_native_object_authority_rules[] = {{
@@ -618,11 +524,16 @@ typedef struct spx_native_external_range_rule {{
   uint32_t termination_unit_bytes, termination_zero_units, termination_max_units;
   uint32_t pointee_offset, max_elements, element_unit_bytes, element_max_units;
   uint32_t object_rule_selector;
+  uint32_t release_success, release_guard_start, release_guard_count;
+  uint32_t allocation_group_selector;
+  uint32_t ownership_family, ownership_owner_argument;
 }} spx_native_external_range_rule;
 static const spx_native_external_range_rule spx_native_external_range_rules[] = {{
 {external_range_rows}
 }};
 static const uint32_t spx_native_external_range_rule_count = {len(plan.external_range_rules)}U;
+{release_declaration}
+static const uint32_t spx_native_ownership_family_count = {ownership_family_count}U;
 
 typedef struct spx_native_callable_resolver {{
   uint32_t instruction_rva, capability_id, result_register, nullable;
@@ -679,6 +590,7 @@ typedef struct spx_native_external_range {{
   uint32_t start, size, producer_rva, producer_action, generation;
   uint32_t external_range_rule_selector;
   uint64_t object_id;
+  uint32_t ownership_family, ownership_owner;
 }} spx_native_external_range;
 
 typedef struct spx_native_interface_instance {{
@@ -763,34 +675,7 @@ static uint32_t spx_native_u32(uint32_t address) {{
       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }}
 
-static uint32_t spx_native_range_end(
-    uint32_t start, uint32_t width, uint32_t *end) {{
-  if (width == 0U || start > 0xffffffffU - width) return 0U;
-  *end = start + width;
-  return 1U;
-}}
-
-static uint32_t spx_native_inside(
-    uint32_t start, uint32_t end, uint32_t region_start, uint32_t region_size) {{
-  uint32_t region_end;
-  if (region_size == 0U ||
-      !spx_native_range_end(region_start, region_size, &region_end))
-    return 0U;
-  return start >= region_start && end <= region_end;
-}}
-
-static uint32_t spx_native_inside_external_range(
-    const spx_native_context *context, uint32_t start, uint32_t end) {{
-  uint32_t i;
-  for (i = 0U; i < context->external_range_count; ++i)
-    if (spx_native_inside(
-            start, end, context->external_ranges[i].start,
-            context->external_ranges[i].size))
-      return 1U;
-  return 0U;
-}}
-
-static void spx_native_diagnose_external_range(
+{range_predicates_source()}static void spx_native_diagnose_external_range(
     const spx_native_context *context, uint32_t address) {{
   uint32_t i, nearest_start = 0U, nearest_end = 0U, has_preceding = 0U;
   if (context == 0) return;
@@ -814,18 +699,7 @@ static void spx_native_diagnose_external_range(
 }}
 
 
-static uint32_t spx_native_inside_thread_environment(
-    const spx_native_context *context, uint32_t start, uint32_t end) {{
-  uint32_t teb_end;
-  return context->owner_fs_base != 0U &&
-      spx_native_range_end(
-          context->owner_fs_base,
-          SPX_NATIVE_THREAD_ENVIRONMENT_BYTES,
-          &teb_end) &&
-      start >= context->owner_fs_base && end <= teb_end;
-}}
-
-static uint32_t spx_native_ranges_overlap(
+{thread_environment_predicate_source()}static uint32_t spx_native_ranges_overlap(
     uint32_t left_start, uint32_t left_end,
     uint32_t right_start, uint32_t right_size) {{
   uint32_t right_end;
@@ -965,33 +839,24 @@ static uint32_t spx_native_string_equal(
 }}
 
 static uint32_t spx_native_override_table_valid(void) {{
-  uint32_t i, matched = 0U;
+  uint32_t i;
   if ((uintptr_t)&spx_region_override_count == 0U ||
       (uintptr_t)spx_region_overrides == 0U)
-    return spx_native_portable_dispatch_count == 0U;
-  if (spx_region_override_count != spx_native_portable_dispatch_count)
-    return 0U;
+    return spx_region_override_lookup == 0;
+  if (spx_region_override_lookup == 0) return 0U;
   for (i = 0U; i < spx_region_override_count; ++i) {{
     const spx_region_override *observed = &spx_region_overrides[i];
-    uint32_t j, found = 0U;
-    for (j = 0U; j < spx_native_implementation_dispatch_count; ++j) {{
-      const spx_native_implementation_dispatch *expected =
-          &spx_native_implementation_dispatches[j];
-      if (expected->implementation_class != 1U || expected->rva != observed->entry_rva)
-        continue;
-      if (found != 0U || observed->function == 0 ||
-          observed->fallback_on_unimplemented != 0U ||
-          !spx_native_string_equal(
-              observed->replacement_id, expected->replacement_id) ||
-          !spx_native_string_equal(
-              observed->cluster_id, expected->cluster_id))
-        return 0U;
-      found = 1U;
-    }}
-    if (found == 0U) return 0U;
-    ++matched;
+    if ((i != 0U && spx_region_overrides[i - 1U].entry_rva >=
+            observed->entry_rva) ||
+        observed->entry_rva >= spx_native_context_value.image_size ||
+        !spx_behavioral_has_unit(observed->entry_rva) ||
+        observed->function == 0 ||
+        observed->fallback_on_unimplemented != 0U ||
+        observed->replacement_id == 0 || observed->cluster_id == 0 ||
+        spx_region_override_lookup(observed->entry_rva) != observed)
+      return 0U;
   }}
-  return matched == spx_native_portable_dispatch_count;
+  return 1U;
 }}
 
 static uint32_t spx_native_transfer_table_valid(void) {{
@@ -999,49 +864,19 @@ static uint32_t spx_native_transfer_table_valid(void) {{
   if ((uintptr_t)&spx_behavioral_transfer_count == 0U ||
       spx_behavioral_transfer_count != spx_native_transfer_count ||
       spx_native_transfer_count == 0U ||
-      spx_native_implementation_dispatch_count !=
-          spx_native_transfer_count ||
       !spx_native_override_table_valid())
     return 0U;
   for (i = 0U; i < spx_native_transfer_count; ++i) {{
     uint32_t rva = spx_native_transfer_rvas[i];
-    const spx_native_implementation_dispatch *expected =
-        &spx_native_implementation_dispatches[i];
-    const spx_region_override *override;
     if ((i != 0U && spx_native_transfer_rvas[i - 1U] >= rva) ||
-        expected->rva != rva ||
         rva >= spx_native_context_value.image_size ||
         !spx_behavioral_has_unit(rva))
       return 0U;
-    override = (
-        spx_region_override_lookup == 0
-        ? (const spx_region_override *)0
-        : spx_region_override_lookup(rva));
-    if (expected->implementation_class == 0U) {{
-      if (override != 0 || expected->replacement_id != 0 ||
-          expected->cluster_id != 0)
-        return 0U;
-    }} else if (expected->implementation_class == 1U) {{
-      if (override == 0 || override->entry_rva != rva ||
-          override->function == 0 || override->fallback_on_unimplemented != 0U ||
-          !spx_native_string_equal(
-              override->replacement_id, expected->replacement_id) ||
-          !spx_native_string_equal(
-              override->cluster_id, expected->cluster_id))
-        return 0U;
-    }} else if (expected->implementation_class == 2U) {{
-      if (override != 0 || expected->replacement_id == 0 ||
-          expected->cluster_id == 0 || expected->component_entry_rva == 0U ||
-          expected->component_entry_rva == rva)
-        return 0U;
-    }} else {{
-      return 0U;
-    }}
   }}
 '''
         + _native_runtime_source_core(plan)
         + _native_runtime_source_entry(plan)
-        + _portable_component_reference_runtime()
+        + spx_portable_reference_runtime_v5_source()
     )
 
 

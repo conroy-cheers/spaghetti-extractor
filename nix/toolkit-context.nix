@@ -165,7 +165,7 @@ let
     };
     cbmc = {
       path = pkgs.cbmc;
-      nativeBuildInputs = [ pkgs.cbmc ];
+      nativeBuildInputs = [ pkgs.cbmc pkgs.bubblewrap ];
     };
     compiler = {
       path = pkgs.pkgsCross.mingw32.stdenv.cc;
@@ -179,6 +179,10 @@ let
       path = headlessWine;
       nativeBuildInputs = [ headlessWine ];
     };
+    jq = {
+      path = pkgs.jq;
+      nativeBuildInputs = [ pkgs.jq ];
+    };
     lean-isa-runner = {
       path = isaConformanceKernel;
       nativeBuildInputs = [ pkgs.lean4 ];
@@ -190,6 +194,10 @@ let
     };
     pe32-minimal-import-call = {
       path = minimalImportCall;
+    };
+    z3 = {
+      path = pkgs.z3;
+      nativeBuildInputs = [ pkgs.z3 ];
     };
   };
 in

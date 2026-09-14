@@ -206,10 +206,10 @@ FORMAT_SPECS = (
         literal="spaghetti-extractor-component-adoption-intent-v1",
         version=1,
         owner=_OWNER,
-        codec="spaghetti_extractor.components.work_package_v6",
+        codec="spaghetti_extractor.components.formats",
         role="intent",
-        state="active",
-        symbol="COMPONENT_ADOPTION_INTENT_V1_FORMAT",
+        state="retired",
+        symbol="RETIRED_COMPONENT_ADOPTION_INTENT_V1_FORMAT",
     ),
     FormatSpecV1(
         literal="spaghetti-extractor-component-work-package-inspection-v1",
@@ -217,8 +217,8 @@ FORMAT_SPECS = (
         owner=_OWNER,
         codec="spaghetti_extractor.boundary.work_status",
         role="view",
-        state="active",
-        symbol="COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT",
+        state="retired",
+        symbol="RETIRED_COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT",
     ),
     FormatSpecV1(
         literal="spaghetti-extractor-component-proposal-inspection-v1",
@@ -228,6 +228,69 @@ FORMAT_SPECS = (
         role="view",
         state="active",
         symbol="COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-bisimulation-intent-v1",
+        version=1,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.bisimulation",
+        role="intent",
+        state="active",
+        symbol="COMPONENT_BISIMULATION_INTENT_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-proof-plan-v1",
+        version=1,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.bisimulation",
+        role="plan",
+        state="active",
+        symbol="COMPONENT_PROOF_PLAN_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-contextual-refinement-v2",
+        version=2,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.contextual_bisimulation",
+        role="receipt",
+        state="active",
+        symbol="CONTEXTUAL_REFINEMENT_V2_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-exact-c-slice-v1",
+        version=1,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.component_exact_c_slice",
+        role="source_package",
+        state="active",
+        symbol="COMPONENT_EXACT_C_SLICE_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-trusted-adapter-lowering-v1",
+        version=1,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.contextual_bisimulation",
+        role="receipt",
+        state="active",
+        symbol="TRUSTED_ADAPTER_LOWERING_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-conditional-contextual-check-v1",
+        version=1,
+        owner=__name__,
+        codec="spaghetti_extractor.components.conditional_check_result",
+        role="proof_diagnostic",
+        state="active",
+        symbol="CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-conditional-contextual-refinement-v1",
+        version=1,
+        owner=_OWNER,
+        codec="spaghetti_extractor.components.contextual_bisimulation",
+        role="receipt",
+        state="active",
+        symbol="CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT",
     ),
 )
 
@@ -251,13 +314,22 @@ INTERACTION_CONTRACT_V1_FORMAT = FORMAT_SPECS[16].literal
 INTERACTION_CONTRACT_CATALOG_V1_FORMAT = FORMAT_SPECS[17].literal
 INTERACTION_CONTRACT_RECEIPT_V1_FORMAT = FORMAT_SPECS[18].literal
 COMPONENT_WORK_PACKAGE_V6_FORMAT = FORMAT_SPECS[19].literal
-COMPONENT_ADOPTION_INTENT_V1_FORMAT = FORMAT_SPECS[20].literal
-COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT = FORMAT_SPECS[21].literal
+RETIRED_COMPONENT_ADOPTION_INTENT_V1_FORMAT = FORMAT_SPECS[20].literal
+RETIRED_COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT = FORMAT_SPECS[21].literal
 COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT = FORMAT_SPECS[22].literal
+COMPONENT_BISIMULATION_INTENT_V1_FORMAT = FORMAT_SPECS[23].literal
+COMPONENT_PROOF_PLAN_V1_FORMAT = FORMAT_SPECS[24].literal
+CONTEXTUAL_REFINEMENT_V2_FORMAT = FORMAT_SPECS[25].literal
+COMPONENT_EXACT_C_SLICE_V1_FORMAT = FORMAT_SPECS[26].literal
+TRUSTED_ADAPTER_LOWERING_V1_FORMAT = FORMAT_SPECS[27].literal
+CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT = FORMAT_SPECS[28].literal
+CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT = FORMAT_SPECS[29].literal
 
 
 __all__ = [
     "FORMAT_SPECS",
+    "CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT",
+    "CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT",
     "RETIRED_COMPONENT_ACTIVATION_PLAN_V4_FORMAT",
     "RETIRED_COMPONENT_CONTRACT_V4_FORMAT",
     "RETIRED_COMPONENT_DEPENDENCY_GRAPH_V4_FORMAT",
@@ -282,7 +354,12 @@ __all__ = [
     "COMPONENT_SOURCE_PACKAGE_V3_FORMAT",
     "RETIRED_COMPONENT_WORK_PACKAGE_V5_FORMAT",
     "COMPONENT_WORK_PACKAGE_V6_FORMAT",
-    "COMPONENT_ADOPTION_INTENT_V1_FORMAT",
-    "COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT",
+    "RETIRED_COMPONENT_ADOPTION_INTENT_V1_FORMAT",
+    "RETIRED_COMPONENT_WORK_PACKAGE_INSPECTION_V1_FORMAT",
     "COMPONENT_PROPOSAL_INSPECTION_V1_FORMAT",
+    "COMPONENT_BISIMULATION_INTENT_V1_FORMAT",
+    "COMPONENT_PROOF_PLAN_V1_FORMAT",
+    "CONTEXTUAL_REFINEMENT_V2_FORMAT",
+    "COMPONENT_EXACT_C_SLICE_V1_FORMAT",
+    "TRUSTED_ADAPTER_LOWERING_V1_FORMAT",
 ]

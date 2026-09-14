@@ -70,6 +70,7 @@ from .operation_model import (
     _U32_MAX,
     _import_json,
 )
+from .range_release import RangeReleaseError, parse_range_release
 from ..errors import ToolkitInputError
 
 
@@ -998,7 +999,12 @@ def _world_effect(value: Any, context: str) -> WorldEffect:
         _exact_keys(row, {"kind"}, set(), context)
         return WorldEffect(str(kind))
     if kind == "dynamicRangeRelease":
-        _exact_keys(row, {"kind", "argument_index"}, set(), context)
+        _exact_keys(row, {"kind", "argument_index", "release"}, set(), context)
+        try:
+            release = parse_range_release(row["release"], argument_words=MAX_ARGUMENT_WORDS,
+                                          context=context)
+        except RangeReleaseError as exc:
+            raise ExternalOperationProfileError(str(exc)) from exc
         return WorldEffect(
             str(kind),
             _bounded_index(
@@ -1006,6 +1012,7 @@ def _world_effect(value: Any, context: str) -> WorldEffect:
                 f"{context} argument index",
                 maximum=MAX_ARGUMENT_WORDS - 1,
             ),
+            release=release,
         )
     if kind == "callbackRegistration":
         _exact_keys(
@@ -1103,6 +1110,19 @@ def _validate_operation(
                 f"operation {operation.operation_id!r} footprint size argument is out of range"
             )
     for effect in contract.world_effects:
+        if (effect.release is not None and effect.release.ownership is not None
+                and effect.release.ownership.owner_argument is not None
+                and effect.release.ownership.owner_argument >= operation.argument_words):
+            raise ExternalOperationProfileError(
+                f"operation {operation.operation_id!r} release owner argument is out of range"
+            )
+        if effect.release is not None and any(
+            index >= operation.argument_words
+            for index, _ in effect.release.argument_equals
+        ):
+            raise ExternalOperationProfileError(
+                f"operation {operation.operation_id!r} release guard argument is out of range"
+            )
         if (
             effect.argument_index is not None
             and effect.argument_index >= operation.argument_words

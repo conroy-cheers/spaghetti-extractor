@@ -61,10 +61,6 @@ let
   releaseSource = mkPhaseSource "release-hypotheses" "proposal" [
     "spaghetti_extractor.libraries.v4_matching"
   ];
-  emptyReleaseSource = mkPhaseSource "empty-release-hypotheses" "proposal" [
-    "spaghetti_extractor.libraries.v4_record_support"
-    "spaghetti_extractor.util"
-  ];
   artifactInputsInput = asStoreInput "library-artifact-inputs.json" artifactInputs;
   artifactRootInput = asStoreInput "library-artifact-root" artifactRoot;
   catalogIndexInputs = map (asStoreInput "library-artifact-index.json") catalogIndexes;
@@ -137,7 +133,7 @@ let
   catalogSearchInputs = lib.optional (effectiveCatalogLock != null) effectiveCatalogLock
     ++ abiCatalogInputs;
 
-  targetSignatureGraph = pkgs.runCommand
+  targetSignatureGraph = if catalogSearchInputs == [ ] then null else pkgs.runCommand
     "${namePrefix}-library-target-signature-graph-v3" commonAttrs ''
       set -euo pipefail
       ${environment targetSignatureSource}
@@ -187,29 +183,7 @@ let
     '';
 
   releaseHypotheses =
-    if catalogSearchIndex == null then
-      pkgs.runCommand "${namePrefix}-library-release-hypotheses-empty-v4" commonAttrs ''
-        set -euo pipefail
-        ${environment emptyReleaseSource}
-        mkdir -p "$out"
-        ${python} - ${lib.escapeShellArg targetId} "$out/manifest.json" <<'PY'
-        import pathlib
-        import sys
-        from spaghetti_extractor.artifacts.formats import LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT
-        from spaghetti_extractor.libraries.v4_record_support import canonical_sha256
-        from spaghetti_extractor.util import write_json
-
-        core = {
-            "format": LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT,
-            "target_id": sys.argv[1],
-            "target_binary_sha256": "0" * 64,
-            "target_signature_graph_sha256": "0" * 64,
-            "catalog_search_index_sha256": "0" * 64,
-            "releases": [],
-        }
-        write_json(pathlib.Path(sys.argv[2]), {**core, "manifest_sha256": canonical_sha256(core)})
-        PY
-      ''
+    if catalogSearchIndex == null then null
     else
       pkgs.runCommand "${namePrefix}-library-release-hypotheses-v4" commonAttrs ''
         set -euo pipefail

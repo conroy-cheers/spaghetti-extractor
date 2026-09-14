@@ -3,7 +3,10 @@ from __future__ import annotations
 from tests.unit.isa.bochs._support import *
 
 
-TESTKIT = {"resources": ("tools/bochs-conformance/instrument.cc",)}
+TESTKIT = {"resources": (
+    "tools/bochs-conformance/instrument.cc",
+    "tools/bochs-conformance/spaghetti-bochs-conformance-runner",
+)}
 
 
 class ISAConformanceBochsTests(unittest.TestCase):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..external.machine_abi import resolve_machine_call_abi
@@ -65,10 +65,24 @@ def _checked_machine_image(
     }
 
 def _operation_units(
-    operation: object, selected: Mapping[str, Mapping[str, object]]
+    operation: object, selected: Mapping[str, Mapping[str, object]],
+    *, owned_unit_ids: Sequence[str] | None = None,
 ) -> tuple[Mapping[str, object], ...] | None:
+    # An exit block may also have an internal successor, as at a loop header.
+    # V5 ownership distinguishes those edges from exits into continuation or
+    # another operation. Inputs without ownership retain conservative traversal.
     entries = tuple(getattr(operation, "entry_unit_ids"))
     exits = set(getattr(operation, "exit_unit_ids"))
+    owned = None
+    if owned_unit_ids is not None:
+        if (not isinstance(owned_unit_ids, (list, tuple)) or not owned_unit_ids
+                or any(not isinstance(item, str) or not item for item in owned_unit_ids)):
+            return None
+        owned = set(owned_unit_ids)
+        if (len(owned) != len(owned_unit_ids) or not owned <= set(selected)
+                or not set(entries) <= owned
+                or owned & set(getattr(operation, "continuation_unit_ids", ()))):
+            return None
     if any(item not in selected for item in entries) or any(
         item not in selected for item in exits
     ):
@@ -88,7 +102,7 @@ def _operation_units(
         if unit_id in visited:
             continue
         visited.add(unit_id)
-        if unit_id in exits:
+        if unit_id in exits and owned is None:
             continue
         semantics = _object(selected[unit_id].get("semantics"), "machine semantics")
         targets = []
@@ -123,14 +137,26 @@ def _operation_units(
                 for field in ("target_rva", "true_target_rva", "false_target_rva"):
                     if isinstance(outcome.get(field), int):
                         targets.append(int(outcome[field]))
+        leaves = not targets
         for target in targets:
             if not isinstance(target, int) or isinstance(target, bool):
                 return None
             target_id = by_rva.get(target)
+            if owned is not None and unit_id in exits and target_id not in owned:
+                leaves = True
+                continue
+            if owned is not None and target_id in set(getattr(operation, "continuation_unit_ids", ())):
+                return None
             if target_id is None:
                 return None
             pending.append(target_id)
+        if owned is not None and ((unit_id in exits) != leaves):
+            return None
     if not exits <= visited:
+        return None
+    # Non-owned exact epilogues can be retained proof context. They are not
+    # replacement ownership, and must remain reachable through non-exit edges.
+    if owned is not None and not owned <= visited:
         return None
     return tuple(
         selected[item]
@@ -214,15 +240,27 @@ def _external_identity_key(
 def _resolved_external_contract_index(
     environment: ResolvedExternalEnvironmentV1,
 ) -> dict[tuple[str, str, int | None], Mapping[str, object]]:
+    """Index selected contracts while retaining unrelated unresolved imports.
+
+    A requested unresolved service still fails at its binding site. An unresolved
+    row must be explicit; malformed partial contracts and duplicate identities
+    cannot disappear when constructing the component-local index.
+    """
     result: dict[tuple[str, str, int | None], Mapping[str, object]] = {}
+    seen: set[tuple[str, str, int | None]] = set()
     for index, raw in enumerate(environment.payload["machine_import_contracts"]):
         row = _object(raw, f"resolved machine-import contract {index}")
         key = _external_identity_key(
             _object(row.get("identity"), "resolved import identity")
         )
+        if key in seen:
+            raise ComponentSemanticContractError("resolved machine-import contracts are duplicated")
+        seen.add(key)
+        if ("contract" in row and row["contract"] is None
+                and "boundary" in row and row["boundary"] is None):
+            continue
         if (
-            key in result
-            or not isinstance(row.get("contract"), Mapping)
+            not isinstance(row.get("contract"), Mapping)
             or not isinstance(row.get("boundary"), Mapping)
         ):
             raise ComponentSemanticContractError(

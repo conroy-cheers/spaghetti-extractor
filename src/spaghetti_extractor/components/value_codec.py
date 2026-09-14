@@ -37,7 +37,13 @@ def parse_value_codec_expression(
         ):
             raise ValueCodecError(f"{context} constant is invalid")
         return {"op": op, "value": raw, "width": width}, "word"
-    if op in {"parameter", "state_input", "bytes_address", "byte_extent"}:
+    if op in {
+        "parameter",
+        "state_input",
+        "bytes_address",
+        "byte_extent",
+        "resource_identity",
+    }:
         row = _exact(value, {"op", "name"}, context)
         return {
             "op": op,
@@ -113,6 +119,7 @@ def value_codec_expression_references(
         "bytes_address": set(),
         "byte_extent": set(),
         "byte_read": set(),
+        "resource_identity": set(),
         "projected_value": set(),
     }
     op = value.get("op")

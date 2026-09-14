@@ -81,12 +81,11 @@ def _normalize_bochs_x87_tags(
 ) -> MachineState:
     """Expand Bochs occupied/empty tags to architectural full tags.
 
-    The private runner exposes Bochs' internal abridged occupancy tags after
-    ordinary x87 operations.  Architectural FSAVE-style tags classify every
-    nonempty physical register from its exact 80-bit value.  Reclassifying only
-    newly occupied slots left existing zero, infinity, NaN, and exchanged slots
-    reported as ``valid`` and created false disagreements with Unicorn's public
-    ``FPTAG`` adapter, which performs this same expansion.
+    Bochs FPU_save_regi writes a ``valid`` marker without classifying the value.
+    Expand that marker for both new and existing occupied slots. Explicit zero,
+    special and empty tags are already full tags: get_tag_word returns the stored
+    tag word, including injected or restored state. Reclassifying those tags
+    changes state even when the instruction (for example FNSTSW) preserves it.
     """
 
     after = state.x87.tag_word
@@ -94,7 +93,7 @@ def _normalize_bochs_x87_tags(
     normalized = after
     for physical in range(8):
         after_tag = (after >> (physical * 2)) & 0b11
-        if after_tag == 0b11:
+        if after_tag != 0b00:
             continue
         logical = (physical - top) & 7
         tag = _x87_value_tag(state.x87.registers[logical])

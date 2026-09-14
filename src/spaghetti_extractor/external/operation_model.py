@@ -38,6 +38,7 @@ from .machine_abi import (
     resolve_machine_call_abi,
 )
 from .machine_import_profiles import MachineImportIdentity
+from .range_release import RangeRelease
 from ..errors import ToolkitInputError
 
 MAX_ARGUMENT_WORDS = 64
@@ -334,6 +335,7 @@ class WorldEffect:
     kind: str
     argument_index: int | None = None
     callback_id: str | None = None
+    release: RangeRelease | None = None
 
     def as_json(self) -> dict[str, Any]:
         result: dict[str, Any] = {"kind": self.kind}
@@ -341,6 +343,8 @@ class WorldEffect:
             result["argument_index"] = self.argument_index
         if self.callback_id is not None:
             result["callback_id"] = self.callback_id
+        if self.release is not None:
+            result["release"] = self.release.payload()
         return result
 
 

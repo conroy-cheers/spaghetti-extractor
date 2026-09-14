@@ -1,0 +1,160 @@
+"""Conditional entry recipe; actual ordinary C is supplied by source preparation."""
+
+TEMPLATE = r'''#include "behavioral-c.h"
+#include "portable-component-implementation.h"
+static uint32_t fresh_address,fresh_extent,length_target;
+uint8_t __CPROVER_uninterpreted_readonly_byte(uint32_t);
+static uint8_t fresh_zero_byte(uint32_t address){
+ return address>=fresh_address && (uint64_t)address<(uint64_t)fresh_address+fresh_extent ? 0U : __CPROVER_uninterpreted_readonly_byte(address);
+}
+@MEMORY_RUNTIME@
+@VIEW_RUNTIME@
+struct environment {struct spx_mutable_world *world; uint32_t phase,allocated,text,length,scratch,extent;spx_view_v5 view;};
+static void entry_before_service(struct environment *e){
+ __CPROVER_assert(e->world->count==0U,"entry-service-current-memory-is-incoming");
+}
+struct machine {struct environment *env; uint32_t entry; uint32_t word_0; uint32_t word_1; uint32_t word_2; uint32_t word_3; uint32_t word_4; uint32_t word_5; uint32_t word_6; uint32_t word_7; uint32_t word_8; uint32_t word_9; uint32_t word_10;};
+static spx_machine_state observed;static uint32_t observed_removed;static spx_view_v5 observed_view;
+static void observe_entry(uint32_t cut,uint32_t input,uint32_t output,uint32_t removed,const spx_view_v5 *scratch){
+ __CPROVER_assert(cut==@EXIT_RVA@U,"entry-source-cut");
+ __CPROVER_assert(input==observed.esi && output==observed.ecx && removed==observed_removed,"entry-source-cursors");
+ __CPROVER_assert(scratch->extent==fresh_extent && scratch->base.extent==fresh_extent && scratch->base.offset==0U && scratch->base.domain==1U && scratch->base.object==2U && scratch->base.generation==1U,"entry-source-view");
+ __CPROVER_assert(scratch->base.domain==observed_view.base.domain,"entry-full-view-base.domain");
+ __CPROVER_assert(scratch->base.object==observed_view.base.object,"entry-full-view-base.object");
+ __CPROVER_assert(scratch->base.generation==observed_view.base.generation,"entry-full-view-base.generation");
+ __CPROVER_assert(scratch->base.offset==observed_view.base.offset,"entry-full-view-base.offset");
+ __CPROVER_assert(scratch->base.extent==observed_view.base.extent,"entry-full-view-base.extent");
+ __CPROVER_assert(scratch->base.permissions==observed_view.base.permissions,"entry-full-view-base.permissions");
+ __CPROVER_assert(scratch->extent==observed_view.extent,"entry-full-view-extent");
+ __CPROVER_assert(scratch->element_width==observed_view.element_width,"entry-full-view-element_width");
+ __CPROVER_assert(scratch->context==observed_view.context,"entry-full-view-context");
+ __CPROVER_assert(scratch->access_context==observed_view.access_context,"entry-full-view-access_context");
+ __CPROVER_assert(scratch->read_u8==observed_view.read_u8,"entry-full-view-read_u8");
+ __CPROVER_assert(scratch->write_u8==observed_view.write_u8,"entry-full-view-write_u8");
+ __CPROVER_assert(scratch->read==observed_view.read,"entry-full-view-read");
+ __CPROVER_assert(scratch->write==observed_view.write,"entry-full-view-write");
+}
+#include "authored.c"
+
+@REFERENCE_RUNTIME@
+static uint32_t machine_read(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){
+ struct machine *m=opaque;*fault=0U;
+ if(address==@LENGTH_POINTER@U && width==4U)return length_target;
+  if(address==m->entry-40U && width==4U)return m->word_0;
+ if(address==m->entry-36U && width==4U)return m->word_1;
+ if(address==m->entry-32U && width==4U)return m->word_2;
+ if(address==m->entry-28U && width==4U)return m->word_3;
+ if(address==m->entry-24U && width==4U)return m->word_4;
+ if(address==m->entry-20U && width==4U)return m->word_5;
+ if(address==m->entry-16U && width==4U)return m->word_6;
+ if(address==m->entry-12U && width==4U)return m->word_7;
+ if(address==m->entry-8U && width==4U)return m->word_8;
+ if(address==m->entry-4U && width==4U)return m->word_9;
+ if(address==m->entry+0U && width==4U)return m->word_10;
+ if(width!=1U || address<m->env->text || (uint64_t)address>=(uint64_t)m->env->text+m->env->extent){*fault=1U;return 0U;}
+ return spx_mutable_byte(m->env->world,address);
+}
+static void machine_write(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){
+ struct machine *m=opaque;*fault=0U;
+  if(address==m->entry-40U && width==4U){m->word_0=value;return;}
+ if(address==m->entry-36U && width==4U){m->word_1=value;return;}
+ if(address==m->entry-32U && width==4U){m->word_2=value;return;}
+ if(address==m->entry-28U && width==4U){m->word_3=value;return;}
+ if(address==m->entry-24U && width==4U){m->word_4=value;return;}
+ if(address==m->entry-20U && width==4U){m->word_5=value;return;}
+ if(address==m->entry-16U && width==4U){m->word_6=value;return;}
+ if(address==m->entry-12U && width==4U){m->word_7=value;return;}
+ if(address==m->entry-8U && width==4U){m->word_8=value;return;}
+ if(address==m->entry-4U && width==4U){m->word_9=value;return;}
+ __CPROVER_assert(m->env->allocated,"entry-write-requires-allocation");
+ if(width!=1U || address<m->env->scratch || (uint64_t)address>=(uint64_t)m->env->scratch+fresh_extent){*fault=1U;return;}
+ spx_mutable_event(m->env->world,address,1U,value,0U,0U);
+}
+static uint32_t length_contract(void *opaque,const spx_view_v5 *text){
+ struct environment *e=opaque;
+ __CPROVER_assert(e->phase==0U || e->phase==2U,"entry-length-order");
+ __CPROVER_assert(text->base.domain==1U && text->base.object==1U && text->base.generation==1U && text->base.offset==0U && text->extent==e->extent && text->base.extent==e->extent,"entry-length-source-view");
+ entry_before_service(e);
+ ++e->phase;return e->length;
+}
+static spx_view_v5 allocate_contract(void *opaque,uint32_t flags,uint32_t size){
+ struct environment *e=opaque;
+ __CPROVER_assert(e->phase==1U && flags==64U && size==e->length+1U,"entry-allocation-call");
+ entry_before_service(e);
+ ++e->phase;e->allocated=1U;return e->view;
+}
+spx_call_status spx_invoke_call(spx_runtime *runtime,const spx_call_event *event,const spx_machine_state *input,spx_machine_state *output){
+ struct machine *m=runtime->context;struct environment *e=m->env;uint32_t fault=0U;
+ __CPROVER_assert(event->call_index==0U && event->arguments==0 && event->argument_count==0U,"entry-call-event");
+ uint32_t first=machine_read(m,input->esp,4U,&fault);__CPROVER_assert(!fault,"entry-call-first-word");
+ *output=*input;
+ uint32_t ecx,edx;_Bool cf,zf,sf,of,pf;output->ecx=ecx;output->edx=edx;output->cf=cf;output->zf=zf;output->sf=sf;output->of=of;output->pf=pf;
+ if(event->source_rva==@LENGTH_BEFORE_ENTRY@U || event->source_rva==@ALLOCATE_SUCCESSOR@U){
+  __CPROVER_assert(event->kind==SPX_CALL_INDIRECT && event->target_rva==length_target && first==e->text,"entry-native-length-binding");
+  __CPROVER_assert((e->phase==0U && event->source_rva==@LENGTH_BEFORE_ENTRY@U && event->instruction_rva==@LENGTH_BEFORE_INSTRUCTION@U && event->return_rva==@LENGTH_BEFORE_SUCCESSOR@U) || (e->phase==2U && event->source_rva==@ALLOCATE_SUCCESSOR@U && event->instruction_rva==@LENGTH_AFTER_INSTRUCTION@U && event->return_rva==@LENGTH_AFTER_SUCCESSOR@U),"entry-native-length-order");
+  entry_before_service(e);
+  ++e->phase;output->eax=e->length;output->esp+=4U;
+ }else{
+  uint32_t second=machine_read(m,input->esp+4U,4U,&fault);__CPROVER_assert(!fault,"entry-call-second-word");
+  __CPROVER_assert(event->kind==SPX_CALL_EXTERNAL_IMPORT && event->source_rva==@LENGTH_BEFORE_SUCCESSOR@U && event->instruction_rva==@ALLOCATE_INSTRUCTION@U && event->return_rva==@ALLOCATE_SUCCESSOR@U && first==64U && second==e->length+1U && e->phase==1U,"entry-native-allocation-binding");
+  entry_before_service(e);
+  ++e->phase;e->allocated=1U;output->eax=e->scratch;output->esp+=8U;
+ }
+ spx_sync_eflags(output);return SPX_CALL_OK;
+}
+void check_iteration(void){
+ uint32_t text_address,text_extent,length,scratch_address,stack,probe;
+ uint32_t target; length_target=target; __CPROVER_assume(length_target!=0U);
+ __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296) && length<text_extent);
+ __CPROVER_assume(__CPROVER_uninterpreted_readonly_byte(text_address+length)==0U);
+ uint32_t scratch_extent=scratch_address ? length+1U : 0U;
+ __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));
+ __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);
+ __CPROVER_assume(stack>=40U && (uint64_t)stack+4U<=UINT64_C(4294967296));
+ __CPROVER_assume((uint64_t)stack+4U<=text_address || (uint64_t)text_address+text_extent<=stack-40U);
+ __CPROVER_assume((uint64_t)stack+4U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-40U);
+ __CPROVER_assume((uint64_t)stack+4U<=@LENGTH_POINTER@U || stack-40U>=(@LENGTH_POINTER@U+4U));
+ __CPROVER_assume((uint64_t)text_address+text_extent<=@LENGTH_POINTER@U || text_address>=(@LENGTH_POINTER@U+4U));
+ __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=@LENGTH_POINTER@U || scratch_address>=(@LENGTH_POINTER@U+4U));
+ fresh_address=scratch_address;fresh_extent=scratch_extent;
+ struct spx_mutable_world left={0},right={0};
+ struct environment a={.world=&left,.text=text_address,.extent=text_extent,.length=length,.scratch=scratch_address};
+ struct environment b={.world=&right,.text=text_address,.extent=text_extent,.length=length,.scratch=scratch_address};
+ struct machine memory;__CPROVER_havoc_object(&memory);memory.env=&a;memory.entry=stack;
+ uint32_t return_word=memory.word_10;
+ spx_runtime runtime={.context=&memory,.image_base=@IMAGE_BASE@U,.read=machine_read,.write=machine_write};
+ spx_machine_state initial,state;initial.esp=stack;initial.edi=text_address;
+ __CPROVER_assume(initial.df<=1U);state=initial;
+ spx_step_result step;uint32_t next=@ENTRY_RVA@U;
+ for(;;){
+  step=@ORIGINAL_FUNCTION@(&runtime,&state,next);
+  if(step.kind==SPX_MEMORY_FAULT || step.target_rva==@EXIT_RVA@U)break;
+  __CPROVER_assert(step.kind==SPX_BRANCH || step.kind==SPX_JUMP || step.kind==SPX_FALLTHROUGH,"entry-native-step");
+  next=step.target_rva;
+ }
+ observed=state;observed_removed=memory.word_7;
+ struct spx_mutable_domain td={&right,text_address,text_extent,3U},sd={&right,scratch_address,scratch_extent,3U};
+ spx_runtime tr={.context=&td,.read=spx_mutable_read,.write=spx_mutable_write},sr={.context=&sd,.read=spx_mutable_read,.write=spx_mutable_write};
+ spx_component_view_context tc={&tr,text_address,text_extent,3U},sc={&sr,scratch_address,scratch_extent,3U};
+ spx_view_v5 text={.base={1U,1U,1U,0U,text_extent,3U},.extent=text_extent,.element_width=1U,.context=&tc,.access_context=&tc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};
+ b.view=(spx_view_v5){.base={1U,2U,1U,0U,scratch_extent,3U},.extent=scratch_extent,.element_width=1U,.context=&sc,.access_context=&sc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};
+ spx_text_cleanup_services_v5 services={.context=&b,.length=length_contract,.allocate=allocate_contract};
+ spx_text_cleanup_context_v5 context={.services=&services};
+ observed_view=b.view;
+ uint32_t result=@SOURCE_CALL@;
+ __CPROVER_assert(a.phase==3U && b.phase==3U,"entry-three-service-invocations");
+ __CPROVER_assert((step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX),"entry-fault-correspondence");
+ __CPROVER_assert(spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe),"entry-whole-post-memory");
+ @PRESERVED_FRAME@
+ if(result!=UINT32_MAX){
+@LOOP_ADMISSION@
+  __CPROVER_assert(result==@EXIT_RVA@U && step.target_rva==result,"entry-loop-successor");
+  __CPROVER_assert(state.esi<text_extent && state.ecx<=state.esi && memory.word_7==state.esi-state.ecx,"entry-loop-cursor-domain");
+  __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent && scratch_extent<=text_extent),"entry-loop-allocation-domain");
+  if(scratch_extent)__CPROVER_assert(spx_mutable_byte(&right,text_address+scratch_extent-1U)==0U,"entry-loop-allocation-text-nul");
+  if(probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent)__CPROVER_assert(spx_mutable_byte(&right,probe)==0U,"entry-loop-zero-suffix");
+  __CPROVER_assert(state.esp==stack-28U && state.ebp==stack-4U && state.edi==text_address && state.ebx==scratch_address,"entry-loop-register-domain");
+  __CPROVER_assert(memory.word_9==initial.ebp && memory.word_4==initial.ebx && memory.word_3==initial.esi && memory.word_10==return_word,"entry-saved-frame");
+ }
+}
+'''

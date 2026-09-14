@@ -1,0 +1,1 @@
+"""Operator contract tests."""

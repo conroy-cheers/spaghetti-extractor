@@ -11,9 +11,12 @@ from ..artifacts.artifact_set import canonical_sha256_v3
 from ..external.contracts import (
     CheckedCallbackAdapter,
     CheckedExternalSiteContract,
+    CheckedExternalSiteContractError,
     CheckedStackArgument,
     ExternalSiteIdentity,
 )
+from ..external.resolved_contract import resolved_import_contract_behavior
+from ..external.import_sites import bind_import_site
 from ..transfer.model import _Call, _Transfer
 from .module_runtime_plan import (
     NativeGuestDispatchDomain,
@@ -43,24 +46,6 @@ def _closed_content_id(
     if not isinstance(observed, str) or observed != canonical_sha256_v3(core):
         raise CanonicalRuntimeError(f"{label} is stale")
     return observed
-
-
-def _profile_metadata(value: Any) -> Any:
-    """Normalize profile spelling once, matching the checked-contract codec."""
-
-    if isinstance(value, Mapping):
-        result: dict[str, Any] = {}
-        for raw_key, item in value.items():
-            key = "byte_count" if raw_key == "bytes" else str(raw_key)
-            if key in result:
-                raise CanonicalRuntimeError(
-                    f"external profile metadata collides at {key!r}"
-                )
-            result[key] = _profile_metadata(item)
-        return result
-    if isinstance(value, list):
-        return [_profile_metadata(item) for item in value]
-    return value
 
 
 def _identity_key(value: Mapping[str, Any]) -> tuple[str, str, str | int]:
@@ -511,65 +496,11 @@ def _checked_contract(
     escape_index: Mapping[tuple[int, str], Mapping[str, Any]],
     tail_jump: bool = False,
 ) -> CheckedExternalSiteContract:
-    identity = row["identity"]
-    contract_binding = row["contract"]
-    payload = contract_binding.get("payload")
+    try:
+        behavior = resolved_import_contract_behavior(row)
+    except CheckedExternalSiteContractError as exc:
+        raise CanonicalRuntimeError(str(exc)) from exc
     boundary = row["boundary"]
-    if not isinstance(payload, Mapping):
-        raise CanonicalRuntimeError("resolved import contract payload is malformed")
-    profile = _profile_metadata(payload)
-    argument_words = profile.get("argument_words")
-    if not isinstance(argument_words, int) or isinstance(argument_words, bool):
-        arity = profile.get("arity")
-        if isinstance(arity, Mapping) and arity.get("kind") == "fixed":
-            argument_words = arity.get("words")
-        elif isinstance(arity, Mapping) and arity.get("kind") == "variadic":
-            # The fixed prefix is the portion imported into typed runtime
-            # arguments.  The checked forwarding rule transports the raw
-            # caller suffix without guessing a total variadic argument count.
-            argument_words = arity.get(
-                "minimum_words", profile.get("minimum_argument_words")
-            )
-        else:
-            argument_words = None
-    if not isinstance(argument_words, int) or not 0 <= argument_words <= 256:
-        raise CanonicalRuntimeError("resolved import argument count is malformed")
-    arity = profile.get("arity")
-    if not isinstance(arity, Mapping):
-        arity = {"kind": "fixed", "words": argument_words}
-    arity_kind = arity.get("kind")
-    if arity_kind == "fixed":
-        forwarding = None
-    elif arity_kind == "variadic":
-        forwarding = arity.get(
-            "raw_caller_stack_suffix_forwarding",
-            profile.get("raw_caller_stack_suffix_forwarding"),
-        )
-    else:
-        raise CanonicalRuntimeError("resolved import arity is unsupported")
-    argument_nodes = list(call.argument_nodes)
-    argument_base_offset = 4 if tail_jump else 0
-    arguments = tuple(
-        {
-            "kind": "transfer_expression_node",
-            "node": argument_nodes[index],
-        }
-        if index < len(argument_nodes)
-        else {
-            "kind": "captured_stack_word",
-            "offset": argument_base_offset + 4 * index,
-        }
-        for index in range(argument_words)
-    )
-    stack_arguments = tuple(
-        CheckedStackArgument(
-            index,
-            argument_base_offset + 4 * index,
-            4,
-            arguments[index],
-        )
-        for index in range(argument_words)
-    )
     callback_protocol = boundary.get("callback_protocol")
     adapter = None
     if callback_protocol is not None:
@@ -584,58 +515,8 @@ def _checked_contract(
                 "complete execution closure omits a resolved callback escape"
             )
         adapter = _callback_adapter(protocol=callback_protocol, escape=escape)
-    profile_disposition = profile.get("disposition", "returns")
-    if profile_disposition not in {"returns", "terminates", "nonlocal"}:
-        raise CanonicalRuntimeError("resolved import disposition is unsupported")
-    symbol = identity.get("symbol")
-    ordinal = identity.get("ordinal")
-    external_identity = ExternalSiteIdentity(
-        kind="import",
-        dll=str(identity["dll"]).lower(),
-        symbol=str(symbol) if isinstance(symbol, str) else None,
-        ordinal=int(ordinal) if isinstance(ordinal, int) else None,
-    )
-    out_pointers = boundary.get("out_pointer_relations", [])
-    out_interfaces = profile.get("out_interface_relations", [])
-    if not isinstance(out_pointers, list) or not isinstance(out_interfaces, list):
-        raise CanonicalRuntimeError("resolved import relation inventory is malformed")
-    return CheckedExternalSiteContract(
-        identity=external_identity,
-        # Machine transfer and callee outcome are independent facts.  A
-        # returning callee reached by JMP still returns to the saved caller
-        # continuation, while a no-return callee can be reached by CALL.
-        transfer_kind="jump" if tail_jump else "call",
-        disposition="tail_jump" if tail_jump else "returns_here",
-        profile_disposition=str(profile_disposition),
-        abi_template=str(profile.get("abi_template")),
-        arity_kind=str(arity_kind),
-        argument_words=argument_words,
-        raw_caller_stack_suffix_forwarding=forwarding,
-        argument_base_offset=argument_base_offset,
-        arguments=arguments,
-        stack_arguments=stack_arguments,
-        contract_id=str(profile.get("id")),
-        profile_binding={
-            key: contract_binding.get(key)
-            for key in (
-                "profile_id", "profile_sha256", "entry_key", "entry_index"
-            )
-        },
-        result_register_relations=tuple(
-            profile.get("result_register_relations", [])
-        ),
-        memory_effect=str(profile.get("memory_effect", "none")),
-        memory_footprints=tuple(profile.get("memory_footprints", [])),
-        world_effect=str(profile.get("world_effect", "none")),
-        world_effect_argument=profile.get("world_effect_argument"),
-        callback_effect="explicit" if adapter is not None else "none",
-        callback_adapter=adapter,
-        out_pointer_relations=tuple(out_pointers),
-        out_interface_relations=tuple(out_interfaces),
-        external_service_protocol=profile.get(
-            "external_service_protocol"
-        ),
-    )
+    return bind_import_site(behavior, argument_nodes=call.argument_nodes,
+                            tail_jump=tail_jump, callback_adapter=adapter)
 
 
 def _checked_interface_method_contract(

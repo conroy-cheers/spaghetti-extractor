@@ -11,7 +11,7 @@
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
   nativeBuildInputs ? [ ],
-  nativeRealization ? null,
+  nativeRealization,
 }:
 
 let
@@ -19,7 +19,10 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
-    modules = [ "spaghetti_extractor.candidate.functional" ];
+    modules = [
+      "spaghetti_extractor.candidate.functional"
+      "spaghetti_extractor.native_realization.receipt_v2"
+    ];
     name = "${namePrefix}-functional-python-closure";
   };
   cases = map (id: { inherit id; }) caseIds;
@@ -45,18 +48,28 @@ let
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
         export PYTHONPATH=${phasePythonSource.pythonPath}
-          ${lib.optionalString (nativeRealization != null) ''
-            ${pkgs.jq}/bin/jq -e '
-            .format == "spaghetti-extractor-native-realization-v2" and
-            .status == "complete" and .ready_for_observation and
-            (.blockers | length) == 0
-          ' ${nativeRealization}/native-realization.json >/dev/null
-          expected_candidate_sha256="$(${pkgs.jq}/bin/jq -r \
-            '.candidate.sha256' ${nativeRealization}/native-realization.json)"
-          actual_candidate_sha256="$(${pkgs.coreutils}/bin/sha256sum \
-            ${candidateBinary} | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
-          test "$expected_candidate_sha256" = "$actual_candidate_sha256"
-        ''}
+        ${pythonEnv}/bin/python3 - \
+          ${nativeRealization}/native-realization.json <<'PY'
+        import pathlib
+        import sys
+
+        from spaghetti_extractor.native_realization.receipt_v2 import (
+            NativeRealizationV2,
+        )
+
+        realization = NativeRealizationV2.load(pathlib.Path(sys.argv[1]))
+        if (
+            realization.payload["status"] != "complete"
+            or realization.payload["ready_for_observation"] is not True
+            or realization.payload["blockers"]
+        ):
+            raise SystemExit("native realization is not ready for execution")
+        PY
+        expected_candidate_sha256="$(${pkgs.jq}/bin/jq -r \
+          '.candidate.sha256' ${nativeRealization}/native-realization.json)"
+        actual_candidate_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+          ${candidateBinary} | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
+        test "$expected_candidate_sha256" = "$actual_candidate_sha256"
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \
           ${suite} \
@@ -133,7 +146,7 @@ assert builtins.isString namePrefix && namePrefix != "";
 assert builtins.isList caseIds && builtins.length caseIds > 0;
 assert builtins.all (id: builtins.isString id && id != "") caseIds;
 assert builtins.isList candidateCommand && builtins.length candidateCommand > 0;
-assert nativeRealization == null || lib.isDerivation nativeRealization;
+assert lib.isDerivation nativeRealization;
 assert builtins.all
   (case: builtins.isAttrs case && case ? id && builtins.isString case.id && case.id != "")
   cases;

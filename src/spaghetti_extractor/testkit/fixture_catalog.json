@@ -36,6 +36,14 @@
     },
     {
       "capabilities": [
+        "jq"
+      ],
+      "description": "Pinned jq interpreter for JSON receipt checks",
+      "id": "jq",
+      "nix_attribute": "test-fixture-jq"
+    },
+    {
+      "capabilities": [
         "isa",
         "lean"
       ],
@@ -58,6 +66,14 @@
       "description": "Small deterministic PE32 import-call fixture",
       "id": "pe32-minimal-import-call",
       "nix_attribute": "test-fixture-pe32-minimal-import-call"
+    },
+    {
+      "capabilities": [
+        "z3"
+      ],
+      "description": "Pinned Z3 executable for word-level SMT proof checks",
+      "id": "z3",
+      "nix_attribute": "test-fixture-z3"
     }
   ]
 }

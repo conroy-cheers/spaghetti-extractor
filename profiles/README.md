@@ -21,6 +21,24 @@ profiles belong in Git history rather than this directory.
   machine-call boundaries shared by targets using the native library.
 - `pe32-kernel32-callable-resolvers-v1.json` describes APIs that return callable
   addresses and the lookup identities used to recover them.
+- `pe32-kernel32-terminated-byte-read-v1.json` explicitly overrides the ABI-only
+  `lstrlenA` entry when selected. Its read-only `terminated_byte_offset` relation
+  requires a current terminating span and live readable origin for nonnull
+  inputs, and includes a null-input/zero-result outcome. It conservatively
+  admits any zero-byte offset inside the span, so it does not prove first-NUL
+  length or repeatability. The [Microsoft API contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lstrlena)
+  supplies the specification input; selecting the pack does not prove the DLL
+  or authorize provider activation. Shared summaries and restricted read
+  footprints still need their checked composition rules. The general kernel32
+  ABI pack and default target selections remain unchanged.
+- `pe32-user32-resource-text-runtime-v1.json` describes `LoadStringA` with a
+  positive signed buffer capacity. Its checked `argument_domain` constrains the
+  fourth machine word to 1 through `INT32_MAX`, and its writable footprint uses
+  that capacity. The profile permits arbitrary buffer bytes and scalar results
+  on every outcome; it does not promise termination or unchanged failure bytes.
+  The positive capacity follows the [Microsoft API contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadstringa),
+  which excludes zero for the ANSI function. This separate pack lets consumers
+  select the resource-text contract without changing their other profile packs.
 - `pe32-mingw-win32-function-extraction-v1.json` and
   `pe32-mingw-directx-interface-extraction-v1.json` drive SDK AST extraction for
   Win32 functions and COM-style interfaces.
@@ -40,6 +58,13 @@ writes, or classify a returned value as an allocation, callback, or opaque
 resource. The binary must still contain the named import or call pattern, the
 site analysis must recover compatible arguments, and the generated candidate
 must pass static assurance plus candidate-only behavioral tests.
+
+Optional `argument_domain` rows contain an `argument_index`, `minimum` and
+`maximum`, compared as unsigned 32-bit words. Rows must be ordered and unique.
+The domain remains part of the selected behavior identity and exact site
+contract. Both the paired oracle and native bridge check the argument before
+applying effects or calling the external implementation. Out-of-domain calls
+fail closed; a domain declaration alone does not establish caller admission.
 
 An entry may intentionally provide only an ABI template and fixed arity. Such
 an entry can support register preservation, stack cleanup, and indirect-target

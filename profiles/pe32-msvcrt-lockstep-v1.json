@@ -10,7 +10,12 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "world_effect_release": {
+        "ownership": {"family": "msvcrt.heap", "owner_argument": null},
+        "success": "always",
+        "argument_equals": []
+      }
     },
     {
       "id": 1,
@@ -157,6 +162,7 @@
         {
           "register": "eax",
           "relation": "dynamic_range_base",
+          "ownership": {"family": "msvcrt.heap", "owner_argument": null},
           "size": {"kind": "argument", "argument": 0, "scale": 1},
           "minimum_size": 0,
           "required_words": [],
@@ -176,6 +182,7 @@
         {
           "register": "eax",
           "relation": "dynamic_range_base",
+          "ownership": {"family": "msvcrt.heap", "owner_argument": null},
           "size": {
             "kind": "product",
             "left_argument": 0,

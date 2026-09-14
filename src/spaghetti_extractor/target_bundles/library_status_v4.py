@@ -164,7 +164,13 @@ def _selected_artifact_issues(
     elif provider.payload.get("status") != "complete":
         provider_issues = provider.payload.get("blockers")
         if isinstance(provider_issues, list) and provider_issues:
-            issues.extend(dict(row) for row in provider_issues if isinstance(row, dict))
+            for row in provider_issues:
+                if not isinstance(row, dict):
+                    continue
+                normalized = dict(row)
+                normalized.setdefault("status", "incomplete")
+                normalized.setdefault("location", location)
+                issues.append(normalized)
         else:
             issues.append(
                 _issue("incomplete", "library_semantic_provider_incomplete", location)

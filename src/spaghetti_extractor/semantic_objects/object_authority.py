@@ -153,6 +153,7 @@ class MachineObjectRuleV2:
     locator: LoaderRealizedLocatorV2
     interior_pointers: bool
     evidence_sha256: str
+    extent_mode: str = "fixed"
 
     @classmethod
     def parse(
@@ -163,8 +164,15 @@ class MachineObjectRuleV2:
             "permissions", "lifetime", "locator", "interior_pointers",
             "evidence_sha256",
         }
-        if not isinstance(value, Mapping) or set(value) != fields:
+        if not isinstance(value, Mapping) or set(value) not in (fields, fields | {"extent_mode"}):
             raise MachineObjectAuthorityError(f"{context} has invalid fields")
+        extent_mode = value.get("extent_mode", "fixed")
+        locator = LoaderRealizedLocatorV2.parse(value["locator"], context)
+        if "extent_mode" in value and (
+            extent_mode != "instance_remainder" or locator.kind not in {"external_allocation", "resource"}
+            or value["lifetime"] != {"external_allocation": "allocation", "resource": "resource"}.get(locator.kind)
+        ):
+            raise MachineObjectAuthorityError(f"{context} extent mode requires a dynamic range locator")
         identity, kind, lifetime = value["id"], value["kind"], value["lifetime"]
         if not isinstance(identity, str) or not identity:
             raise MachineObjectAuthorityError(f"{context} id is invalid")
@@ -174,10 +182,16 @@ class MachineObjectRuleV2:
         for field in ("domain", "object", "generation", "extent", "permissions"):
             item = value[field]
             maximum = 0xFFFFFFFF if field == "extent" else 2**64 - 1
+            # A dynamic allocation rule's extent is its minimum admitted span.
+            # Zero admits an empty identity; resolution still checks access,
+            # one-past policy and lifetime against the actual instance.
+            minimum = 0 if (field == "extent" and kind == "external" and
+                lifetime == "allocation" and locator.kind == "external_allocation" and
+                extent_mode == "instance_remainder") else 1
             if (
                 not isinstance(item, int)
                 or isinstance(item, bool)
-                or item <= 0
+                or item < minimum
                 or item > maximum
             ):
                 raise MachineObjectAuthorityError(f"{context} {field} is invalid")
@@ -193,8 +207,7 @@ class MachineObjectRuleV2:
         return cls(
             str(identity), str(kind), numbers["domain"], numbers["object"],
             numbers["generation"], numbers["extent"], numbers["permissions"],
-            str(lifetime), LoaderRealizedLocatorV2.parse(value["locator"], context),
-            interior, evidence,
+            str(lifetime), locator, interior, evidence, str(extent_mode),
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -210,6 +223,7 @@ class MachineObjectRuleV2:
             "locator": self.locator.to_payload(),
             "interior_pointers": self.interior_pointers,
             "evidence_sha256": self.evidence_sha256,
+            **({"extent_mode": self.extent_mode} if self.extent_mode != "fixed" else {}),
         }
 
     @property
@@ -386,6 +400,8 @@ class MachineObjectAuthorityV2:
             )
         instances: list[MachineObjectInstanceV2] = []
         for rule in self.rules:
+            if rule.extent_mode != "fixed":
+                raise MachineObjectAuthorityError("runtime extent requires a checked live range instance, not a base address")
             base = realizations[rule.locator.selector]
             if not isinstance(base, int) or isinstance(base, bool) or base < 0 or base + rule.extent > 0x100000000:
                 raise MachineObjectAuthorityError("object realization is outside x86 address space")

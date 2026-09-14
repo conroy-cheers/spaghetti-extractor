@@ -1,0 +1,19 @@
+{
+  "format": "spaghetti-extractor-candidate-test-suite-v1",
+  "target_name": "gnu-hello",
+  "suite_id": "gnu-hello-string-pointer-v6-candidate",
+  "suite_name": "GNU Hello direct V6 string-pointer hybrid candidate",
+  "suite_kind": "curated_expected_output",
+  "suite_scope": "string-pointer-enabled",
+  "upstream_suite": false,
+  "cases": [
+    {
+      "id": "default-greeting",
+      "kind": "expected-exit",
+      "args": [],
+      "expected_returncode": 0,
+      "expected_stdout": "Hello, world!\r\n",
+      "expected_stderr": ""
+    }
+  ]
+}

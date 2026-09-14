@@ -806,7 +806,10 @@ def _local_cell_variant(
     )
     discriminant_indices = tuple(item.word_index for item in discriminants)
     if (
-        not inputs
+        (
+            not inputs
+            and (discriminants or condition != "always" or not outputs)
+        )
         or condition not in {"always", "hresult_succeeded_eax"}
         or discriminant_indices != tuple(sorted(set(discriminant_indices)))
         or not set(discriminant_indices).issubset(inputs)

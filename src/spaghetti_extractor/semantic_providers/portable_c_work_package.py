@@ -8,37 +8,48 @@ in-memory normalized view; no compatibility artifact is emitted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
-from typing import Any, Mapping, Sequence
+import tempfile
+from typing import Mapping, Sequence
 
+from .allocation_inputs import allocation_producer_inputs
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..components.binding_intent import ComponentMachineBindingIntentV1
+from ..components.component_exact_c_slice import write_component_exact_c_slice_v1
+from ..components.bisimulation import (
+    ComponentBisimulationError,
+    ComponentBisimulationIntentV1,
+    build_component_proof_plan_v1,
+    load_component_bisimulation_intent,
+)
+from ..components.bisimulation_refinement import (
+    build_typed_proof_service_thunk_renderer,
+    check_bisimulation_refinement,
+)
+from .portable_c_source_contracts import check_provider_source_contracts
+from .portable_c_relations import _checked_relation_boundary_operations
+from .portable_c_shared_contracts import prepare_provider_shared_contract, check_provider_shared_binding
+from ..components.bisimulation_shared_model import SHARED_CONTRACT_POLICY
+from ..components.bisimulation_local_views import has_local_views
+from .portable_c_postconditions import (
+    normal_exit_intent, checked_provider_postconditions, validate_provider_postconditions,
+    validate_provider_postcondition_request,
+)
+from ..components.bisimulation_readable_entry import checked_memory_summary_facts
 from ..components.component_c_v5 import render_component_c_headers_v5
-from ..components.interface_package_v5 import (
-    ComponentInterfaceIntentV1,
-    compile_component_interface_v5,
-)
-from ..components.interaction_contract import (
-    InteractionContractCatalogV1,
-    InteractionContractReceiptV1,
-    contract_type_matches,
-)
-from ..components.machine_overlay_v5 import render_component_machine_overlay_v5
-from ..components.normalized_component import (
-    NormalizedComponentContract,
-    NormalizedMachineBinding,
-)
+from ..components.machine_overlay_v5 import render_component_machine_overlay_v5, render_bound_proof_overlay
 from ..components.portable_object import compile_portable_component_objects
-from ..components.refinement import check_component_refinement
 from ..components.refinement_v5 import (
-    _check_inductive_refinement_v5,
     _compile_kernel_semantic_contract,
 )
-from ..components.relation_v5 import ComponentRelationIntentV1
+from ..components.contextual_bisimulation import (
+    build_contextual_refinement_v2,
+    operation_sources_from_package,
+    validate_contextual_refinement_v2,
+)
 from ..components.semantic_contract import load_transfer_v2_refinement_universe
-from ..components.semantic_path_operations import _nullable_same_origin_input
 from ..components.source import (
     component_operation_symbols,
     load_component_source_package,
@@ -49,159 +60,27 @@ from ..semantic_objects.object_authority import MachineObjectAuthorityV2
 from ..pe32.module_interface import Pe32ModuleInterfaceV2
 from ..transfer.plan import load_executable_transfer_plan
 from ..transfer.runtime_abi import exact_runtime_header
+from .exact_context import build_exact_context
 from ..util import sha256_file, write_json
 from .encapsulated_owned import check_encapsulated_owned_admission
-from .qualification_v2 import write_semantic_provider_qualification_v2
+from .portable_c_common import (
+    PortableCWorkPackageError,
+    fail as _fail,
+    load_json as _load_json,
+)
+from .portable_c_inputs import (
+    _checked_callback_projection_capabilities_v2,
+    _component_proof_world_v1,
+    _direct_component_view,
+    _direct_operation_rows,
+    _validate_exact_c_slice,
+)
+from .qualification_v2 import (
+    SemanticProviderQualificationV2,
+    SemanticProviderQualificationV2Error,
+    write_semantic_provider_qualification_v2,
+)
 from .slices_v2 import SemanticSliceV2
-
-
-class PortableCWorkPackageError(ValueError):
-    """A direct portable provider is stale or cannot be qualified."""
-
-
-def _fail(message: str) -> None:
-    raise PortableCWorkPackageError(message)
-
-
-def _load_json(path: Path, context: str) -> Mapping[str, Any]:
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        _fail(f"cannot read {context}: {exc}")
-    if not isinstance(value, Mapping):
-        _fail(f"{context} must be an object")
-    return value
-
-
-def _direct_component_view(
-    *,
-    binding_intent: Path,
-    interface_package: Path,
-    transfer_payload: Mapping[str, Any],
-    semantic_slice_sha256: str,
-) -> tuple[
-    object,
-    NormalizedComponentContract,
-    NormalizedMachineBinding,
-    ComponentMachineBindingIntentV1,
-]:
-    """Normalize V6 directly for the existing proof/overlay kernels."""
-
-    intent = ComponentInterfaceIntentV1.parse(
-        _load_json(
-            Path(interface_package) / "component-interface-intent-v1.json",
-            "component interface intent",
-        )
-    )
-    bundle = compile_component_interface_v5(intent)
-    binding_model = ComponentMachineBindingIntentV1.parse(
-        _load_json(
-            Path(binding_intent),
-            "component machine-binding intent",
-        )
-    )
-    if binding_model.component_id != bundle.interface.identity:
-        _fail("direct V6 binding names another component interface")
-
-    semantics = []
-    operation_authority: dict[str, Mapping[str, object]] = {}
-    for operation in binding_model.operations:
-        operation_id = operation.semantics.operation_id
-        semantics.append(operation.semantics)
-        operation_authority[operation_id] = {
-            "object_authority_selectors": list(
-                operation.authority["object_authority_selectors"]
-            ),
-            "pointer_views": list(operation.authority["pointer_views"]),
-            "service_ids": list(operation.semantics.service_ids),
-            "callback_ids": list(operation.semantics.callback_ids),
-            "outcome_protocol_ids": list(operation.semantics.outcome_protocol_ids),
-            # Relation and induction proofs are qualified by the direct proof
-            # phase, not imported from the retired machine-binding receipt.
-            "relation_receipt_sha256s": [],
-            "induction_evidence_sha256": operation.authority[
-                "induction_evidence_sha256"
-            ],
-        }
-    contract = NormalizedComponentContract.create(
-        interface=bundle.interface,
-        machine_semantics=semantics,
-    )
-    transfer_bindings = transfer_payload.get("bindings")
-    if not isinstance(transfer_bindings, Mapping):
-        _fail("transfer-plan bindings are malformed")
-    required = (
-        "pe_sha256",
-        "machine_ir_sha256",
-        "machine_ir_manifest_sha256",
-        "unit_inventory_sha256",
-    )
-    if any(not isinstance(transfer_bindings.get(key), str) for key in required):
-        _fail("transfer plan omits a component proof binding")
-    machine_binding = NormalizedMachineBinding.create(
-        bundle=bundle,
-        contract=contract,
-        artifacts={
-            "pe_sha256": str(transfer_bindings["pe_sha256"]),
-            "machine_ir_sha256": str(transfer_bindings["machine_ir_sha256"]),
-            "machine_ir_manifest_sha256": str(
-                transfer_bindings["machine_ir_manifest_sha256"]
-            ),
-            "unit_inventory_sha256": str(transfer_bindings["unit_inventory_sha256"]),
-            # These identities are internal normalization facts.  They bind
-            # the exact V6 ownership projection rather than reviving public
-            # structural-unit or component-inventory receipts.
-            "structural_units_sha256": canonical_sha256_v3(
-                [item.semantics.to_payload() for item in binding_model.operations]
-            ),
-            "component_unit_inventory_sha256": semantic_slice_sha256,
-        },
-        operation_authority=operation_authority,
-        blockers=[dict(item) for item in binding_model.blockers],
-    )
-    return bundle, contract, machine_binding, binding_model
-
-
-def _direct_operation_rows(
-    *,
-    binding: ComponentMachineBindingIntentV1,
-    semantic_slice: SemanticSliceV2,
-) -> list[dict[str, object]]:
-    definitions = {
-        str(row["symbol_id"]): str(row["definition_id"])
-        for row in semantic_slice.payload["definitions"]
-    }
-    result = []
-    for operation in binding.operations:
-        semantics = operation.semantics
-        definition_ids = []
-        for unit_id in semantics.unit_ids:
-            definition_id = definitions.get(f"original:function:{unit_id}")
-            if definition_id is None:
-                _fail("direct V6 semantic slice omits an owned transfer")
-            definition_ids.append(definition_id)
-        result.append(
-            {
-                "operation_id": semantics.operation_id,
-                "definition_ids": sorted(definition_ids),
-                "unit_ids": list(semantics.unit_ids),
-                "context_transfer_ids": list(semantics.transfer_ids),
-                "effect_ids": list(semantics.effect_ids),
-                "service_ids": list(semantics.service_ids),
-                "callback_ids": list(semantics.callback_ids),
-                "outcome_protocol_ids": list(semantics.outcome_protocol_ids),
-                "object_authority_selectors": list(
-                    operation.authority["object_authority_selectors"]
-                ),
-                "pointer_views": list(operation.authority["pointer_views"]),
-                "machine_projection": dict(semantics.machine_projection),
-            }
-        )
-    if {str(item) for row in result for item in row["definition_ids"]} != {
-        str(row["definition_id"]) for row in semantic_slice.payload["definitions"]
-    }:
-        _fail("direct V6 operation ownership is not slice-total")
-    return result
 
 
 def _has_callback_projection(
@@ -221,392 +100,30 @@ def _has_callback_projection(
     return any(contains(row["machine_projection"]) for row in operations)
 
 
-def _checked_callback_projection_capabilities_v2(
-    *,
+def _component_operation_provider_ids(
     operations: Sequence[Mapping[str, object]],
-    linked: LinkedSemanticModuleV2,
-    module_interface: Mapping[str, Any],
-) -> dict[str, Mapping[str, object]]:
-    """Validate constant callback projections against V2 semantic facts.
-
-    The overlay renderer still accepts its historical, address-free capability
-    lookup as an internal kernel input.  Build that lookup here from the V2
-    callback effect and admitted domain instead of importing V1's partial
-    code-capability registry.  The binding intent's authority ID is only a
-    local projection key; it grants no authority.
-    """
-
-    loader = module_interface.get("loader")
-    if not isinstance(loader, Mapping):
-        _fail("module interface loader geometry is malformed")
-    image_base = loader.get("preferred_base")
-    if (
-        not isinstance(image_base, int)
-        or isinstance(image_base, bool)
-        or image_base < 0
-        or image_base > 0xFFFFFFFF
-    ):
-        _fail("module interface preferred image base is malformed")
-    domains = {
-        str(row["domain_sha256"]): row
-        for row in linked.payload["admitted_domains"]
-        if isinstance(row, Mapping) and isinstance(row.get("domain_sha256"), str)
-    }
-    active_by_rva: dict[int, list[Mapping[str, Any]]] = {}
-    for raw in linked.payload["active_symbols"]:
-        if not isinstance(raw, Mapping):
-            _fail("linked semantic module active-symbol catalog is malformed")
-        rva = raw.get("original_rva")
-        if isinstance(rva, int) and not isinstance(rva, bool):
-            active_by_rva.setdefault(rva, []).append(raw)
-    effects = [
-        row
-        for row in linked.payload["effects"]["callbacks"]
-        if isinstance(row, Mapping)
-    ]
-    result: dict[str, Mapping[str, object]] = {}
+) -> set[str]:
+    result: set[str] = set()
     for operation in operations:
-        projection = operation["machine_projection"].get("operation")
+        projection = operation.get("machine_projection")
         if not isinstance(projection, Mapping):
-            _fail("V6 callback operation projection is malformed")
-        service_bindings = operation["machine_projection"].get("service_bindings")
-        if not isinstance(service_bindings, list):
-            _fail("V6 callback service bindings are malformed")
-        callback_services = []
-        for raw_binding in service_bindings:
+            _fail("V6 operation machine projection is malformed")
+        bindings = projection.get("service_bindings", [])
+        if not isinstance(bindings, list):
+            _fail("V6 service binding inventory is malformed")
+        for raw_binding in bindings:
             if not isinstance(raw_binding, Mapping):
-                _fail("V6 callback service binding is malformed")
+                _fail("V6 service binding is malformed")
             provider = raw_binding.get("provider")
-            if (
-                raw_binding.get("mediation") == "callback"
-                and isinstance(provider, Mapping)
-                and provider.get("kind") == "external_call"
-            ):
-                callback_services.append(provider)
-        parameters = projection.get("parameters")
-        if not isinstance(parameters, list):
-            _fail("V6 callback parameter projection is malformed")
-        for raw_parameter in parameters:
-            if not isinstance(raw_parameter, Mapping):
-                _fail("V6 callback parameter row is malformed")
-            callback = raw_parameter.get("projection")
-            if not isinstance(callback, Mapping) or callback.get("kind") != (
-                "callback_handle"
-            ):
+            if not isinstance(provider, Mapping):
+                _fail("V6 service provider is malformed")
+            if provider.get("kind") != "component_operation":
                 continue
-            authority_id = callback.get("authority_id")
-            protocol_id = callback.get("protocol_id")
-            source = callback.get("source")
-            if (
-                not isinstance(authority_id, str)
-                or not authority_id
-                or not isinstance(protocol_id, str)
-                or not protocol_id
-                or not isinstance(source, Mapping)
-                or source.get("kind") != "constant"
-                or source.get("width") != 32
-                or not isinstance(source.get("value"), int)
-                or isinstance(source.get("value"), bool)
-            ):
-                _fail("V6 callback projection is not an exact constant handle")
-            target_word = int(source["value"])
-            target_rva = target_word - image_base
-            if target_rva < 0 or target_rva > 0xFFFFFFFF:
-                _fail("V6 callback projection lies outside the logical image")
-            publication_effects = []
-            for provider in callback_services:
-                identity = provider.get("identity")
-                if not isinstance(identity, Mapping):
-                    _fail("V6 callback external identity is malformed")
-                provider_events = provider.get("events")
-                if (
-                    not isinstance(provider_events, list)
-                    or not provider_events
-                    or any(not isinstance(event, Mapping) for event in provider_events)
-                ):
-                    _fail("V6 callback external event inventory is malformed")
-                for event in provider_events:
-                    matches = []
-                    for effect in effects:
-                        external_identity = effect.get("external_identity")
-                        if (
-                            effect.get("source_transfer_id") == event.get("unit_id")
-                            and effect.get("call_id") == event.get("event_index")
-                            and effect.get("callback_protocol_id") == protocol_id
-                            and isinstance(external_identity, Mapping)
-                            and str(external_identity.get("dll", "")).lower()
-                            == str(identity.get("dll", "")).lower()
-                            and external_identity.get("symbol")
-                            == identity.get("symbol")
-                            and external_identity.get("ordinal")
-                            == identity.get("ordinal")
-                        ):
-                            matches.append(effect)
-                    if len(matches) != 1:
-                        _fail("V6 callback event has no unique V2 publication effect")
-                    publication_effects.extend(matches)
-            if not publication_effects:
-                _fail("V6 callback projection has no V2 publication effect")
-            for effect in publication_effects:
-                domain_reference = effect.get("admitted_domain")
-                if not isinstance(domain_reference, Mapping):
-                    _fail("V2 callback effect has no admitted domain")
-                domain = domains.get(str(domain_reference.get("domain_sha256")))
-                if (
-                    domain is None
-                    or domain.get("kind") != "checked_callback_transfer_entry_rvas"
-                    or domain.get("protocol_id") != protocol_id
-                    or target_rva not in domain.get("targets", [])
-                ):
-                    _fail("V6 callback target is outside its checked V2 domain")
-            targets = active_by_rva.get(target_rva, [])
-            if len(targets) != 1 or targets[0].get("kind") != "function":
-                _fail("V6 callback target is not unique active code")
-            lifetimes = {effect.get("lifetime") for effect in publication_effects}
-            if len(lifetimes) != 1:
-                _fail("V2 callback publication lifetimes disagree")
-            capability = {
-                "capability_id": authority_id,
-                "protocol_id": protocol_id,
-                "target_rva": target_rva,
-                "target_word": target_word,
-                "lifetime": next(iter(lifetimes)),
-            }
-            previous = result.get(authority_id)
-            if previous is not None and previous != capability:
-                _fail("V6 callback projection authority key is ambiguous")
-            result[authority_id] = capability
+            component_id = provider.get("component_id")
+            if not isinstance(component_id, str) or not component_id:
+                _fail("V6 component-operation provider identity is malformed")
+            result.add(component_id)
     return result
-
-
-def _interaction_expression(
-    value: Mapping[str, object],
-    *,
-    interaction_id: str,
-) -> dict[str, object]:
-    """Specialize one reviewed portable interaction expression."""
-
-    op = value.get("op")
-    if not isinstance(op, str) or not op:
-        _fail("reviewed interaction expression operation is malformed")
-    if op == "port":
-        direction = value.get("direction")
-        identity = value.get("id")
-        if (
-            direction not in {"input", "output"}
-            or not isinstance(identity, str)
-            or not identity
-        ):
-            _fail("reviewed interaction port expression is malformed")
-        return {
-            "op": "logical",
-            "args": [],
-            "attributes": {
-                "path": {
-                    "root": "interaction",
-                    "id": interaction_id,
-                    "fields": [direction, identity],
-                }
-            },
-        }
-    if op == "const":
-        return {
-            "op": "const",
-            "args": [],
-            "attributes": {
-                "value": value.get("value"),
-                "width": value.get("width"),
-            },
-        }
-    if op in {"true", "false"}:
-        return {"op": op, "args": [], "attributes": {}}
-    arguments = value.get("args")
-    if not isinstance(arguments, list) or any(
-        not isinstance(argument, Mapping) for argument in arguments
-    ):
-        _fail("reviewed interaction expression arguments are malformed")
-    return {
-        "op": op,
-        "args": [
-            _interaction_expression(argument, interaction_id=interaction_id)
-            for argument in arguments
-        ],
-        "attributes": {},
-    }
-
-
-def _checked_relation_boundary_operations(
-    *,
-    component_id: str,
-    bundle: object,
-    portable: object,
-    semantic_contract: Mapping[str, object],
-    relation_intent: Path | None,
-    interaction_contract_catalog: Path | None,
-) -> tuple[dict[str, Mapping[str, object]], list[Mapping[str, object]]]:
-    """Bind operator relation intent to unique reviewed provider contracts.
-
-    The intent requests a relation but grants no authority.  Authority comes
-    from a unique catalog contract matching the exact machine import and the
-    logical service types, followed by contextual CBMC refinement.
-    """
-
-    if relation_intent is None:
-        return {}, []
-    intent = ComponentRelationIntentV1.parse(
-        _load_json(
-            Path(relation_intent),
-            "component relation intent",
-        )
-    )
-    if (
-        intent.component_id != component_id
-        or intent.status != "ready_for_check"
-        or intent.blockers
-    ):
-        _fail("component relation intent is not ready for a checked proof")
-    if interaction_contract_catalog is None:
-        _fail("component relation proof requires an interaction catalog")
-    catalog = InteractionContractCatalogV1.parse(
-        _load_json(
-            Path(interaction_contract_catalog),
-            "interaction contract catalog",
-        )
-    )
-
-    operation_index = portable.operation_index()
-    service_index = {service.identity: service for service in portable.services}
-    type_index = portable.type_index()
-    semantic_services = {
-        str(row.get("service_id")): row
-        for row in semantic_contract.get("services", [])
-        if isinstance(row, Mapping)
-    }
-    boundary_operations: dict[str, Mapping[str, object]] = {}
-    evidence: list[Mapping[str, object]] = []
-    for operation in intent.operations:
-        operation_id = str(operation["operation_id"])
-        logical_operation = operation_index.get(operation_id)
-        if logical_operation is None:
-            _fail("relation intent names an unknown component operation")
-        parameter_ids = {item.identity for item in logical_operation.parameters}
-        interactions: list[dict[str, object]] = []
-        for requirement in operation["requirements"]:
-            if requirement["relation"] != "borrowed_interior_or_null":
-                _fail("direct relation proof kind is unsupported")
-            service_id = str(requirement["service_id"])
-            service = service_index.get(service_id)
-            semantic_service = semantic_services.get(service_id)
-            if service is None or semantic_service is None:
-                _fail("relation intent names an unbound component service")
-            if str(requirement["origin_parameter_id"]) not in parameter_ids:
-                _fail("relation intent origin is not an operation parameter")
-            if (
-                service.result_type_id is None
-                or requirement["result_value_id"] != "result"
-            ):
-                _fail("relation intent result does not name the service result")
-            provider = semantic_service.get("provider")
-            if not isinstance(provider, Mapping) or provider.get("kind") != (
-                "checked_external_call_events"
-            ):
-                _fail("relation proof currently requires a checked external service")
-            events = provider.get("events")
-            if (
-                not isinstance(events, list)
-                or len(events) != 1
-                or not isinstance(events[0], Mapping)
-            ):
-                _fail("relation service has no unique checked machine event")
-            event = events[0]
-            identity = event.get("identity")
-            if not isinstance(identity, Mapping):
-                _fail("relation service machine identity is malformed")
-
-            matches = []
-            for contract in catalog.contracts:
-                subject = contract.subject
-                if (
-                    subject.get("kind") != "external_import"
-                    or str(subject.get("dll", "")).lower()
-                    != str(identity.get("dll", "")).lower()
-                    or subject.get("symbol") != identity.get("symbol")
-                    or subject.get("ordinal") != identity.get("ordinal")
-                ):
-                    continue
-                patterns = {item.identity: item for item in contract.type_parameters}
-                matched_ports = True
-                for port in contract.ports:
-                    if port.direction == "input" and port.identity.startswith(
-                        "argument."
-                    ):
-                        suffix = port.identity.removeprefix("argument.")
-                        if not suffix.isdigit() or int(suffix) >= len(
-                            service.parameter_type_ids
-                        ):
-                            matched_ports = False
-                            break
-                        logical_type_id = service.parameter_type_ids[int(suffix)]
-                    elif port.direction == "output" and port.identity == "result":
-                        logical_type_id = service.result_type_id
-                    else:
-                        matched_ports = False
-                        break
-                    if logical_type_id is None or not contract_type_matches(
-                        patterns[port.type_parameter],
-                        type_index[logical_type_id],
-                        type_index,
-                    ):
-                        matched_ports = False
-                        break
-                if matched_ports:
-                    matches.append(contract)
-            if len(matches) != 1:
-                _fail("relation service has no unique reviewed interaction contract")
-            contract = matches[0]
-            receipt = InteractionContractReceiptV1.create(contract)
-            if not receipt.authorizing:
-                _fail("relation service interaction contract is not reviewed")
-            interaction_id = (
-                f"service:{service_id}:{event['unit_id']}:{event['event_index']}"
-            )
-            ensures = [
-                _interaction_expression(row, interaction_id=interaction_id)
-                for row in contract.ensures
-            ]
-            input_index = _nullable_same_origin_input(ensures, interaction_id)
-            if input_index is None:
-                _fail(
-                    "reviewed interaction contract omits the requested origin relation"
-                )
-            interactions.append(
-                {
-                    "id": interaction_id,
-                    "contract_id": contract.identity,
-                    "machine_event": {
-                        "unit_id": event["unit_id"],
-                        "event_index": event["event_index"],
-                        "event_sha256": event["event_sha256"],
-                    },
-                    "invoke_action": {"clause": {"ensures": ensures}},
-                }
-            )
-            evidence.append(
-                {
-                    "operation_id": operation_id,
-                    "requirement_id": requirement["id"],
-                    "service_id": service_id,
-                    "input_argument_index": input_index,
-                    "contract_id": contract.identity,
-                    "contract_sha256": contract.contract_sha256,
-                    "contract_receipt_sha256": receipt.receipt_sha256,
-                }
-            )
-        boundary_operations[operation_id] = {
-            "operation_id": operation_id,
-            "interactions": interactions,
-        }
-    return boundary_operations, evidence
 
 
 def write_portable_c_work_package_provider_v2(
@@ -629,15 +146,36 @@ def write_portable_c_work_package_provider_v2(
     generated_choices: Path | None = None,
     provider_entry_units: Mapping[str, str] | None = None,
     relation_intent: Path | None = None,
-    induction_intent: Path | None = None,
+    bisimulation_intent: Path | None = None,
+    exact_c_slice: Path | None = None,
     provider_components: Mapping[str, Mapping[str, Path]] | None = None,
     provenance_artifacts: Mapping[str, Path] | None = None,
     interaction_contract_catalog: Path | None = None,
     timeout_seconds: int = 300,
+    source_entry_timeout_seconds: int | None = None,
+    source_summary_workspace: Path | None = None,
+    proof_workspace: Path | None = None, previous_query_evidence: Path | None = None,
+    shared_source_contract_artifacts: Path | None = None,
+    smt_solver: Path | None = None,
+    runtime_assurance: Mapping[str, object] | None = None,
+    selected_obligations: list[dict[str, str]] | None = None,
 ) -> dict[str, Path]:
     """Prove, compile, and qualify one direct V6 portable component."""
-
+    from ..components.bisimulation_assurance import checked_implemented_runtime_assurance
+    runtime_assurance = checked_implemented_runtime_assurance(runtime_assurance)
+    if source_entry_timeout_seconds is not None and (
+            type(source_entry_timeout_seconds) is not int or source_entry_timeout_seconds <= 0
+            or runtime_assurance is None):
+        _fail('entry query timeout requires a positive integer and explicit conditional assurance')
+    from ..components.conditional_check_result import checked_obligation_selection
+    selected_obligations = checked_obligation_selection(selected_obligations)
+    if selected_obligations is not None and runtime_assurance is None:
+        _fail('focused region checks require explicit conditional assurance')
     output = Path(out)
+    if runtime_assurance is not None and any((output / name).exists() for name in (
+            "semantic-provider-qualification.json", "provider-object-manifest.json",
+            "definition-choices.json", "implementation-choices.json")):
+        _fail("conditional check output contains activation artifacts")
     output.mkdir(parents=True, exist_ok=True)
     if proof_classification not in {"machine_overlay", "encapsulated_owned"}:
         _fail("direct portable provider proof classification is unsupported")
@@ -674,6 +212,14 @@ def write_portable_c_work_package_provider_v2(
         or module_interface["identity"]["pe_sha256"] != transfer_bindings["pe_sha256"]
     ):
         _fail("component proof image/object bindings name another module")
+    producer_inputs = None
+    if any(rule.locator.kind == "external_allocation" for rule in authority.rules):
+        producer_inputs = allocation_producer_inputs(authority=authority, transfers=transfers,
+            resolved_environment=_load_json(Path(resolved_external_environment), "resolved external environment"),
+            transfer_plan=transfer_payload, module_interface=module_interface)
+        write_json(output / "allocation-producer-inputs.json", producer_inputs)
+    allocation_requirements = (None if producer_inputs is None else sorted(
+        [row['class_requirement'] for row in producer_inputs['classes']], key=lambda row: row['authority']['id']))
     loader = module_interface["loader"]
     machine_image = {
         "image_size": loader["image_size"],
@@ -687,8 +233,9 @@ def write_portable_c_work_package_provider_v2(
         transfer_payload=transfer_payload,
         semantic_slice_sha256=semantic_slice_model.identity,
     )
-    if contract.status != "checked" or binding.status != "checked":
-        _fail("V6 work package is not statically complete")
+    from .portable_c_inputs import pending_local_check_requirements
+    pending_requirements = pending_local_check_requirements(bundle=bundle, contract=contract,
+        binding=binding, binding_model=binding_model, runtime_assurance=runtime_assurance)
     operations = _direct_operation_rows(
         binding=binding_model,
         semantic_slice=semantic_slice_model,
@@ -710,6 +257,9 @@ def write_portable_c_work_package_provider_v2(
             _fail("portable provider provenance artifact is not a file")
         provenance_sha256s[artifact_id] = sha256_file(path)
     qualification_input = {
+        **({'selected_obligations': selected_obligations} if selected_obligations is not None else {}),
+        **({"boundary_requirements": pending_requirements} if pending_requirements else {}),
+        **({"runtime_assurance": runtime_assurance} if runtime_assurance is not None else {}),
         "component_id": component_id,
         "proof_classification": proof_classification,
         "semantic_slice_sha256": semantic_slice_model.identity,
@@ -719,16 +269,31 @@ def write_portable_c_work_package_provider_v2(
         "executable_transfer_plan_sha256": sha256_file(transfer_path),
         "module_interface_sha256": module_interface["interface_sha256"],
         "provenance_artifact_sha256s": provenance_sha256s,
-        "induction_intent_sha256": (
-            None if induction_intent is None else sha256_file(Path(induction_intent))
+        "bisimulation_intent_sha256": (
+            None
+            if bisimulation_intent is None
+            else sha256_file(Path(bisimulation_intent))
+        ),
+        "exact_c_slice_manifest_sha256": (
+            None if exact_c_slice is None else sha256_file(Path(exact_c_slice))
         ),
     }
+    requested_postconditions = (None if relation_intent is None else normal_exit_intent(
+        _load_json(Path(relation_intent), "component relation intent"), bundle=bundle))
+    if requested_postconditions is not None:
+        qualification_input["normal_exit_relation_intent_sha256"] = requested_postconditions.intent_sha256
+    if shared_source_contract_artifacts is not None:
+        qualification_input["shared_source_contract_file_sha256"] = sha256_file(
+            Path(shared_source_contract_artifacts) / "local-contract-result.json")
+    if producer_inputs is not None:
+        qualification_input["allocation_producer_inputs_sha256"] = producer_inputs["producer_inputs_sha256"]
     has_callback_projection = _has_callback_projection(operations)
     needs_linked_module = (
         proof_classification == "encapsulated_owned" or has_callback_projection
+        or any(row["machine_projection"].get("operation", {}).get("continuation_unit_ids") for row in operations)
     )
     if needs_linked_module and linked_semantic_module is None:
-        _fail("direct portable provider requires linked callback/ownership facts")
+        _fail("direct portable provider requires linked callback/ownership/context facts")
     linked = (
         None
         if linked_semantic_module is None
@@ -751,48 +316,23 @@ def write_portable_c_work_package_provider_v2(
     source = load_component_source_package(source_root)
     if source.get("lift_unit_id") != component_id:
         _fail("component source package binds another V6 component")
+    if runtime_assurance is not None:
+        qualification_input["implementation_sha256"] = source["implementation_sha256"]
     symbols = component_operation_symbols(source)
     if set(symbols) != {str(row["operation_id"]) for row in operations}:
         _fail("component source symbols disagree with the V6 binding")
 
     provider_entries = dict(provider_entry_units or {})
-    referenced_provider_ids: set[str] = set()
-    for operation in operations:
-        for raw_binding in operation["machine_projection"].get("service_bindings", []):
-            if not isinstance(raw_binding, Mapping):
-                _fail("V6 service binding is malformed")
-            provider = raw_binding.get("provider")
-            if (
-                isinstance(provider, Mapping)
-                and provider.get("kind") == "component_operation"
-            ):
-                referenced_component_id = provider.get("component_id")
-                if (
-                    not isinstance(referenced_component_id, str)
-                    or not referenced_component_id
-                ):
-                    _fail("V6 component-operation provider identity is malformed")
-                referenced_provider_ids.add(referenced_component_id)
-    missing_provider_ids = sorted(referenced_provider_ids - set(provider_entries))
-    if missing_provider_ids:
-        _fail(
-            "V6 component-operation provider entries are missing: "
-            + repr(missing_provider_ids)
-        )
+    direct_provider_ids = _component_operation_provider_ids(operations)
     provider_paths = dict(provider_components or {})
-    missing_provider_views = sorted(referenced_provider_ids - set(provider_paths))
-    if missing_provider_views:
-        _fail(
-            "V6 component-operation provider views are missing: "
-            + repr(missing_provider_views)
-        )
-    provider_views: dict[
-        str,
-        tuple[object, NormalizedComponentContract, NormalizedMachineBinding],
-    ] = {}
+    if component_id in provider_paths:
+        _fail("V6 connected-provider closure repeats the root component")
+    provider_proof_inputs: dict[str, dict[str, object]] = {}
+    provider_edges: dict[str, set[str]] = {}
     provider_transfer_ids: set[str] = set()
     provider_view_bindings: dict[str, Mapping[str, str]] = {}
-    for referenced_component_id in sorted(referenced_provider_ids):
+    exact_dependency_components: dict[str, Mapping[str, object]] = {}
+    for referenced_component_id in sorted(provider_paths):
         paths = provider_paths[referenced_component_id]
         provider_slice = SemanticSliceV2.parse(
             _load_json(
@@ -817,11 +357,192 @@ def write_portable_c_work_package_provider_v2(
             or provider_binding.status != "checked"
         ):
             _fail("V6 component-operation provider view is incomplete")
-        provider_views[referenced_component_id] = (
-            provider_bundle,
-            provider_contract,
-            provider_binding,
+        provider_operations = _direct_operation_rows(
+            binding=provider_binding_model,
+            semantic_slice=provider_slice,
         )
+        provider_edges[referenced_component_id] = _component_operation_provider_ids(
+            provider_operations
+        )
+        provider_source_root = Path(paths["source_package"])
+        provider_source = load_component_source_package(provider_source_root)
+        provider_symbols = component_operation_symbols(provider_source)
+        if provider_source.get("lift_unit_id") != referenced_component_id or set(
+            provider_symbols
+        ) != {str(row["operation_id"]) for row in provider_operations}:
+            _fail("V6 connected-provider source package is stale")
+        provider_profile = check_component_source_profile(package=provider_source_root)
+        if "conditional_refinement" in paths:
+            from .portable_c_conditional_supplier import load_conditional_supplier
+            provider_proof_inputs[referenced_component_id] = load_conditional_supplier(
+                paths=paths, component_id=referenced_component_id, parent_assurance=runtime_assurance,
+                bundle=provider_bundle, contract=provider_contract, binding=provider_binding,
+                binding_model=provider_binding_model, operations=provider_operations,
+                source_root=provider_source_root, source=provider_source, symbols=provider_symbols,
+                profile=provider_profile, slice_id=provider_slice.identity,
+                transfer_plan_sha256=sha256_file(transfer_path))
+        else:
+            try:
+                provider_qualification = SemanticProviderQualificationV2.load(
+                    Path(paths["qualification"])
+                )
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                SemanticProviderQualificationV2Error,
+            ) as exc:
+                _fail(f"V6 connected-provider qualification is invalid: {exc}")
+            provider_contextual = _load_json(
+                Path(paths["contextual_refinement"]),
+                f"V6 provider {referenced_component_id} contextual refinement",
+            )
+            provider_proof = provider_contextual.get("proof")
+            if not isinstance(provider_proof, Mapping):
+                _fail("V6 connected-provider contextual proof is missing")
+            provider_proof_core = dict(provider_proof)
+            provider_proof_sha256 = provider_proof_core.pop("receipt_sha256", None)
+            provider_facets = {
+                str(row.get("name")): str(row.get("status"))
+                for row in provider_qualification.payload.get("facets", [])
+                if isinstance(row, Mapping)
+            }
+            provider_proof_bindings = provider_proof.get("bindings")
+            provider_root = Path(paths["contextual_refinement"]).parent
+            provider_proof_plan = _load_json(
+                provider_root / "component-proof-plan-v1.json",
+                f"V6 provider {referenced_component_id} proof plan",
+            )
+            provider_exact_slice = _load_json(
+                provider_root / "exact-c" / "component-exact-c-slice-v1.json",
+                f"V6 provider {referenced_component_id} exact-C slice",
+            )
+            provider_contextual_input = provider_contextual.get("qualification_input")
+            provider_contextual_input_sha256 = provider_contextual.get(
+                "qualification_input_sha256"
+            )
+            provider_plan_bindings = provider_proof_plan.get("bindings")
+            provider_checker = provider_proof.get("checker")
+            provider_models = provider_proof.get("models")
+            provider_dependencies = set(provider_qualification.payload["dependencies"])
+            provider_refinement_receipt = provider_contextual.get("receipt_sha256")
+            if (
+                not isinstance(provider_contextual_input, Mapping)
+                or provider_contextual_input_sha256
+                != canonical_sha256_v3(provider_contextual_input)
+                or not isinstance(provider_plan_bindings, Mapping)
+                or not isinstance(provider_checker, Mapping)
+                or not isinstance(provider_models, Mapping)
+                or provider_contextual.get("proof_plan") != provider_proof_plan
+                or provider_contextual.get("exact_c_slice") != provider_exact_slice
+                or provider_contextual.get("source_package_sha256")
+                != provider_source.get("implementation_sha256")
+                or provider_contextual_input.get("component_id") != referenced_component_id
+                or provider_contextual_input.get("semantic_slice_sha256")
+                != provider_slice.identity
+                or provider_contextual_input.get("binding_intent_sha256")
+                != provider_binding_model.intent_sha256
+                or provider_contextual_input.get("interface_sha256")
+                != provider_bundle.interface.interface_sha256
+                or provider_contextual_input.get("executable_transfer_plan_sha256")
+                != sha256_file(transfer_path)
+                or f"contextual-refinement:{provider_refinement_receipt}"
+                not in provider_dependencies
+                or f"component-proof-plan:{provider_proof_plan.get('plan_sha256')}"
+                not in provider_dependencies
+                or "component-exact-c-slice:"
+                + str(provider_exact_slice.get("slice_sha256"))
+                not in provider_dependencies
+                or provider_refinement_receipt
+                != canonical_sha256_v3(
+                    {
+                        "qualification_input_sha256": provider_contextual_input_sha256,
+                        "source_package_sha256": provider_source["implementation_sha256"],
+                        "semantic_contract_sha256": provider_plan_bindings.get(
+                            "semantic_contract_sha256"
+                        ),
+                        "cbmc_sha256": provider_checker.get("cbmc_sha256"),
+                        "proof": provider_proof,
+                        "relation_evidence": provider_contextual.get("relation_evidence"),
+                        **({"normal_exit_postconditions": provider_contextual["normal_exit_postconditions"]}
+                           if "normal_exit_postconditions" in provider_contextual else {}),
+                        "proof_plan_sha256": provider_proof_plan.get("plan_sha256"),
+                        "exact_c_slice_sha256": provider_exact_slice.get("slice_sha256"),
+                    }
+                )
+            ):
+                _fail("V6 connected-provider wrapper or dependency binding is stale")
+            try:
+                validate_contextual_refinement_v2(
+                    provider_proof,
+                    proof_plan=provider_proof_plan,
+                    exact_c_slice=provider_exact_slice,
+                    implementation_sha256=str(provider_source["implementation_sha256"]),
+                )
+            except ComponentBisimulationError as exc:
+                _fail(f"V6 connected-provider contextual proof is invalid: {exc}")
+            try:
+                validate_provider_postcondition_request(provider_contextual.get("normal_exit_postconditions"),
+                    requested_sha256=provider_contextual_input.get("normal_exit_relation_intent_sha256"))
+            except ValueError as error:
+                _fail(str(error))
+            shared_source_requested = provider_contextual_input.get("shared_source_contract_file_sha256")
+            shared_source_bound = provider_models.get("source_summary_contracts", {}).get("certificate", {}).get("policy") == SHARED_CONTRACT_POLICY
+            if (shared_source_requested is not None) != shared_source_bound:
+                _fail("V6 shared source contract and qualification request disagree")
+            if (
+                provider_qualification.payload.get("status") != "complete"
+                or provider_qualification.provider_kind != "qualified_portable_c"
+                or provider_qualification.semantic_slice.identity != provider_slice.identity
+                or provider_contextual.get("status") != "satisfied"
+                or provider_proof.get("status") != "satisfied"
+                or provider_proof.get("activation_authorized") is not True
+                or provider_proof_sha256 != canonical_sha256_v3(provider_proof_core)
+                or not isinstance(provider_proof_bindings, Mapping)
+                or provider_proof_bindings.get("implementation_sha256")
+                != provider_source.get("implementation_sha256")
+                or provider_facets.get("bisimulation") != "checked"
+                or provider_facets.get("contextual_refinement") != "checked"
+            ):
+                _fail("V6 connected-provider proof summary is incomplete or stale")
+            provider_classification = str(
+                paths.get("proof_classification", "machine_overlay")
+            )
+            if provider_classification not in {
+                "machine_overlay",
+                "encapsulated_owned",
+            }:
+                _fail("V6 connected-provider proof classification is unsupported")
+            provider_proof_inputs[referenced_component_id] = {
+                "bundle": provider_bundle,
+                "contract": provider_contract,
+                "binding": provider_binding,
+                "binding_model": provider_binding_model,
+                "operations": provider_operations,
+                "source_root": provider_source_root,
+                "source": provider_source,
+                "symbols": provider_symbols,
+                "source_profile": provider_profile,
+                "qualification_sha256": provider_qualification.identity,
+                "contextual_refinement_sha256": str(
+                    provider_contextual.get("receipt_sha256", "")
+                ),
+                "proof_receipt_sha256": str(provider_proof_sha256),
+                "proof_classification": provider_classification,
+                "proof_machine_overlay_sha256": provider_models["machine_overlay_sha256"],
+                "proof_overlay_sha256": provider_models["proof_overlay_sha256"],
+                "trusted_adapter_lowering": provider_models.get("trusted_adapter_lowering"),
+                "relation_evidence": provider_contextual.get("relation_evidence", []),
+                "normal_exit_postconditions": provider_contextual.get("normal_exit_postconditions"),
+                "shared_source_contract_file_sha256": shared_source_requested,
+                "source_summary_contracts": provider_models.get("source_summary_contracts"),
+                "proof_system": {key: provider_contextual[key] for key in ("proof", "proof_plan", "exact_c_slice")},
+                "binding_intent": provider_binding_model.to_payload(),
+                "proof_artifacts": Path(paths["contextual_refinement"]).parent / "proof-diagnostics",
+                "source_summary_artifacts": Path(paths["contextual_refinement"]).parent / "source-summary-contracts",
+                **checked_memory_summary_facts(provider_proof,
+                    artifacts=Path(paths["contextual_refinement"]).parent / "proof-diagnostics"),
+            }
         provider_transfer_ids.update(
             unit_id
             for operation in provider_binding_model.operations
@@ -831,13 +552,83 @@ def write_portable_c_work_package_provider_v2(
             "semantic_slice_sha256": provider_slice.identity,
             "binding_intent_sha256": provider_binding_model.intent_sha256,
             "interface_sha256": provider_bundle.interface.interface_sha256,
+            "source_implementation_sha256": str(
+                provider_source["implementation_sha256"]
+            ),
+            "source_profile_sha256": str(provider_profile["receipt_sha256"]),
+            "qualification_sha256": provider_proof_inputs[referenced_component_id]["qualification_sha256"],
+            "contextual_refinement_sha256": provider_proof_inputs[referenced_component_id]["contextual_refinement_sha256"],
+            "proof_receipt_sha256": provider_proof_inputs[referenced_component_id]["proof_receipt_sha256"],
+            "proof_classification": provider_proof_inputs[referenced_component_id]["proof_classification"],
+            **({"assurance": provider_proof_inputs[referenced_component_id]["assurance"]}
+               if "assurance" in provider_proof_inputs[referenced_component_id] else {}),
         }
+        exact_dependency_components[referenced_component_id] = {
+            "binding_intent_sha256": provider_binding_model.intent_sha256,
+            "unit_ids": sorted(
+                {
+                    unit_id
+                    for operation in provider_binding_model.operations
+                    for unit_id in operation.semantics.transfer_ids
+                }
+            ),
+            "entry_rvas": sorted(
+                {
+                    rva
+                    for operation in provider_binding_model.operations
+                    for rva in operation.semantics.entry_rvas
+                }
+            ),
+            "operations": [
+                {
+                    "unit_ids": list(operation.semantics.transfer_ids),
+                    "entry_rvas": list(operation.semantics.entry_rvas),
+                }
+                for operation in provider_binding_model.operations
+            ],
+        }
+    reachable_provider_ids: set[str] = set()
+    frontier = set(direct_provider_ids)
+    while frontier:
+        candidate = frontier.pop()
+        if candidate == component_id or candidate in reachable_provider_ids:
+            continue
+        reachable_provider_ids.add(candidate)
+        frontier.update(provider_edges.get(candidate, set()))
+    missing_provider_views = sorted(reachable_provider_ids - set(provider_paths))
+    if missing_provider_views:
+        _fail(
+            "V6 connected-provider closure is missing components: "
+            + repr(missing_provider_views)
+        )
+    unused_provider_views = sorted(set(provider_paths) - reachable_provider_ids)
+    if unused_provider_views:
+        _fail(
+            "V6 connected-provider closure has unreachable components: "
+            + repr(unused_provider_views)
+        )
+    missing_provider_ids = sorted(
+        (reachable_provider_ids | direct_provider_ids) - set(provider_entries)
+    )
+    if missing_provider_ids:
+        _fail(
+            "V6 component-operation provider entries are missing: "
+            + repr(missing_provider_ids)
+        )
+    if linked is None and any(
+        str(provider_proof_inputs[item]["proof_classification"]) == "encapsulated_owned"
+        or _has_callback_projection(
+            provider_proof_inputs[item]["operations"]  # type: ignore[arg-type]
+        )
+        for item in reachable_provider_ids
+    ):
+        _fail("V6 connected-provider closure requires linked callback/ownership facts")
     qualification_input["provider_components"] = provider_view_bindings
     qualification_input_sha256 = canonical_sha256_v3(qualification_input)
     required_transfer_ids = sorted(
         {str(unit_id) for row in operations for unit_id in row["context_transfer_ids"]}
         | provider_transfer_ids
-        | {provider_entries[component_id] for component_id in referenced_provider_ids}
+        | {provider_entries[item] for item in reachable_provider_ids}
     )
     transfer_universe = load_transfer_v2_refinement_universe(
         transfer_plan=transfer_path,
@@ -852,15 +643,13 @@ def write_portable_c_work_package_provider_v2(
             finite_control_routes=transfer_payload["finite_control_routes"],
             resolved_external_environment=Path(resolved_external_environment),
             provider_entry_units={
-                component_id: provider_entries[component_id]
-                for component_id in sorted(referenced_provider_ids)
+                provider_component_id: provider_entries[provider_component_id]
+                for provider_component_id in sorted(direct_provider_ids)
             },
             machine_image=machine_image,
         )
     )
-    if induction_intent is not None and relation_intent is not None:
-        _fail("direct inductive relation composition is not yet supported")
-    boundary_operations, relation_evidence = _checked_relation_boundary_operations(
+    _boundary_operations, relation_evidence = _checked_relation_boundary_operations(
         component_id=component_id,
         bundle=bundle,
         portable=portable,
@@ -869,51 +658,473 @@ def write_portable_c_work_package_provider_v2(
         interaction_contract_catalog=interaction_contract_catalog,
     )
     source_profile = check_component_source_profile(package=source_root)
-    induction_facet = None
-    induction_receipt = None
-    induction_source_plan = None
-    if induction_intent is None:
-        proof = check_component_refinement(
-            semantic_contract=semantic_contract,
-            interface=portable_payload,
-            source_package=source_root,
-            source_profile=source_profile,
-            cbmc=Path(cbmc),
-            boundary_operations=boundary_operations,
-            c_headers=render_component_c_headers_v5(bundle, symbols),
-            timeout_seconds=timeout_seconds,
+    resolved = _load_json(
+        Path(resolved_external_environment),
+        "resolved external environment",
+    )
+    callback_capabilities: dict[str, Mapping[str, object]] = {}
+    if has_callback_projection:
+        assert linked is not None and linked_semantic_module is not None
+        module_interface = _load_json(
+            Path(linked_semantic_module).parent / "module-interface.json",
+            "linked module interface",
         )
-    else:
-        (
-            proof,
-            induction_facet,
-            induction_receipt,
-            induction_source_plan,
-        ) = _check_inductive_refinement_v5(
+        callback_capabilities = _checked_callback_projection_capabilities_v2(
+            operations=operations,
+            linked=linked,
+            module_interface=module_interface,
+        )
+    authored_bisimulation = (
+        ComponentBisimulationIntentV1.create(
+            component_id=component_id,
+            operations=[{"operation_id": operation_id, "syncs": []}
+                        for operation_id in sorted(symbols)],
+        ) if bisimulation_intent is None
+        else load_component_bisimulation_intent(Path(bisimulation_intent))
+    )
+    overlay = render_component_machine_overlay_v5(
+        bundle=bundle,
+        contract=contract,
+        operation_symbols=symbols,
+        transfers=transfers,
+        machine_binding=binding,
+        object_authority_rule_ids=[item.identity for item in authority.rules],
+        resolved_external_environment=resolved,
+        code_capabilities=callback_capabilities,
+        proof_classification=proof_classification,
+    )
+    proof_service_bindings = [
+        binding
+        for entry in overlay.entries
+        for binding in entry.get("service_bindings", [])
+        if isinstance(binding, Mapping)
+    ]
+    typed_proof_service_bindings = [
+        binding
+        for binding in proof_service_bindings
+        if binding.get("provider_kind") in {"external_call", "interface_method"}
+    ]
+    proof_overlay = overlay
+    if typed_proof_service_bindings:
+        proof_overlay = render_component_machine_overlay_v5(
+            emit_proof_local_view_codec=any(has_local_views(op) for op in authored_bisimulation.operations),
             bundle=bundle,
             contract=contract,
+            operation_symbols=symbols,
+            transfers=transfers,
             machine_binding=binding,
-            portable_payload=portable_payload,
-            portable=portable,
-            semantic_contract=semantic_contract,
-            service_rows=service_rows,
-            source_package=source_root,
-            source_profile=source_profile,
-            declaration_path=Path(induction_intent),
+            object_authority_rule_ids=[item.identity for item in authority.rules],
+            resolved_external_environment=resolved,
+            code_capabilities=callback_capabilities,
+            proof_classification=proof_classification,
+            external_service_thunk_renderer=(
+                build_typed_proof_service_thunk_renderer(
+                    interface=portable,
+                    service_bindings=proof_service_bindings,
+                    relation_evidence=relation_evidence,
+                    reference_authority=authority.to_payload(), allocation_requirements=allocation_requirements,
+                )
+            ),
+        )
+        if proof_overlay.entries != overlay.entries:
+            _fail("trusted proof-overlay lowering changed checked overlay metadata")
+        if proof_overlay.source == overlay.source:
+            _fail("trusted proof-overlay lowering did not change typed adapters")
+    connected_proof_components: list[dict[str, object]] = []
+    for provider_component_id in sorted(reachable_provider_ids):
+        provider_input = provider_proof_inputs[provider_component_id]
+        provider_operations = provider_input["operations"]
+        provider_callback_capabilities: dict[str, Mapping[str, object]] = {}
+        if _has_callback_projection(provider_operations):  # type: ignore[arg-type]
+            assert linked is not None and linked_semantic_module is not None
+            provider_callback_capabilities = (
+                _checked_callback_projection_capabilities_v2(
+                    operations=provider_operations,  # type: ignore[arg-type]
+                    linked=linked,
+                    module_interface=_load_json(
+                        Path(linked_semantic_module).parent / "module-interface.json",
+                        "linked module interface",
+                    ),
+                )
+            )
+        provider_overlay = render_component_machine_overlay_v5(
+            bundle=provider_input["bundle"],
+            contract=provider_input["contract"],  # type: ignore[arg-type]
+            operation_symbols=provider_input["symbols"],  # type: ignore[arg-type]
+            transfers=transfers,
+            machine_binding=provider_input["binding"],  # type: ignore[arg-type]
+            object_authority_rule_ids=[item.identity for item in authority.rules],
+            resolved_external_environment=resolved,
+            code_capabilities=provider_callback_capabilities,
+            proof_classification=str(provider_input["proof_classification"]),
+        )
+        _, provider_portable, _, _ = _compile_kernel_semantic_contract(
+            bundle=provider_input["bundle"],  # type: ignore[arg-type]
+            contract=provider_input["contract"],  # type: ignore[arg-type]
+            machine_binding=provider_input["binding"],  # type: ignore[arg-type]
             transfer_universe=transfer_universe,
             finite_control_routes=transfer_payload["finite_control_routes"],
-            cbmc=Path(cbmc),
-            provider_entry_units=provider_entries,
-            provider_components={},
-            provider_views=provider_views,
             resolved_external_environment=Path(resolved_external_environment),
-            timeout_seconds=timeout_seconds,
+            provider_entry_units={
+                dependency_id: provider_entries[dependency_id]
+                for dependency_id in sorted(
+                    provider_edges.get(provider_component_id, set())
+                )
+            },
+            machine_image=machine_image,
         )
-        write_json(
-            output / "induction-source-plan-v1.json",
-            induction_source_plan,
+        provider_service_bindings = [
+            service_binding
+            for entry in provider_overlay.entries
+            for service_binding in entry.get("service_bindings", [])
+            if isinstance(service_binding, Mapping)
+        ]
+        provider_proof_overlay = provider_overlay
+        if provider_input["trusted_adapter_lowering"] is not None:
+            provider_proof_overlay = render_bound_proof_overlay(
+                expected_sha256=provider_input["proof_overlay_sha256"],
+                requires_local_view_codec=any("local_view_cut_policy" in op
+                    for op in provider_input["proof_system"]["proof"]["models"]["operation_models"]),
+                bundle=provider_input["bundle"],  # type: ignore[arg-type]
+                contract=provider_input["contract"],  # type: ignore[arg-type]
+                operation_symbols=provider_input["symbols"],  # type: ignore[arg-type]
+                transfers=transfers,
+                machine_binding=provider_input["binding"],  # type: ignore[arg-type]
+                object_authority_rule_ids=[item.identity for item in authority.rules],
+                resolved_external_environment=resolved,
+                code_capabilities=provider_callback_capabilities,
+                proof_classification=str(provider_input["proof_classification"]),
+                external_service_thunk_renderer=(
+                    build_typed_proof_service_thunk_renderer(
+                        interface=provider_portable,
+                        service_bindings=provider_service_bindings,
+                        relation_evidence=provider_input["relation_evidence"],  # type: ignore[arg-type]
+                        reference_authority=provider_input["proof_system"]["proof"]["models"]["reference_authority"],
+                        allocation_requirements=provider_input["proof_system"]["proof"]["models"].get("reference_allocation_requirements"),
+                    )
+                ),
+            )
+            if provider_proof_overlay.entries != provider_overlay.entries:
+                _fail("V6 connected-provider proof lowering changed overlay metadata")
+        if (
+            hashlib.sha256(provider_overlay.source.encode("ascii")).hexdigest()
+            != (provider_input["proof_machine_overlay_sha256"])
+        ):
+            _fail("V6 connected-provider proof names a different machine overlay")
+        if (
+            hashlib.sha256(provider_proof_overlay.source.encode("ascii")).hexdigest()
+            != provider_input["proof_overlay_sha256"]
+        ):
+            _fail("V6 connected-provider proof names a different proof overlay")
+        if "conditional_postcondition_intent" in provider_input:
+            provider_input["normal_exit_postconditions"] = checked_provider_postconditions(
+                intent=provider_input["conditional_postcondition_intent"], bundle=provider_input["bundle"],
+                binding=provider_input["binding_model"], proof_system=provider_input["proof_system"],
+                transfers=transfers, machine_binding=provider_input["binding"], operation_symbols=provider_input["symbols"],
+                resolved_external_environment=resolved, relation_evidence=provider_input["relation_evidence"],
+                source_summary_artifacts=provider_input["source_summary_artifacts"], runtime_assurance=provider_input["assurance"])
+        if provider_input["normal_exit_postconditions"] is not None:
+            try:
+                validate_provider_postconditions(provider_input["normal_exit_postconditions"],
+                    bundle=provider_input["bundle"], binding=provider_input["binding_model"],
+                    proof_system=provider_input["proof_system"], transfers=transfers,
+                    machine_binding=provider_input["binding"], operation_symbols=provider_input["symbols"],
+                    resolved_external_environment=resolved, relation_evidence=provider_input["relation_evidence"],
+                    source_summary_artifacts=provider_input["source_summary_artifacts"], runtime_assurance=provider_input.get("assurance"))
+            except ValueError as error:
+                _fail(str(error))
+        if provider_input["shared_source_contract_file_sha256"] is not None:
+            try:
+                requested = normal_exit_intent(provider_input["normal_exit_postconditions"]["intent"], bundle=provider_input["bundle"])
+                certificate = prepare_provider_shared_contract(
+                    artifacts=provider_input["source_summary_artifacts"], bundle=provider_input["bundle"],
+                    source=provider_input["source"], source_profile_sha256=provider_input["source_profile"]["receipt_sha256"],
+                    symbols=provider_input["symbols"], intent=requested, service_bindings=provider_service_bindings,
+                    connected_components=provider_input["proof_system"]["proof"]["models"]["connected_components"],
+                    expected_file_sha256=provider_input["shared_source_contract_file_sha256"])
+                if certificate != provider_input["source_summary_contracts"]["certificate"]:
+                    _fail("V6 shared source contract differs from its paired proof")
+                check_provider_shared_binding(certificate=certificate,
+                    artifacts=provider_input["source_summary_artifacts"], proof_artifacts=provider_input["proof_artifacts"],
+                    normal_exit_inputs=dict(intent=requested, bundle=provider_input["bundle"], binding=provider_input["binding_model"],
+                        proof_system=provider_input["proof_system"], transfers=transfers, machine_binding=provider_input["binding"],
+                        operation_symbols=provider_input["symbols"], resolved_external_environment=resolved,
+                        runtime_assurance=provider_input.get("assurance")))
+            except (ValueError, TypeError, KeyError) as error:
+                _fail(str(error))
+        connected_proof_components.append(
+            {
+                "component_id": provider_component_id,
+                **({"assurance": provider_input["assurance"], "authorizing": False} if "assurance" in provider_input else {}),
+                "compiled_interface": provider_input["bundle"],
+                "operation_symbols": provider_input["symbols"],
+                "source_package": provider_input["source_root"],
+                "source_profile": provider_input["source_profile"],
+                "machine_overlay_source": provider_overlay.source,
+                "trusted_proof_overlay_source": (
+                    None
+                    if provider_proof_overlay is provider_overlay
+                    else provider_proof_overlay.source
+                ),
+                "trusted_adapter_lowering": provider_input["trusted_adapter_lowering"],
+                "machine_overlay_entries": list(provider_overlay.entries),
+                "c_headers": render_component_c_headers_v5(
+                    provider_input["bundle"],  # type: ignore[arg-type]
+                    provider_input["symbols"],  # type: ignore[arg-type]
+                ),
+                "binding_intent_sha256": provider_input["binding_model"].intent_sha256,
+                "qualification_sha256": provider_input["qualification_sha256"],
+                "contextual_refinement_sha256": provider_input[
+                    "contextual_refinement_sha256"
+                ],
+                "proof_receipt_sha256": provider_input["proof_receipt_sha256"],
+                "source_summary_contracts": provider_input["source_summary_contracts"],
+                "source_summary_artifacts": provider_input["source_summary_artifacts"],
+                **{key: provider_input[key] for key in ("proof_system", "binding_intent", "proof_artifacts")},
+            }
         )
+    if exact_c_slice is None:
+        _fail("direct Portable-C qualification requires an exact-C slice")
+    operation_sources = operation_sources_from_package(
+        source_root=source_root,
+        source=source,
+        symbols=symbols,
+    )
+    proof_plan = build_component_proof_plan_v1(
+        component_id=component_id,
+        semantic_contract_sha256=str(semantic_contract["contract_sha256"]),
+        interface=portable,
+        operations=[
+            row for row in semantic_contract["operations"] if isinstance(row, Mapping)
+        ],
+        operation_sources=operation_sources,
+        source_package_sha256=str(source["implementation_sha256"]),
+        intent=authored_bisimulation,
+    )
+    write_json(output / "component-proof-plan-v1.json", proof_plan)
+    exact_context = build_exact_context(
+        proof_plan=proof_plan, linked=linked, owned=semantic_slice_model,
+    )
+    exact_c_slice_path = Path(exact_c_slice)
+    exact_c_slice_manifest = dict(
+        _load_json(exact_c_slice_path, "component exact-C slice V1")
+    )
+    _validate_exact_c_slice(
+        manifest=exact_c_slice_manifest,
+        root=exact_c_slice_path.parent,
+        component_id=component_id,
+        operations=operations,
+        bisimulation_intent_sha256=(authored_bisimulation.intent_sha256),
+        executable_transfer_plan_sha256=sha256_file(transfer_path),
+        dependency_components=exact_dependency_components,
+    )
+    with tempfile.TemporaryDirectory(prefix="spx-exact-c-recheck-") as temporary:
+        regenerated = write_component_exact_c_slice_v1(
+            component_id=component_id,
+            transfers=transfers,
+            operations=[
+                {
+                    "operation_id": str(row["operation_id"]),
+                    "unit_ids": list(row["unit_ids"]),
+                    "context_unit_ids": list(row["context_transfer_ids"]),
+                    "continuation_unit_ids": list(row["machine_projection"].get("operation", {}).get("continuation_unit_ids", [])),
+                    "entry_rvas": list(row["entry_rvas"]),
+                }
+                for row in operations
+            ],
+            intent=authored_bisimulation,
+            executable_transfer_plan_sha256=sha256_file(transfer_path),
+            out=Path(temporary),
+            dependency_components=[
+                {
+                    "component_id": dependency_id,
+                    "binding_intent_sha256": row["binding_intent_sha256"],
+                    "operations": row["operations"],
+                }
+                for dependency_id, row in sorted(exact_dependency_components.items())
+            ],
+        )
+        if regenerated != exact_c_slice_manifest:
+            _fail("component exact-C slice differs from deterministic rerender")
+    shutil.copytree(exact_c_slice_path.parent, output / "exact-c")
+    semantic_operations = {
+        str(row["operation_id"]): row
+        for row in semantic_contract["operations"]
+        if isinstance(row, Mapping)
+    }
+    if set(semantic_operations) != {
+        operation.semantics.operation_id for operation in binding_model.operations
+    }:
+        _fail("contextual proof operation inventory is inconsistent")
+    retained_shared_contract = None
+    if shared_source_contract_artifacts is not None:
+        try:
+            retained_shared_contract = prepare_provider_shared_contract(
+                artifacts=shared_source_contract_artifacts, bundle=bundle, source=source,
+                source_profile_sha256=source_profile["receipt_sha256"], symbols=symbols,
+                intent=requested_postconditions, service_bindings=proof_service_bindings,
+                connected_components=connected_proof_components, output=output / "source-summary-contracts",
+                expected_file_sha256=qualification_input["shared_source_contract_file_sha256"])
+        except (ValueError, TypeError, KeyError) as error:
+            _fail(str(error))
+    shard_proof = check_bisimulation_refinement(
+        selected_obligations=selected_obligations,
+        runtime_assurance=runtime_assurance,
+        smt_solver=smt_solver,
+        reference_authority=authority.to_payload(),
+        reference_allocation_requirements=allocation_requirements,
+        semantic_contract=semantic_contract,
+        interface=portable,
+        source_package=source_root,
+        source_profile=source_profile,
+        intent=authored_bisimulation,
+        exact_c_root=exact_c_slice_path.parent,
+        exact_c_slice=exact_c_slice_manifest,
+        machine_overlay_source=overlay.source,
+        trusted_proof_overlay_source=(
+            None if proof_overlay is overlay else proof_overlay.source
+        ),
+        machine_overlay_entries=overlay.entries,
+        machine_projections={
+            operation.semantics.operation_id: {
+                **operation.semantics.machine_projection,
+                "operation": semantic_operations[operation.semantics.operation_id],
+            }
+            for operation in binding_model.operations
+        },
+        cbmc=Path(cbmc),
+        c_headers=render_component_c_headers_v5(bundle, symbols),
+        connected_components=connected_proof_components,
+        relation_evidence=relation_evidence,
+        timeout_seconds=timeout_seconds,
+        source_entry_timeout_seconds=source_entry_timeout_seconds,
+        diagnostic_root=output / "proof-diagnostics", proof_workspace=proof_workspace,
+        previous_query_evidence=previous_query_evidence,
+    )
+    if runtime_assurance is not None:
+        # Conditional evidence is a separate exit. The full refinement checker
+        # runs, but no provider qualification, native objects or choices follow.
+        from ..components.formats import CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT
+        from ..components.contextual_bisimulation import build_conditional_contextual_refinement_v1
+        if pending_requirements or selected_obligations is not None:
+            # Retain query evidence for investigation/reuse, but export no local
+            # supplier theorem while boundary requirements remain unresolved.
+            from ..components.conditional_check_result import conditional_packet_status
+            if (output / "conditional-refinement-result.json").exists():
+                _fail("pending boundary requirements conflict with an existing supplier theorem")
+            if pending_requirements:
+                shard_proof["boundary_requirements"] = pending_requirements
+            shard_proof["receipt_sha256"] = canonical_sha256_v3(
+                {k: v for k, v in shard_proof.items() if k != "receipt_sha256"})
+            packet_path = output / "conditional-engine-result.json"
+            write_json(packet_path, {"format": CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT,
+                "status": conditional_packet_status(shard_proof), "inputs": qualification_input,
+                "inputs_sha256": qualification_input_sha256, "result": shard_proof, "authorizing": False})
+            return {"conditional_check": packet_path}
+        conditional_models = dict(shard_proof["bindings"])
+        if retained_shared_contract is not None:
+            conditional_models["source_summary_contracts"] = {
+                "implementation_sha256": source["implementation_sha256"],
+                "source_profile_sha256": source_profile["receipt_sha256"],
+                "proof_interface_sha256": conditional_models["interface_sha256"],
+                "certificate": retained_shared_contract,
+            }
+        conditional_proof = build_conditional_contextual_refinement_v1(
+            runtime_assurance=runtime_assurance, proof_plan=proof_plan,
+            exact_c_slice=exact_c_slice_manifest,
+            implementation_sha256=str(source["implementation_sha256"]),
+            source_profile_sha256=str(source_profile["receipt_sha256"]),
+            checker=shard_proof["checker"], models=conditional_models,
+            shard_results=shard_proof["checks"],
+            world=_component_proof_world_v1(bundle=bundle,
+                binding_intent_sha256=binding_model.intent_sha256,
+                machine_object_authority_sha256=authority.authority_sha256,
+                checked_component_summaries_used=any(
+                    row["summary_strategy"] in {"scalar-body-free-v1", "image-readable-body-free-v1", "image-mutable-body-free-v1", "image-shared-body-free-v1", "image-shared-framed-body-free-v1"}
+                    for row in shard_proof["bindings"]["connected_components"])),
+        )
+        if conditional_proof["status"] == "satisfied" and requested_postconditions is not None:
+            normal_exit_inputs = dict(intent=requested_postconditions, bundle=bundle, binding=binding_model,
+                proof_system={"proof": conditional_proof, "proof_plan": proof_plan, "exact_c_slice": exact_c_slice_manifest},
+                transfers=transfers, machine_binding=binding, operation_symbols=symbols,
+                resolved_external_environment=resolved, relation_evidence=relation_evidence,
+                runtime_assurance=runtime_assurance)
+            checked_provider_postconditions(**normal_exit_inputs,
+                source_summary_artifacts=output / "source-summary-contracts" if retained_shared_contract is not None else None)
+            if retained_shared_contract is not None:
+                check_provider_shared_binding(certificate=retained_shared_contract,
+                    artifacts=output / "source-summary-contracts", proof_artifacts=output / "proof-diagnostics",
+                    normal_exit_inputs=normal_exit_inputs)
+        refinement_path = output / "conditional-refinement-result.json"
+        write_json(refinement_path, conditional_proof)
+        packet_path = output / "conditional-engine-result.json"
+        write_json(packet_path, {"format": CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT,
+            "status": shard_proof["status"], "inputs": qualification_input,
+            "inputs_sha256": qualification_input_sha256, "result": shard_proof, "authorizing": False})
+        return {"conditional_check": packet_path, "conditional_refinement": refinement_path}
+    proof_models = dict(shard_proof["bindings"])
+    summary_contracts = retained_shared_contract if retained_shared_contract is not None else check_provider_source_contracts(
+        bundle=bundle, symbols=symbols, source=source, source_root=source_root,
+        output=output / "source-summary-contracts", cbmc=cbmc,
+        timeout_seconds=timeout_seconds, workspace=source_summary_workspace,
+        connected_components=connected_proof_components, proof_models=proof_models,
+    )
+    if summary_contracts is not None:
+        proof_models["source_summary_contracts"] = {
+            "implementation_sha256": source["implementation_sha256"],
+            "source_profile_sha256": source_profile["receipt_sha256"],
+            "proof_interface_sha256": proof_models["interface_sha256"],
+            "certificate": summary_contracts,
+        }
+    proof = build_contextual_refinement_v2(
+        proof_plan=proof_plan,
+        exact_c_slice=exact_c_slice_manifest,
+        implementation_sha256=str(source["implementation_sha256"]),
+        source_profile_sha256=str(source_profile["receipt_sha256"]),
+        checker=dict(shard_proof["checker"]),
+        models=proof_models,
+        shard_results=[
+            row for row in shard_proof["checks"] if isinstance(row, Mapping)
+        ],
+        world=_component_proof_world_v1(
+            bundle=bundle,
+            binding_intent_sha256=binding_model.intent_sha256,
+            machine_object_authority_sha256=authority.authority_sha256,
+            checked_component_summaries_used=any(
+                row["summary_strategy"] in {"scalar-body-free-v1", "image-readable-body-free-v1", "image-mutable-body-free-v1", "image-shared-body-free-v1", "image-shared-framed-body-free-v1"}
+                for row in proof_models["connected_components"]
+            ),
+        ),
+    )
+    validate_contextual_refinement_v2(
+        proof,
+        proof_plan=proof_plan,
+        exact_c_slice=exact_c_slice_manifest,
+        implementation_sha256=str(source["implementation_sha256"]),
+    )
     proof_status = str(proof.get("status"))
+    postconditions = None
+    if requested_postconditions is not None:
+        postconditions = {"authorizing": False, "intent": requested_postconditions.to_payload(), "facts": []}
+        if proof_status == "satisfied" and proof.get("activation_authorized") is True:
+            try:
+                postconditions = checked_provider_postconditions(intent=requested_postconditions,
+                    bundle=bundle, binding=binding_model,
+                    proof_system={"proof": proof, "proof_plan": proof_plan, "exact_c_slice": exact_c_slice_manifest},
+                    transfers=transfers, machine_binding=binding, operation_symbols=symbols,
+                    resolved_external_environment=resolved, relation_evidence=relation_evidence,
+                    source_summary_artifacts=output / "source-summary-contracts" if retained_shared_contract is not None else None)
+            except ValueError as error:
+                _fail(str(error))
+    if retained_shared_contract is not None and proof_status == "satisfied" and proof.get("activation_authorized") is True:
+        try:
+            check_provider_shared_binding(certificate=retained_shared_contract, artifacts=output / "source-summary-contracts",
+                proof_artifacts=output / "proof-diagnostics",
+                normal_exit_inputs=dict(intent=requested_postconditions, bundle=bundle, binding=binding_model,
+                    proof_system={"proof": proof, "proof_plan": proof_plan, "exact_c_slice": exact_c_slice_manifest},
+                    transfers=transfers, machine_binding=binding, operation_symbols=symbols, resolved_external_environment=resolved))
+        except (ValueError, TypeError, KeyError) as error:
+            _fail(str(error))
     refinement_status = {
         "satisfied": "checked",
         "incomplete": "incomplete",
@@ -921,15 +1132,26 @@ def write_portable_c_work_package_provider_v2(
     }.get(proof_status)
     if refinement_status is None:
         _fail("contextual-refinement checker returned an unknown status")
+    if (proof.get("activation_authorized") is not True and
+            (exact_context is None or any("entry_allocation_history" in operation["source"]
+                                         for operation in proof_plan["operations"]))):
+        # Conditional local proofs qualify only with a machine-derived context
+        # requirement, enforced again by selection and exact native linking.
+        # A continuation context does not discharge incoming heap premises.
+        refinement_status = "incomplete"
     refinement_receipt = canonical_sha256_v3(
         {
             "qualification_input_sha256": qualification_input_sha256,
             "source_package_sha256": source["implementation_sha256"],
-            "semantic_contract_sha256": canonical_sha256_v3(semantic_contract),
+            "semantic_contract_sha256": proof_plan["bindings"][
+                "semantic_contract_sha256"
+            ],
             "cbmc_sha256": sha256_file(Path(cbmc)),
             "proof": proof,
             "relation_evidence": relation_evidence,
-            "induction_receipt": induction_receipt,
+            **({"normal_exit_postconditions": postconditions} if postconditions is not None else {}),
+            "proof_plan_sha256": proof_plan["plan_sha256"],
+            "exact_c_slice_sha256": exact_c_slice_manifest["slice_sha256"],
         }
     )
 
@@ -953,33 +1175,6 @@ def write_portable_c_work_package_provider_v2(
             output / "encapsulated-owned-admission.json",
             encapsulated_admission,
         )
-    resolved = _load_json(
-        Path(resolved_external_environment),
-        "resolved external environment",
-    )
-    callback_capabilities: dict[str, Mapping[str, object]] = {}
-    if has_callback_projection:
-        assert linked is not None and linked_semantic_module is not None
-        module_interface = _load_json(
-            Path(linked_semantic_module).parent / "module-interface.json",
-            "linked module interface",
-        )
-        callback_capabilities = _checked_callback_projection_capabilities_v2(
-            operations=operations,
-            linked=linked,
-            module_interface=module_interface,
-        )
-    overlay = render_component_machine_overlay_v5(
-        bundle=bundle,
-        contract=contract,
-        operation_symbols=symbols,
-        transfers=transfers,
-        machine_binding=binding,
-        object_authority_rule_ids=[item.identity for item in authority.rules],
-        resolved_external_environment=resolved,
-        code_capabilities=callback_capabilities,
-        proof_classification=proof_classification,
-    )
     component_output = output / "component-object"
     component_output.mkdir()
     runtime_header = exact_runtime_header()
@@ -988,11 +1183,7 @@ def write_portable_c_work_package_provider_v2(
         source,
         bundle=bundle,
         operation_symbols=symbols,
-        induction_source_plan=(
-            None
-            if induction_source_plan is None
-            else output / "induction-source-plan-v1.json"
-        ),
+        induction_source_plan=None,
         machine_overlay=overlay,
         machine_overlay_error=None,
         runtime_header=runtime_header,
@@ -1002,7 +1193,19 @@ def write_portable_c_work_package_provider_v2(
     )
     manifest_path = component_output / "object-manifest.json"
     if not manifest_path.is_file():
-        _fail("direct portable component did not emit an object manifest")
+        failures = [
+            {
+                key: row.get(key)
+                for key in ("compiler", "source", "code", "status", "diagnostic")
+                if row.get(key) is not None
+            }
+            for row in compile_checks
+            if row.get("status") != "checked"
+        ]
+        _fail(
+            "direct portable component did not emit an object manifest: "
+            + repr(failures)
+        )
     component_manifest = dict(
         _load_json(
             manifest_path,
@@ -1019,11 +1222,8 @@ def write_portable_c_work_package_provider_v2(
             "proof_classification": proof_classification,
             "semantic_slice_sha256": semantic_slice_model.identity,
             "contextual_refinement_sha256": refinement_receipt,
-            "induction_refinement_sha256": (
-                None
-                if induction_receipt is None
-                else induction_receipt["receipt_sha256"]
-            ),
+            "proof_plan_sha256": proof_plan["plan_sha256"],
+            "exact_c_slice_sha256": (exact_c_slice_manifest["slice_sha256"]),
             "encapsulated_owned_admission_sha256": (
                 None
                 if encapsulated_admission is None
@@ -1091,10 +1291,10 @@ def write_portable_c_work_package_provider_v2(
         "component_id": component_id,
         "proof_classification": proof_classification,
         "semantic_slice_sha256": semantic_slice_model.identity,
+        "implementation_sha256": str(source["implementation_sha256"]),
         "contextual_refinement_sha256": refinement_receipt,
-        "induction_refinement_sha256": (
-            None if induction_receipt is None else induction_receipt["receipt_sha256"]
-        ),
+        "proof_plan_sha256": proof_plan["plan_sha256"],
+        "exact_c_slice_sha256": (exact_c_slice_manifest["slice_sha256"]),
         "encapsulated_owned_admission_sha256": (
             None
             if encapsulated_admission is None
@@ -1102,8 +1302,31 @@ def write_portable_c_work_package_provider_v2(
         ),
         "compiler_sha256": sha256_file(Path(pe32_compiler)),
         "nm_sha256": sha256_file(Path(nm)),
+        "machine_overlay_source_sha256": hashlib.sha256(
+            overlay.source.encode("ascii")
+        ).hexdigest(),
+        "machine_overlay_object_sha256": next(
+            (
+                row["object_sha256"]
+                for row in provider_objects
+                if row["source_sha256"]
+                == hashlib.sha256(overlay.source.encode("ascii")).hexdigest()
+            ),
+            None,
+        ),
+        "machine_overlays": component_manifest["machine_overlays"],
         "objects": provider_objects,
     }
+    if (
+        provider_manifest_core["machine_overlay_object_sha256"] is None
+        or sum(
+            row["source_sha256"]
+            == provider_manifest_core["machine_overlay_source_sha256"]
+            for row in provider_objects
+        )
+        != 1
+    ):
+        _fail("direct portable provider has no unique machine-overlay object")
     provider_manifest = output / "provider-object-manifest.json"
     write_json(
         provider_manifest,
@@ -1159,13 +1382,13 @@ def write_portable_c_work_package_provider_v2(
     facet_status = {
         "compile": compile_status,
         "contextual_refinement": refinement_status,
-        "induction": ("checked" if induction_facet is None else induction_facet.status),
+        "bisimulation": refinement_status,
         "lifecycle": "checked",
         "native_objects": "checked" if object_hashes else "incomplete",
         "object_binding": "checked",
         "ownership": "checked",
         "relations": "checked"
-        if (relation_intent is None or relation_evidence)
+        if (relation_intent is None or relation_evidence or postconditions is not None and postconditions["facts"])
         else "incomplete",
         "services": "checked",
         "source": "checked",
@@ -1191,6 +1414,8 @@ def write_portable_c_work_package_provider_v2(
                         else {}
                     ),
                     **({"evidence": relation_evidence} if name == "relations" else {}),
+                    **({"normal_exit_postconditions": postconditions}
+                       if name == "relations" and postconditions is not None else {}),
                     **({"checks": compile_checks} if name == "compile" else {}),
                 }
             ),
@@ -1200,6 +1425,7 @@ def write_portable_c_work_package_provider_v2(
 
     qualification = output / "semantic-provider-qualification.json"
     write_semantic_provider_qualification_v2(
+        exact_context=exact_context,
         semantic_slice=semantic_slice_model,
         provider_id=provider_id,
         provider_kind="qualified_portable_c",
@@ -1233,6 +1459,12 @@ def write_portable_c_work_package_provider_v2(
                     f"provider-provenance:{artifact_id}:{artifact_sha256}"
                     for artifact_id, artifact_sha256 in provenance_sha256s.items()
                 ),
+                *([f"normal-exit-relation:{requested_postconditions.intent_sha256}"]
+                  if requested_postconditions is not None else []),
+                f"contextual-refinement:{refinement_receipt}",
+                f"component-proof-plan:{proof_plan['plan_sha256']}",
+                "component-exact-c-slice:"
+                + str(exact_c_slice_manifest["slice_sha256"]),
             }
         ),
         out=qualification,
@@ -1267,7 +1499,9 @@ def write_portable_c_work_package_provider_v2(
             "source_package_sha256": source["implementation_sha256"],
             "proof": proof,
             "relation_evidence": relation_evidence,
-            "induction_receipt": induction_receipt,
+            **({"normal_exit_postconditions": postconditions} if postconditions is not None else {}),
+            "proof_plan": proof_plan,
+            "exact_c_slice": exact_c_slice_manifest,
             "proof_classification": proof_classification,
             "encapsulated_owned_admission": encapsulated_admission,
             "policy": {"tests_authorize": False, "cbmc_required": True},

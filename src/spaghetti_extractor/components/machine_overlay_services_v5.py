@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from ..external.contracts import CheckedExternalSiteContractError
+from ..external.import_sites import bind_import_site
+from ..external.resolved_contract import resolved_import_contract_behavior
 from ..boundary._canonical import BoundaryModelError, array, object_
 from ..external.resolved import (
     ExternalEnvironmentError,
@@ -12,6 +15,7 @@ from ..external.resolved import (
     resolved_interface_method_index_v1,
 )
 from ..transfer.model import _Call, _Transfer
+from ..transfer.call_sites import external_tail_call
 from .component_c_v5 import _parameter_type, _result_type
 from .interface_package_v5 import CompiledComponentInterfaceV5
 from .machine_overlay_external_v5 import _checked_service_argument_transducers
@@ -31,10 +35,6 @@ def _resolved_external_contract_index(
         raise BoundaryModelError(
             f"component resolved external environment is invalid: {exc}"
         ) from exc
-    if environment.payload["status"] != "complete":
-        raise BoundaryModelError(
-            "component resolved external environment is incomplete"
-        )
     result: dict[tuple[str, str, int | None], Mapping[str, object]] = {}
     for index, raw in enumerate(environment.payload["machine_import_contracts"]):
         row = object_(raw, f"resolved machine-import contract {index}")
@@ -51,10 +51,15 @@ def _resolved_external_contract_index(
                 ordinal is not None
                 and (not isinstance(ordinal, int) or isinstance(ordinal, bool))
             )
-            or not isinstance(row.get("contract"), Mapping)
-            or not isinstance(row.get("boundary"), Mapping)
         ):
-            raise BoundaryModelError("resolved machine-import contract is incomplete")
+            raise BoundaryModelError("resolved machine-import identity is invalid")
+        # An environment may honestly contain unrelated unresolved imports.
+        # Index only complete rows; selection below remains fail closed when a
+        # component names one of the omitted contracts.
+        if not isinstance(row.get("contract"), Mapping) or not isinstance(
+            row.get("boundary"), Mapping
+        ):
+            continue
         key = (dll.lower(), "" if symbol is None else symbol, ordinal)
         if key in result:
             raise BoundaryModelError("resolved machine-import identity is duplicated")
@@ -72,10 +77,6 @@ def _resolved_interface_method_index(
         raise BoundaryModelError(
             f"component resolved external environment is invalid: {exc}"
         ) from exc
-    if environment.payload["status"] != "complete":
-        raise BoundaryModelError(
-            "component resolved external environment is incomplete"
-        )
     try:
         return resolved_interface_method_index_v1(environment)
     except ExternalEnvironmentError as exc:
@@ -189,6 +190,25 @@ def _operation_service_bindings(
                 raise BoundaryModelError(
                     "component service provider identity is incomplete"
                 )
+            event_references = [
+                {
+                    "unit_id": object_(
+                        raw, "component-operation service event"
+                    ).get("unit_id"),
+                    "event_index": object_(
+                        raw, "component-operation service event"
+                    ).get("event_index"),
+                }
+                for raw in array(
+                    provider.get("events"),
+                    "component-operation service events",
+                )
+            ]
+            event_calls = _checked_service_event_calls(
+                event_references,
+                transfer_index=transfer_index,
+                expected_call_kind="internal_call",
+            )
             result.append(
                 {
                     "service_id": service_id,
@@ -199,6 +219,21 @@ def _operation_service_bindings(
                         provider_component, provider_operation
                     ),
                     "abi_sha256": abi_sha256,
+                    "events": [
+                        {
+                            "unit_id": unit_id,
+                            "source_rva": transfer.rva_start,
+                            "event_index": event_index,
+                            "instruction_rva": call.instruction_rva,
+                            "return_rva": call.return_rva,
+                            "event_stack_offsets": [
+                                offset
+                                for offset, width, _node in call.stack_inputs
+                                if width == 4
+                            ],
+                        }
+                        for unit_id, event_index, transfer, call in event_calls
+                    ],
                 }
             )
             continue
@@ -240,6 +275,7 @@ def _operation_service_bindings(
             rendered_transducers, out_interfaces, argument_interfaces = (
                 _checked_service_argument_transducers(
                     signature=signature,
+                    types=bundle.intent.schema.type_index,
                     argument_words=argument_words,
                     value=provider.get("argument_transducers"),
                     relation_values=method.get("out_interfaces", []),
@@ -362,6 +398,10 @@ def _operation_service_bindings(
             )
         contract = object_(contract_row.get("contract"), "resolved import contract")
         payload = object_(contract.get("payload"), "resolved import contract payload")
+        try:
+            external_behavior = resolved_import_contract_behavior(contract_row)
+        except CheckedExternalSiteContractError as exc:
+            raise BoundaryModelError(str(exc)) from exc
         argument_words = payload.get("argument_words")
         if argument_words is None:
             arity = object_(payload.get("arity"), "resolved import arity")
@@ -370,15 +410,30 @@ def _operation_service_bindings(
                     "component external service requires a fixed arity"
                 )
             argument_words = arity.get("words")
+        (
+            normalized_transducers,
+            normalized_local_cells,
+            normalized_caller_memory_frame,
+            normalized_result_projection,
+        ) = _normalize_aggregate_result_binding(
+            signature=signature,
+            types=bundle.intent.schema.type_index,
+            provider=provider,
+            payload=payload,
+            contract_row=contract_row,
+            argument_words=argument_words,
+            context="component external service",
+        )
         rendered_transducers, out_interfaces, argument_interfaces = (
             _checked_service_argument_transducers(
                 signature=signature,
+                types=bundle.intent.schema.type_index,
                 argument_words=argument_words,
-                value=provider.get("argument_transducers"),
+                value=normalized_transducers,
                 relation_values=payload.get("out_interface_relations", []),
-                local_cell_values=payload.get("local_cells", []),
+                local_cell_values=normalized_local_cells,
                 argument_interface_values=[],
-                caller_memory_frame=payload.get("caller_memory_frame"),
+                caller_memory_frame=normalized_caller_memory_frame,
                 profile_sha256=contract.get("profile_sha256"),
                 context="component external service",
             )
@@ -404,6 +459,9 @@ def _operation_service_bindings(
                     "instruction_rva": call.instruction_rva,
                     "return_rva": call.return_rva,
                     "event_stack_offsets": list(event_offsets),
+                    **({'checked_external_contract': bind_import_site(external_behavior,
+                        argument_nodes=call.argument_nodes, tail_jump=call is external_tail_call(transfer)).payload()}
+                       if external_behavior.world_effect in {'dynamicRanges', 'dynamicRangeRelease'} else {}),
                 }
             )
         assert argument_offsets is not None
@@ -411,6 +469,9 @@ def _operation_service_bindings(
             {
                 "service_id": service_id,
                 "provider_kind": "external_call",
+                "external_effect_contract": (external_behavior.profile_effect_payload()
+                    if external_behavior.world_effect in {'dynamicRanges', 'dynamicRangeRelease'} else dict(payload)),
+                "external_contract_identity_sha256": external_behavior.identity_sha256(),
                 "symbol": f"spx_component_external_{_c_identifier(bundle.interface.identity)}_{_c_identifier(service_id)}",
                 "abi_sha256": abi_sha256,
                 "events": rendered_events,
@@ -426,13 +487,215 @@ def _operation_service_bindings(
                 "argument_transducers": rendered_transducers,
                 "out_interfaces": out_interfaces,
                 "argument_interfaces": argument_interfaces,
-                "local_cells": payload.get("local_cells", []),
+                "local_cells": normalized_local_cells,
                 "abi_template": payload.get("abi_template"),
-                "result_projection": provider.get("result_projection"),
+                "result_projection": normalized_result_projection,
                 "_signature": signature,
             }
         )
     return tuple(result)
+
+
+def _normalize_aggregate_result_binding(
+    *,
+    signature: object,
+    types: Mapping[str, object],
+    provider: Mapping[str, object],
+    payload: Mapping[str, object],
+    contract_row: Mapping[str, object],
+    argument_words: object,
+    context: str,
+) -> tuple[object, list[object], object, object]:
+    """Derive hidden-sret mechanics from the compiler-lowered ABI receipt."""
+
+    value = provider.get("argument_transducers")
+    if not isinstance(value, list) or not any(
+        isinstance(item, Mapping) and item.get("kind") == "aggregate_result"
+        for item in value
+    ):
+        return (
+            value,
+            list(array(payload.get("local_cells", []), f"{context} local cells")),
+            payload.get("caller_memory_frame"),
+            provider.get("result_projection"),
+        )
+    if len(value) != _uint(argument_words, f"{context} argument words"):
+        raise BoundaryModelError(f"{context} aggregate-result arity is incompatible")
+    aggregate_rows = [
+        (index, object_(item, f"{context} aggregate-result transducer"))
+        for index, item in enumerate(value)
+        if isinstance(item, Mapping) and item.get("kind") == "aggregate_result"
+    ]
+    if len(aggregate_rows) != 1 or provider.get("result_projection") is not None:
+        raise BoundaryModelError(
+            f"{context} aggregate result must have one derived projection"
+        )
+    if len(signature.results) != 1:
+        raise BoundaryModelError(f"{context} aggregate result is not singular")
+    result = signature.results[0]
+    logical_type = types.get(result.type_id)
+    fields = () if logical_type is None else tuple(logical_type.body.get("fields", ()))
+    if (
+        result.interpretation != "value"
+        or logical_type is None
+        or logical_type.kind != "record"
+        or not fields
+        or any(not _logical_word_field(types, field) for field in fields)
+    ):
+        raise BoundaryModelError(
+            f"{context} aggregate result must be a word-record value"
+        )
+    physical_index, transducer = aggregate_rows[0]
+    cell_id = transducer.get("cell_id")
+    if not isinstance(cell_id, str) or not cell_id:
+        raise BoundaryModelError(f"{context} aggregate result cell id is invalid")
+    boundary = object_(contract_row.get("boundary"), f"{context} boundary")
+    frame = object_(
+        boundary.get("physical_call_frame_v3"),
+        f"{context} physical call frame",
+    )
+    transport = object_(frame.get("transport"), f"{context} physical transport")
+    arguments = [
+        object_(item, f"{context} physical argument")
+        for item in array(transport.get("arguments"), f"{context} physical arguments")
+    ]
+    hidden = [item for item in arguments if item.get("role") == "hidden_sret"]
+    physical_results = [
+        object_(item, f"{context} physical result")
+        for item in array(transport.get("results"), f"{context} physical results")
+    ]
+    if len(hidden) != 1 or len(physical_results) != 1:
+        raise BoundaryModelError(
+            f"{context} aggregate result lacks one compiler-lowered hidden return"
+        )
+    hidden_fragments = array(hidden[0].get("fragments"), f"{context} hidden return")
+    result_fragments = array(
+        physical_results[0].get("fragments"), f"{context} aggregate result"
+    )
+    if len(hidden_fragments) != 1 or len(result_fragments) != 1:
+        raise BoundaryModelError(f"{context} aggregate result is fragmented")
+    hidden_location = object_(
+        object_(hidden_fragments[0], f"{context} hidden fragment").get("location"),
+        f"{context} hidden location",
+    )
+    result_location = object_(
+        object_(result_fragments[0], f"{context} result fragment").get("location"),
+        f"{context} result location",
+    )
+    hidden_offset = hidden_location.get("stack_offset_bytes")
+    derived_index = (
+        (hidden_offset - 4) // 4
+        if isinstance(hidden_offset, int)
+        and not isinstance(hidden_offset, bool)
+        and hidden_offset >= 4
+        and hidden_offset % 4 == 0
+        else -1
+    )
+    result_width = len(fields) * 32
+    if (
+        physical_index != derived_index
+        or hidden_location.get("kind") != "stack"
+        or hidden_location.get("width_bits") != 32
+        or hidden[0].get("storage_bits") != 32
+        or physical_results[0].get("pass_mode") != "indirect"
+        or result_location.get("kind") != "memory"
+        or result_location.get("memory_slot") != hidden[0].get("id")
+        or result_location.get("width_bits") != result_width
+        or physical_results[0].get("storage_bits") != result_width
+    ):
+        raise BoundaryModelError(
+            f"{context} aggregate result disagrees with its compiler-lowered ABI"
+        )
+    relation = {
+        "argument_index": physical_index,
+        "extent_words": len(fields),
+        "variants": [
+            {
+                "id": "aggregate_result",
+                "discriminants": [],
+                "input_word_indices": [],
+                "output_word_indices": list(range(len(fields))),
+                "output_condition": "always",
+                "failure_preserved_word_indices": [],
+                "failure_observed_word_indices": [],
+            }
+        ],
+    }
+    relation_sha256 = canonical_sha256_v3(relation)
+    local_cells = list(array(payload.get("local_cells", []), f"{context} local cells"))
+    if any(
+        isinstance(item, Mapping)
+        and item.get("argument_index") == physical_index
+        for item in local_cells
+    ):
+        raise BoundaryModelError(f"{context} aggregate local cell is duplicated")
+    local_cells.append(relation)
+    normalized = [dict(object_(item, f"{context} argument transducer")) for item in value]
+    normalized[physical_index] = {
+        "kind": "local_cell",
+        "cell_id": cell_id,
+        "initial_words": [None] * len(fields),
+        "local_cell_relation_sha256": relation_sha256,
+    }
+    raw_memory = payload.get("caller_memory_frame")
+    if raw_memory is None:
+        memory = {
+            "status": "complete",
+            "model": "compiler-derived-hidden-sret-v1",
+            "arguments": [],
+            "assumptions": [
+                "hidden return storage is retained only during the call"
+            ],
+        }
+    else:
+        memory = dict(object_(raw_memory, f"{context} caller-memory frame"))
+        memory["arguments"] = list(
+            array(memory.get("arguments"), f"{context} caller-memory arguments")
+        )
+    if any(
+        isinstance(item, Mapping) and item.get("argument_index") == physical_index
+        for item in memory["arguments"]
+    ):
+        raise BoundaryModelError(f"{context} aggregate caller memory is duplicated")
+    memory["arguments"].append(
+        {
+            "argument_index": physical_index,
+            "role": "caller_memory",
+            "access": "read_write",
+            "extent": "enclosing_object",
+            "retention": "during_call",
+        }
+    )
+    memory["arguments"] = sorted(
+        memory["arguments"], key=lambda item: int(item["argument_index"])
+    )
+    result_projection = {
+        "kind": "local_cell_record",
+        "cell_id": cell_id,
+        "fields": [
+            {"id": str(field["id"]), "word_index": index}
+            for index, field in enumerate(fields)
+        ],
+    }
+    return normalized, local_cells, memory, result_projection
+
+
+def _logical_word_field(
+    types: Mapping[str, object], field: Mapping[str, object]
+) -> bool:
+    value = types.get(str(field.get("type_id")))
+    if value is None or field.get("bit_width") is not None:
+        return False
+    if value.kind == "integer":
+        return value.body.get("width_bits") == 32
+    if value.kind == "enum":
+        underlying = types.get(str(value.body.get("underlying_type_id")))
+        return (
+            underlying is not None
+            and underlying.kind == "integer"
+            and underlying.body.get("width_bits") == 32
+        )
+    return value.kind == "pointer"
 
 def _checked_service_event_calls(
     value: object,
@@ -522,10 +785,11 @@ def _service_setup_lines(
     context_expression: str,
     runtime_expression: str,
     state_expression: str,
+    memory_fault_expression: str,
     fault_expression: str,
 ) -> list[str]:
-    if not bundle.interface.services:
-        return []
+    # The context also identifies the runtime for connected logical operations,
+    # including service-free operations used through paired proof wrappers.
     by_id = {str(item["service_id"]): item for item in service_bindings}
     values = [
         (str(by_id[item.identity]["symbol"]) if item.identity in by_id else "0")
@@ -533,10 +797,11 @@ def _service_setup_lines(
     ]
     return [
         "  spx_component_service_context_v1 service_context = {",
-        f"    {runtime_expression}, {state_expression}, {fault_expression}, {{0, 0}}",
+        f"    {runtime_expression}, {state_expression}, {memory_fault_expression},",
+        f"    {fault_expression}, {{0, 0}}",
         "  };",
         f"  spx_{component}_services_v5 logical_services = {{",
-        f"    &service_context, {', '.join(values)}",
+        f"    &service_context, {', '.join(values) if values else '0'}",
         "  };",
         f"  ({context_expression})->services = &logical_services;",
     ]

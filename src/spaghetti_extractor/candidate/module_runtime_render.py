@@ -7,6 +7,7 @@ import json
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..errors import ToolkitInputError
+from .runtime_argument_domains import argument_domain_source
 from .module_runtime_plan import (
     ModuleRuntimePlan,
     _FNSAVE_IMAGE_SIZE,
@@ -992,6 +993,7 @@ def _wrapper_source(
             if plan.x87_operations
             else []
         ),
+        argument_domain_source(plan.external_sites),
         "spx_call_status spx_dispatch_external_call(",
         "    spx_runtime *runtime,",
         "    const spx_call_event *event,",
@@ -1039,6 +1041,11 @@ def _wrapper_source(
         "    return SPX_CALL_UNIMPLEMENTED;",
         "  }",
         "  preserved_ebx = input->ebx;",
+        "  if (!spx_native_arguments_admitted(runtime, entry, input)) {",
+        "    spx_native_diagnostic_reason = 0x1019U;",
+        "    spx_native_diagnostic_value = event->instruction_rva;",
+        "    return SPX_CALL_UNIMPLEMENTED;",
+        "  }",
         "  preserved_esi = input->esi;",
         "  preserved_edi = input->edi;",
         "  preserved_ebp = input->ebp;",

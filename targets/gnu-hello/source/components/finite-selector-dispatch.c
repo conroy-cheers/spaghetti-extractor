@@ -18,6 +18,7 @@ enum gnu_hello_quoting_route {
 uint32_t gnu_hello_finite_selector_dispatch(
     spx_finite_selector_dispatch_context_v2 *context,
     uint8_t selector) {
+  SPX_PROOF_BEGIN(select);
   (void)context;
   switch (selector) {
     case 0:

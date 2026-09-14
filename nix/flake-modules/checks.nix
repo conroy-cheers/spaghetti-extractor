@@ -725,7 +725,7 @@
                 'workflow\.linkedSemanticModule\.derivation' \
                 ${testSource}/nix/target-sdk.nix || \
                ! rg -q \
-                'write_operator_work_status_v1' \
+                'write_operator_work_status_v2' \
                 ${testSource}/src/spaghetti_extractor/target_bundles/project_status.py; then
               echo "project status is not a semantic-module operator view" >&2
               exit 1
@@ -738,13 +738,56 @@
               echo "retired candidate-status reducer or format reintroduced" >&2
               exit 1
             fi
+            if rg -n \
+                -e 'candidateStatusReports' \
+                -e 'defaultCandidateStatusReport' \
+                -e 'componentConfigurations' \
+                ${testSource}/nix/target-sdk.nix || \
+               rg -n \
+                -e 'schemaAdapters' \
+                -e 'componentAdapters' \
+                ${testSource}/nix/boundary-workbench.nix || \
+               rg -n \
+                -e 'intentTemplates' \
+                ${testSource}/nix/call-protocol-workflow.nix || \
+               rg -n \
+                -e 'componentSeedSubjects' \
+                ${testSource}/nix/component-workflow.nix; then
+              echo "retired operator aliases or boundary adapter derivations reintroduced" >&2
+              exit 1
+            fi
+            if rg -n \
+                -e '"name": "component bind"' \
+                -e '"name": "component relation"' \
+                -e '"name": "candidate check"' \
+                ${testSource}/src/spaghetti_extractor/commands/manifest.py; then
+              echo "retired public operator command reintroduced" >&2
+              exit 1
+            fi
+            if rg -n \
+                -e 'library-release-hypotheses-empty' \
+                -e 'emptyReleaseSource' \
+                -e '"target_binary_sha256": "0" \* 64' \
+                ${testSource}/nix/linked-libraries.nix; then
+              echo "synthetic empty library workflow reintroduced" >&2
+              exit 1
+            fi
             if ! rg -q \
-                'implementation_selection=inputs\["implementation_selection"\]' \
+                'format = "spaghetti-extractor-operator-index-v1"' \
                 ${testSource}/nix/target-sdk.nix || \
                ! rg -q \
-                '"candidate\.materializedStatus"' \
+                'format = "spaghetti-extractor-target-sdk-v5"' \
+                ${testSource}/nix/target-sdk.nix; then
+              echo "target SDK no longer exposes the strict V5 operator product tree" >&2
+              exit 1
+            fi
+            if ! rg -q \
+                'project_candidate_selection' \
+                ${testSource}/src/spaghetti_extractor/commands/workflows.py || \
+               ! rg -q \
+                'candidate\.configurations' \
                 ${testSource}/src/spaghetti_extractor/commands/workflows.py; then
-              echo "candidate status is not the compact semantic selection view" >&2
+              echo "candidate status is not a local projection of one indexed selection" >&2
               exit 1
             fi
             if rg -n \
@@ -795,7 +838,10 @@
                 'nativeRealizationV2 \{' \
                 ${testSource}/nix/target-sdk.nix || \
                ! rg -q \
-                'nativeRealizations = workflow\.nativeRealizations or' \
+                'candidateConfigurations = lib\.genAttrs' \
+                ${testSource}/nix/target-sdk.nix || \
+               ! rg -q \
+                'realization = checkedCandidateBuilds' \
                 ${testSource}/nix/target-sdk.nix; then
               echo "target SDK no longer exposes lazy native realization" >&2
               exit 1
@@ -1131,7 +1177,9 @@
                 -e 'from .*refinement import' \
                 -e 'machine_ir' \
                 ${testSource}/src/spaghetti_extractor/semantic_providers/encapsulated_owned.py || \
-               test "$(rg -c 'check_component_refinement\(' \
+               test "$(rg -c 'check_bisimulation_refinement\(' \
+                 ${testSource}/src/spaghetti_extractor/semantic_providers/portable_c_work_package.py)" != 1 || \
+               test "$(rg -c 'build_contextual_refinement_v2\(' \
                  ${testSource}/src/spaghetti_extractor/semantic_providers/portable_c_work_package.py)" != 1 || \
                test "$(rg -c 'check_encapsulated_owned_admission\(' \
                  ${testSource}/src/spaghetti_extractor/semantic_providers/portable_c_work_package.py)" != 1 || \

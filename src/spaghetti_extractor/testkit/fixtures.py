@@ -43,6 +43,11 @@ def _load_builtin_fixtures() -> tuple[FixtureDefinition, ...]:
         payload = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"cannot load checked fixture catalog: {exc}") from exc
+    return parse_fixture_definitions(payload)
+
+
+def parse_fixture_definitions(payload: object) -> tuple[FixtureDefinition, ...]:
+    """Validate catalog names and capabilities; this format has no file references."""
     if not isinstance(payload, Mapping) or set(payload) != {"format", "fixtures"}:
         raise RuntimeError("fixture catalog must contain only format and fixtures")
     if payload.get("format") != FIXTURE_CATALOG_FORMAT:

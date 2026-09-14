@@ -53,7 +53,7 @@
     },
     {
       "id": "bounded-string-length",
-      "induction_intent": "induction/bounded-string-length.json",
+      "bisimulation_intent": "bisimulation/bounded-string-length.json",
       "label": "Bounded byte-string length",
       "source": {
         "files": [
@@ -123,7 +123,7 @@
     },
     {
       "id": "ascii-string-compare",
-      "induction_intent": "induction/ascii-string-compare.json",
+      "bisimulation_intent": "bisimulation/ascii-string-compare.json",
       "label": "ASCII case-insensitive string comparison",
       "source": {
         "files": [
@@ -137,7 +137,7 @@
     },
     {
       "id": "last-path-component",
-      "induction_intent": "induction/last-path-component.json",
+      "bisimulation_intent": "bisimulation/last-path-component.json",
       "label": "Final path component scan",
       "source": {
         "files": [
@@ -459,7 +459,7 @@
       ]
     }
   ],
-  "intent_sha256": "f9346d896a58106340b46226f612aea45ae6f710b94fd30a1bcc9b188e0a383b",
+  "intent_sha256": "c5a92c57fa64897d0f9957c6f6aec5c6b911ba63c12b27178b6e2e6d2e3e9391",
   "policy": {
     "machine_authority_from_v5_bindings_only": true,
     "operation_symbols_only": true,

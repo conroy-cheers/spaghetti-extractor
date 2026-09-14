@@ -1,0 +1,69 @@
+static char expected_notice[500];
+static uint32_t notice_dialog_count,notice_text_seen;
+static BOOL CALLBACK notice_child(HWND child,LPARAM unused){
+ (void)unused;char text[500]={0};GetWindowTextA(child,text,sizeof text);
+ if(strcmp(text,expected_notice)==0)notice_text_seen++;
+ return TRUE;
+}
+static LRESULT CALLBACK notice_hook(int code,WPARAM wparam,LPARAM lparam){
+ if(code==HCBT_ACTIVATE){
+  HWND window=(HWND)wparam;char kind[32]={0};GetClassNameA(window,kind,sizeof kind);
+  if(strcmp(kind,"#32770")!=0)return CallNextHookEx(NULL,code,wparam,lparam);
+  char caption[500]={0};GetWindowTextA(window,caption,sizeof caption);
+  require(strcmp(caption,(char *)physical(4252580U))==0,"actual notice dialog caption");
+  EnumChildWindows(window,notice_child,0);notice_dialog_count++;
+  require(PostMessageA(window,WM_COMMAND,IDOK,0),"close own notice dialog");
+ }
+ return CallNextHookEx(NULL,code,wparam,lparam);
+}
+static uint32_t deliver_notice(uint32_t window,uint32_t text,uint32_t caption,uint32_t flags){
+ require(window==word(4260180U) && text==4275488U && caption==4252580U && flags==48U,"actual notice arguments");
+ require(memchr(physical(text),0,500U)!=NULL &&
+   strcmp((char *)physical(text),expected_notice)==0,"actual current resource contents");
+ events[event_count++]=9U;notice_dialog_count=0U;notice_text_seen=0U;
+ HHOOK hook=SetWindowsHookExA(WH_CBT,notice_hook,NULL,GetCurrentThreadId());require(hook!=NULL,"own notice hook");
+ uint32_t result=(uint32_t)MessageBoxA((HWND)(uintptr_t)window,(char *)physical(text),(char *)physical(caption),flags);
+ require(UnhookWindowsHookEx(hook),"remove own notice hook");
+ require(result==IDOK && notice_dialog_count==1U && notice_text_seen==1U,"actual notice dialog contents and return");
+ return result;
+}
+uint32_t network_load_string(void *opaque,uint32_t module,uint32_t id,const spx_view_v5 *buffer,uint32_t maximum){
+ spx_component_service_context_v1 *context=opaque;
+ require(module==(uint32_t)(uintptr_t)metapad_image && id==31U && maximum==500U && buffer->extent==500U,"actual resource arguments");
+ spx_machine_reference_v1 ref={buffer->base.domain,buffer->base.object,buffer->base.generation,
+  buffer->base.offset,buffer->base.extent,buffer->base.permissions};uint32_t address=0U;
+ require(ref.domain==1U && ref.object==UINT64_C(2134217653344611032) && ref.generation==1U &&
+  ref.offset==0x3d20U && ref.extent==18272U && ref.permissions==3U,"actual resource section coordinates");
+ require(context->runtime->realize_reference(context->runtime->context,&ref,3U,0U,0U,&address)==SPX_BOUNDARY_OK &&
+  address==4275488U,"actual resource buffer origin");
+ uint32_t native_address=0U;
+ require(spx_native_realize_reference(context->runtime->context,&ref,3U,0U,0U,&native_address)==SPX_BOUNDARY_OK &&
+  native_address==(uint32_t)(uintptr_t)physical(address),"actual image address transport");
+ events[event_count++]=8U;
+ int result=LoadStringA((HMODULE)(uintptr_t)module,id,(char *)physical(address),(int)maximum);
+ require(result>0 && result<500 && strcmp((char *)physical(address),expected_notice)==0,"actual resource load result and contents");
+ return (uint32_t)result;
+}
+static void load_metapad(void){
+ char path[MAX_PATH];DWORD length=GetModuleFileNameA(NULL,path,sizeof path);
+ require(length>0 && length<sizeof path,"own executable path");
+ char *name=strrchr(path,'\\');require(name!=NULL && (size_t)(name-path)+13U<sizeof path,"resource image path");strcpy(name+1,"metapad.exe");
+ HANDLE file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+ require(file!=INVALID_HANDLE_VALUE,"open retained original PE");
+ HANDLE mapping=CreateFileMappingA(file,NULL,PAGE_READONLY|SEC_IMAGE,0,0,NULL);
+ require(mapping!=NULL,"original PE image section");
+ metapad_image=(HMODULE)MapViewOfFile(mapping,FILE_MAP_READ,0,0,0);
+ CloseHandle(mapping);CloseHandle(file);
+ require(metapad_image!=NULL,"actual original image mapping");
+ require((uintptr_t)metapad_image>=0x437000U || (uintptr_t)metapad_image+0x37000U<=0x400000U,"disjoint actual and retained image coordinates");
+ const IMAGE_DOS_HEADER *dos=(const IMAGE_DOS_HEADER *)metapad_image;
+ const IMAGE_NT_HEADERS32 *nt=(const IMAGE_NT_HEADERS32 *)((const char *)metapad_image+dos->e_lfanew);
+ require(dos->e_magic==IMAGE_DOS_SIGNATURE && nt->Signature==IMAGE_NT_SIGNATURE &&
+  nt->OptionalHeader.SizeOfImage==0x37000U,"actual original image extent");
+ require(LoadStringA(metapad_image,31U,expected_notice,sizeof expected_notice)>0,"retained original notice resource");
+ require(memchr(physical(4252580U),0,500U)!=NULL,"retained original caption terminator");
+ DWORD protection,ignored;
+ require(VirtualProtect(physical(4251992U),4U,PAGE_READWRITE,&protection),"selected length IAT writable");
+ put(4251992U,(uint32_t)(uintptr_t)lstrlenA);
+ require(VirtualProtect(physical(4251992U),4U,protection,&ignored),"selected length IAT protection restored");
+}

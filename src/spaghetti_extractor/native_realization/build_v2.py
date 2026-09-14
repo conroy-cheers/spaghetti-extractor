@@ -393,6 +393,13 @@ def write_native_realization_v2_from_linked_payload(
     build_manifest, native_symbols, linked_sections = _linked_payload_facts(
         native_build_manifest
     )
+    portable_dispatch_link_receipt = build_manifest.get(
+        "portable_dispatch_link_receipt"
+    )
+    if not isinstance(portable_dispatch_link_receipt, Mapping):
+        raise NativeRealizationBuildError(
+            "V2 native build omits portable dispatch link authority"
+        )
     native_objects = _native_objects_v2(build_manifest)
     definitions, definition_blockers = _realized_definitions_v2(
         linked=linked, selection=selection,
@@ -472,7 +479,9 @@ def write_native_realization_v2_from_linked_payload(
         original_module_interface_sha256=original_interface["interface_sha256"],
         definitions=definitions, obligations=obligations,
         native_objects=native_objects, bridges=bridges, runtime=runtime,
-        link=link, loader_surface=_loader_surface(candidate_interface),
+        link=link,
+        portable_dispatch_link_receipt=portable_dispatch_link_receipt,
+        loader_surface=_loader_surface(candidate_interface),
         candidate=candidate,
         pinned_code_layout_requirements=pinned_requirements,
         blockers=[

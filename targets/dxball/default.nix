@@ -275,8 +275,8 @@ let
                 nonnull:([.[] | select(. != null)]),
                 discriminant:.[1], width:.[2], height:.[3], caps:.[26]
               }) == {
-                nonnull:[108,7,480,640,16448],
-                discriminant:7, width:480, height:640, caps:16448
+                nonnull:[108,7,480,640,64],
+                discriminant:7, width:480, height:640, caps:64
               } and
               ($primary.provider.events[0].unit_id ==
                 "semantic-transfer:original-cutpoint-0000ce6b-0000ce70") and
@@ -510,6 +510,73 @@ let
               >/dev/null
             touch "$out"
       '';
+  directdrawProvider =
+    workflow.portableSemanticProvidersByComponent.directdraw-init;
+  directdrawProofGate =
+    pkgs.runCommand "dxball-directdraw-init-contextual-bisimulation-v6"
+      { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        set -euo pipefail
+        provider=${directdrawProvider.derivation}
+        jq -e '
+          .format == "spaghetti-extractor-semantic-provider-qualification-v2" and
+          .status == "incomplete" and
+          .provider_kind == "qualified_portable_c" and
+          ([.facets[] | select(
+            .name == "bisimulation" or .name == "contextual_refinement"
+          ) | [.name, .status]] | sort) == [
+            ["bisimulation", "incomplete"],
+            ["contextual_refinement", "incomplete"]
+          ] and
+          .blockers == [
+            {code:"provider_facet_incomplete", facet:"bisimulation"},
+            {code:"provider_facet_incomplete", facet:"contextual_refinement"}
+          ]
+        ' "$provider/semantic-provider-qualification.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          .status == "incomplete" and
+          .proof.status == "incomplete" and
+          .proof.activation_authorized == false and
+          spx_contextual_proof_system and
+          (.proof.shards | length) == 1 and
+          ([.proof.shards[].nonvacuity.status] | all(. == "satisfied")) and
+          .proof.checker.model_bounds.maximum_calls_per_obligation == 27 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_accesses == 0 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_bytes == 0 and
+          ([.proof.shards[] | select(.status != "satisfied") | {
+            shard_id,
+            status,
+            code,
+            detail,
+            nonvacuity_status:.nonvacuity.status,
+            failed_queries:[.partitioned_evidence.queries[] | select(
+              .status != "satisfied"
+            ) | {kind, property_id, code, detail}]
+          }]) == [{
+            shard_id:"initialize:entry:semantic-transfer:original-cutpoint-0000cd5c-0000cd6a",
+            status:"incomplete",
+            code:"cbmc_timeout",
+            detail:"exceeded 300 seconds",
+            nonvacuity_status:"satisfied",
+            failed_queries:[{
+              kind:"language_safety",
+              property_id:null,
+              code:"cbmc_timeout",
+              detail:"exceeded 300 seconds"
+            }]
+          }]
+        ' "$provider/contextual-refinement-result.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          spx_strong_cutpoint_plan
+        ' "$provider/component-proof-plan-v1.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          spx_contextual_exact_c_slice
+        ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null
+        touch "$out"
+      '';
   semanticMigrationGate =
     pkgs.runCommand "dxball-semantic-module-v2-migration-checkpoint"
       {
@@ -705,10 +772,12 @@ sdk.target.pe32Bundle {
   targetAssets.boundary_schema = [ "intent/boundaries.json" ];
   targetAssets.boundary_source = [ "source/window-class-boundary.c" ];
   extraArtifacts.boundaries = boundaries;
+  extraArtifacts.directdraw-init-v6-provider = directdrawProvider.derivation;
+  extraArtifacts.directdraw-init-contextual-bisimulation-v6 = directdrawProofGate;
   checks = v6ComponentChecks // {
     component-v6-migration-status = componentMigrationStatus;
     directdraw-init-v6-work-package = components.v6WorkPackages.directdraw-init.derivation;
-    directdraw-init-v6-honest-blockers = directdrawBlockerGate;
+    directdraw-init-contextual-bisimulation-v6 = directdrawProofGate;
     semantic-module-v2-migration-checkpoint = semanticMigrationGate;
     canonical-boundaries = boundaries;
   };

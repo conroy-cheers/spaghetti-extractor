@@ -9,6 +9,45 @@ from typing import Mapping
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..boundary._canonical import BoundaryModelError, object_
 from .interface_package_v5 import CompiledComponentInterfaceV5
+from .machine_storage import scalar_storage_address
+from .machine_overlay_state_views import state_view_import_lines, state_view_export_lines
+
+
+def checked_result_fault_outcomes(signature, bindings, types):
+    """Fault cases are explicit logical u32 values, not inferred error sentinels."""
+    from .machine_binding import LogicalMachineValueV1
+    from .machine_binding_schema import ComponentMachineBindingError
+    selected = [row for row in bindings.values() if "fault_outcomes" in row]
+    if not selected:
+        return ()
+    if len(signature.results) != 1 or len(selected) != 1:
+        raise BoundaryModelError("fault outcomes require one logical result")
+    result = signature.results[0]
+    logical_type = types[result.type_id]
+    if (result.interpretation != "value" or logical_type.kind != "integer"
+            or logical_type.body.get("width_bits") != 32 or logical_type.body.get("signed") is not False):
+        raise BoundaryModelError("fault outcomes require an unsigned 32-bit logical result")
+    try:
+        return LogicalMachineValueV1.parse(selected[0], "component result").fault_outcomes
+    except ComponentMachineBindingError as error:
+        raise BoundaryModelError(str(error)) from error
+
+
+def result_fault_outcome_lines(cases, *, caller=None):
+    """Map only the declared return value, after the operation's preceding effects."""
+    lines = []
+    for case in cases:
+        kind = case["kind"]
+        lines.append(f"  if (logical_result == UINT32_C({case['logical_value']})) {{")
+        if caller is None:
+            outcome = {"memory_fault": "SPX_MEMORY_FAULT", "external_fault": "SPX_EXTERNAL_FAULT"}[kind]
+            lines.append(f"    return (spx_step_result){{ {outcome}, 0U, 0U }};")
+        else:
+            channel = {"memory_fault": "memory_fault", "external_fault": "service_fault"}[kind]
+            lines.extend([f"    if ({caller}->{channel} != 0) *{caller}->{channel} = UINT32_C(1);",
+                          "    return logical_result;"])
+        lines.append("  }")
+    return lines
 
 
 def callback_type_ids(bundle: CompiledComponentInterfaceV5) -> tuple[str, ...]:
@@ -137,7 +176,26 @@ def state_import_lines(
         identity = item.value.identity
         name = _c_identifier(identity)
         row = state_projections[identity]
+        if item.value.interpretation == "view":
+            lines.extend(state_view_import_lines(
+                bundle=bundle, item=item, row=row,
+                selector=authority_selector_expression(
+                    object_(row.get("entry"), f"component state {identity} entry"), authority_selectors),
+                context=context_expression, runtime=runtime_expression,
+            ))
+            continue
         if item.value.interpretation == "value":
+            if object_(row.get("entry"), "scalar state entry").get("kind") == "memory":
+                address, width = _dynamic_scalar_state_storage(bundle, item, row, runtime_expression)
+                lines.extend([
+                    f"  const uint32_t component_state_{name}_address = {address};",
+                    f"  {context_expression}.state.{name} = spx_component_read(",
+                    f"      {runtime_expression}, component_state_{name}_address,",
+                    f"      UINT32_C({width // 8}), &memory_fault);",
+                    "  if (memory_fault != 0U)",
+                    "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+                ])
+                continue
             slot, width = _checked_state_scalar_projection(
                 row.get("entry"), f"component state {identity} entry"
             )
@@ -155,7 +213,8 @@ def state_import_lines(
             lines.extend(
                 [
                     f"  {context_expression}.state.{name} = spx_component_read(",
-                    f"      {runtime_expression}, UINT32_C({slot}), "
+                    f"      {runtime_expression}, {runtime_expression}->image_base + "
+                    f"UINT32_C({slot}), "
                     f"UINT32_C({width // 8}), &memory_fault);",
                     "  if (memory_fault != 0U)",
                     "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
@@ -185,7 +244,8 @@ def state_import_lines(
         lines.extend(
             [
                 f"  uint32_t component_state_{name}_word = spx_component_read(",
-                f"      {runtime_expression}, UINT32_C({slot}), UINT32_C(4), &memory_fault);",
+                f"      {runtime_expression}, {runtime_expression}->image_base + "
+                f"UINT32_C({slot}), UINT32_C(4), &memory_fault);",
                 f"  spx_machine_reference_v1 component_state_{name}_machine = {{0}};",
                 "  if (memory_fault != 0U ||",
                 f"      {runtime_expression} == 0 || {runtime_expression}->resolve_reference == 0 ||",
@@ -277,6 +337,11 @@ def state_export_lines(
     if not bundle.interface.state:
         return []
     interpretations = {item.value.interpretation for item in bundle.interface.state}
+    if interpretations == {"view"}:
+        return state_view_export_lines(
+            bundle=bundle, state_projections=state_projections,
+            context=context_expression, runtime=runtime_expression,
+        )
     if interpretations == {"value"}:
         return _scalar_state_export_lines(
             bundle=bundle,
@@ -286,7 +351,7 @@ def state_export_lines(
         )
     if interpretations != {"reference"}:
         raise BoundaryModelError(
-            "component state cannot mix scalar and reference storage"
+            "component state cannot mix scalar, reference and shared-view storage"
         )
     lines = ["  uint32_t component_state_restore_fault = 0U;"]
     slots: list[tuple[str, int]] = []
@@ -318,7 +383,8 @@ def state_export_lines(
                 f"          &component_state_{name}_new_word) != SPX_BOUNDARY_OK)",
                 "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
                 f"  uint32_t component_state_{name}_old_word = spx_component_read(",
-                f"      {runtime_expression}, UINT32_C({slot}), UINT32_C(4), &memory_fault);",
+                f"      {runtime_expression}, {runtime_expression}->image_base + "
+                f"UINT32_C({slot}), UINT32_C(4), &memory_fault);",
             ]
         )
     lines.append(
@@ -327,13 +393,15 @@ def state_export_lines(
     )
     for name, slot in slots:
         lines.append(
-            f"  spx_component_write({runtime_expression}, UINT32_C({slot}), "
+            f"  spx_component_write({runtime_expression}, "
+            f"{runtime_expression}->image_base + UINT32_C({slot}), "
             f"UINT32_C(4), component_state_{name}_new_word, &memory_fault);"
         )
     lines.append("  if (memory_fault != 0U) {")
     for name, slot in slots:
         lines.append(
-            f"    spx_component_write({runtime_expression}, UINT32_C({slot}), "
+            f"    spx_component_write({runtime_expression}, "
+            f"{runtime_expression}->image_base + UINT32_C({slot}), "
             f"UINT32_C(4), component_state_{name}_old_word, "
             "&component_state_restore_fault);"
         )
@@ -354,10 +422,22 @@ def _scalar_state_export_lines(
     runtime_expression: str,
 ) -> list[str]:
     lines = ["  uint32_t component_state_restore_fault = 0U;"]
-    slots: list[tuple[str, int, int]] = []
+    slots: list[tuple[str, str, int]] = []
     for item in bundle.interface.state:
         identity = item.value.identity
         name = _c_identifier(identity)
+        row = state_projections[identity]
+        if object_(row.get("entry"), "scalar state entry").get("kind") == "memory":
+            address, width = _dynamic_scalar_state_storage(bundle, item, row, runtime_expression)
+            lines.extend([
+                f"  if (component_state_{name}_address != {address})",
+                "    return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+                f"  uint32_t component_state_{name}_old_word = spx_component_read(",
+                f"      {runtime_expression}, component_state_{name}_address,",
+                f"      UINT32_C({width // 8}), &memory_fault);",
+            ])
+            slots.append((name, f"component_state_{name}_address", width // 8))
+            continue
         slot, width = _checked_state_scalar_projection(
             state_projections[identity].get("exit"),
             f"component state {identity} exit",
@@ -374,11 +454,12 @@ def _scalar_state_export_lines(
             raise BoundaryModelError(
                 "component scalar state slot changes across operation"
             )
-        slots.append((name, slot, width // 8))
+        slots.append((name, f"{runtime_expression}->image_base + UINT32_C({slot})", width // 8))
         lines.extend(
             [
                 f"  uint32_t component_state_{name}_old_word = spx_component_read(",
-                f"      {runtime_expression}, UINT32_C({slot}), "
+                f"      {runtime_expression}, {runtime_expression}->image_base + "
+                f"UINT32_C({slot}), "
                 f"UINT32_C({width // 8}), &memory_fault);",
             ]
         )
@@ -386,16 +467,18 @@ def _scalar_state_export_lines(
         "  if (memory_fault != 0U) return "
         "(spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };"
     )
-    for name, slot, width in slots:
+    for name, address, width in slots:
         lines.append(
-            f"  spx_component_write({runtime_expression}, UINT32_C({slot}), "
+            f"  spx_component_write({runtime_expression}, "
+            f"{address}, "
             f"UINT32_C({width}), (uint32_t){context_expression}.state.{name}, "
             "&memory_fault);"
         )
     lines.append("  if (memory_fault != 0U) {")
-    for name, slot, width in slots:
+    for name, address, width in slots:
         lines.append(
-            f"    spx_component_write({runtime_expression}, UINT32_C({slot}), "
+            f"    spx_component_write({runtime_expression}, "
+            f"{address}, "
             f"UINT32_C({width}), component_state_{name}_old_word, "
             "&component_state_restore_fault);"
         )
@@ -406,6 +489,16 @@ def _scalar_state_export_lines(
         ]
     )
     return lines
+
+
+def _dynamic_scalar_state_storage(bundle, item, row, runtime_expression: str) -> tuple[str, int]:
+    entry = scalar_storage_address(row.get("entry"), state="(*state)",
+                                   image_base=f"{runtime_expression}->image_base", phase="entry")
+    exit_value = scalar_storage_address(row.get("exit"), state="(*state)",
+                                        image_base=f"{runtime_expression}->image_base", phase="exit")
+    if entry != exit_value or entry[1] != _state_scalar_width(bundle, item.value.type_id):
+        raise BoundaryModelError("component scalar state address or width changes across operation")
+    return entry
 
 
 def _uint(value: object, context: str) -> int:

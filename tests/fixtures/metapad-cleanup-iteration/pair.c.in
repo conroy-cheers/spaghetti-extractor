@@ -1,0 +1,116 @@
+#include "behavioral-c.h"
+#include "portable-component-implementation.h"
+@MEMORY_RUNTIME@
+@VIEW_RUNTIME@
+@REFERENCE_RUNTIME@
+
+static struct {uint32_t input,output,removed;spx_view_v5 scratch;} spx_cut;
+static spx_machine_state observed_state;
+static spx_step_result observed_step;
+static uint32_t observed_removed,observed_extent;
+static void observe_loop(uint32_t cut,uint32_t input,uint32_t output,uint32_t removed,const spx_view_v5 *scratch){
+ __CPROVER_assert(cut==observed_step.target_rva,"loop-observer-cut");
+ __CPROVER_assert(input==observed_state.esi,"loop-observer-input");
+ __CPROVER_assert(output==observed_state.ecx,"loop-observer-output");
+ __CPROVER_assert(removed==observed_removed,"loop-observer-count");
+ __CPROVER_assert(output<=input,"loop-observer-cursor-order");
+ __CPROVER_assert(removed==input-output,"loop-observer-count-invariant");
+ __CPROVER_assert((cut!=0x5606U) | ((input>spx_cut.input) & (input<observed_extent)),"loop-observer-progress");
+ __CPROVER_assert(scratch->base.domain==spx_cut.scratch.base.domain,"loop-observer-view-base.domain");
+ __CPROVER_assert(scratch->base.object==spx_cut.scratch.base.object,"loop-observer-view-base.object");
+ __CPROVER_assert(scratch->base.generation==spx_cut.scratch.base.generation,"loop-observer-view-base.generation");
+ __CPROVER_assert(scratch->base.offset==spx_cut.scratch.base.offset,"loop-observer-view-base.offset");
+ __CPROVER_assert(scratch->base.extent==spx_cut.scratch.base.extent,"loop-observer-view-base.extent");
+ __CPROVER_assert(scratch->base.permissions==spx_cut.scratch.base.permissions,"loop-observer-view-base.permissions");
+ __CPROVER_assert(scratch->extent==spx_cut.scratch.extent,"loop-observer-view-extent");
+ __CPROVER_assert(scratch->element_width==spx_cut.scratch.element_width,"loop-observer-view-element_width");
+ __CPROVER_assert(scratch->context==spx_cut.scratch.context,"loop-observer-view-context");
+ __CPROVER_assert(scratch->access_context==spx_cut.scratch.access_context,"loop-observer-view-access_context");
+ __CPROVER_assert(scratch->read_u8==spx_cut.scratch.read_u8,"loop-observer-view-read_u8");
+ __CPROVER_assert(scratch->write_u8==spx_cut.scratch.write_u8,"loop-observer-view-write_u8");
+ __CPROVER_assert(scratch->read==spx_cut.scratch.read,"loop-observer-view-read");
+ __CPROVER_assert(scratch->write==spx_cut.scratch.write,"loop-observer-view-write");
+}
+#define SPX_PROOF_BEGIN(...) goto enter_iteration
+#define SPX_PROOF_SYNC(id,...) SPX_PROOF_SYNC_I(id,__VA_ARGS__)
+#define SPX_PROOF_SYNC_I(id,...) SPX_PROOF_SYNC_##id(__VA_ARGS__)
+#define SPX_PROOF_SYNC_allocated(...)
+#define SPX_PROOF_SYNC_lookahead_one(...)
+#define SPX_PROOF_SYNC_lookahead_two(...)
+#define SPX_PROOF_SYNC_advance(...)
+#define SPX_PROOF_SYNC_tail_second(...)
+#define SPX_PROOF_SYNC_tail_done(...)
+#define SPX_PROOF_SYNC_notice(...)
+#define SPX_PROOF_SYNC_notice_active(...)
+#define SPX_PROOF_SYNC_notice_finish(...)
+#define SPX_PROOF_SYNC_loop(...) do { __CPROVER_assert(1,"source-cut-invariant:loop"); observe_loop(0x5606U,input,output,removed,&scratch); return 0x5606U; enter_iteration: input=spx_cut.input;output=spx_cut.output;removed=spx_cut.removed;scratch=spx_cut.scratch; __CPROVER_assert(1,"source-cut-invariant"); }while(0)
+#define SPX_PROOF_SYNC_tail(...) do { __CPROVER_assert(1,"source-cut-invariant:tail"); observe_loop(0x560dU,input,output,removed,&scratch); return 0x560dU;}while(0)
+#include "authored.c"
+
+struct machine_memory {struct spx_mutable_world *world;uint32_t text,text_extent,scratch,scratch_extent,stack;uint32_t removed;uint8_t b,c;};
+static uint32_t machine_read(void *opaque,uint32_t address,uint32_t width,uint32_t *fault){
+ struct machine_memory *m=opaque;*fault=0U;
+ if(address==m->stack && width==4U)return m->removed;
+ if(address==m->stack+6U && width==1U)return m->c;
+ if(address==m->stack+7U && width==1U)return m->b;
+ __CPROVER_assert(width==1U,"loop-text-read-width");
+ if(address<m->text || (uint64_t)address>=(uint64_t)m->text+m->text_extent){*fault=1U;return 0U;}
+ return spx_mutable_byte(m->world,address);
+}
+static void machine_write(void *opaque,uint32_t address,uint32_t width,uint32_t value,uint32_t *fault){
+ struct machine_memory *m=opaque;*fault=0U;
+ if(address==m->stack && width==4U){m->removed=value;return;}
+ if(address==m->stack+6U && width==1U){m->c=(uint8_t)value;return;}
+ if(address==m->stack+7U && width==1U){m->b=(uint8_t)value;return;}
+ __CPROVER_assert(width==1U,"loop-scratch-write-width");
+ if(address<m->scratch || (uint64_t)address>=(uint64_t)m->scratch+m->scratch_extent){*fault=1U;return;}
+ spx_mutable_event(m->world,address,1U,value,0U,0U);
+}
+spx_call_status spx_invoke_call(spx_runtime *r,const spx_call_event *e,const spx_machine_state *i,spx_machine_state *o){
+ (void)r;(void)e;(void)i;(void)o;__CPROVER_assert(0,"loop-no-service-call");return SPX_CALL_UNIMPLEMENTED;
+}
+void check_iteration(void){
+ uint32_t text_address,text_extent,scratch_address,scratch_extent,stack,input,output,removed,probe;
+ __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296));
+ __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));
+ __CPROVER_assume((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U));
+ __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);
+ __CPROVER_assume(stack>=16U && (uint64_t)stack+12U<=UINT64_C(4294967296));
+ __CPROVER_assume((uint64_t)stack+8U<=text_address || (uint64_t)text_address+text_extent<=stack);
+ __CPROVER_assume((uint64_t)stack+8U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack);
+ __CPROVER_assume(input<text_extent && output<=input && removed==input-output);
+ __CPROVER_assume(__CPROVER_uninterpreted_readonly_byte(text_address+text_extent-1U)==0U);
+ __CPROVER_assume((scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && __CPROVER_uninterpreted_readonly_byte(text_address+scratch_extent-1U)==0U));
+ if(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent)
+  __CPROVER_assume(__CPROVER_uninterpreted_readonly_byte(probe)==0U);
+ struct spx_mutable_world left={0},right={0};
+ struct machine_memory memory={.world=&left,.text=text_address,.text_extent=text_extent,.scratch=scratch_address,.scratch_extent=scratch_extent,.stack=stack};
+ uint8_t private_b,private_c; memory.removed=removed;memory.b=private_b;memory.c=private_c;
+ spx_machine_state initial,state;initial.esp=stack-16U;initial.ebp=stack+8U;
+ initial.edi=text_address;initial.ebx=scratch_address;initial.esi=input;initial.ecx=output;state=initial;
+ spx_runtime runtime={.context=&memory,.read=machine_read,.write=machine_write,.image_base=4194304U};
+ spx_step_result step=spx_sub_00005606(&runtime,&state,0x5606U);
+ struct spx_mutable_domain text_domain={&right,text_address,text_extent,1U},scratch_domain={&right,scratch_address,scratch_extent,3U};
+ spx_runtime text_runtime={.context=&text_domain,.read=spx_mutable_read},scratch_runtime={.context=&scratch_domain,.read=spx_mutable_read,.write=spx_mutable_write};
+ spx_component_view_context text_transport={&text_runtime,text_address,text_extent,1U},scratch_transport={&scratch_runtime,scratch_address,scratch_extent,3U};
+ spx_view_v5 text={.base={1U,1U,1U,0U,text_extent,1U},.extent=text_extent,.element_width=1U,.context=&text_transport,.access_context=&text_transport,.read_u8=spx_component_view_read,.read=spx_component_view_read_span};
+ spx_cut.scratch=(spx_view_v5){.base={1U,2U,1U,0U,scratch_extent,3U},.extent=scratch_extent,.element_width=1U,.context=&scratch_transport,.access_context=&scratch_transport,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};
+ spx_cut.input=input;spx_cut.output=output;spx_cut.removed=removed;
+ observed_state=state;observed_step=step;observed_removed=memory.removed;observed_extent=text_extent;
+ spx_text_cleanup_context_v5 context={0};
+ uint32_t result=cleanup(&context,&text,0,0,0,0);
+ __CPROVER_assert((step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX),"loop-fault-outcome");
+ __CPROVER_assert(spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe),"loop-whole-post-memory");
+ if(result!=UINT32_MAX){
+  __CPROVER_assert((step.kind==SPX_BRANCH || step.kind==SPX_FALLTHROUGH) && step.target_rva==result,"loop-control-successor");
+  if(scratch_extent && probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent)
+   __CPROVER_assert(spx_mutable_byte(&right,probe)==0U,"loop-zero-suffix-preserved");
+  __CPROVER_assert(state.ecx<=state.esi && memory.removed==state.esi-state.ecx,"loop-counter-invariant");
+  if(result==0x5606U){
+   __CPROVER_assert(state.esi>input && state.esi<text_extent,"loop-progress-and-domain");
+   __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent),"loop-scratch-domain-preserved");
+  }
+ }
+ uint32_t continuation_slot,continuation_byte;__CPROVER_assume(continuation_slot<8U && continuation_byte<10U);
+ __CPROVER_assert(state.ebx == initial.ebx && state.edi == initial.edi && state.ebp == initial.ebp && state.esp == initial.esp && state.x87_control == initial.x87_control && state.x87_status == initial.x87_status && state.x87_pending_exception == initial.x87_pending_exception && state.x87_last_opcode == initial.x87_last_opcode && state.x87_instruction_pointer == initial.x87_instruction_pointer && state.x87_code_selector == initial.x87_code_selector && state.x87_data_pointer == initial.x87_data_pointer && state.x87_data_selector == initial.x87_data_selector && state.fs_base == initial.fs_base && state.x87_stack[continuation_slot].value_bytes[continuation_byte] == initial.x87_stack[continuation_slot].value_bytes[continuation_byte] && state.x87_stack[continuation_slot].empty == initial.x87_stack[continuation_slot].empty && state.x87_stack[continuation_slot].tag == initial.x87_stack[continuation_slot].tag,"loop-preserved-register-frame");
+}

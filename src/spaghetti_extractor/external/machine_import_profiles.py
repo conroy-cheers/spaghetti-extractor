@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from .range_ownership import RangeOwnershipError, validate_range_ownership_relations
+from .range_allocation import RangeAllocationError, validate_range_allocation_relations
+
+from .range_release import RangeReleaseError, machine_range_release
+from .argument_domains import ArgumentDomainError, checked_argument_domain
+from .terminated_reads import checked_terminated_read, checked_terminated_write
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -347,6 +354,31 @@ def load_machine_import_profile_set(
                     context=f"{profile.path} {entry_key}[{entry_index}].import",
                 )
                 arity_kind, arity_words = _arity(raw)
+                try:
+                    checked_terminated_read(raw, argument_words=arity_words)
+                    checked_terminated_write(raw, argument_words=arity_words)
+                except ValueError as exc:
+                    raise MachineImportProfileError(str(exc)) from exc
+                try:
+                    checked_argument_domain(raw.get("argument_domain", []), argument_words=arity_words,
+                                            context=f"{profile.path} {entry_key}[{entry_index}]")
+                except ArgumentDomainError as exc:
+                    raise MachineImportProfileError(str(exc)) from exc
+                try:
+                    validate_range_ownership_relations(raw, argument_words=arity_words,
+                                                      context=f"{profile.path} {entry_key}[{entry_index}]")
+                except RangeOwnershipError as exc:
+                    raise MachineImportProfileError(str(exc)) from exc
+                try:
+                    validate_range_allocation_relations(raw, argument_words=arity_words,
+                                                      context=f"{profile.path} {entry_key}[{entry_index}]")
+                except RangeAllocationError as exc:
+                    raise MachineImportProfileError(str(exc)) from exc
+                try:
+                    machine_range_release(raw, argument_words=arity_words,
+                                          context=f"{profile.path} {entry_key}[{entry_index}]")
+                except RangeReleaseError as exc:
+                    raise MachineImportProfileError(str(exc)) from exc
                 _validate_callback_contract(
                     raw,
                     profile_format=str(profile_format),

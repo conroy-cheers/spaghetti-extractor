@@ -200,6 +200,95 @@ let
   };
   workflow = project.root;
   components = workflow.components;
+  outputValuePipelineProvider =
+    workflow.portableSemanticProvidersByComponent.output-value-pipeline;
+  outputValuePipelineProviderSet =
+    workflow.portableSemanticProviderSets.output-value-pipeline-enabled;
+  outputValuePipelineSelection =
+    workflow.semanticImplementationSelections.output-value-pipeline-enabled;
+  outputValuePipelineProofGate =
+    pkgs.runCommand "jq-output-value-pipeline-contextual-bisimulation-v6"
+      { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        set -euo pipefail
+        provider=${outputValuePipelineProvider.derivation}
+        jq -e '
+          .format == "spaghetti-extractor-semantic-provider-qualification-v2" and
+          .status == "complete" and
+          .provider_kind == "qualified_portable_c" and
+          ([.facets[] | select(.name == "bisimulation") | .status] == ["checked"]) and
+          .blockers == []
+        ' "$provider/semantic-provider-qualification.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          .status == "satisfied" and
+          .proof.status == "satisfied" and
+          .proof.activation_authorized == true and
+          spx_strong_contextual_proof and
+          ([.proof.shards[].nonvacuity.status] | all(. == "satisfied")) and
+          (.proof.shards | length) == 1 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_accesses == 14 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_bytes == 56
+        ' "$provider/contextual-refinement-result.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          spx_strong_cutpoint_plan
+        ' "$provider/component-proof-plan-v1.json" >/dev/null
+        jq -L ${../../nix/jq} -e '
+          include "strong-contextual-proof";
+          spx_contextual_exact_c_slice
+        ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null
+        touch "$out"
+      '';
+  outputValuePipelineLinkageBoundaryGate =
+    assert outputValuePipelineProviderSet.directIds == [ "output-value-pipeline" ];
+    pkgs.runCommand "jq-output-value-pipeline-native-linkage-boundary-v6"
+      { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; }
+      ''
+        set -euo pipefail
+        provider=${outputValuePipelineProvider.derivation}
+        selection=${outputValuePipelineSelection.artifact}
+        linked=${workflow.linkedSemanticModule.linkedSemanticModule}
+        provider_sha256="$(jq -r '.qualification_sha256' \
+          "$provider/semantic-provider-qualification.json")"
+        linked_sha256="$(jq -r '.linked_semantic_module_sha256' "$linked")"
+
+        # The component is qualified and selected, but jq's whole linked
+        # semantic module is not complete.  The selection receipt must remain
+        # the fail-closed endpoint: native realization cannot start until the
+        # linked-module blockers below are discharged.
+        jq -e \
+          --arg provider_sha256 "$provider_sha256" \
+          --arg linked_sha256 "$linked_sha256" '
+          .format == "spaghetti-extractor-implementation-selection-v2" and
+          .status == "incomplete" and
+          .ready_for_realization == false and
+          .mode == "hybrid" and
+          .bindings.linked_semantic_module_sha256 == $linked_sha256 and
+          ([.qualification_sha256s[] | select(. == $provider_sha256)] |
+            length) == 1 and
+          ([.definition_selections[] | select(
+            .provider_id == "jq.output-value-pipeline.portable-c" and
+            .provider_kind == "qualified_portable_c" and
+            .qualification_sha256 == $provider_sha256
+          )] | length) == 7 and
+          ([.blockers[] | select(
+            .code == "linked_semantic_module_incomplete"
+          )] | length) == 1
+        ' "$selection" >/dev/null
+        jq -e '
+          .format == "spaghetti-extractor-linked-semantic-module-v2" and
+          .status == "incomplete" and
+          .authority == false and
+          .counts.semantic_holes > 0 and
+          ([.semantic_holes[].code] | index(
+            "resolved_external_environment_incomplete"
+          )) != null
+        ' "$linked" >/dev/null
+        mkdir -p "$out"
+        cp "$selection" "$out/implementation-selection.json"
+        cp "$linked" "$out/linked-semantic-module.json"
+      '';
   componentMigrationStatus = pkgs.writeTextFile {
     name = "jq-component-v6-migration-status";
     destination = "/component-v6-migration-status.json";
@@ -245,9 +334,6 @@ let
           ([.blockers[] | .source] | unique) == ["component_binding_intent"]
         ' "$package" >/dev/null
       }
-      check_blockers \
-        ${components.v6WorkPackages.output-value-pipeline.derivation} \
-        output-value-pipeline
       check_blockers \
         ${components.v6WorkPackages.math-error-callback-dispatch.derivation} \
         math-error-callback-dispatch
@@ -333,9 +419,19 @@ sdk.target.pe32Bundle {
   targetAssets.boundary_schema = [ "intent/boundaries.json" ];
   targetAssets.boundary_source = [ "source/output-value-boundary.c" ];
   extraArtifacts.boundaries = boundaries;
+  extraArtifacts.output-value-pipeline-v6-provider =
+    outputValuePipelineProvider.derivation;
+  extraArtifacts.output-value-pipeline-contextual-bisimulation-v6 =
+    outputValuePipelineProofGate;
+  extraArtifacts.output-value-pipeline-native-linkage-boundary-v6 =
+    outputValuePipelineLinkageBoundaryGate;
   checks = v6ComponentChecks // authoredComponentChecks // {
     component-v6-migration-status = componentMigrationStatus;
     authored-component-v6-honest-blockers = authoredComponentBlockerGate;
+    output-value-pipeline-contextual-bisimulation-v6 =
+      outputValuePipelineProofGate;
+    output-value-pipeline-native-linkage-boundary-v6 =
+      outputValuePipelineLinkageBoundaryGate;
     semantic-module-v2-migration-checkpoint = semanticMigrationGate;
     canonical-boundaries = boundaries;
   };

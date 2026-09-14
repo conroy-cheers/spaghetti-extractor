@@ -917,8 +917,9 @@ def _render_expression(
             f"(((uint32_t)({rendered[0]})) {word_binary[op]} "
             f"((uint32_t)({rendered[1]})))"
         )
-    if op in logical_binary and len(rendered) == 2:
-        return f"(({rendered[0]}) {logical_binary[op]} ({rendered[1]}))"
+    if op in logical_binary and len(rendered) >= 2:
+        operator = f" {logical_binary[op]} "
+        return "(" + operator.join(f"({item})" for item in rendered) + ")"
     if op == "not" and len(rendered) == 1:
         return f"(!({rendered[0]}))"
     if op == "ite" and len(rendered) == 3:
@@ -985,9 +986,13 @@ def _write_cbmc_stdint(path: Path) -> None:
         "typedef unsigned short uint16_t; typedef signed short int16_t;\n"
         "typedef unsigned int uint32_t; typedef signed int int32_t;\n"
         "typedef unsigned long long uint64_t; typedef signed long long int64_t;\n"
+        "#define INT8_C(x) x\n#define INT16_C(x) x\n"
+        "#define INT32_C(x) x\n#define INT64_C(x) x##LL\n"
         "#define UINT8_C(x) x##U\n#define UINT16_C(x) x##U\n"
         "#define UINT32_C(x) x##U\n#define UINT64_C(x) x##ULL\n"
-        "#define UINT32_MAX UINT32_C(4294967295)\n#endif\n",
+        "#define INT64_MAX INT64_C(9223372036854775807)\n"
+        "#define UINT32_MAX UINT32_C(4294967295)\n"
+        "#define UINT64_MAX UINT64_C(18446744073709551615)\n#endif\n",
         encoding="ascii",
     )
 

@@ -67,6 +67,7 @@
           pkgs.lean4
           pkgs.z3
           pkgs.cbmc
+          pkgs.bubblewrap
           pkgs.jq
           pkgs.pkg-config
           pkgs.pkgsCross.mingw32.stdenv.cc

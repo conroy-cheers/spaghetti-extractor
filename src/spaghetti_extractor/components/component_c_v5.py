@@ -100,10 +100,12 @@ def _render_public(bundle: CompiledComponentInterfaceV5, component: str) -> str:
         "  SPX_REF_WRONG_ORIGIN = 3u, SPX_REF_PERMISSION = 4u",
         "};",
         "spx_ref_status spx_view_read_u8(const spx_view_v5 *, uint64_t, uint8_t *);",
+        "spx_ref_status spx_view_write_u8(const spx_view_v5 *, uint64_t, uint8_t);",
         "spx_ref_status spx_ref_derive(spx_ref_v5, uint64_t, uint32_t, spx_ref_v5 *);",
         "spx_ref_status spx_ref_difference(spx_ref_v5, spx_ref_v5, int64_t *);",
         "",
     ]
+    lines.extend(_record_type_declarations(schema.type_index))
     callback_types = sorted(
         {
             value.type_id
@@ -195,6 +197,15 @@ def _render_implementation(
         f"#define {guard}",
         "",
         '#include "portable-component.h"',
+        "",
+        "/* Proof markers are erased from every production object.  The CBMC",
+        " * proof prelude defines them before this header is included. */",
+        "#ifndef SPX_PROOF_BEGIN",
+        "#define SPX_PROOF_BEGIN(operation_id) ((void)0)",
+        "#endif",
+        "#ifndef SPX_PROOF_SYNC",
+        "#define SPX_PROOF_SYNC(sync_id, invariant, ...) ((void)0)",
+        "#endif",
         "",
     ]
     for operation in bundle.interface.operations:
@@ -457,9 +468,58 @@ def _plain_type(types: Mapping[str, BoundaryTypeV1], value: BoundaryTypeV1) -> s
         return "uintptr_t"
     if value.kind == "opaque":
         return f"struct spx_opaque_{_c(value.identity)}_v5 *"
+    if value.kind == "record":
+        return f"spx_{_c(value.identity)}_v2"
     raise BoundaryModelError(
         f"V5 component C does not support plain boundary type {value.kind!r}"
     )
+
+
+def _record_type_declarations(
+    types: Mapping[str, BoundaryTypeV1],
+) -> list[str]:
+    """Render logical record values once, independently of physical ABI lowering."""
+
+    pending = {
+        identity: value
+        for identity, value in types.items()
+        if value.kind == "record"
+    }
+    rendered: set[str] = set()
+    lines: list[str] = []
+    while pending:
+        ready = [
+            identity
+            for identity, value in pending.items()
+            if all(
+                types[str(field["type_id"])].kind != "record"
+                or str(field["type_id"]) in rendered
+                for field in value.body["fields"]
+            )
+        ]
+        if not ready:
+            raise BoundaryModelError(
+                "V5 component C record values contain an unsupported value cycle"
+            )
+        for identity in sorted(ready):
+            value = pending.pop(identity)
+            name = f"spx_{_c(identity)}_v2"
+            lines.append(f"typedef struct {name} {{")
+            fields = tuple(value.body["fields"])
+            if not fields:
+                raise BoundaryModelError("V5 component C record values may not be empty")
+            for field in fields:
+                if field["bit_width"] is not None:
+                    raise BoundaryModelError(
+                        "V5 component C record values do not support bit-fields"
+                    )
+                field_type = types[str(field["type_id"])]
+                lines.append(
+                    f"  {_plain_type(types, field_type)} {_c(str(field['id']))};"
+                )
+            lines.extend([f"}} {name};", f"typedef {name} spx_{_c(identity)}_v5;", ""])
+            rendered.add(identity)
+    return lines
 
 
 def _uses_atomic_resource(bundle: CompiledComponentInterfaceV5) -> bool:

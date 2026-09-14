@@ -47,21 +47,10 @@ let
             "--compiler-proposal ${lib.escapeShellArg "${spec.compilerProposal}"}"} \
           --out "$out"
       '') protocols;
-  intentTemplates = lib.mapAttrs (id: spec:
-    let safeId = lib.replaceStrings [ ":" ] [ "-" ] id;
-    in
-    pkgs.runCommand
-      "${namePrefix}-${safeId}-boundary-intent-template"
-      { __contentAddressed = true; }
-      ''
-        mkdir -p "$out"
-        cp ${lib.escapeShellArg "${spec.intent}"} "$out/call-intent.json"
-      '') protocols;
   subjects = lib.mapAttrs (id: result: {
-    proposal = result;
-    inspection = result;
+    source = result;
     check = result;
-    intentTemplate = intentTemplates.${id};
+    intent = protocols.${id}.intent;
   }) checked;
   assetInventory = lib.concatLists (lib.mapAttrsToList (id: spec: [
     { path = spec.intent; role = "call_intent"; owner = id; }
@@ -101,7 +90,7 @@ let
 in
 {
   configured = protocols != { };
-  inherit assetInventory checked intentTemplates status subjects;
+  inherit assetInventory checked status subjects;
   check = pkgs.linkFarm "${namePrefix}-checked-call-protocols"
     (lib.mapAttrsToList (name: path: { inherit name path; }) checked);
 }

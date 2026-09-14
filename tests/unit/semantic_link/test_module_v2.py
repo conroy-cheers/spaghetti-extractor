@@ -608,15 +608,15 @@ class LinkedSemanticModuleV2Tests(unittest.TestCase):
             diagnostic = semantic_status_projection_v2(module_path)
 
         subject = status["subjects"][0]
-        self.assertIs(subject["authority"], False)
+        self.assertEqual(subject["authority"], "not-applicable")
         self.assertEqual(subject["state"], payload["status"])
         self.assertEqual(
-            subject["blockers"], payload["semantic_holes"]
+            subject["blockers"]["count"], len(payload["semantic_holes"])
         )
         self.assertEqual(
-            subject["bindings"][0]["residual_obligations"],
-            len(payload["residual_obligations"]),
+            subject["sources"][0]["format"], payload["format"]
         )
+        self.assertNotIn("authority", status)
         self.assertIs(diagnostic["authority"], False)
         self.assertEqual(
             diagnostic["counts"]["semantic_holes"],

@@ -3,7 +3,10 @@
 from importlib import import_module
 from typing import Any
 
-from .formats import NATIVE_REALIZATION_V2_FORMAT
+from .formats import (
+    NATIVE_REALIZATION_V2_FORMAT,
+    PORTABLE_DISPATCH_LINK_RECEIPT_V1_FORMAT,
+)
 
 
 _RECEIPT_EXPORTS = {
@@ -20,4 +23,8 @@ def __getattr__(name: str) -> Any:
     return getattr(import_module(".receipt_v2", __name__), name)
 
 
-__all__ = ["NATIVE_REALIZATION_V2_FORMAT", *_RECEIPT_EXPORTS]
+__all__ = [
+    "NATIVE_REALIZATION_V2_FORMAT",
+    "PORTABLE_DISPATCH_LINK_RECEIPT_V1_FORMAT",
+    *_RECEIPT_EXPORTS,
+]

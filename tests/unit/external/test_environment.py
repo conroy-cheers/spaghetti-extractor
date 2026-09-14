@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.boundary import BoundarySchemaV1, TargetDataLayoutV1
@@ -97,6 +98,40 @@ def _write_checked_schema_package(spec_path: Path, out: Path) -> None:
 
 
 class ExternalEnvironmentTests(unittest.TestCase):
+    def test_text_api_frames_remain_abi_only_until_effects_are_qualified(self) -> None:
+        from spaghetti_extractor.candidate.runtime_canonical_common import _checked_contract
+        from spaghetti_extractor.candidate.runtime_canonical_errors import CanonicalRuntimeError
+
+        root = Path(__file__).parents[3]
+        profiles = load_machine_import_profile_set([
+            root / "profiles/pe32-kernel32-runtime-v1.json",
+            root / "profiles/pe32-win32-windowing-runtime-v1.json",
+        ])
+        expected = {"lstrlenA": 1, "lstrlenW": 1, "SetWindowTextA": 2, "SetWindowTextW": 2}
+        selected = {str(item.identity.value): item for item in profiles.contracts if item.identity.value in expected}
+        self.assertEqual(set(selected), set(expected))
+        for symbol, words in expected.items():
+            with self.subTest(symbol=symbol):
+                contract = selected[symbol]
+                boundary = lower_machine_import_boundary_v1(contract, abi_dialect="pe32-i386-ms-v1")
+                frame = boundary["physical_call_frame_v3"]["transport"]
+                self.assertEqual(frame["calling_convention"], "stdcall")
+                self.assertEqual([row["fragments"][0]["location"]["stack_offset_bytes"] for row in frame["arguments"]],
+                                 list(range(4, 4 + words * 4, 4)))
+                self.assertEqual(frame["stack"]["cleanup_bytes"], words * 4)
+                for key in ("memory_effect", "world_effect", "callback_effect", "result_register_relations"):
+                    self.assertNotIn(key, contract.contract)
+                with self.assertRaisesRegex(CanonicalRuntimeError, "ABI-only declaration"):
+                    _checked_contract(
+                        row={"identity": contract.contract["import"], "boundary": boundary, "contract": {
+                            "profile_id": contract.profile_id, "profile_sha256": contract.profile_sha256,
+                            "entry_key": contract.entry_key, "entry_index": contract.entry_index,
+                            "payload": contract.contract,
+                        }},
+                        call=SimpleNamespace(argument_nodes=(), instruction_rva=0x1000),
+                        escape_index={},
+                    )
+
     def test_external_service_profiles_lower_to_exact_outcomes_and_views(
         self,
     ) -> None:

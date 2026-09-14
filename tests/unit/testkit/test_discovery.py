@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 from spaghetti_extractor.build_support.python_module_index import declared_public_command_roots
-from spaghetti_extractor.testkit import TestkitError, build_impact_index
+from spaghetti_extractor.testkit import TestkitError
+from spaghetti_extractor.testkit.discovery import build_impact_index
 
 
 def _repository(root: Path) -> Path:
@@ -23,6 +24,27 @@ def _write(root: Path, relative: str, content: str) -> None:
 
 
 class TestDiscoveryTests(unittest.TestCase):
+    def test_fixture_import_does_not_inherit_developer_tool_invalidation(self) -> None:
+        initializer = (Path(__file__).resolve().parents[3] /
+                       "src/spaghetti_extractor/testkit/__init__.py").read_text()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            package = "src/spaghetti_extractor/testkit/"
+            _write(root, package + "__init__.py", initializer)
+            for module in ("diagnostics", "fixtures", "model", "discovery", "doctor",
+                           "planning", "rebuild", "scaffold", "static_manifest", "transfer_fixture"):
+                _write(root, package + module + ".py", "VALUE = 1\n")
+            _write(root, "tests/unit/value/test_value.py",
+                   "from spaghetti_extractor.testkit.transfer_fixture import VALUE\n")
+            before = build_impact_index(root).tests[0]
+            _write(root, package + "scaffold.py", "VALUE = 2\n")
+            after_tool_edit = build_impact_index(root).tests[0]
+            self.assertEqual(before.input_sha256, after_tool_edit.input_sha256)
+            self.assertNotIn(package + "scaffold.py", after_tool_edit.dependency_paths)
+            _write(root, package + "transfer_fixture.py", "VALUE = 2\n")
+            after_fixture_edit = build_impact_index(root).tests[0]
+            self.assertNotEqual(before.input_sha256, after_fixture_edit.input_sha256)
+
     def test_command_backends_are_role_roots_not_cli_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))
@@ -278,6 +300,27 @@ list(PROFILES.glob(\"*.json\"))
                 row.resources,
                 ("profiles/base.json", "profiles/selected.json"),
             )
+
+    def test_fixture_catalog_names_do_not_become_directory_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            catalog = {"format": "spaghetti-extractor-test-fixture-catalog-v1", "fixtures": [
+                {"id": "nix", "description": "Nix fixture", "capabilities": ["nix"],
+                 "nix_attribute": "test-fixture-nix"}]}
+            _write(root, "fixtures.json", json.dumps(catalog))
+            _write(root, "nix/unrelated.nix", "{}\n")
+            _write(root, "tests/unit/config/test_fixture.py", 'TESTKIT = {"resources": ["fixtures.json"]}\n')
+            before = build_impact_index(root).tests[0]
+            self.assertEqual(before.resources, ("fixtures.json",))
+            _write(root, "nix/unrelated.nix", "{ changed = true; }\n")
+            self.assertEqual(before.input_sha256, build_impact_index(root).tests[0].input_sha256)
+            catalog["fixtures"][0]["description"] = "Updated fixture"
+            _write(root, "fixtures.json", json.dumps(catalog))
+            self.assertNotEqual(before.input_sha256, build_impact_index(root).tests[0].input_sha256)
+            catalog["includes"] = ["nix/unrelated.nix"]
+            _write(root, "fixtures.json", json.dumps(catalog))
+            with self.assertRaises(TestkitError):
+                build_impact_index(root)
 
     def test_transitive_module_owned_resources_are_discovered_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

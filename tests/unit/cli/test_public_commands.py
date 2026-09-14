@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from spaghetti_extractor.cli import _build_parser, main
@@ -61,9 +62,8 @@ OPERATOR_COMMANDS = (
     "component list",
     "component status",
     "component build",
-    "component bind",
+    "component start",
     "component check",
-    "component relation",
     "boundary status",
     "boundary inspect",
     "boundary propose",
@@ -76,9 +76,43 @@ OPERATOR_COMMANDS = (
     "candidate list",
     "candidate status",
     "candidate build",
-    "candidate check",
     "candidate test",
 )
+
+
+def _operator_status(
+    subject: str,
+    *,
+    state: str = "complete",
+    authority: str = "not-applicable",
+    blockers: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    groups = [] if blockers is None else blockers
+    count = sum(int(row["count"]) for row in groups)
+    return {
+        "format": "spaghetti-extractor-operator-work-status-v2",
+        "target_id": "gnu-hello",
+        "scope": "test",
+        "status": state,
+        "counts": {
+            "subjects": 1,
+            "complete": int(state == "complete"),
+            "incomplete": int(state == "incomplete"),
+            "violated": int(state == "violated"),
+            "authority_held": int(authority == "held"),
+            "blockers": count,
+        },
+        "subjects": [{
+            "subject": subject,
+            "kind": subject.split(":", 1)[0],
+            "state": state,
+            "authority": authority,
+            "stage": None,
+            "sources": [],
+            "blockers": {"count": count, "groups": groups},
+            "next_action": None,
+        }],
+    }
 
 
 def _subcommands(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
@@ -262,6 +296,27 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_operator_group_defers_domain_codecs_until_a_product_is_read(self) -> None:
+        program = r"""
+import sys
+import spaghetti_extractor.commands.workflows
+forbidden = {
+    "spaghetti_extractor.components.work_package_v6",
+    "spaghetti_extractor.semantic_link.module_v2",
+    "spaghetti_extractor.semantic_providers.qualification_v2",
+    "spaghetti_extractor.semantic_providers.selection_v2",
+}
+loaded = sorted(forbidden.intersection(sys.modules))
+raise SystemExit("eager domain codecs: " + repr(loaded) if loaded else 0)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", program],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_active_command_keeps_argument_errors_at_exit_two(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaisesRegex(SystemExit, "2"):
@@ -269,41 +324,36 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
     def test_operator_workflows_select_explicit_products(self) -> None:
         index = {
-            "hasComponents": True,
             "defaultConfiguration": "default",
             "components": {
                 "units": {
                     "leaf": {
-                        "kind": "component",
                         "label": "Leaf",
-                        "hasActivationReceipt": True,
+                        "entryRvas": [4096],
+                        "products": ["qualification", "workPackage"],
                     }
                 },
-                "configurations": {"default": {"kind": "configuration"}},
             },
             "candidate": {
-                "configurations": ["default"],
+                "configurations": {
+                    "default": {
+                        "mode": "hybrid",
+                        "products": ["realization", "selection"],
+                    }
+                },
                 "testSuites": {"public": {"configurationId": "default"}},
             },
-            "libraries": {"configured": True, "selections": []},
+            "libraries": {"selections": {}},
         }
         cases = (
             (["project", "analyze", "jq"], "project.analysis", False),
             (["project", "check", "dxball"], "project.regressionCheck", True),
             (["project", "check", "jq", "--acceptance"], "project.acceptanceCheck", True),
-            (["component", "build", "gnu-hello", "leaf"], 'components.units."leaf".build', False),
-            (["component", "build", "gnu-hello"], 'components.configurations."default".runtime', False),
-            (["component", "check", "gnu-hello", "leaf"], 'components.units."leaf".check', True),
+            (["component", "build", "gnu-hello", "leaf"], 'components.units."leaf".workPackage', False),
             (["library", "check", "gnu-hello"], "libraries.check", True),
-            (["candidate", "build", "jq"], 'candidate.builds."default"', False),
-            (["candidate", "check", "jq"], 'candidate.checks."default"."hybrid"', True),
-            (
-                ["candidate", "check", "jq", "--mode", "portable"],
-                'candidate.checks."default"."portable"',
-                True,
-            ),
+            (["candidate", "build", "jq"], 'candidate.configurations."default".realization', False),
             (["candidate", "test", "jq"], "candidate.allTests", True),
-            (["candidate", "test", "jq", "--suite", "public"], 'candidate.tests."public"', True),
+            (["candidate", "test", "jq", "--suite", "public"], 'candidate.testSuites."public"', True),
         )
         for arguments, suffix, no_link in cases:
             with self.subTest(arguments=arguments), patch(
@@ -318,10 +368,101 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 self.assertEqual(called_args[1], suffix)
                 self.assertEqual(called_kwargs.get("no_link", False), no_link)
 
+    def test_component_check_requires_a_complete_bound_qualification(self) -> None:
+        index = {
+            "components": {
+                "units": {
+                    "leaf": {"products": ["qualification"]},
+                },
+            },
+        }
+        qualification = SimpleNamespace(
+            provider_id="fixture.leaf.portable-c",
+            payload={"status": "complete", "blockers": []},
+        )
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_artifact",
+            return_value=(Path("/tmp/qualification"), {}),
+        ) as realize, patch(
+            "spaghetti_extractor.semantic_providers.qualification_v2."
+            "SemanticProviderQualificationV2.parse",
+            return_value=qualification,
+        ):
+            self.assertEqual(
+                main(["component", "check", "fixture", "leaf"]), 0
+            )
+        self.assertEqual(
+            realize.call_args.args[1], 'components.units."leaf".qualification'
+        )
+
+    def test_boundary_adopt_directs_components_to_component_start(self) -> None:
+        with patch(
+            "spaghetti_extractor.commands.workflows._boundary_subject",
+            return_value={
+                "canonicalSubject": "component:leaf",
+                "kind": "component",
+            },
+        ), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([
+                "boundary", "adopt", "fixture", "component:leaf",
+                "--output", "/tmp/unused-component-intent.json",
+            ]), 2)
+
+    def test_component_seed_is_an_alias_only_when_its_entry_rva_is_authored(self) -> None:
+        from spaghetti_extractor.commands.workflows import _boundary_subject
+
+        args = SimpleNamespace(subject="component-seed:0x1000")
+        boundaries = {
+            "subjects": {
+                "component:leaf": {
+                    "kind": "component",
+                    "products": ["source"],
+                },
+            },
+        }
+        components = {
+            "units": {
+                "leaf": {"entryRvas": [4096]},
+            },
+        }
+        with patch(
+            "spaghetti_extractor.commands.workflows._boundary_index",
+            return_value=boundaries,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._component_index",
+            return_value=components,
+        ):
+            resolved = _boundary_subject(args)
+        self.assertEqual(resolved["canonicalSubject"], "component:leaf")
+        self.assertNotIn("dynamic", resolved)
+
+        with patch(
+            "spaghetti_extractor.commands.workflows._boundary_index",
+            return_value={"subjects": {}},
+        ), patch(
+            "spaghetti_extractor.commands.workflows._component_index",
+            return_value=components,
+        ), self.assertRaisesRegex(ValueError, "has no boundary product"):
+            _boundary_subject(args)
+
+        components["units"]["leaf"]["entryRvas"] = [8192]
+        with patch(
+            "spaghetti_extractor.commands.workflows._boundary_index",
+            return_value=boundaries,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._component_index",
+            return_value=components,
+        ):
+            unresolved = _boundary_subject(args)
+        self.assertTrue(unresolved["dynamic"])
+
     def test_library_check_accepts_the_public_island_id(self) -> None:
         island = "library-island-v4:" + "a" * 64
         index = {
-            "libraries": {"configured": True, "selections": ["a" * 64]},
+            "libraries": {"selections": {"a" * 64: {"products": ["check"]}}},
         }
         with patch(
             "spaghetti_extractor.commands.workflows._operator_index",
@@ -334,84 +475,81 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 0,
             )
         self.assertEqual(
-            build.call_args.args[1], f'libraries.checks."{"a" * 64}"'
+            build.call_args.args[1], f'libraries.selections."{"a" * 64}".check'
         )
         self.assertTrue(build.call_args.kwargs["no_link"])
 
     def test_component_status_reads_the_canonical_checked_status(self) -> None:
         index = {
-            "hasComponents": True,
-            "defaultConfiguration": "default",
             "components": {
                 "units": {"leaf": {
-                    "kind": "component",
                     "label": "Leaf",
-                    "hasActivationReceipt": True,
+                    "entryRvas": [4096],
+                    "products": ["qualification", "workPackage"],
                 }},
-                "configurations": {"default": {"kind": "configuration"}},
             },
         }
-        report = {"status": "ready", "counts": None, "next_action": None}
+        report = _operator_status("component:leaf", authority="held")
         with patch(
             "spaghetti_extractor.commands.workflows._operator_index",
             return_value=index,
         ), patch(
-            "spaghetti_extractor.commands.workflows._realize_json",
-            return_value=report,
+            "spaghetti_extractor.commands.workflows._realize_artifact",
+            return_value=(Path("/tmp/qualification"), {}),
         ) as realize, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main(["component", "status", "fixture", "leaf"]), 0)
+            with patch(
+                "spaghetti_extractor.commands.workflows.project_component_qualification",
+                return_value=(report, []),
+            ):
+                self.assertEqual(main(["component", "status", "fixture", "leaf"]), 0)
             self.assertEqual(
-                realize.call_args.args[1], 'components.units."leaf".status'
+                realize.call_args.args[1], 'components.units."leaf".qualification'
             )
 
     def test_component_development_status_selects_the_local_progress_leaf(self) -> None:
         index = {
-            "hasComponents": True,
-            "defaultConfiguration": "default",
             "components": {
-                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
-                "configurations": {"default": {"kind": "configuration"}},
+                "units": {"leaf": {
+                    "label": "Leaf",
+                    "entryRvas": [4096],
+                    "products": ["workPackage"],
+                }},
             },
         }
-        report = {"status": "incomplete", "counts": None, "next_action": None}
+        report = _operator_status("component:leaf", state="incomplete")
         with patch(
             "spaghetti_extractor.commands.workflows._operator_index",
             return_value=index,
         ), patch(
-            "spaghetti_extractor.commands.workflows._realize_json",
-            return_value=report,
+            "spaghetti_extractor.commands.workflows._realize_artifact",
+            return_value=(Path("/tmp/work-package"), {}),
         ) as realize, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(
-                main(
-                    [
-                        "component",
-                        "status",
-                        "fixture",
-                        "leaf",
-                        "--development",
-                    ]
-                ),
-                0,
-            )
+            with patch(
+                "spaghetti_extractor.commands.workflows.project_component_work_package",
+                return_value=(report, []),
+            ):
+                self.assertEqual(
+                    main([
+                        "component", "status", "fixture", "leaf", "--development",
+                    ]),
+                    0,
+                )
         self.assertEqual(
             realize.call_args.args[1],
-            'components.units."leaf".developmentStatus',
+            'components.units."leaf".workPackage',
         )
 
     def test_component_development_status_rejects_configurations(self) -> None:
         index = {
-            "hasComponents": True,
-            "defaultConfiguration": "default",
             "components": {
-                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
-                "configurations": {"default": {"kind": "configuration"}},
+                "units": {"leaf": {"label": "Leaf", "products": []}},
             },
         }
         with patch(
             "spaghetti_extractor.commands.workflows._operator_index",
             return_value=index,
         ), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(
+            with self.assertRaisesRegex(SystemExit, "2"):
                 main(
                     [
                         "component",
@@ -421,38 +559,24 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                         "default",
                         "--development",
                     ]
-                ),
-                2,
-            )
+                )
 
     def test_project_status_reads_semantic_module_work_view(self) -> None:
-        report = {
-            "format": "spaghetti-extractor-operator-work-status-v1",
-            "status": "incomplete",
-            "authority": False,
-            "counts": {
-                "subjects": 1,
-                "complete": 0,
-                "incomplete": 1,
-                "violated": 0,
-                "authoritative": 0,
-                "blockers": 1,
-            },
-            "subjects": [{
-                "subject": "module:gnu-hello",
-                "state": "incomplete",
-                "authority": False,
-                "bindings": [],
-                "blockers": [{
-                    "code": "isa_qualification_evidence_missing",
-                    "unit_id": "unit:1",
-                }],
-                "dependencies": [],
-                "ranked_next_action": "qualify the form",
+        report = _operator_status(
+            "module:gnu-hello",
+            state="incomplete",
+            blockers=[{
+                "family": "semantic-link",
+                "code": "isa_qualification_evidence_missing",
+                "count": 1,
+                "example_location": "unit:1",
             }],
-        }
+        )
         output = io.StringIO()
         with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value={"libraries": {"selections": {}}},
+        ), patch(
             "spaghetti_extractor.commands.workflows._realize_json",
             return_value=report,
         ) as realize, contextlib.redirect_stdout(output):
@@ -461,7 +585,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertEqual(realize.call_args.args[2], "project-status.json")
         self.assertIn("blockers=1", output.getvalue())
         self.assertIn("[unit:1]", output.getvalue())
-        self.assertIn("semantic-authority=false", output.getvalue())
+        self.assertIn("authority=not-applicable", output.getvalue())
         self.assertNotIn("configuration=", output.getvalue())
 
     def test_library_status_reads_checked_operator_artifact(self) -> None:
@@ -483,6 +607,9 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         }
         output = io.StringIO()
         with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value={"libraries": {"selections": {}}},
+        ), patch(
             "spaghetti_extractor.commands.workflows._realize_json",
             return_value=report,
         ) as realize, contextlib.redirect_stdout(output):
@@ -493,6 +620,16 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertIn("adoption=ready", output.getvalue())
         self.assertIn("recognition=incomplete", output.getvalue())
         self.assertIn("ready=1/2", output.getvalue())
+
+    def test_unconfigured_library_workflow_fails_before_realization(self) -> None:
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value={"libraries": None},
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_json"
+        ) as realize, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["library", "status", "jq"]), 2)
+        realize.assert_not_called()
 
     def test_library_adoption_is_tracked_idempotent_and_refuses_stale_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -539,6 +676,9 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 "--recipe", "portable-runtime",
             ]
             with patch(
+                "spaghetti_extractor.commands.workflows._operator_index",
+                return_value={"libraries": {"selections": {}}},
+            ), patch(
                 "spaghetti_extractor.commands.workflows._realize_json",
                 return_value=report,
             ), contextlib.redirect_stdout(io.StringIO()):
@@ -550,16 +690,21 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             self.assertEqual(intent["format"], "spaghetti-extractor-library-adoption-intent-v1")
             outputs[0].write_text("{}\n", encoding="utf-8")
             with patch(
+                "spaghetti_extractor.commands.workflows._operator_index",
+                return_value={"libraries": {"selections": {}}},
+            ), patch(
                 "spaghetti_extractor.commands.workflows._realize_json",
                 return_value=report,
             ), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main(arguments), 2)
     def test_component_list_is_index_only(self) -> None:
         index = {
-            "hasComponents": True,
             "components": {
-                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
-                "configurations": {"default": {"kind": "configuration", "label": "Default"}},
+                "units": {"leaf": {
+                    "label": "Leaf",
+                    "entryRvas": [4096],
+                    "products": ["workPackage"],
+                }},
             }
         }
         output = io.StringIO()
@@ -569,13 +714,42 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         ), contextlib.redirect_stdout(output):
             self.assertEqual(main(["component", "list", "gnu-hello"]), 0)
         self.assertIn("leaf", output.getvalue())
-        self.assertIn("default", output.getvalue())
+        self.assertNotIn("configuration", output.getvalue())
+
+    def test_json_list_commands_emit_the_complete_validated_index(self) -> None:
+        index = {
+            "format": "spaghetti-extractor-operator-index-v1",
+            "targetId": "fixture",
+            "defaultConfiguration": "faithful",
+            "project": {"products": []},
+            "components": {"products": ["proposals"], "units": {}},
+            "boundaries": {"products": [], "subjects": {}},
+            "libraries": None,
+            "candidate": {
+                "products": [],
+                "configurations": {},
+                "testSuites": {},
+            },
+        }
+        for namespace in ("component", "candidate"):
+            with self.subTest(namespace=namespace), patch(
+                "spaghetti_extractor.commands.workflows._operator_index",
+                return_value=index,
+            ), patch(
+                "spaghetti_extractor.commands.workflows._realize_json"
+            ) as realize:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(
+                        main([namespace, "list", "fixture", "--json"]), 0
+                    )
+                self.assertEqual(json.loads(output.getvalue()), index)
+                realize.assert_not_called()
 
     def test_component_list_exposes_analysis_proposals_before_intent(self) -> None:
         index = {
-            "hasComponents": False,
-            "defaultConfiguration": None,
-            "components": {"units": {}, "configurations": {}},
+            "defaultConfiguration": "faithful",
+            "components": {"units": {}},
         }
         proposals = {
             "proposals": [
@@ -600,28 +774,38 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertIn("proposal:entry", output.getvalue())
         self.assertIn("0x1000-0x1010", output.getvalue())
 
-    def test_component_and_candidate_builds_fail_cleanly_before_intent(self) -> None:
+    def test_component_absence_does_not_hide_the_faithful_candidate(self) -> None:
         index = {
-            "hasComponents": False,
-            "defaultConfiguration": None,
-            "components": {"units": {}, "configurations": {}},
-            "candidate": {"configurations": [], "testSuites": {}},
+            "defaultConfiguration": "faithful",
+            "components": {"units": {}},
+            "candidate": {
+                "configurations": {
+                    "faithful": {
+                        "mode": "faithful",
+                        "products": ["realization", "selection"],
+                    }
+                },
+                "testSuites": {},
+            },
         }
-        for command in (
-            ["component", "build", "fixture"],
-            ["candidate", "build", "fixture"],
-            ["candidate", "check", "fixture"],
-        ):
-            with self.subTest(command=command), patch(
-                "spaghetti_extractor.commands.workflows._operator_index",
-                return_value=index,
-            ), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(main(command), 2)
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._build", return_value=0
+        ) as build:
+            self.assertEqual(main(["candidate", "build", "fixture"]), 0)
+        self.assertEqual(
+            build.call_args.args[1], 'candidate.configurations."faithful".realization'
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(SystemExit, "2"):
+                main(["component", "build", "fixture"])
 
     def test_candidate_test_without_declared_suites_is_a_usage_error(self) -> None:
         index = {
             "defaultConfiguration": "default",
-            "candidate": {"configurations": ["default"], "testSuites": {}},
+            "candidate": {"configurations": {"default": {}}, "testSuites": {}},
         }
         with patch(
             "spaghetti_extractor.commands.workflows._operator_index",
@@ -633,7 +817,10 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         index = {
             "defaultConfiguration": "default",
             "candidate": {
-                "configurations": ["default", "minimal"],
+                "configurations": {
+                    "default": {"mode": "hybrid"},
+                    "minimal": {"mode": "portable"},
+                },
                 "testSuites": {
                     "public": {"configurationId": "default"},
                 },
@@ -650,74 +837,90 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertIn("minimal", output.getvalue())
 
     def test_candidate_status_selects_one_configuration_progress_report(self) -> None:
-        report = {
-            "format": "spaghetti-extractor-operator-work-status-v1",
-            "status": "complete",
-            "counts": {"blockers": 0},
-            "subjects": [{
-                "subject": "configuration:gnu-hello:minimal",
-                "state": "complete",
-                "authority": False,
-                "bindings": [{"ready_for_realization": True}],
-                "blockers": [],
-                "dependencies": [],
-                "ranked_next_action": "realize semantic module configuration minimal",
-            }],
+        report = _operator_status("configuration:gnu-hello:minimal")
+        index = {
+            "defaultConfiguration": "default",
+            "candidate": {
+                "configurations": {
+                    "default": {"mode": "hybrid"},
+                    "minimal": {"mode": "portable"},
+                },
+            },
         }
         output = io.StringIO()
         with patch(
-            "spaghetti_extractor.commands.workflows._realize_json",
-            return_value=report,
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_artifact",
+            return_value=(Path("/tmp/selection"), {"ready_for_realization": True}),
         ) as realize, contextlib.redirect_stdout(output):
-            self.assertEqual(
-                main(
-                    [
-                        "candidate",
-                        "status",
-                        "gnu-hello",
-                        "--configuration",
-                        "minimal",
-                    ]
-                ),
-                0,
-            )
+            with patch(
+                "spaghetti_extractor.commands.workflows.project_candidate_selection",
+                return_value=({
+                    **report,
+                    "provider_coverage": {
+                        "portable_progress": "partial",
+                        "fallback_free": False,
+                        "definitions": {
+                            "selected": 3,
+                            "by_kind": {
+                                "qualified_portable_c": 1,
+                                "generated_behavioral_c": 2,
+                                "external_environment": 0,
+                                "qualified_runtime": 0,
+                                "pinned_binary": 0,
+                            },
+                        },
+                    },
+                }, []),
+            ):
+                self.assertEqual(
+                    main([
+                        "candidate", "status", "gnu-hello",
+                        "--configuration", "minimal",
+                    ]),
+                    0,
+                )
         self.assertEqual(
-            realize.call_args.args[1], 'candidate.statuses."minimal"'
+            realize.call_args.args[1],
+            'candidate.configurations."minimal".selection',
         )
-        self.assertEqual(realize.call_args.args[2], "project-status.json")
+        self.assertEqual(realize.call_args.args[2], "implementation-selection.json")
         self.assertIn("realization-ready=true", output.getvalue())
+        self.assertIn("exact-selection=complete", output.getvalue())
+        self.assertIn("portable-progress=partial", output.getvalue())
+        self.assertIn("fallback-free=false", output.getvalue())
+        self.assertIn("portable-c=1", output.getvalue())
+        self.assertIn("generated-c=2", output.getvalue())
 
-    def test_candidate_status_reads_materialized_default_without_index(self) -> None:
-        report = {
-            "format": "spaghetti-extractor-operator-work-status-v1",
-            "status": "incomplete",
-            "counts": {"blockers": 1},
-            "subjects": [{
-                "subject": "configuration:gnu-hello:default",
-                "state": "incomplete",
-                "authority": False,
-                "bindings": [{"ready_for_realization": False}],
-                "blockers": [{"code": "implementation_selection_missing"}],
-                "dependencies": [],
-                "ranked_next_action": "resolve the selection",
-            }],
+    def test_candidate_status_uses_the_indexed_default_selection(self) -> None:
+        report = _operator_status("configuration:gnu-hello:default")
+        index = {
+            "defaultConfiguration": "default",
+            "candidate": {"configurations": {"default": {"mode": "hybrid"}}},
         }
         with patch(
-            "spaghetti_extractor.commands.workflows._realize_json",
-            return_value=report,
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_artifact",
+            return_value=(Path("/tmp/selection"), {"ready_for_realization": True}),
         ) as realize, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main(["candidate", "status", "gnu-hello"]), 0)
+            with patch(
+                "spaghetti_extractor.commands.workflows.project_candidate_selection",
+                return_value=(report, []),
+            ):
+                self.assertEqual(main(["candidate", "status", "gnu-hello"]), 0)
         self.assertEqual(
-            realize.call_args.args[1], "candidate.materializedStatus"
+            realize.call_args.args[1],
+            'candidate.configurations."default".selection',
         )
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
         index = {
-            "hasComponents": True,
-            "defaultConfiguration": "default",
             "components": {
-                "units": {"leaf": {}},
-                "configurations": {"default": {}},
+                "units": {"leaf": {"products": ["workPackage"]}},
             },
         }
         with patch(
@@ -742,7 +945,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         args = build.call_args.args[0]
         self.assertEqual(args.target_flake, "path:/tmp/consumer")
         self.assertEqual(
-            build.call_args.args[1], 'components.units."leaf".build'
+            build.call_args.args[1], 'components.units."leaf".workPackage'
         )
 
     def test_operator_installables_quote_dotted_dynamic_identifiers(self) -> None:
@@ -752,10 +955,10 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertEqual(
             _operator_attribute(
                 args,
-                'candidate.tests."suite.with.dots"',
+                'candidate.testSuites."suite.with.dots"',
             ),
             'legacyPackages.x86_64-linux.operatorTargets.'
-            '"target.with.dots".candidate.tests."suite.with.dots"',
+            '"target.with.dots".candidate.testSuites."suite.with.dots"',
         )
 
 

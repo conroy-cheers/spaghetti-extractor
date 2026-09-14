@@ -16,8 +16,8 @@ from types import ModuleType
 from typing import Any, Mapping
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..candidate import behavioral_c_render, runtime_helpers
-from ..candidate.behavioral_c_render import behavioral_c_operation_coverage_v2
+from ..transfer import behavioral_c_render, runtime_helpers
+from ..transfer.behavioral_c_render import behavioral_c_operation_coverage_v2
 from ..errors import ToolkitInputError
 from ..isa.catalog import ISA_PROFILE_ID
 from ..isa.qualification_certificate import (

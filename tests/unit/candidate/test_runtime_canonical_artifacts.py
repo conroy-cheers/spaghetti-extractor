@@ -64,6 +64,11 @@ class CanonicalRuntimeArtifactTests(unittest.TestCase):
             self.assertEqual(runtime_source.count("uint32_t spx_ref_derive("), 1)
             self.assertEqual(runtime_source.count("uint32_t spx_ref_difference("), 1)
             self.assertEqual(runtime_source.count("uint32_t spx_view_read_u8("), 1)
+            self.assertIn("typedef struct spx_ref_v1 {", runtime_source)
+            self.assertIn("uint64_t domain;", runtime_source)
+            self.assertIn("typedef spx_ref_v1 spx_ref_v5;", runtime_source)
+            self.assertIn("return 3U; /* SPX_REF_WRONG_ORIGIN */", runtime_source)
+            self.assertNotIn("typedef struct spx_ref_v5 {", runtime_source)
             self.assertIn(
                 "static const spx_native_guest_dispatch_site",
                 runtime_source,
@@ -88,6 +93,18 @@ class CanonicalRuntimeArtifactTests(unittest.TestCase):
             )
             self.assertIn("__atomic_compare_exchange_n", runtime_source)
             self.assertIn("__ATOMIC_ACQUIRE", runtime_source)
+            self.assertNotIn(
+                "spx_native_implementation_dispatches", runtime_source
+            )
+            self.assertNotIn("spx_native_portable_dispatch_count", runtime_source)
+            self.assertIn(
+                "spx_region_override_lookup(observed->entry_rva) != observed",
+                runtime_source,
+            )
+            self.assertIn(
+                "return override == 0 || override->fallback_on_unimplemented != 0U;",
+                runtime_source,
+            )
             self.assertIn("spx_code_site_kind site_kind", runtime_source)
             guest_table = runtime_source.split(
                 "static const uint32_t spx_native_guest_dispatch_targets[] = {",

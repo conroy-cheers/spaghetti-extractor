@@ -22,6 +22,7 @@ from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
 from ..util import sha256_file, write_json
 from .compiler import _TransferCompiler
 from .definedness import analyze_transfer_definedness_v2
+from .finite_control import _finite_control_routes, _validate_finite_control_routes
 from .formats import EXECUTABLE_TRANSFER_PLAN_FORMAT
 from .model import (
     _FLAGS,
@@ -235,7 +236,10 @@ def write_executable_transfer_plan(
     ]
     finite_control_routes = _finite_control_routes(
         manifest,
+        binary=_object(manifest.get("binary"), "machine-IR manifest binary"),
         transfers={row.identity: row for row in transfers},
+        units={str(unit["id"]): unit for unit in units},
+        unit_inventory={str(row["unit_id"]): row for row in inventory},
     )
     atomic_effect_authority = _atomic_effect_authority(
         semantic_rows,
@@ -360,7 +364,19 @@ def parse_executable_transfer_plan(
     finite_control_routes = _list(
         payload.get("finite_control_routes"), "finite control routes"
     )
-    _validate_finite_control_routes(finite_control_routes)
+    _validate_finite_control_routes(
+        finite_control_routes,
+        transfers={row.identity: row for row in transfers},
+        unit_inventory={
+            str(_object(row, "unit binding").get("unit_id")): _object(
+                row, "unit binding"
+            )
+            for row in inventory
+        },
+        pe_sha256=_sha256(
+            bindings.get("pe_sha256"), "transfer-plan PE SHA-256"
+        ),
+    )
     if bindings.get("finite_control_routes_sha256") != canonical_sha256_v3(
         finite_control_routes
     ):
@@ -608,76 +624,8 @@ def _validate_manifest(
         )
 
 
-def _finite_control_routes(
-    manifest: Mapping[str, Any], *, transfers: Mapping[str, _Transfer]
-) -> list[dict[str, Any]]:
-    """Project checked selector-to-target behavior into the canonical IR."""
 
-    control = _object(manifest.get("control", {}), "machine-IR manifest control")
-    inventories = _list(
-        control.get("recovered_indirect_targets", []),
-        "recovered indirect-target inventories",
-    )
-    result: list[dict[str, Any]] = []
-    for raw in inventories:
-        inventory = _object(raw, "recovered indirect-target inventory")
-        unit_id = inventory.get("source_unit_id")
-        transfer = transfers.get(str(unit_id))
-        if transfer is None:
-            continue
-        if (
-            inventory.get("status") != "recovered"
-            or inventory.get("closure") != "checked_finite_target_inventory"
-            or inventory.get("failure") is not None
-        ):
-            continue
-        routes: list[dict[str, int]] = []
-        for raw_entry in _list(
-            inventory.get("entries"), "finite-control route entries"
-        ):
-            entry = _object(raw_entry, "finite-control route entry")
-            routes.append({
-                "selector_value": _nonnegative(
-                    entry.get("index"), "finite-control selector value"
-                ),
-                "target_rva": _u32(
-                    entry.get("target_rva"), "finite-control target RVA"
-                ),
-                "target_address": _u32(
-                    entry.get("target_address"),
-                    "finite-control target address",
-                ),
-            })
-        routes.sort(key=lambda row: (
-            row["selector_value"], row["target_rva"], row["target_address"]
-        ))
-        if not routes or len({row["selector_value"] for row in routes}) != len(routes):
-            raise TransferPlanError(
-                f"{unit_id}: finite-control selector routes are ambiguous",
-                code="malformed_finite_control_routes",
-            )
-        core = {
-            "unit_id": str(unit_id),
-            "source_rva": _u32(
-                inventory.get("source_rva"), "finite-control source RVA"
-            ),
-            "routes": routes,
-        }
-        if (
-            core["source_rva"] != transfer.rva_start
-            or transfer.actions[-1].op != "outcome_indirect"
-        ):
-            raise TransferPlanError(
-                f"{unit_id}: finite-control routes do not bind an indirect transfer",
-                code="malformed_finite_control_routes",
-            )
-        result.append({
-            **core,
-            "route_inventory_sha256": canonical_sha256_v3(core),
-        })
-    result.sort(key=lambda row: (row["source_rva"], row["unit_id"]))
-    _validate_finite_control_routes(result)
-    return result
+
 
 
 def _atomic_effect_authority(
@@ -840,73 +788,6 @@ def _validate_atomic_effect_authority(
         )
 
 
-def _validate_finite_control_routes(rows: list[Any]) -> None:
-    keys: list[tuple[int, str]] = []
-    for raw in rows:
-        row = _object(raw, "finite-control route inventory")
-        if set(row) != {
-            "unit_id", "source_rva", "routes", "route_inventory_sha256"
-        }:
-            raise TransferPlanError(
-                "finite-control route inventory fields are incomplete",
-                code="malformed_finite_control_routes",
-            )
-        unit_id = _string(row.get("unit_id"), "finite-control unit ID")
-        source_rva = _u32(row.get("source_rva"), "finite-control source RVA")
-        routes = _list(row.get("routes"), "finite-control routes")
-        normalized = []
-        for raw_route in routes:
-            route = _object(raw_route, "finite-control route")
-            if set(route) != {"selector_value", "target_rva", "target_address"}:
-                raise TransferPlanError(
-                    "finite-control route fields are incomplete",
-                    code="malformed_finite_control_routes",
-                )
-            normalized.append({
-                "selector_value": _nonnegative(
-                    route.get("selector_value"), "finite-control selector value"
-                ),
-                "target_rva": _u32(
-                    route.get("target_rva"), "finite-control target RVA"
-                ),
-                "target_address": _u32(
-                    route.get("target_address"),
-                    "finite-control target address",
-                ),
-            })
-        if (
-            not normalized
-            or normalized != sorted(
-                normalized,
-                key=lambda item: (
-                    item["selector_value"],
-                    item["target_rva"],
-                    item["target_address"],
-                ),
-            )
-            or len({item["selector_value"] for item in normalized})
-            != len(normalized)
-        ):
-            raise TransferPlanError(
-                "finite-control routes are empty, unordered, or ambiguous",
-                code="malformed_finite_control_routes",
-            )
-        core = {
-            "unit_id": unit_id,
-            "source_rva": source_rva,
-            "routes": normalized,
-        }
-        if row.get("route_inventory_sha256") != canonical_sha256_v3(core):
-            raise TransferPlanError(
-                "finite-control route inventory digest is stale",
-                code="stale_executable_transfer_plan",
-            )
-        keys.append((source_rva, unit_id))
-    if keys != sorted(set(keys)):
-        raise TransferPlanError(
-            "finite-control route inventories are duplicated or unordered",
-            code="malformed_finite_control_routes",
-        )
 
 
 def _unit_binding(unit: Mapping[str, Any]) -> dict[str, Any]:

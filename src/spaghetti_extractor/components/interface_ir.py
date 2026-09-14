@@ -284,6 +284,31 @@ class ProofKernelComponentInterface:
                     )
         type_index = self.type_index()
         _validate_record_type_graph(type_index)
+        nullable_views = {row.identity for row in self.types if row.kind == 'view' and row.nullable}
+        remaining_views = {row.identity for row in self.types
+                           if row.kind == 'view' and row.extent_kind == 'origin_remainder'}
+        input_uses = {row.type_id for op in self.operations for row in op.parameters}
+        # Returned nullable views have a checked service decoder. Other uses
+        # still need their own admission/reconstruction rule, including nested
+        # records and callbacks; the scalar type extension cannot grant one.
+        other_uses = {row.type_id for op in self.operations for row in op.results}
+        other_uses.update(row.type_id for row in self.state)
+        other_uses.update(t for service in self.services for t in service.parameter_type_ids)
+        for row in self.types:
+            other_uses.update(field.type_id for field in row.fields)
+            other_uses.update(row.parameter_type_ids)
+            other_uses.update(t for t in (row.element_type_id, row.result_type_id) if t is not None)
+        service_results = {service.result_type_id for service in self.services}
+        if (remaining_views - input_uses or remaining_views & (other_uses | service_results)):
+            raise ComponentInterfaceIRError('origin-remainder views require direct operation-input admission')
+        for identity in remaining_views:
+            row = type_index[identity]
+            element = type_index[row.element_type_id]
+            if (not row.nullable or row.ownership != 'borrowed' or
+                    element.kind != 'scalar' or element.c_type != 'uint8_t'):
+                raise ComponentInterfaceIRError('origin-remainder inputs require nullable borrowed byte views')
+        if nullable_views & (other_uses | (input_uses - remaining_views)):
+            raise ComponentInterfaceIRError('nullable views require checked service-result admission')
         for logical_type in self.types:
             if logical_type.element_type_id is None:
                 continue
@@ -297,6 +322,12 @@ class ProofKernelComponentInterface:
                 raise ComponentInterfaceIRError(
                     f"state field {field.identity!r} references unknown type {field.type_id!r}"
                 )
+            # A borrowed view has no constructed initial value. Its contents
+            # and live origin come from checked entry transport, not a null
+            # reference or a zero-filled logical heap. This is representation
+            # admission only; local-summary recognizers still reject state.
+            if field.initial_value.to_value() is None and type_index[field.type_id].kind == "view":
+                continue
             _validate_portable_value(
                 field.initial_value.to_value(),
                 type_index[field.type_id],
@@ -1060,11 +1091,14 @@ def _parse_type(value: object, index: int) -> ProofKernelLogicalType:
     if kind == "view":
         _exact(
             row,
-            {"id", "kind", "element_type_id", "access", "extent", "ownership"},
+            {"id", "kind", "element_type_id", "access", "extent", "ownership",
+             *({'nullable'} if 'nullable' in row else set())},
             f"logical type {identity}",
         )
         access = _text(row["access"], f"logical type {identity} access")
         ownership = _text(row["ownership"], f"logical type {identity} ownership")
+        if 'nullable' in row and type(row['nullable']) is not bool:
+            raise ComponentInterfaceIRError(f'logical view type {identity!r} nullability must be Boolean')
         if access not in ACCESS_MODES or ownership not in RESOURCE_OWNERSHIP:
             raise ComponentInterfaceIRError(
                 f"logical view type {identity!r} has invalid access or ownership"
@@ -1090,6 +1124,8 @@ def _parse_type(value: object, index: int) -> ProofKernelLogicalType:
         elif extent_kind == "nul_terminated":
             _exact(extent, {"kind"}, f"logical type {identity} extent")
             nul_terminated = True
+        elif extent_kind == "origin_remainder":
+            _exact(extent, {"kind"}, f"logical type {identity} extent")
         else:
             raise ComponentInterfaceIRError(
                 f"logical view type {identity!r} has unsupported extent policy"
@@ -1107,6 +1143,7 @@ def _parse_type(value: object, index: int) -> ProofKernelLogicalType:
             extent_kind=extent_kind,
             fixed_extent=fixed_extent,
             lifetime="origin",
+            nullable=row.get('nullable'),
         )
     if kind == "reference":
         _exact(
@@ -1216,6 +1253,7 @@ def _type_payload(value: ProofKernelLogicalType) -> dict[str, object]:
                 "access": value.access,
                 "extent": extent,
                 "ownership": value.ownership,
+                **({'nullable': value.nullable} if value.nullable is not None else {}),
             }
         )
     elif value.kind == "reference":

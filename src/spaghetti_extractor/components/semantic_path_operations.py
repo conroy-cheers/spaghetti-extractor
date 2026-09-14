@@ -93,6 +93,8 @@ def build_operation_path_model(
     """Return every finite machine path and its logical service trace."""
 
     operation_id = _text(operation.get("operation_id"), "operation id")
+    if any('exit_projection' in row for row in operation.get('parameters', [])):
+        raise SemanticPathError('parameter exit transport requires contextual machine-state checking')
     machine_image = _machine_image_mapping(operation.get("machine_image"))
     logical = interface.operation_index()[operation_id]
     types = interface.type_index()
@@ -816,7 +818,7 @@ def _nullable_same_origin_input(value: object, interaction_id: str) -> int | Non
     def same_origin_input(expression: Mapping[str, object]) -> int | None:
         args = expression.get("args")
         if (
-            expression.get("op") != "same_origin"
+            expression.get("op") != "borrowed_interior"
             or not isinstance(args, list)
             or len(args) != 2
         ):

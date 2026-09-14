@@ -23,6 +23,7 @@ from .qualification_v2 import (
     SemanticProviderQualificationV2,
 )
 from .slices_v2 import SemanticSliceV2Error, build_semantic_slice_v2
+from .exact_context import exact_context_blockers
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -441,6 +442,11 @@ def build_implementation_selection_v2(
     ):
         blockers.append({"code": "linked_semantic_module_incomplete"})
 
+    blockers.extend(exact_context_blockers(
+        qualifications=qualifications, definition_selections=definition_selections,
+        obligation_selections=obligation_selections,
+        linked=linked_semantic_module,
+    ))
     blockers = _canonical_rows(blockers)
     core = {
         "format": IMPLEMENTATION_SELECTION_V2_FORMAT,

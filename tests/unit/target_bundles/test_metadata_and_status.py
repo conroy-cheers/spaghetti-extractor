@@ -16,6 +16,10 @@ from spaghetti_extractor.target_bundles.metadata import (
     TargetMetadataError,
 )
 from spaghetti_extractor.operator.formats import OPERATOR_WORK_STATUS_FORMAT
+from spaghetti_extractor.operator.projections import (
+    _candidate_provider_coverage,
+    project_candidate_selection,
+)
 from spaghetti_extractor.target_bundles.project_status import (
     StatusArtifactError,
     build_project_status,
@@ -30,7 +34,11 @@ def _metadata() -> dict[str, object]:
         "id": "fixture",
         "display_name": "Fixture PE32",
         "input": {"kind": "pe32", "expected_sha256": "1" * 64},
-        "paths": {"nix": "default.nix", "components": "intent/components.json"},
+        "paths": {
+            "nix": "default.nix",
+            "components": "intent/components.json",
+            "component_sources": "source",
+        },
         "workflow": {"default_configuration": "default"},
     }
 
@@ -41,6 +49,7 @@ class TargetMetadataTests(unittest.TestCase):
         self.assertEqual(value.identity, "fixture")
         self.assertEqual(value.input.expected_sha256, "1" * 64)
         self.assertEqual(value.workflow.default_configuration, "default")
+        self.assertEqual(dict(value.paths)["component_sources"], Path("source"))
 
     def test_unknown_fields_bad_hashes_and_escaping_paths_fail(self) -> None:
         for mutate, pattern in (
@@ -68,6 +77,7 @@ class TargetMetadataTests(unittest.TestCase):
     def test_analysis_only_metadata_has_no_fake_component_configuration(self) -> None:
         payload = _metadata()
         payload["paths"]["components"] = None
+        payload["paths"].pop("component_sources")
         payload["workflow"]["default_configuration"] = None
         value = TargetMetadata.parse(payload)
         self.assertIsNone(value.workflow.default_configuration)
@@ -76,7 +86,15 @@ class TargetMetadataTests(unittest.TestCase):
     def test_component_path_and_configuration_are_atomic(self) -> None:
         payload = _metadata()
         payload["paths"]["components"] = None
+        payload["paths"].pop("component_sources")
         with self.assertRaisesRegex(TargetMetadataError, "both be set or both be null"):
+            TargetMetadata.parse(payload)
+
+    def test_component_source_path_requires_component_intent(self) -> None:
+        payload = _metadata()
+        payload["paths"]["components"] = None
+        payload["workflow"]["default_configuration"] = None
+        with self.assertRaisesRegex(TargetMetadataError, "source path requires"):
             TargetMetadata.parse(payload)
 
 
@@ -116,14 +134,17 @@ class ProjectStatusTests(unittest.TestCase):
         result = self._build(module)
         self.assertEqual(result["format"], OPERATOR_WORK_STATUS_FORMAT)
         self.assertEqual(result["status"], "incomplete")
-        self.assertFalse(result["authority"])
         self.assertEqual(
             result["counts"]["blockers"], len(module["semantic_holes"])
         )
         subject = result["subjects"][0]
         self.assertEqual(subject["subject"], "module:fixture")
-        self.assertEqual(subject["blockers"], module["semantic_holes"])
-        self.assertFalse(subject["authority"])
+        self.assertEqual(subject["blockers"]["count"], len(module["semantic_holes"]))
+        self.assertIn(
+            module["semantic_holes"][0]["code"],
+            {row["code"] for row in subject["blockers"]["groups"]},
+        )
+        self.assertEqual(subject["authority"], "not-applicable")
         self.assertNotIn("configuration_id", result)
         self.assertNotIn("component_configuration", result)
         self.assertNotIn("candidate", result)
@@ -132,10 +153,11 @@ class ProjectStatusTests(unittest.TestCase):
         module = self._module(blockers=[])
         result = self._build(module)
         self.assertEqual(result["status"], module["status"])
-        self.assertFalse(result["authority"])
-        self.assertFalse(result["subjects"][0]["authority"])
         self.assertEqual(
-            result["subjects"][0]["ranked_next_action"],
+            result["subjects"][0]["authority"], "not-applicable"
+        )
+        self.assertEqual(
+            result["subjects"][0]["next_action"],
             f"resolve semantic hole {module['semantic_holes'][0]['code']}",
         )
 
@@ -155,7 +177,20 @@ class ProjectStatusTests(unittest.TestCase):
             self._build(inconsistent)
 
 
-class CandidateStatusTests(unittest.TestCase):
+class CandidateProjectionTests(unittest.TestCase):
+    def test_fallback_free_covers_definitions_and_obligations(self) -> None:
+        coverage = _candidate_provider_coverage({
+            "status": "complete",
+            "definition_selections": [{
+                "provider_kind": "qualified_portable_c",
+            }],
+            "obligation_selections": [{
+                "provider_kind": "generated_behavioral_c",
+            }],
+        })
+        self.assertFalse(coverage["fallback_free"])
+        self.assertEqual(coverage["portable_progress"], "partial")
+
     @staticmethod
     def _selection(
         *,
@@ -188,71 +223,91 @@ class CandidateStatusTests(unittest.TestCase):
     def _build(
         self,
         *,
-        module_blockers: list[dict[str, object]] | None = None,
         blockers: list[dict[str, object]] | None = None,
-        selection_module_sha256: str | None = None,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            module_path = root / "linked-semantic-module.json"
             selection_path = root / "implementation-selection.json"
-            output = root / "status.json"
-            module = ProjectStatusTests._module(
-                blockers=module_blockers or []
-            )
-            module_path.write_text(json.dumps(module), encoding="ascii")
             selection_path.write_text(
                 json.dumps(self._selection(
-                    module_sha256=(
-                        selection_module_sha256
-                        or str(module["linked_semantic_module_sha256"])
-                    ),
+                    module_sha256="3" * 64,
                     blockers=blockers,
                 )),
                 encoding="ascii",
             )
-            return build_project_status(
+            return project_candidate_selection(
                 target_id="fixture",
-                linked_semantic_module=module_path,
-                implementation_selection=selection_path,
                 configuration_id="default",
-                out=output,
+                path=selection_path,
             )
 
     def test_ready_selection_is_a_compact_configuration_subject(self) -> None:
-        result = self._build()
+        result, raw_blockers = self._build()
         self.assertEqual(result["format"], OPERATOR_WORK_STATUS_FORMAT)
-        self.assertEqual(result["status"], "incomplete")
-        self.assertEqual(result["counts"]["subjects"], 2)
-        configuration = next(
-            row for row in result["subjects"]
-            if row["subject"] == "configuration:fixture:default"
-        )
-        self.assertFalse(configuration["authority"])
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["counts"]["subjects"], 1)
+        configuration = result["subjects"][0]
+        self.assertEqual(configuration["authority"], "not-applicable")
         self.assertEqual(configuration["state"], "complete")
-        self.assertTrue(configuration["bindings"][0]["ready_for_realization"])
-        self.assertEqual(configuration["bindings"][0]["selected_symbols"], 1)
+        self.assertEqual(configuration["blockers"], {"count": 0, "groups": []})
+        self.assertEqual(result["provider_coverage"], {
+            "exact_selection": "complete",
+            "portable_progress": "not-started",
+            "fallback_free": False,
+            "definitions": {
+                "selected": 1,
+                "by_kind": {
+                    "external_environment": 0,
+                    "generated_behavioral_c": 1,
+                    "pinned_binary": 0,
+                    "qualified_portable_c": 0,
+                    "qualified_runtime": 0,
+                },
+                "portable_c": 0,
+                "generated_behavioral_c": 1,
+                "pinned_binary": 0,
+                "portable_share_of_selected_basis_points": 0,
+            },
+            "obligations": {
+                "selected": 0,
+                "by_kind": {
+                    "external_environment": 0,
+                    "generated_behavioral_c": 0,
+                    "pinned_binary": 0,
+                    "qualified_portable_c": 0,
+                    "qualified_runtime": 0,
+                },
+                "portable_c": 0,
+                "generated_behavioral_c": 0,
+                "pinned_binary": 0,
+                "portable_share_of_selected_basis_points": None,
+            },
+        })
+        self.assertEqual(raw_blockers, [])
 
-    def test_selection_blockers_remain_distinct_from_module_blockers(self) -> None:
-        result = self._build(
-            module_blockers=[{"code": "reachable_symbol_unresolved"}],
+    def test_selection_blockers_are_grouped_but_details_remain_available(self) -> None:
+        result, raw_blockers = self._build(
             blockers=[{"code": "source_missing", "detail": "write source"}],
         )
-        subjects = {row["subject"]: row for row in result["subjects"]}
-        self.assertNotEqual(subjects["module:fixture"]["blockers"], [])
+        subject = result["subjects"][0]
         self.assertEqual(
-            subjects["configuration:fixture:default"]["blockers"],
+            subject["blockers"]["groups"],
+            [{
+                "family": "provider-selection",
+                "code": "source_missing",
+                "count": 1,
+                "example_location": "write source",
+            }],
+        )
+        self.assertEqual(
+            raw_blockers,
             [{"code": "source_missing", "detail": "write source"}],
         )
 
-    def test_selection_for_another_module_is_rejected(self) -> None:
-        with self.assertRaisesRegex(StatusArtifactError, "another linked semantic"):
-            self._build(selection_module_sha256="f" * 64)
-
-    def test_status_hash_is_deterministic(self) -> None:
-        first = self._build()
-        second = self._build()
-        self.assertEqual(first["view_sha256"], second["view_sha256"])
+    def test_projection_is_deterministic(self) -> None:
+        first, _ = self._build()
+        second, _ = self._build()
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,13 @@ class LinkedLibrariesNixTests(unittest.TestCase):
         self.assertIn('mkPhaseSource "catalog-search"', module)
         self.assertIn('mkPhaseSource "release-hypotheses"', module)
         self.assertNotIn("linked-libraries-python-closure", module)
+        self.assertIn(
+            "if catalogSearchInputs == [ ] then null else pkgs.runCommand",
+            module,
+        )
+        self.assertIn("if catalogSearchIndex == null then null", module)
+        self.assertNotIn("library-release-hypotheses-empty", module)
+        self.assertNotIn('"target_binary_sha256": "0" * 64', module)
         generic_binding = (
             ROOT / "src" / "spaghetti_extractor" / "components" / "machine_binding.py"
         ).read_text(encoding="utf-8")

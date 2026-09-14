@@ -15,6 +15,7 @@ from ..boundary._canonical import (
     object_,
 )
 from .formats import COMPONENT_RELATION_INTENT_V1_FORMAT
+from .relation_ir import BOOL_SORT, RelationExpressionV1
 
 
 _POLICY = {
@@ -32,6 +33,16 @@ class ComponentRelationIntentV1:
     operations: tuple[Mapping[str, object], ...]
     blockers: tuple[Mapping[str, object], ...]
     intent_sha256: str
+
+    def checked_normal_exit_views(self, **proof_inputs) -> list[dict[str, object]]:
+        """Check supported normal-return facts in an existing local proof world.
+
+        This inspection does not qualify a provider or compose a callee summary.
+        Unsupported predicates and stale proof inputs fail closed.
+        """
+        from .normal_exit_postconditions import checked_normal_exit_view_postconditions
+
+        return checked_normal_exit_view_postconditions(intent=self, **proof_inputs)
 
     @classmethod
     def create(
@@ -136,6 +147,14 @@ def _operation(value: Mapping[str, object]) -> Mapping[str, object]:
 
 def _requirement(value: object) -> Mapping[str, object]:
     row = object_(value, "component relation requirement")
+    if row.get("relation") == "normal_exit_postcondition":
+        exact(row, {"id", "relation", "expression"}, "normal exit postcondition")
+        expression = RelationExpressionV1.parse(row["expression"])
+        if (expression.sort != BOOL_SORT or expression.machine_places() or
+                any(node.op == "authority_call" for node in expression.walk())):
+            raise BoundaryModelError("normal exit postcondition must be a logical Boolean predicate")
+        return canonical({"id": identifier(row["id"], "relation requirement"),
+                          "relation": row["relation"], "expression": expression.to_payload()})
     exact(
         row,
         {"id", "relation", "service_id", "origin_parameter_id", "result_value_id"},

@@ -46,6 +46,55 @@ class ProposalPackageTests(unittest.TestCase):
         )
         package.validate_all_proposals()
 
+    def test_seed_navigation_ignores_holes_in_enclosing_proposal_span(self) -> None:
+        proposal = self.payload["proposals"][0]
+        proposal["membership"]["rva_end"] = 0x1100
+        _rehash_proposal(proposal)
+        _rehash_discovery(self.payload)
+        write_component_proposal_package_v2(payload=self.payload, out=self.root)
+        package = load_component_proposal_package_v2(self.root)
+        self.assertEqual([row["id"] for row in package.proposals_at_rva(0x1000)],
+                         [self.proposal_ids[0]])
+        self.assertEqual(package.proposals_at_rva(0x1005), [])
+        self.assertEqual([row["id"] for row in package.proposals_at_rva(0x1010)],
+                         [self.proposal_ids[1]])
+
+    def test_seed_navigation_rejects_an_unrelated_indexed_proposal(self) -> None:
+        self.payload["seed_index"][0]["proposal_ids"] = [self.proposal_ids[1]]
+        _rehash_discovery(self.payload)
+        write_component_proposal_package_v2(payload=self.payload, out=self.root)
+        package = load_component_proposal_package_v2(self.root)
+        with self.assertRaisesRegex(ValueError, "does not contain its unit"):
+            package.proposals_at_rva(0x1000)
+
+    def test_seed_navigation_uses_rank_for_requested_seed(self) -> None:
+        first, second = self.payload["proposals"][:2]
+        seed = self.payload["seed_index"][0]
+        seed["proposal_ids"].append(second["id"])
+        second["membership"].update({"unit_ids": ["unit:00000000", "unit:00000001"],
+                                     "unit_count": 2, "rva_start": 0x1000})
+        bindings = [{key: node[key] for key in
+                     ("unit_id", "contract_sha256", "instruction_bytes_sha256")}
+                    for node in self.payload["graph_facts"]["nodes"][:2]]
+        second["bindings"]["membership_bindings_sha256"] = _sha256(bindings)
+        for proposal, rank in ((first, 1), (second, 0)):
+            proposal["score"]["seed_rankings"] = [
+                {"seed_id": seed["seed_id"], "front": 0, "rank": rank}]
+            _rehash_proposal(proposal)
+        _rehash_discovery(self.payload)
+        write_component_proposal_package_v2(payload=self.payload, out=self.root)
+        package = load_component_proposal_package_v2(self.root)
+        self.assertEqual([row["id"] for row in package.proposals_at_rva(0x1000)],
+                         [second["id"], first["id"]])
+
+    def test_seed_navigation_rechecks_modified_graph(self) -> None:
+        write_component_proposal_package_v2(payload=self.payload, out=self.root)
+        package = load_component_proposal_package_v2(self.root)
+        path = self.root / "graph-facts.json"
+        path.write_text(path.read_text().replace('4096', '4097'))
+        with self.assertRaisesRegex(ValueError, "stale"):
+            package.proposals_at_rva(0x1000)
+
     def test_index_corruption_fails_before_selection(self) -> None:
         write_component_proposal_package_v2(payload=self.payload, out=self.root)
         index_path = self.root / "proposal-index.json"
@@ -189,7 +238,8 @@ def _payload(proposal_ids: list[str]) -> dict[str, object]:
                 f"instructions:{index}".encode("ascii")
             ).hexdigest(),
         }
-        nodes.append(unit_binding)
+        nodes.append({**unit_binding, "rva_start": 0x1000 + index * 0x10,
+                      "rva_end": 0x1001 + index * 0x10})
         proposal = {
             "id": identity,
             "status": "proposed",
@@ -232,7 +282,8 @@ def _payload(proposal_ids: list[str]) -> dict[str, object]:
             "path_search_depth": 64,
         },
         "graph_facts": {"nodes": nodes},
-        "seed_index": [],
+        "seed_index": [{"seed_id": "unit:" + row["membership"]["unit_ids"][0],
+                        "proposal_ids": [row["id"]]} for row in proposals],
         "proposals": proposals,
         "coverage": {"exact": {"complete": True}},
         "issues": [],

@@ -1,0 +1,65 @@
+{
+  "profile": "local-byte-compaction-step-v1",
+  "graph_index": 0,
+  "entry_cut": "entry",
+  "exit_cut": "tail",
+  "regions": [
+    "entry",
+    "copy",
+    "advance"
+  ],
+  "begin": {
+    "position": "before",
+    "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+  },
+  "source_locals": {
+    "input": "input",
+    "output": "output",
+    "removed": "removed",
+    "scratch": "scratch"
+  },
+  "text_parameter": "text",
+  "entry_rva": 22022,
+  "exit_rva": 22029,
+  "image_base": 4194304,
+  "registers": {
+    "input": "esi",
+    "output": "ecx",
+    "text": "edi",
+    "scratch": "ebx"
+  },
+  "private_extent": 8,
+  "stack_offsets": {
+    "esp": -16,
+    "ebp": 8
+  },
+  "private_cells": [
+    {
+      "name": "removed",
+      "offset": 0,
+      "width": 4
+    },
+    {
+      "name": "b",
+      "offset": 7,
+      "width": 1
+    },
+    {
+      "name": "c",
+      "offset": 6,
+      "width": 1
+    }
+  ],
+  "clobbers": [
+    "eax",
+    "edx",
+    "esi",
+    "ecx",
+    "cf",
+    "zf",
+    "sf",
+    "of",
+    "pf",
+    "eflags"
+  ]
+}

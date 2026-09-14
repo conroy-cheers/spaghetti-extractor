@@ -56,7 +56,7 @@
               ]
             },
             {
-              "op": "same_origin",
+              "op": "borrowed_interior",
               "args": [
                 {"op": "port", "direction": "output", "id": "result"},
                 {"op": "port", "direction": "input", "id": "argument.0"}
@@ -126,8 +126,8 @@
         "source": "ISO C strrchr result relationship specialized to the checked msvcrt import",
         "reviewed": true
       },
-      "contract_sha256": "269fd22cbe4f7e9c29737304bf8ee9b31fc807bf90374b7d4ea5d9ce8f8c1ab6"
+      "contract_sha256": "a24b0530cbd63278e52bbea114c79a9594117f7a2a9fdc4247118fd0d3501087"
     }
   ],
-  "catalog_sha256": "6cc057074b2f964a5f8cf35a549e9c1f703512bdac73b76c32d2dcce01b57efa"
+  "catalog_sha256": "a20c46fad879e7073c5807b41a1084c6789584e8aa32d07934ebc96ab4a1a10d"
 }

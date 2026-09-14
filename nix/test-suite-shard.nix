@@ -37,6 +37,8 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}"
     preferLocalBuild = shard.resource_class != "small";
     allowSubstitutes = true;
     __contentAddressed = true;
+    sourceFileRows = fileRowsJson;
+    passAsFile = [ "sourceFileRows" ];
   }
   ''
     set -euo pipefail
@@ -48,14 +50,16 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}"
     ${environmentExports}
     work="$TMPDIR/test-source"
     mkdir -p "$work"
-    python - "$work" ${lib.escapeShellArg fileRowsJson} <<'PY'
+    # Large smoke closures can exceed Linux's per-argument size limit. Keep
+    # the complete bound inventory in a Nix-provided file instead of argv.
+    python - "$work" "$sourceFileRowsPath" <<'PY'
     import json
     import pathlib
     import shutil
     import sys
 
     root = pathlib.Path(sys.argv[1])
-    rows = sorted(json.loads(sys.argv[2]), key=lambda row: (row["path"].count("/"), row["path"]))
+    rows = sorted(json.loads(pathlib.Path(sys.argv[2]).read_text()), key=lambda row: (row["path"].count("/"), row["path"]))
     for row in rows:
         destination = root / row["path"]
         source = pathlib.Path(row["source"])
@@ -81,6 +85,12 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}"
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     status_rows = pathlib.Path("/proc/self/status").read_text(encoding="ascii").splitlines()
     peak_rss_kib = int(next(row.split()[1] for row in status_rows if row.startswith("VmHWM:")))
+    # Measurements vary between identical builds. Keep them in the build log,
+    # outside the content-addressed correctness report.
+    print(json.dumps({
+        "shard_id": ${builtins.toJSON shard.id},
+        "peak_rss_kib": peak_rss_kib,
+    }, sort_keys=True), file=sys.stderr)
     report = {
         "format": "spaghetti-extractor-test-shard-report-v1",
         "status": "pass" if result.wasSuccessful() else "fail",
@@ -91,7 +101,6 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}"
         "skipped": len(result.skipped),
         "failures": len(result.failures),
         "errors": len(result.errors),
-        "peak_rss_kib": peak_rss_kib,
         "resource_class": ${builtins.toJSON shard.resource_class},
     }
     pathlib.Path(sys.argv[2]).write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")

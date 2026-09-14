@@ -1,0 +1,153 @@
+void network_require(int condition,const char *message){require(condition,message);}
+uint32_t network_word(spx_runtime *rt,uint32_t address){
+ uint32_t fault=0U,value=rt->read(rt->context,address,4U,&fault);require(!fault,"consumer scalar admission");return value;
+}
+static LRESULT CALLBACK edit_callback(HWND window,UINT message,WPARAM wparam,LPARAM lparam){
+ if(message==WM_SETFOCUS && swap_on_focus){put(4260184U,(uint32_t)(uintptr_t)edits[1]);swap_on_focus=0U;}
+ if(message==EM_REPLACESEL){
+  const char *text=(const char *)lparam;size_t length=strlen(text);
+  require(length<sizeof delivered,"UI text fixture capacity");memcpy(delivered,text,length+1U);callback_count++;
+  (void)CallWindowProcA(edit_proc,window,message,wparam,lparam);
+  return (LRESULT)message_value;
+ }
+ return CallWindowProcA(edit_proc,window,message,wparam,lparam);
+}
+static uint32_t deliver_message(uint32_t window,uint32_t message,uint32_t wparam,uint32_t text){
+ require(window==word(4260184U),"current edit handle at delivery");
+ require(message==EM_REPLACESEL && wparam==1U,"actual UI message arguments");
+ spx_machine_reference_v1 reference={0};
+ require(resolve_view(&spx_native_context_value,text,1U,1U,"cleanup.scratch",0U,0U,&reference)==SPX_BOUNDARY_OK,"live UI text origin");
+ uint64_t remaining=reference.extent-reference.offset;
+ require(remaining<512U && memchr((void *)(uintptr_t)text,0,(size_t)remaining)!=NULL,"UI text termination inside live extent");
+ events[event_count++]=6U;
+ return (uint32_t)SendMessageA((HWND)(uintptr_t)window,message,wparam,(LPARAM)(uintptr_t)text);
+}
+uint32_t network_send_message(void *opaque,uint32_t window,uint32_t message,uint32_t wparam,const spx_view_v5 *text){
+ spx_component_service_context_v1 *context=opaque;spx_machine_reference_v1 ref={text->base.domain,text->base.object,
+  text->base.generation,text->base.offset,text->base.extent,text->base.permissions};uint32_t address=0U;
+ require(context->runtime->realize_reference(context->runtime->context,&ref,1U,0U,0U,&address)==SPX_BOUNDARY_OK,"source UI text lifetime");
+ require(memchr((void *)(uintptr_t)address,0,(size_t)text->extent)!=NULL,"source UI view contains terminator");
+ return deliver_message(window,message,wparam,address);
+}
+uint32_t network_cleanup(void *opaque,const spx_view_v5 *text,const spx_view_v5 *notice,
+    const spx_view_v5 *window,const spx_view_v5 *edit,const spx_view_v5 *caption){
+ spx_component_service_context_v1 *context=opaque;events[event_count++]=7U;
+ uint32_t result=spx_component_logical_text_cleanup_cleanup(opaque,text,notice,window,edit,caption);
+ return *context->memory_fault || *context->service_fault ? UINT32_MAX:result;
+}
+struct test_case {uint32_t save,mode;const char *input,*expected;uint32_t removed,fail_allocate,swap,reply,length,offset,notice;};
+struct observation {uint32_t fault,value,length,handle,callbacks,count,events[32];char text[512],delivered[512],ui[512];};
+static struct observation execute(const struct test_case *test,uint32_t source){
+ SetFocus(NULL);SetWindowTextA(edits[0],"");SetWindowTextA(edits[1],"");
+ memset(&spx_native_context_value,0,sizeof spx_native_context_value);memset(stack_words,0x5a,sizeof stack_words);memset(physical(0x410000U),0,18272U);
+ spx_native_context_value.image_base=(uint32_t)(uintptr_t)metapad_image;spx_native_context_value.image_size=0x37000U;
+ put(4260176U,(uint32_t)(uintptr_t)metapad_image);
+ uint32_t n=(uint32_t)strlen(test->input)+1U,size=test->offset+n+8U;
+ unsigned char *allocation=GlobalAlloc(64U,size);require(allocation!=NULL,"network input allocation");memset(allocation,0xa5,size);
+ char *text=(char *)allocation+test->offset;memcpy(text,test->input,n);
+ require(spx_native_add_external_range((uint32_t)(uintptr_t)allocation,size,100U,1U,7U,1U)==SPX_CALL_OK,"network input registration");
+ spx_machine_reference_v1 live={0};
+ require(resolve_view(&spx_native_context_value,(uint32_t)(uintptr_t)text,1U,3U,"cleanup.scratch",0U,0U,&live)==SPX_BOUNDARY_OK,"network input origin");
+ require(live.offset==test->offset,"interior input coordinates");
+ put(4263788U,!test->notice);put(4260180U,0U);put(4260184U,(uint32_t)(uintptr_t)edits[0]);
+ event_count=0U;memset(events,0,sizeof events);memset(delivered,0,sizeof delivered);callback_count=0U;
+ allocation_mode=test->fail_allocate;scratch_address=0U;scratch_extent=0U;issued_scratch=(spx_machine_reference_v1){0};
+ swap_on_focus=test->swap;message_value=test->reply;
+ spx_runtime runtime={.context=&spx_native_context_value,.image_base=0x400000U,.read=read_memory,.write=write_memory,.resolve_reference=resolve_view,.realize_reference=realize_view};
+ spx_machine_state state={0};state.edi=(uint32_t)(uintptr_t)text;state.esp=(uint32_t)(uintptr_t)&stack_words[32];state.ebp=state.esp+64U;
+ state.ebx=0x77665544U;state.esi=0x22334455U;
+ put(state.ebp-20U,(uint32_t)(uintptr_t)text);put(state.ebp-12U,test->length);put(state.esp+48U,test->mode);
+ uint32_t entry_sp=state.esp,entry_bp=state.ebp,frame[32];memcpy(frame,&stack_words[32],sizeof frame);
+ require(entry_sp-76U>0x437000U && ((uint64_t)(uintptr_t)allocation+size<=entry_sp-76U || (uintptr_t)allocation>=entry_sp+52U),"finite caller frame separation");
+ uint32_t fault=0U,service_fault=0U;network_result result={0};
+ if(source){
+  spx_component_service_context_v1 context={&runtime,&state,&fault,&service_fault,{0,0}};
+  result=test->save?network_run_save(&runtime,&context,&state,test->mode):network_run_replace(&runtime,&context,&state,test->mode);
+  require(!service_fault,"generated logical service adapter applicability");
+ }else{
+  spx_step_result step=test->save?spx_sub_00005c2a(&runtime,&state,0x5c2aU):spx_sub_0000b18e(&runtime,&state,0xb18eU);
+  result=(network_result){step.kind==SPX_MEMORY_FAULT,state.eax};
+  if(!result.fault){
+   require(step.kind==SPX_FALLTHROUGH && step.target_rva==(test->save?0x5c3fU:0xb1b5U),"actual caller continuation");
+   require(state.ebp==entry_bp && state.ebx==0x77665544U,"actual caller preserved frame");
+   if(test->save)require(state.esp==entry_sp-8U && word(entry_sp-4U)==state.ebx && word(entry_sp-8U)==state.ebx &&
+       state.esi==(uint32_t)(uintptr_t)text && state.edi==word(4252140U),"actual save continuation transport");
+   else require(state.esp==entry_sp && state.edi==(uint32_t)(uintptr_t)text && state.esi==0x22334455U,"actual UI continuation transport");
+  }
+ }
+ uint32_t active=test->save || (test->mode!=2U && test->mode!=3U);
+ uint32_t expected_fault=active && test->fail_allocate && test->input[0];
+ require(result.fault==expected_fault,"network outcome");
+ require(strcmp(text,test->expected)==0,"network current text contents");
+ uint32_t expected_length=test->save && !expected_fault ? test->length-test->removed:test->length;
+ require(word(entry_bp-12U)==expected_length,"network current length and uint32 arithmetic");
+ if(!expected_fault)require(result.value==(test->save?test->removed:test->reply),"network complete result value");
+ uint32_t expected_events[32],count=0U;
+ if(active){expected_events[count++]=7U;expected_events[count++]=1U;expected_events[count++]=2U;expected_events[count++]=1U;
+  if(!expected_fault){if(test->removed)expected_events[count++]=3U;expected_events[count++]=4U;if(test->removed){if(test->notice){expected_events[count++]=8U;expected_events[count++]=9U;}expected_events[count++]=5U;}}}
+ if(!test->save && !expected_fault)expected_events[count++]=6U;
+ require(event_count==count && memcmp(events,expected_events,count*4U)==0,"network ordered effects and fault prefix");
+ require(callback_count==(!test->save && !expected_fault),"network actual UI callback count");
+ uint32_t address=0U;require(realize_view(&spx_native_context_value,&live,3U,0U,0U,&address)==SPX_BOUNDARY_OK && address==(uint32_t)(uintptr_t)text,"input alias remains live after cleanup");
+ if(scratch_address)require(realize_view(&spx_native_context_value,&issued_scratch,1U,0U,0U,&address)==SPX_BOUNDARY_EXPIRED,"network scratch origin expired after release");
+ for(uint32_t i=0;i<test->offset;i++)require(allocation[i]==0xa5U,"input prefix frame");
+ for(uint32_t i=test->offset+n;i<size;i++)require(allocation[i]==0xa5U,"input suffix frame");
+ frame[13]=expected_length;require(memcmp(frame,&stack_words[32],sizeof frame)==0,"caller public stack frame");
+ struct observation observation={.fault=result.fault,.value=result.fault?0U:result.value,.length=expected_length,
+  .handle=word(4260184U)==(uint32_t)(uintptr_t)edits[1],.callbacks=callback_count,.count=event_count};
+ memcpy(observation.events,events,event_count*4U);strcpy(observation.text,text);strcpy(observation.delivered,delivered);
+ GetWindowTextA((HWND)(uintptr_t)word(4260184U),observation.ui,sizeof observation.ui);
+ if(test->swap && active && test->removed && !expected_fault)require(observation.handle==1U,"actual focus callback updates current handle");
+ if(!test->save && !expected_fault)require(strcmp(observation.delivered,test->expected)==0,"actual UI received current text");
+ if(!test->save && !expected_fault){
+  char copied[512]={0};memset(text,'~',strlen(text));
+  GetWindowTextA((HWND)(uintptr_t)word(4260184U),copied,sizeof copied);
+  require(strcmp(copied,observation.ui)==0,"UI contents independent of borrowed text mutation");
+ }
+ require(GlobalFree(allocation)==NULL,"network input release");
+ require(spx_native_release_external_range((uint32_t)(uintptr_t)allocation,101U)==SPX_CALL_OK,"network input release registration");
+ require(realize_view(&spx_native_context_value,&live,1U,0U,0U,&address)==SPX_BOUNDARY_EXPIRED,"input alias expires at owner release");
+ if(!test->save && !expected_fault){
+  char copied[512]={0};GetWindowTextA((HWND)(uintptr_t)word(4260184U),copied,sizeof copied);
+  require(strcmp(copied,observation.ui)==0,"UI contents survive input owner release");
+ }
+ return observation;
+}
+int main(void){
+ require(sizeof(void *)==4U,"PE32 consumer fixture");
+ load_metapad();
+ for(uint32_t i=0;i<2U;i++){
+  edits[i]=CreateWindowExA(0,"EDIT","",WS_POPUP|WS_VISIBLE|ES_MULTILINE,0,0,160,80,NULL,NULL,GetModuleHandleA(NULL),NULL);
+  require(edits[i]!=NULL,"actual edit window creation");
+  WNDPROC original=(WNDPROC)SetWindowLongPtrA(edits[i],GWLP_WNDPROC,(LONG_PTR)edit_callback);
+  require(original!=NULL,"actual edit callback installation");if(i==0)edit_proc=original;else require(edit_proc==original,"common edit procedure");
+ }
+ const struct test_case cases[]={
+  {0,0,"","",0,0,0,0,0,0},
+  {0,0,"a\r\r\nb","a\r\nb",1,0,0,0,0,16},
+  {0,1,"\r\r\n\r\r\n","\r\n\r\n",2,0,1,UINT32_MAX,0,0},
+  {0,2,"a\r\r\nb","a\r\r\nb",0,1,0,UINT32_MAX,0,16},
+  {0,3,"a\r\r\nb","a\r\r\nb",0,1,0,0x80000000U,0,0},
+  {0,UINT32_MAX,"a\r\r\nb","a\r\nb",1,0,0,0x80000000U,0,0},
+  {0,0,"abc","abc",0,1,0,0,0,16},
+  {0,0,"","",0,1,0,UINT32_MAX,0,0},
+  {1,0,"ab","ab",0,0,0,0,UINT32_MAX,0},
+  {1,0,"a\r\r\nb","a\r\nb",1,0,1,0,0,16},
+  {1,0,"a\r\r\nb","a\r\nb",1,0,0,0,0x80000000U,0},
+  {1,0,"abc","abc",0,1,0,0,123U,16},
+  {1,0,"","",0,1,0,0,UINT32_MAX,0},
+  {0,0,"a\r\r\nb","a\r\nb",1,0,0,UINT32_MAX,0,16,1},
+  {1,0,"a\r\r\nb","a\r\nb",1,0,0,0,0,16,1}
+ };
+ for(uint32_t i=0;i<sizeof cases/sizeof cases[0];i++){
+  struct observation original=execute(&cases[i],0U),source=execute(&cases[i],1U);
+  require(memcmp(&original,&source,sizeof original)==0,"original and ordinary-C runtime observations");
+ }
+ for(uint32_t i=0;i<2U;i++)DestroyWindow(edits[i]);
+ spx_machine_reference_v1 image_ref={0};uint32_t address;
+ require(resolve_view(&spx_native_context_value,4275488U,500U,3U,"image:metapad:section:2",0U,0U,&image_ref)==SPX_BOUNDARY_OK,"live resource image reference");
+ require(UnmapViewOfFile(metapad_image),"original image release");spx_native_context_value.image_size=0U;
+ require(realize_view(&spx_native_context_value,&image_ref,1U,0U,0U,&address)!=SPX_BOUNDARY_OK,"removed image reference rejects");
+ puts("consumer runtime: 15 cases, 30 original/C runs, real allocation and UI effects, current contents and lifetimes checked");
+ return 0;
+}

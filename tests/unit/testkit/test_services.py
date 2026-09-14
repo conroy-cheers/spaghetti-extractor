@@ -14,12 +14,10 @@ from spaghetti_extractor.testkit import (
     ImpactIndex,
     TestRecord,
     TestkitError,
-    apply_scaffold_plan,
-    build_suite_plan,
-    explain_plan_rebuild,
-    plan_target_scaffold,
-    plan_test_scaffold,
 )
+from spaghetti_extractor.testkit.planning import build_suite_plan
+from spaghetti_extractor.testkit.rebuild import explain_plan_rebuild
+from spaghetti_extractor.testkit.scaffold import apply_scaffold_plan, plan_target_scaffold, plan_test_scaffold
 from spaghetti_extractor.testkit.cli import main as developer_main
 from spaghetti_extractor.testkit.fixtures import (
     BUILTIN_FIXTURES,

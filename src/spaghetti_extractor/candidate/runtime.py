@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,12 +39,12 @@ from .runtime_model import (
     NATIVE_RUNTIME_OBJECT_AUTHORITY_FILENAME,
     NATIVE_RUNTIME_SOURCE_FILENAME,
     SharedModuleRuntimePlan,
-    NativeExternalRangeRule,
     NativeNonlocalTransition,
     NativeObjectAuthorityRule,
     NativeUndefinedPolicy,
     CandidateRuntimeError,
 )
+from .runtime_allocation_bindings import _bind_dynamic_external_object_rules
 from .runtime_external_range_validation import _external_range_rules
 from .runtime_plan_validation import (
     _validate_native_plan,
@@ -68,74 +67,6 @@ from .runtime_values import (
     _required_sha256,
     _verify_artifact_inventory,
 )
-
-
-def _bind_dynamic_external_object_rules(
-    object_rules: list[NativeObjectAuthorityRule],
-    external_range_rules: tuple[NativeExternalRangeRule, ...],
-    blockers: list[dict[str, Any]],
-) -> list[NativeObjectAuthorityRule]:
-    """Bind allocation/resource locators to one checked range contract."""
-
-    allocation_contracts: dict[str, list[int]] = {}
-    for index, range_rule in enumerate(external_range_rules):
-        if range_rule.action in {
-            "add_result_range",
-            "add_result_pointee_ranges",
-            "add_argument_pointee_ranges",
-            "add_argument_interface_ranges",
-        }:
-            allocation_contracts.setdefault(range_rule.contract_id, []).append(
-                index + 1
-            )
-    resolved: list[NativeObjectAuthorityRule] = []
-    for rule in object_rules:
-        if rule.locator_kind not in {"external_allocation", "resource"}:
-            resolved.append(rule)
-            continue
-        matches = allocation_contracts.get(rule.locator_identity, [])
-        if len(matches) != 1:
-            blockers.append({
-                "category": (
-                    "runtime_external_allocation_locator_unresolved"
-                    if rule.locator_kind == "external_allocation"
-                    else "runtime_resource_locator_unresolved"
-                ),
-                "rule_id": rule.identity,
-                "allocation_id": rule.locator_identity,
-                "matching_range_rules": len(matches),
-            })
-            resolved.append(rule)
-            continue
-        resolved.append(replace(rule, locator_subject_rva=matches[0]))
-    allocation_authorities: dict[int, list[int]] = {}
-    for index, rule in enumerate(resolved):
-        if (
-            rule.locator_kind in {"external_allocation", "resource"}
-            and rule.locator_subject_rva != 0
-        ):
-            allocation_authorities.setdefault(
-                rule.locator_subject_rva, []
-            ).append(index)
-    ambiguous = {
-        index
-        for indexes in allocation_authorities.values()
-        if len(indexes) != 1
-        for index in indexes
-    }
-    for index in sorted(ambiguous):
-        rule = resolved[index]
-        blockers.append({
-            "category": (
-                "runtime_external_allocation_authority_ambiguous"
-                if rule.locator_kind == "external_allocation"
-                else "runtime_resource_authority_ambiguous"
-            ),
-            "rule_id": rule.identity,
-            "allocation_id": rule.locator_identity,
-        })
-        resolved[index] = replace(rule, locator_subject_rva=0)
-    return resolved
 
 
 def plan_shared_module_runtime(
@@ -502,6 +433,7 @@ def plan_shared_module_runtime(
             locator_offset=locator.offset,
             locator_subject_rva=locator_subject_rva,
             interior_pointers=rule.interior_pointers,
+            extent_mode=rule.extent_mode,
         ))
     operations = _required_list(
         native_plan.get("x87_operations"), "module-runtime typed x87 operations"

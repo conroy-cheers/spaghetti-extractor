@@ -1,25 +1,8 @@
 {
-  "blockers": [
-    {
-      "code": "machine_effect_service_callback_outcome_projection_unreviewed",
-      "component_id": "directdraw-init"
-    },
-    {
-      "code": "contextual_tail_live_in_object_outcome_projection_unreviewed",
-      "component_id": "directdraw-init",
-      "entry_rva": 52572,
-      "excluded_prefix_rva_end": 52572,
-      "excluded_prefix_rva_start": 52320,
-      "required_review": [
-        "checked_faithful_continuation_portal_state",
-        "six_zero_failure_one_success_outcome_projections",
-        "two_internal_call_effects"
-      ]
-    }
-  ],
+  "blockers": [],
   "component_id": "directdraw-init",
   "format": "spaghetti-extractor-component-machine-binding-intent-v1",
-  "intent_sha256": "6799b6c4c5baa51c9f78d725d5f516705ad6e734398ce619556a45a9a53ada76",
+  "intent_sha256": "5fa030e579e0928070b5c07487e8c688d234da416d27037eeba1381c4497d7b2",
   "operations": [
     {
       "callback_ids": [],
@@ -81,6 +64,21 @@
               "entry": {
                 "at": "entry",
                 "kind": "static_slot",
+                "rva": 215480,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 215480,
+                "width": 32
+              },
+              "id": "backbuffer_word"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
                 "rva": 96764,
                 "width": 32
               },
@@ -111,6 +109,21 @@
               "entry": {
                 "at": "entry",
                 "kind": "static_slot",
+                "rva": 215484,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 215484,
+                "width": 32
+              },
+              "id": "clipper_word"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
                 "rva": 96772,
                 "width": 32
               },
@@ -121,6 +134,36 @@
                 "width": 32
               },
               "id": "directdraw_initialized"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 215464,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 215464,
+                "width": 32
+              },
+              "id": "directdraw_word"
+            },
+            {
+              "entry": {
+                "at": "entry",
+                "kind": "static_slot",
+                "rva": 215476,
+                "width": 32
+              },
+              "exit": {
+                "at": "exit",
+                "kind": "static_slot",
+                "rva": 215476,
+                "width": 32
+              },
+              "id": "primary_word"
             },
             {
               "entry": {
@@ -268,7 +311,7 @@
                     null,
                     null,
                     null,
-                    16448
+                    64
                   ],
                   "kind": "local_cell",
                   "local_cell_relation_sha256": "62be9a58f0d0c09e24124fd198d97d89145ec23b3937ce54da8e7a229b83dfc5"
@@ -935,5 +978,5 @@
       ]
     }
   ],
-  "status": "incomplete"
+  "status": "complete"
 }

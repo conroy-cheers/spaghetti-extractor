@@ -36,7 +36,9 @@ from .interface_package_v5 import (
     ComponentInterfaceIntentV1,
     compile_component_interface_v5,
 )
+from .logical_value_types import checked_nullable_input_values, logical_value_type_uses
 from .machine_binding import create_proof_kernel_machine_binding
+from .machine_overlay_state_views import checked_state_view
 from .normalized_component import (
     NormalizedComponentContract,
     NormalizedMachineBinding,
@@ -347,6 +349,8 @@ def _compile_kernel_semantic_contract(
         normalized_projection = _materialize_kernel_finite_control_targets(
             normalized_projection,
             finite_control_routes=finite_control_routes,
+            expected_pe_sha256=machine_binding.artifacts["pe_sha256"],
+            machine_image=machine_image,
         )
         operations.append(normalized_projection)
         unit_ids.update(str(item) for item in semantics.transfer_ids)
@@ -388,6 +392,7 @@ def _compile_kernel_semantic_contract(
             provider_entry_units=provider_entry_units,
         ),
         machine_image=machine_image,
+        operation_unit_ids={identity: row.unit_ids for identity, row in semantics_index.items()},
     )
     return portable_payload, portable, semantic_contract, normalized_services
 
@@ -396,6 +401,8 @@ def _materialize_kernel_finite_control_targets(
     operation: Mapping[str, object],
     *,
     finite_control_routes: Sequence[object],
+    expected_pe_sha256: str,
+    machine_image: Mapping[str, object] | None,
 ) -> dict[str, object]:
     """Translate only transfer-plan-authorized finite targets into routes."""
 
@@ -420,6 +427,27 @@ def _materialize_kernel_finite_control_targets(
                 "V5 finite-control target authority is absent or ambiguous"
             )
         route_inventory = route_matches[0]
+        index_provenance = object_(
+            route_inventory.get("index_provenance"),
+            "V5 finite-control index provenance",
+        )
+        if index_provenance.get("kind") != "direct_index":
+            raise BoundaryModelError(
+                "V5 remapped finite-control selectors lack a proof model"
+            )
+        if route_inventory.get("pe_sha256") != expected_pe_sha256:
+            raise BoundaryModelError(
+                "V5 finite-control authority names another PE image"
+            )
+        if machine_image is not None and (
+            route_inventory.get("pe_sha256") != machine_image.get("pe_sha256")
+            or route_inventory.get("image_base")
+            != machine_image.get("preferred_base")
+            or route_inventory.get("image_size") != machine_image.get("image_size")
+        ):
+            raise BoundaryModelError(
+                "V5 finite-control authority disagrees with the proof machine image"
+            )
         declared_targets: dict[int, int] = {}
         for raw_target in array(
             projection.get("targets"), "V5 declared finite-control targets"
@@ -456,6 +484,7 @@ def _materialize_kernel_finite_control_targets(
             "unit_id": unit_id,
             "selector_parameter_id": projection.get("selector_parameter_id"),
             "target_inventory_sha256": str(route_inventory["route_inventory_sha256"]),
+            "proof_evidence": json.loads(json.dumps(route_inventory)),
             "routes": sorted(
                 (
                     {
@@ -742,33 +771,30 @@ def _logical_projection(
     """Project canonical boundary types into the proven logical C kernel."""
 
     schema = bundle.intent.schema
-    occurrences: dict[str, list[object]] = {}
-    for signature in schema.signatures:
-        for value in (*signature.parameters, *signature.results):
-            occurrences.setdefault(value.type_id, []).append(value)
-    for item in bundle.interface.state:
-        occurrences.setdefault(item.value.type_id, []).append(item.value)
-    bytes_type_ids: set[str] = set()
-    if contract is not None:
-        operation_index = {item.identity: item for item in bundle.interface.operations}
+    nullable_inputs = checked_nullable_input_values(bundle, contract)
+    borrowed_views = tuple(item for item in bundle.interface.state
+                           if item.initial is None and item.value.interpretation == "view")
+    if contract is not None and borrowed_views:
+        if (contract.interface_sha256 != bundle.interface.interface_sha256 or
+                {row.operation_id for row in contract.machine_semantics} !=
+                {row.identity for row in bundle.interface.operations}):
+            raise BoundaryModelError("borrowed shared state requires current, total operation bindings")
         for semantics in contract.machine_semantics:
-            operation = operation_index[semantics.operation_id]
-            signature = schema.signature_index[operation.signature_id]
-            parameter_types = {
-                item.identity: item.type_id for item in signature.parameters
-            }
-            projection = object_(
-                semantics.machine_projection.get("operation"),
-                "V5 refinement logical projection",
-            )
-            for raw in array(projection.get("parameters"), "V5 refinement parameters"):
-                row = object_(raw, "V5 refinement parameter")
-                machine = object_(row.get("projection"), "parameter projection")
-                if machine.get("kind") == "bytes_view":
-                    type_id = parameter_types.get(str(row.get("id")))
-                    if type_id is not None:
-                        bytes_type_ids.add(type_id)
-
+            operation = object_(semantics.machine_projection.get("operation"), "borrowed state operation")
+            state_rows = {row["id"]: row for row in operation.get("state", [])}
+            for item in borrowed_views:
+                if item.value.identity not in state_rows:
+                    raise BoundaryModelError("borrowed shared state has no operation entry binding")
+                checked_state_view(bundle, item, state_rows[item.value.identity])
+    type_uses, value_type_ids = logical_value_type_uses(bundle, contract)
+    service_result_values = {id(value) for service in bundle.interface.services
+                             for value in schema.signature_index[service.signature_id].results}
+    other_values = {id(value) for operation in bundle.interface.operations
+                    for value in (*schema.signature_index[operation.signature_id].parameters,
+                                  *schema.signature_index[operation.signature_id].results)}
+    other_values.update(id(value) for service in bundle.interface.services
+                        for value in schema.signature_index[service.signature_id].parameters)
+    other_values.update(id(item.value) for item in bundle.interface.state)
     types: list[dict[str, object]] = []
     resource_cell_type_ids: dict[tuple[str, str, str], str] = {}
     for signature in schema.signatures:
@@ -792,12 +818,11 @@ def _logical_projection(
         for item in schema.types
         if item.kind == "enum"
     }
-    for type_node in schema.types:
+    for type_node, values, is_bytes_view in type_uses:
         if type_node.kind in {"void", "function"}:
             continue
         if type_node.identity in enum_underlyings:
             continue
-        values = occurrences.get(type_node.identity, [])
         interpretations = {str(item.interpretation) for item in values}
         if type_node.kind == "integer":
             types.append(
@@ -820,6 +845,22 @@ def _logical_projection(
                         int(underlying.body["width_bits"]),
                         bool(underlying.body["signed"]),
                     ),
+                }
+            )
+        elif type_node.kind == "record":
+            if any(field["bit_width"] is not None for field in type_node.body["fields"]):
+                raise BoundaryModelError(
+                    f"V5 refinement record {type_node.identity!r} uses bit-fields"
+                )
+            types.append(
+                {
+                    "id": type_node.identity,
+                    "kind": "record",
+                    "access": "read_write",
+                    "fields": [
+                        {"id": str(field["id"]), "type_id": str(field["type_id"])}
+                        for field in type_node.body["fields"]
+                    ],
                 }
             )
         elif type_node.kind == "opaque":
@@ -879,7 +920,13 @@ def _logical_projection(
                 values[0],
             )
             extent = sample.extent
-            if type_node.identity in bytes_type_ids:
+            nullable_input = bool(values) and all(id(value) in nullable_inputs for value in values)
+            if sample.nullable and not nullable_input and (is_bytes_view or
+                    any(id(value) not in service_result_values or id(value) in other_values for value in values)):
+                raise BoundaryModelError(
+                    f"V5 refinement view {type_node.identity!r} needs a nullable logical view contract"
+                )
+            if is_bytes_view:
                 if extent["kind"] == "value":
                     extent_parameter_id = extent["value_id"]
                     nul_terminated = False
@@ -913,7 +960,8 @@ def _logical_projection(
                 # Service schemas intentionally omit operation-local extent
                 # names.  Exact event projections carry the service extent;
                 # the logical C kernel needs only a non-authorizing shape.
-                extent_payload = {"kind": "fixed", "elements": 1}
+                extent_payload = ({"kind": "origin_remainder"} if nullable_input
+                                  else {"kind": "fixed", "elements": 1})
             else:
                 raise BoundaryModelError(
                     f"V5 refinement view {type_node.identity!r} lacks an exact extent"
@@ -926,6 +974,7 @@ def _logical_projection(
                     "access": sample.access,
                     "extent": extent_payload,
                     "ownership": "borrowed",
+                    **({'nullable': True} if sample.nullable else {}),
                 }
             )
         else:
@@ -951,7 +1000,7 @@ def _logical_projection(
             return resource_cell_type_ids[
                 (value.type_id, str(value.resource_kind), value.access)
             ]
-        return value.type_id
+        return value_type_ids.get(id(value), value.type_id)
 
     operations = []
     for operation in bundle.interface.operations:
@@ -1006,7 +1055,7 @@ def _logical_projection(
         "state": [
             {
                 "id": item.value.identity,
-                "type_id": item.value.type_id,
+                "type_id": logical_type_id(item.value),
                 "initial": item.initial,
             }
             for item in bundle.interface.state

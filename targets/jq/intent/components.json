@@ -216,6 +216,17 @@
           "kind": "group"
         }
       ]
+    },
+    {
+      "id": "output-value-pipeline-enabled",
+      "label": "Verified output value pipeline with machine fallback",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "output-value-pipeline",
+          "kind": "component"
+        }
+      ]
     }
   ],
   "format": "spaghetti-extractor-component-lifting-intent-v1",
@@ -247,7 +258,7 @@
       ]
     }
   ],
-  "intent_sha256": "1046a5842dae36aa47a5d800c738333294f39e51ae8a2651f13384d6816d481c",
+  "intent_sha256": "019edd1297f49e2d924d322f5c802d898a13b9a665d49d9be605f02c75eea13e",
   "policy": {
     "machine_authority_from_v5_bindings_only": true,
     "operation_symbols_only": true,

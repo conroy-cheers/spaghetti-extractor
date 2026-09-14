@@ -72,19 +72,20 @@ def build_inductive_machine_shape(
     outgoing: dict[str, tuple[tuple[str, Mapping[str, object]], ...]] = {}
     edges: list[dict[str, object]] = []
     for identity in sorted(units, key=lambda item: units[item].rva):
-        if identity in exits:
-            outgoing[identity] = ()
-            continue
         edge_rows = _edge_rows(units[identity].semantics)
-        if not edge_rows:
+        if not edge_rows and identity not in exits:
             raise SemanticInductionError(
                 f"non-exit semantic unit {identity!r} has no direct transition"
             )
         resolved: list[tuple[str, Mapping[str, object]]] = []
         seen_targets: set[str] = set()
+        leaves = not edge_rows
         for condition, target_rva in edge_rows:
             target = by_rva.get(target_rva)
             if target is None:
+                if identity in exits:
+                    leaves = True
+                    continue
                 raise SemanticInductionError(
                     f"semantic edge from {identity!r} leaves the operation at RVA "
                     f"{target_rva:#x}"
@@ -102,6 +103,8 @@ def build_inductive_machine_shape(
                     "condition": copy.deepcopy(dict(condition)),
                 }
             )
+        if identity in exits and not leaves:
+            raise SemanticInductionError(f"declared exit {identity!r} has no outgoing boundary edge")
         outgoing[identity] = tuple(resolved)
 
     reachable = _reachable(entries, outgoing)
@@ -249,8 +252,8 @@ def build_inductive_segment_inventory(
     entries = tuple(str(item) for item in shape["entry_unit_ids"])
     exits = set(str(item) for item in shape["exit_unit_ids"])
     cutpoints = tuple(cutpoint_unit_ids)
-    if not cutpoints or any(not isinstance(item, str) or not item for item in cutpoints):
-        raise SemanticInductionError("inductive cutpoints must be nonempty strings")
+    if any(not isinstance(item, str) or not item for item in cutpoints):
+        raise SemanticInductionError("inductive cutpoints must be strings")
     if len(cutpoints) != len(set(cutpoints)):
         raise SemanticInductionError("inductive cutpoints contain duplicates")
     if set(cutpoints) - set(rvas):
@@ -268,6 +271,10 @@ def build_inductive_segment_inventory(
             )
 
     edge_rows = _rows(shape["control_edges"], "control edges")
+    if any(str(row["source_unit_id"]) in exits for row in edge_rows):
+        raise SemanticInductionError(
+            "mixed internal and boundary exits require contextual cut checking, not path segments"
+        )
     outgoing: dict[str, list[tuple[int, str, Mapping[str, object]]]] = {
         identity: [] for identity in rvas
     }

@@ -1,0 +1,62 @@
+{
+  "format": "spaghetti-extractor-component-relation-intent-v1",
+  "component_id": "resource-text",
+  "status": "ready_for_check",
+  "operations": [
+    {
+      "operation_id": "get",
+      "requirements": [
+        {
+          "id": "returns-shared-buffer",
+          "relation": "normal_exit_postcondition",
+          "expression": {
+            "op": "eq",
+            "sort": {
+              "kind": "bool"
+            },
+            "args": [
+              {
+                "op": "logical",
+                "sort": {
+                  "kind": "view",
+                  "type_id": "bytes"
+                },
+                "args": [],
+                "attributes": {
+                  "path": {
+                    "root": "result",
+                    "id": "result",
+                    "fields": []
+                  }
+                }
+              },
+              {
+                "op": "logical",
+                "sort": {
+                  "kind": "view",
+                  "type_id": "bytes"
+                },
+                "args": [],
+                "attributes": {
+                  "path": {
+                    "root": "state",
+                    "id": "buffer",
+                    "fields": []
+                  }
+                }
+              }
+            ],
+            "attributes": {}
+          }
+        }
+      ]
+    }
+  ],
+  "blockers": [],
+  "policy": {
+    "intent_authorizes": false,
+    "checked_evidence_required": true,
+    "tests_authorize": false
+  },
+  "intent_sha256": "cd79194238e6e35670506c689992cf09ed1fae32739c3d891784f6d0b08ba1e0"
+}

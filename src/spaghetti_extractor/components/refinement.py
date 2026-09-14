@@ -27,6 +27,7 @@ from .refinement_harness import (
     _render_atomic_refinement_oracle,
     _render_callback_refinement_types,
     _render_checked_reference_support,
+    _operation_result_c_type,
     _render_service_path_harness,
     _rows,
     _string_rows,
@@ -517,7 +518,7 @@ def _run_cbmc_operation(
                 f"&spx_bytes_{parameter.identity}_view"
             )
         arguments = [argument_by_id[row.identity] for row in operation.parameters]
-        result_type = interface.operation_c_result(operation)
+        result_type = _operation_result_c_type(interface, operation)
         call_arguments = ", ".join(["&context", *arguments])
         common = [
             '#include "portable-component-implementation.h"',

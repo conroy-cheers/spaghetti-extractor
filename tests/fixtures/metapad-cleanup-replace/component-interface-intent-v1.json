@@ -1,0 +1,570 @@
+{
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "status": "complete",
+  "id": "cleanup-replace",
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "metapad.cleanup-replace",
+    "types": [
+      {
+        "id": "bytes",
+        "kind": "pointer",
+        "pointee_type_id": "u8",
+        "qualifiers": []
+      },
+      {
+        "id": "cleanup.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "outcome",
+        "kind": "record",
+        "fields": [
+          {
+            "id": "fault",
+            "type_id": "u32",
+            "bit_width": null
+          },
+          {
+            "id": "value",
+            "type_id": "u32",
+            "bit_width": null
+          }
+        ],
+        "nominal_id": "cleanup-replace-outcome"
+      },
+      {
+        "id": "replace.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "u32"
+        ],
+        "result_type_id": "outcome",
+        "variadic": false
+      },
+      {
+        "id": "send_message.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "u32",
+          "u32",
+          "u32",
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "u32",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "u8",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 8
+      }
+    ],
+    "signatures": [
+      {
+        "id": "cleanup",
+        "function_type_id": "cleanup.fn",
+        "parameters": [
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "suppress_notice",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "main_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "edit_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "removed",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "replace",
+        "function_type_id": "replace.fn",
+        "parameters": [
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "suppress_notice",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "main_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "edit_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "mode",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "result",
+            "type_id": "outcome",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "send_message",
+        "function_type_id": "send_message.fn",
+        "parameters": [
+          {
+            "id": "window",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "message",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "wparam",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "result",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      }
+    ],
+    "schema_sha256": "33fd146c2cf28cd27728cb93d9648839b5d7526461de966855386d38fc5c9472"
+  },
+  "state": [],
+  "operations": [
+    {
+      "allowed_service_ids": [
+        "cleanup",
+        "send_message"
+      ],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "replace",
+      "lifecycle_additional_roots": {
+        "state": []
+      },
+      "lifecycle_bindings": [],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "text",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "text"
+          }
+        },
+        {
+          "source_id": "suppress_notice",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "suppress_notice"
+          }
+        },
+        {
+          "source_id": "main_window",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "main_window"
+          }
+        },
+        {
+          "source_id": "edit_window",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "edit_window"
+          }
+        },
+        {
+          "source_id": "caption",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "caption"
+          }
+        },
+        {
+          "source_id": "mode",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "mode"
+          }
+        },
+        {
+          "source_id": "result",
+          "target": {
+            "fields": [],
+            "root": "result",
+            "value_id": "result"
+          }
+        }
+      ],
+      "signature_id": "replace",
+      "source_values": [
+        {
+          "access": "read_write",
+          "extent": {
+            "bytes": null,
+            "kind": "nul_terminated",
+            "value_id": null
+          },
+          "id": "text",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "suppress_notice",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "main_window",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "edit_window",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": null,
+            "kind": "nul_terminated",
+            "value_id": null
+          },
+          "id": "caption",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "id": "mode",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        },
+        {
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "id": "result",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "outcome"
+        }
+      ]
+    }
+  ],
+  "effects": [],
+  "services": [
+    {
+      "id": "cleanup",
+      "signature_id": "cleanup",
+      "effect_ids": [],
+      "interaction_contract_id": "component-service.cleanup-replace.cleanup"
+    },
+    {
+      "id": "send_message",
+      "signature_id": "send_message",
+      "effect_ids": [],
+      "interaction_contract_id": "component-service.cleanup-replace.send-message"
+    }
+  ],
+  "protocol": {
+    "states": [
+      "ready"
+    ],
+    "initial_state": "ready"
+  },
+  "intent_sha256": "91261e7a253cb71a7e97f2c8c937c6e7f52825af8bba283dcd26073d5fbb88db"
+}

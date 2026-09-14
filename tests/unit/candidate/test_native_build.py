@@ -9,6 +9,7 @@ from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.candidate.build_objects import _payload_symbol_rvas
 from spaghetti_extractor.candidate.build_workflow import (
     _native_realization_object_sources,
+    _prepare_portable_dispatch_registry,
     _stage_provider_objects,
     build_native_realization_payload,
 )
@@ -141,6 +142,23 @@ class NativeModuleBuildContractTests(unittest.TestCase):
                 rows[0]["selected_provider"]["symbol_ids"],
                 ["original:function:portable"],
             )
+
+    def test_nonportable_link_skips_dispatch_registry_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = _prepare_portable_dispatch_registry(
+                portable_inputs=[],
+                transfer_plan=root / "not-needed.json",
+                provider_qualifications=[],
+                compiler=root / "not-needed-cc",
+                nm=root / "not-needed-nm",
+                object_paths=[],
+                object_rows=[],
+                objects=root,
+                output=root,
+                environment={},
+            )
+            self.assertEqual(result, {"entries": [], "registry": None})
 
     def test_realization_provider_objects_link_without_source_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,0 +1,30 @@
+{
+  "plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590",
+  "owned": [
+    45454,
+    45461,
+    45468,
+    45473,
+    45487
+  ],
+  "incoming": [
+    {
+      "kind": "control",
+      "source_rva": 45382,
+      "target_rva": 45454
+    },
+    {
+      "kind": "control",
+      "source_rva": 45430,
+      "target_rva": 45454
+    },
+    {
+      "kind": "control",
+      "source_rva": 45447,
+      "target_rva": 45454
+    }
+  ],
+  "slice_sha256": "26cb927a61864bacd858e6a1bc77167609439e536854329f5c1ee6257aae94c6",
+  "exact": "build/independent-lifting/practical-assurance/cleanup-callers-v1/replace-with-guards/exact",
+  "status": "structural-input-only-not-proved"
+}

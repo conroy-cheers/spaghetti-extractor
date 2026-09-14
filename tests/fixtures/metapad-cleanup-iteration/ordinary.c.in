@@ -1,0 +1,5 @@
+#include "portable-component-implementation.h"
+@REFERENCE_RUNTIME@
+#define SPX_PROOF_BEGIN(...)
+#define SPX_PROOF_SYNC(...)
+#include "authored.c"

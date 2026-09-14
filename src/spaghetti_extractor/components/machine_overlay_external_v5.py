@@ -8,6 +8,7 @@ from ..artifacts.artifact_set import canonical_sha256_v3
 from ..boundary._canonical import BoundaryModelError, array, object_
 from ..transfer.values import _c_string
 from .component_c_v5 import _parameter_type, _result_type
+from .machine_overlay_result_views import result_view_lines
 from .finite_word_transducers import FiniteWordMapError, parse_finite_word_map
 from .interface_package_v5 import CompiledComponentInterfaceV5
 from .local_cell_transducers import (
@@ -46,6 +47,7 @@ def _service_provider_declaration(
 def _checked_service_argument_transducers(
     *,
     signature: object,
+    types: Mapping[str, object],
     argument_words: int,
     value: object,
     relation_values: object,
@@ -133,6 +135,7 @@ def _checked_service_argument_transducers(
         for relation in array(local_cell_values, f"{context} local-cell relations")
     }
     mapped_parameters: set[int] = set()
+    mapped_record_fields: dict[int, set[str]] = {}
     local_cell_ids: set[str] = set()
     out_interfaces: list[dict[str, object]] = []
     input_interfaces: list[dict[str, object]] = []
@@ -217,6 +220,38 @@ def _checked_service_argument_transducers(
                 )
             mapped_parameters.add(parameter_index)
             continue
+        if transducer_kind == "record_field":
+            parameter_index = _uint(
+                transducer.get("parameter_index"),
+                f"{context} record-field parameter",
+            )
+            field_id = transducer.get("field_id")
+            if parameter_index >= len(parameters) or not isinstance(field_id, str):
+                raise BoundaryModelError(
+                    f"{context} record-field parameter map is invalid"
+                )
+            parameter = parameters[parameter_index]
+            logical_type = types.get(parameter.type_id)
+            fields = () if logical_type is None else tuple(logical_type.body.get("fields", ()))
+            matches = [field for field in fields if field.get("id") == field_id]
+            if (
+                parameter.interpretation != "value"
+                or logical_type is None
+                or logical_type.kind != "record"
+                or parameter_index in mapped_parameters
+                or len(matches) != 1
+                or not _is_word_record_field(types, matches[0])
+                or field_id in mapped_record_fields.setdefault(parameter_index, set())
+            ):
+                raise BoundaryModelError(
+                    f"{context} record-field transducer is incompatible"
+                )
+            mapped_record_fields[parameter_index].add(field_id)
+            continue
+        if transducer_kind == "aggregate_result":
+            raise BoundaryModelError(
+                f"{context} aggregate-result transducer was not ABI-normalized"
+            )
         parameter_index = _uint(
             transducer.get("parameter_index"),
             f"{context} transducer parameter",
@@ -226,6 +261,11 @@ def _checked_service_argument_transducers(
         mapped_parameters.add(parameter_index)
         parameter = parameters[parameter_index]
         if transducer_kind == "logical_argument":
+            logical_type = types.get(parameter.type_id)
+            if logical_type is not None and logical_type.kind == "record":
+                raise BoundaryModelError(
+                    f"{context} record value requires field transducers"
+                )
             if parameter.interpretation == "resource" and parameter.access != "none":
                 raise BoundaryModelError(
                     f"{context} writable resource requires an out-interface transducer"
@@ -276,6 +316,10 @@ def _checked_service_argument_transducers(
             raise BoundaryModelError(
                 f"{context} out-interface relation is incompatible"
             )
+        if parameter.nullable and not bool(relation.get("nullable")):
+            raise BoundaryModelError(
+                f"{context} nullable logical output contradicts its physical relation"
+            )
         out_interfaces.append(
             {
                 "physical_index": physical_index,
@@ -283,12 +327,26 @@ def _checked_service_argument_transducers(
                 "profile_sha256": profile_sha256,
                 "interface_id": relation["interface_id"],
                 "relation_sha256": relation_sha256,
-                "nullable": bool(relation.get("nullable")),
+                # The logical signature is the authoritative contract exposed
+                # to Portable-C.  A more-permissive physical declaration must
+                # not silently make a non-null logical resource nullable.
+                "nullable": bool(parameter.nullable),
             }
         )
+    for parameter_index, field_ids in mapped_record_fields.items():
+        parameter = parameters[parameter_index]
+        logical_type = types[parameter.type_id]
+        expected = {str(field["id"]) for field in logical_type.body["fields"]}
+        if field_ids != expected:
+            raise BoundaryModelError(
+                f"{context} record-field transducer is not total"
+            )
+        mapped_parameters.add(parameter_index)
     if mapped_parameters != set(range(len(parameters))):
         raise BoundaryModelError(
-            f"{context} transducer is not total over logical parameters"
+            f"{context} transducer is not total over logical parameters: "
+            f"mapped={sorted(mapped_parameters)!r}, "
+            f"expected={list(range(len(parameters)))!r}"
         )
     if {item["physical_index"] for item in input_interfaces} != set(
         argument_interfaces
@@ -297,6 +355,24 @@ def _checked_service_argument_transducers(
             f"{context} argument-interface relation is not mapped logically"
         )
     return transducers, out_interfaces, input_interfaces
+
+
+def _is_word_record_field(
+    types: Mapping[str, object], field: Mapping[str, object]
+) -> bool:
+    value = types.get(str(field.get("type_id")))
+    if value is None or field.get("bit_width") is not None:
+        return False
+    if value.kind == "integer":
+        return value.body.get("width_bits") == 32
+    if value.kind == "enum":
+        underlying = types.get(str(value.body.get("underlying_type_id")))
+        return (
+            underlying is not None
+            and underlying.kind == "integer"
+            and underlying.body.get("width_bits") == 32
+        )
+    return value.kind == "pointer"
 
 
 def _caller_memory_argument(
@@ -348,7 +424,7 @@ def _external_service_thunk(
     if len(signature.results) > 1 or (
         signature.results
         and signature.results[0].interpretation
-        not in {"value", "reference", "callback"}
+        not in {"value", "reference", "callback", "view"}
     ):
         raise BoundaryModelError(
             "component external service result requires a checked reference or capability transducer"
@@ -376,9 +452,16 @@ def _external_service_thunk(
         for physical_index, item in enumerate(transducers or [])
         if isinstance(item, Mapping) and item.get("kind") == "local_cell"
     )
+    local_cell_relations = {
+        canonical_sha256_v3(dict(item)): object_(
+            item, "component external local-cell relation"
+        )
+        for item in binding.get("local_cells", [])
+    }
+    local_cell_selections = {}
     local_cell_offsets: dict[str, int] = {}
     next_cell_offset = len(offsets) * 4 + len(out_interfaces) * 4
-    for _physical_index, cell in local_cells:
+    for physical_index, cell in local_cells:
         cell_id = str(cell.get("cell_id", ""))
         initial_words = cell.get("initial_words")
         if (
@@ -390,15 +473,57 @@ def _external_service_thunk(
             raise BoundaryModelError(
                 "component external local-cell inventory is invalid"
             )
+        relation_sha256 = cell.get("local_cell_relation_sha256")
+        relation = (
+            None
+            if relation_sha256 is None
+            else local_cell_relations.get(str(relation_sha256))
+        )
+        if relation_sha256 is not None and relation is None:
+            raise BoundaryModelError(
+                "component external local-cell relation is absent"
+            )
+        if relation is not None:
+            try:
+                local_cell_selections[cell_id] = checked_local_cell_selection(
+                    relation,
+                    physical_index=physical_index,
+                    initial_words=checked_initial_words(
+                        initial_words, context="component external local cell"
+                    ),
+                    memory={
+                        "role": "caller_memory",
+                        "access": "read_write",
+                        "extent": "enclosing_object",
+                        "retention": "during_call",
+                    },
+                    context="component external local cell",
+                )
+            except LocalCellTransducerError as exc:
+                raise BoundaryModelError(str(exc)) from exc
         local_cell_offsets[cell_id] = next_cell_offset
         next_cell_offset += len(initial_words) * 4
     local_word_offsets = tuple(
         local_cell_offsets[str(cell["cell_id"])] + word_index * 4
         for _physical_index, cell in local_cells
-        for word_index, _word in enumerate(cell["initial_words"])
+        for word_index, word in enumerate(cell["initial_words"])
+        if word is not None
+        or (
+            str(cell["cell_id"]) in local_cell_selections
+            and word_index
+            in (
+                local_cell_selections[str(cell["cell_id"])].output_word_indices
+                | local_cell_selections[
+                    str(cell["cell_id"])
+                ].failure_preserved_word_indices
+                | local_cell_selections[
+                    str(cell["cell_id"])
+                ].failure_observed_word_indices
+            )
+        )
     )
     storage_offsets = (*offsets, *cell_offsets.values(), *local_word_offsets)
-    frame_size = max(storage_offsets, default=-4) + 4
+    frame_size = max(max(storage_offsets, default=-4) + 4, next_cell_offset)
     if frame_size <= 0 or frame_size > 0x1000:
         raise BoundaryModelError(
             "component external service stack frame is unsupported"
@@ -413,20 +538,27 @@ def _external_service_thunk(
         "  uint32_t memory_fault = 0U;",
         "  uint32_t restore_fault = 0U;",
         f"  if (service == 0 || service->runtime == 0 || service->state == 0 ||",
-        f"      service->fault == 0 || service->state->esp < UINT32_C({frame_size}))",
+        "      service->memory_fault == 0 || service->service_fault == 0)",
         f"    {_zero_result_expression(result_type)}",
+        "  if (*service->memory_fault != UINT32_C(0) ||",
+        "      *service->service_fault != UINT32_C(0))",
+        f"    {_zero_result_expression(result_type)}",
+        f"  if (service->state->esp < UINT32_C({frame_size}))",
+        "    goto spx_service_memory_fail;",
     ]
     initial_cell_words: dict[tuple[str, int], str] = {}
     for _physical_index, cell in local_cells:
         cell_id = str(cell["cell_id"])
         for word_index, word in enumerate(cell["initial_words"]):
+            if word is None:
+                continue
             variable = f"initial_local_cell_{_c_identifier(cell_id)}_{word_index}"
             initial_cell_words[(cell_id, word_index)] = variable
             lines.append(
                 f"  uint32_t {variable} = {_initial_local_cell_word_expression(word)};"
             )
     if initial_cell_words:
-        lines.append("  if (memory_fault != 0U) goto spx_service_fail;")
+        lines.append("  if (memory_fault != 0U) goto spx_service_memory_fail;")
     out_by_parameter = {int(item["parameter_index"]): item for item in out_interfaces}
     if transducers is None:
         for index, value in enumerate(signature.parameters):
@@ -457,6 +589,9 @@ def _external_service_thunk(
                     ]
                 )
                 continue
+            logical_type = types[value.type_id]
+            if logical_type.kind == "record":
+                continue
             physical = f"logical_argument_word_{parameter_index}"
             logical_words[parameter_index] = physical
             lines.append(f"  uint32_t {physical} = 0U;")
@@ -482,6 +617,14 @@ def _external_service_thunk(
                 parameter_index = int(transducer["parameter_index"])
                 lines.append(
                     f"  physical_argument_{physical_index} = {logical_words[parameter_index]};"
+                )
+            elif transducer.get("kind") == "record_field":
+                parameter_index = int(transducer["parameter_index"])
+                field_id = _c_identifier(str(transducer["field_id"]))
+                parameter = signature.parameters[parameter_index]
+                logical = f"logical_{_c_identifier(parameter.identity)}"
+                lines.append(
+                    f"  physical_argument_{physical_index} = (uint32_t){logical}.{field_id};"
                 )
             elif transducer.get("kind") == "finite_word_map":
                 try:
@@ -513,12 +656,14 @@ def _external_service_thunk(
                 "  uint32_t interface_vtable = spx_component_read(",
                 f"      service->runtime, physical_argument_{receiver}, UINT32_C(4), &memory_fault);",
                 "  uint32_t interface_target = 0U;",
-                f"  if (memory_fault != 0U || interface_vtable > UINT32_MAX - UINT32_C({slot_offset}))",
-                "    goto spx_service_fail;",
+                "  if (memory_fault != 0U)",
+                "    goto spx_service_memory_fail;",
                 "  interface_target = spx_component_read(",
                 f"      service->runtime, interface_vtable + UINT32_C({slot_offset}),",
                 "      UINT32_C(4), &memory_fault);",
-                "  if (memory_fault != 0U || interface_target == 0U)",
+                "  if (memory_fault != 0U)",
+                "    goto spx_service_memory_fail;",
+                "  if (interface_target == 0U)",
                 "    goto spx_service_fail;",
             ]
         )
@@ -553,7 +698,7 @@ def _external_service_thunk(
             f"  uint32_t saved_frame_word_{index} = spx_component_read(service->runtime, "
             f"call_input.esp + UINT32_C({offset}), UINT32_C(4), &memory_fault);"
         )
-    lines.append("  if (memory_fault != 0U) goto spx_service_fail;")
+    lines.append("  if (memory_fault != 0U) goto spx_service_memory_fail;")
     for index, offset in enumerate(offsets):
         lines.append(
             f"  spx_component_write(service->runtime, call_input.esp + UINT32_C({offset}), "
@@ -567,13 +712,15 @@ def _external_service_thunk(
     for _physical_index, cell in local_cells:
         base_offset = local_cell_offsets[str(cell["cell_id"])]
         cell_id = str(cell["cell_id"])
-        for word_index, _word in enumerate(cell["initial_words"]):
+        for word_index, word in enumerate(cell["initial_words"]):
+            if word is None:
+                continue
             lines.append(
                 "  spx_component_write(service->runtime, call_input.esp + "
                 f"UINT32_C({base_offset + word_index * 4}), UINT32_C(4), "
                 f"{initial_cell_words[(cell_id, word_index)]}, &memory_fault);"
             )
-    lines.append("  if (memory_fault != 0U) goto spx_service_restore_fail;")
+    lines.append("  if (memory_fault != 0U) goto spx_service_memory_restore_fail;")
     events = array(binding.get("events"), "component external service events")
     if not events:
         raise BoundaryModelError("component external service has no machine events")
@@ -646,6 +793,7 @@ def _external_service_thunk(
         )
         lines.append("      UINT32_C(4), &memory_fault);")
     local_result_expression = "call_output.eax"
+    record_result_fields: tuple[tuple[str, str], ...] = ()
     result_projection = binding.get("result_projection")
     if (
         isinstance(result_projection, Mapping)
@@ -671,13 +819,7 @@ def _external_service_thunk(
         selected_relation = None
         relation_sha256 = selected_cell.get("local_cell_relation_sha256")
         if relation_sha256 is not None:
-            relations = {
-                canonical_sha256_v3(dict(item)): object_(
-                    item, "component external local-cell result relation"
-                )
-                for item in binding.get("local_cells", [])
-            }
-            relation = relations.get(str(relation_sha256))
+            relation = local_cell_relations.get(str(relation_sha256))
             if relation is None:
                 raise BoundaryModelError(
                     "component external local-cell result relation is absent"
@@ -740,16 +882,106 @@ def _external_service_thunk(
             local_result_expression = "checked_local_cell_result"
         else:
             local_result_expression = "physical_local_cell_result"
+    elif (
+        isinstance(result_projection, Mapping)
+        and result_projection.get("kind") == "local_cell_record"
+    ):
+        cell_id = str(result_projection.get("cell_id", ""))
+        matching_cells = [
+            (physical_index, cell)
+            for physical_index, cell in local_cells
+            if cell.get("cell_id") == cell_id
+        ]
+        raw_fields = result_projection.get("fields")
+        result_value = signature.results[0] if signature.results else None
+        logical_type = None if result_value is None else types[result_value.type_id]
+        schema_fields = () if logical_type is None else tuple(logical_type.body.get("fields", ()))
+        if (
+            len(matching_cells) != 1
+            or logical_type is None
+            or logical_type.kind != "record"
+            or not isinstance(raw_fields, list)
+        ):
+            raise BoundaryModelError(
+                "component external local-cell record result projection is invalid"
+            )
+        physical_index, selected_cell = matching_cells[0]
+        relation_sha256 = selected_cell.get("local_cell_relation_sha256")
+        relation = local_cell_relations.get(str(relation_sha256))
+        try:
+            selection = checked_local_cell_selection(
+                relation,
+                physical_index=physical_index,
+                initial_words=checked_initial_words(
+                    selected_cell.get("initial_words"),
+                    context="component external local-cell record result",
+                ),
+                memory={
+                    "role": "caller_memory",
+                    "access": "read_write",
+                    "extent": "enclosing_object",
+                    "retention": "during_call",
+                },
+                context="component external local-cell record result",
+            )
+        except (BoundaryModelError, LocalCellTransducerError) as exc:
+            raise BoundaryModelError(str(exc)) from exc
+        fields_by_id = {
+            str(object_(field, "component local-cell record field").get("id")): object_(
+                field, "component local-cell record field"
+            )
+            for field in raw_fields
+        }
+        expected_ids = tuple(str(field["id"]) for field in schema_fields)
+        if (
+            selection.output_condition != "always"
+            or set(fields_by_id) != set(expected_ids)
+            or len(fields_by_id) != len(raw_fields)
+        ):
+            raise BoundaryModelError(
+                "component external local-cell record result is not total"
+            )
+        record_fields: list[tuple[str, str]] = []
+        for field in schema_fields:
+            field_id = str(field["id"])
+            word_index = fields_by_id[field_id].get("word_index")
+            if (
+                not isinstance(word_index, int)
+                or isinstance(word_index, bool)
+                or word_index not in selection.output_word_indices
+            ):
+                raise BoundaryModelError(
+                    "component external local-cell record result is not total"
+                )
+            variable = f"physical_local_cell_result_{_c_identifier(field_id)}"
+            lines.extend(
+                [
+                    f"  uint32_t {variable} = spx_component_read(",
+                    "      service->runtime, call_input.esp + "
+                    f"UINT32_C({local_cell_offsets[cell_id] + word_index * 4}),",
+                    "      UINT32_C(4), &memory_fault);",
+                ]
+            )
+            record_fields.append((field_id, variable))
+        record_result_fields = tuple(record_fields)
     lines.extend(_external_stack_restore_lines(storage_offsets, "restore_fault"))
     lines.extend(
         [
-            "  if (memory_fault != 0U || restore_fault != 0U || call_status != SPX_CALL_OK)",
+            "  if (memory_fault != 0U || restore_fault != 0U ||",
+            "      call_status == SPX_CALL_MEMORY_FAULT)",
+            "    goto spx_service_memory_fail;",
+            "  if (call_status != SPX_CALL_OK)",
             "    goto spx_service_fail;",
         ]
     )
     lines.extend(_external_out_interface_writeback_lines(signature, out_interfaces))
     if result_type == "void":
-        lines.extend(["  return;", "spx_service_restore_fail:"])
+        lines.extend(["  return;", "spx_service_memory_restore_fail:"])
+    elif signature.results[0].interpretation == 'view':
+        lines.extend(result_view_lines(signature=signature, types=types,
+            projection=binding.get('result_projection'), authority_selectors=authority_selectors,
+            runtime='service->runtime', result_word='call_output.eax', failure=['    goto spx_service_fail;']))
+        lines.append('spx_service_memory_restore_fail:')
     elif signature.results[0].interpretation == "reference":
         lines.extend(
             _external_reference_result_lines(
@@ -759,7 +991,7 @@ def _external_service_thunk(
                 authority_selectors=authority_selectors,
             )
         )
-        lines.append("spx_service_restore_fail:")
+        lines.append("spx_service_memory_restore_fail:")
     elif signature.results[0].interpretation == "callback":
         nullable = signature.results[0].nullable
         callback_type = _c_identifier(signature.results[0].type_id)
@@ -775,21 +1007,36 @@ def _external_service_thunk(
                 "  service->callback_result.physical_word = call_output.eax;",
                 "  service->callback_result.target_rva = UINT32_C(0);",
                 f"  return (spx_callback_{callback_type}_v5 *)&service->callback_result;",
-                "spx_service_restore_fail:",
+                "spx_service_memory_restore_fail:",
+            ]
+        )
+    elif record_result_fields:
+        lines.extend(
+            [
+                f"  return ({result_type}){{",
+                *(
+                    f"    .{_c_identifier(field_id)} = ({variable}),"
+                    for field_id, variable in record_result_fields
+                ),
+                "  };",
+                "spx_service_memory_restore_fail:",
             ]
         )
     else:
         lines.extend(
             [
                 f"  return ({result_type}){local_result_expression};",
-                "spx_service_restore_fail:",
+                "spx_service_memory_restore_fail:",
             ]
         )
     lines.extend(_external_stack_restore_lines(storage_offsets, "restore_fault"))
     lines.extend(
         [
+            "spx_service_memory_fail:",
+            "  *service->memory_fault = UINT32_C(1);",
+            f"  {_zero_result_expression(result_type)}",
             "spx_service_fail:",
-            "  *service->fault = UINT32_C(1);",
+            "  *service->service_fault = UINT32_C(1);",
             f"  {_zero_result_expression(result_type)}",
             "}",
             "",
@@ -830,13 +1077,31 @@ def _captured_external_target_lines(
             "spx_component_read(service->runtime, service->state->esp + "
             f"UINT32_C({offset}), UINT32_C(4), &memory_fault)"
         )
+    elif kind == "static_slot":
+        rva = _uint(projection.get("rva"), "component captured target slot RVA")
+        if rva > 0xfffffffc:
+            raise BoundaryModelError("component captured target slot is truncated")
+        return [
+            "  uint64_t captured_target_address = (uint64_t)service->runtime->image_base +",
+            f"      UINT64_C({rva});",
+            "  if (captured_target_address > UINT64_C(4294967292))",
+            "    goto spx_service_memory_fail;",
+            "  uint32_t captured_external_target = spx_component_read(service->runtime,",
+            "      (uint32_t)captured_target_address, UINT32_C(4), &memory_fault);",
+            "  if (memory_fault != 0U)",
+            "    goto spx_service_memory_fail;",
+            "  if (captured_external_target == 0U)",
+            "    goto spx_service_fail;",
+        ]
     else:
         raise BoundaryModelError(
             "component captured external target projection is unsupported"
         )
     return [
         f"  uint32_t captured_external_target = {expression};",
-        "  if (memory_fault != 0U || captured_external_target == 0U)",
+        "  if (memory_fault != 0U)",
+        "    goto spx_service_memory_fail;",
+        "  if (captured_external_target == 0U)",
         "    goto spx_service_fail;",
     ]
 
@@ -879,9 +1144,9 @@ def _external_reference_result_lines(
         "          &service_result_reference) != SPX_BOUNDARY_OK)",
         "    goto spx_service_fail;",
         f"  return ({result_type}){{",
-        "    (uint32_t)service_result_reference.domain,",
-        "    (uint32_t)service_result_reference.object,",
-        "    (uint32_t)service_result_reference.generation,",
+        "    service_result_reference.domain,",
+        "    service_result_reference.object,",
+        "    service_result_reference.generation,",
         "    service_result_reference.offset, service_result_reference.extent,",
         "    service_result_reference.permissions",
         "  };",
@@ -1088,7 +1353,7 @@ def _external_stack_restore_lines(offsets: Sequence[int], fault_name: str) -> li
 def _zero_result_expression(result_type: str) -> str:
     if result_type == "void":
         return "return;"
-    if result_type.startswith("spx_ref_"):
+    if result_type.startswith("spx_") and "*" not in result_type:
         return f"return ({result_type}){{0}};"
     return f"return ({result_type})0;"
 

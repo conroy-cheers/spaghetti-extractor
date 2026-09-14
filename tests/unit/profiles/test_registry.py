@@ -30,6 +30,7 @@ EXPECTED_PROFILES = {
     "pe32-oniguruma-runtime-v1.json",
     "pe32-normal-return-nonvolatile-v1.json",
     "pe32-static-cutpoints-and-paired-callables-v1.json",
+    "pe32-user32-resource-text-runtime-v1.json",
     "pe32-win32-console-launch-assumptions-v1.json",
     "pe32-win32-gui-launch-assumptions-v1.json",
     "pe32-win32-system-dll-abi-policy-v1.json",
@@ -61,7 +62,7 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_committed_catalog_validates_exact_inventory(self) -> None:
         registry = validate_profile_inventory(PROFILE_DIRECTORY)
 
-        self.assertEqual(len(registry.profiles), 19)
+        self.assertEqual(len(registry.profiles), len(EXPECTED_PROFILES))
         self.assertEqual(set(registry.by_path()), EXPECTED_PROFILES)
         for registration in registry.registrations:
             self.assertTrue(registration.role)

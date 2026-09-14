@@ -496,7 +496,8 @@ def _affected_suite_expression(
       context = import (source + "/nix/toolkit-context.nix") {{ inherit pkgs; }};
       suite = import (source + "/nix/test-suite.nix") {{
         inherit pkgs;
-        inherit (context) pythonEnv fixtures;
+        pythonEnv = context.transferPythonEnv;
+        inherit (context) fixtures;
         repositoryRoot = source;
         mode = "affected";
         planPayload = builtins.fromJSON {encoded_plan};
@@ -512,12 +513,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("mode", choices=("affected", "benchmark", "full", "smoke"))
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--changed", action="append", default=[])
+    parser.add_argument("--max-jobs", type=int,
+                        help="Limit concurrent local Nix builds (each proof build may run multiple solvers).")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="Finish independent Nix checks after a failure; the run still fails.")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None, *, run: Run = _run) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.max_jobs is not None and args.max_jobs < 1:
+        parser.error("--max-jobs must be a positive integer")
     repository = args.repository.resolve()
     try:
         check_repository_metadata(repository)
@@ -527,6 +535,10 @@ def main(argv: list[str] | None = None, *, run: Run = _run) -> int:
             changed=tuple(args.changed),
         )
         for command in commands:
+            if args.max_jobs is not None:
+                command = (*command, "--max-jobs", str(args.max_jobs))
+            if args.keep_going and "--keep-going" not in command:
+                command = (*command, "--keep-going")
             if args.dry_run:
                 print(" ".join(command))
                 continue

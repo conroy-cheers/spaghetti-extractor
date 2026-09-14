@@ -1,0 +1,455 @@
+{
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "status": "complete",
+  "id": "cleanup-save",
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "metapad.cleanup-save",
+    "types": [
+      {
+        "id": "bytes",
+        "kind": "pointer",
+        "pointee_type_id": "u8",
+        "qualifiers": []
+      },
+      {
+        "id": "cleanup.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "prepare.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "u32",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "u8",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 8
+      }
+    ],
+    "signatures": [
+      {
+        "id": "cleanup",
+        "function_type_id": "cleanup.fn",
+        "parameters": [
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "suppress_notice",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "main_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "edit_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "removed",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "prepare",
+        "function_type_id": "prepare.fn",
+        "parameters": [
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "suppress_notice",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "main_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "edit_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "nul_terminated",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "length",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "removed",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      }
+    ],
+    "schema_sha256": "00742d5e13f63a05190be49c687887b561463d6562d610fba94d52ed2549153b"
+  },
+  "state": [],
+  "operations": [
+    {
+      "allowed_service_ids": [
+        "cleanup"
+      ],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "prepare",
+      "lifecycle_additional_roots": {
+        "state": []
+      },
+      "lifecycle_bindings": [],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "text",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "text"
+          }
+        },
+        {
+          "source_id": "suppress_notice",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "suppress_notice"
+          }
+        },
+        {
+          "source_id": "main_window",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "main_window"
+          }
+        },
+        {
+          "source_id": "edit_window",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "edit_window"
+          }
+        },
+        {
+          "source_id": "caption",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "caption"
+          }
+        },
+        {
+          "source_id": "length",
+          "target": {
+            "fields": [],
+            "root": "parameter",
+            "value_id": "length"
+          }
+        },
+        {
+          "source_id": "removed",
+          "target": {
+            "fields": [],
+            "root": "result",
+            "value_id": "removed"
+          }
+        }
+      ],
+      "signature_id": "prepare",
+      "source_values": [
+        {
+          "access": "read_write",
+          "extent": {
+            "bytes": null,
+            "kind": "nul_terminated",
+            "value_id": null
+          },
+          "id": "text",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "suppress_notice",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "main_window",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "edit_window",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read",
+          "extent": {
+            "bytes": null,
+            "kind": "nul_terminated",
+            "value_id": null
+          },
+          "id": "caption",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "read_write",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "length",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        },
+        {
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "id": "removed",
+          "interpretation": "value",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "u32"
+        }
+      ]
+    }
+  ],
+  "effects": [],
+  "services": [
+    {
+      "id": "cleanup",
+      "signature_id": "cleanup",
+      "effect_ids": [],
+      "interaction_contract_id": "component-service.cleanup-save.cleanup"
+    }
+  ],
+  "protocol": {
+    "states": [
+      "ready"
+    ],
+    "initial_state": "ready"
+  },
+  "intent_sha256": "e54d8406a762ed4641449ce67024cd00e782c1515cf23ebb187aaa2aa12a28ba"
+}

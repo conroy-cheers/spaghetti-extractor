@@ -15,6 +15,9 @@ from ..external.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
+from ..external.range_release import RangeReleaseError, machine_range_release
+from ..external.range_ownership import RangeOwnershipError, parse_range_ownership
+from ..external.range_allocation import RangeAllocationError, parse_range_allocation
 from .runtime_model import (
     CandidateRuntimeError,
     INTERFACE_METHOD_TARGET_TAG,
@@ -128,7 +131,7 @@ def _external_range_rules(
     expanded_sites: list[
         tuple[
             dict[str, Any], int | None, int | None,
-            dict[str, Any], int, str,
+            dict[str, Any], int, str, str,
         ]
     ] = []
     authorized_sites: set[int] = set()
@@ -154,7 +157,7 @@ def _external_range_rules(
 
     parsed_targets: dict[
         tuple[str, str],
-        tuple[int | None, int | None, dict[str, Any], int, str],
+        tuple[int | None, int | None, dict[str, Any], int, str, str],
     ] = {}
     for site_index, site, target_id, target_body in (
         inventory.iter_site_targets()
@@ -358,6 +361,7 @@ def _external_range_rules(
             checked.profile_effect_payload(),
             checked.argument_base_offset,
             checked.contract_id,
+            checked.identity_sha256(),
         )
         parsed_targets[cache_key] = cached
         expanded_sites.append((dict(site), *cached))
@@ -373,6 +377,7 @@ def _external_range_rules(
         contract,
         argument_base_offset,
         contract_id,
+        contract_identity_sha256,
     ) in expanded_sites:
         instruction_rva = _required_u32(
             site.get("instruction_rva"), "external site instruction RVA"
@@ -418,6 +423,7 @@ def _external_range_rules(
             element_unit_bytes=0,
             element_max_units=0,
             contract_id=contract_id,
+            contract_identity_sha256=contract_identity_sha256,
         ))
         relations = contract.get("result_register_relations", [])
         if not isinstance(relations, list):
@@ -503,6 +509,13 @@ def _external_range_rules(
                 raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has invalid nullability"
                 )
+            try:
+                ownership = parse_range_ownership(relation.get("ownership"),
+                                                  argument_words=argument_count, context=contract_id)
+                allocation = parse_range_allocation(relation.get("allocation"),
+                    argument_words=argument_count, context=contract_id)
+            except (RangeOwnershipError, RangeAllocationError) as exc:
+                raise CandidateRuntimeError(str(exc)) from exc
             rules.append(
                 NativeExternalRangeRule(
                     instruction_rva=instruction_rva,
@@ -510,6 +523,8 @@ def _external_range_rules(
                     target_catalog_index=target_catalog_index,
                     interface_class_index=None,
                     action="add_result_range",
+                    ownership=ownership,
+                    allocation=allocation,
                     argument_base_offset=argument_base_offset,
                     argument_count=argument_count,
                     register=register,
@@ -528,6 +543,7 @@ def _external_range_rules(
                     element_unit_bytes=0,
                     element_max_units=0,
                     contract_id=contract_id,
+                    contract_identity_sha256=contract_identity_sha256,
                 )
             )
             required_words = relation.get("required_words", [])
@@ -617,6 +633,7 @@ def _external_range_rules(
                         element_unit_bytes=element_unit_bytes,
                         element_max_units=element_max_units,
                         contract_id=contract_id,
+                        contract_identity_sha256=contract_identity_sha256,
                     )
                 )
         out_pointer_relations = contract.get("out_pointer_relations", [])
@@ -707,6 +724,7 @@ def _external_range_rules(
                     element_unit_bytes=element_unit_bytes,
                     element_max_units=element_max_units,
                     contract_id=contract_id,
+                    contract_identity_sha256=contract_identity_sha256,
                 )
             )
         out_interface_relations = contract.get("out_interface_relations", [])
@@ -785,9 +803,15 @@ def _external_range_rules(
                     element_unit_bytes=0,
                     element_max_units=0,
                     contract_id=contract_id,
+                    contract_identity_sha256=contract_identity_sha256,
                 )
             )
         if contract.get("world_effect") == "dynamicRangeRelease":
+            try:
+                release = machine_range_release(contract, argument_words=argument_count,
+                                                context=contract_id)
+            except RangeReleaseError as exc:
+                raise CandidateRuntimeError(str(exc)) from exc
             argument = _required_count(
                 contract.get("world_effect_argument"),
                 "dynamic-range release argument",
@@ -803,6 +827,8 @@ def _external_range_rules(
                     target_catalog_index=target_catalog_index,
                     interface_class_index=None,
                     action="release_argument_range",
+                    release=release,
+                    ownership=release.ownership,
                     argument_base_offset=argument_base_offset,
                     argument_count=argument_count,
                     register=None,
@@ -821,6 +847,7 @@ def _external_range_rules(
                     element_unit_bytes=0,
                     element_max_units=0,
                     contract_id=contract_id,
+                    contract_identity_sha256=contract_identity_sha256,
                 )
             )
     sorted_rules = tuple(

@@ -384,6 +384,109 @@ spx_ref_status spx_view_write_u8(
 """
 
 
+def spx_portable_reference_runtime_v5_source() -> str:
+    """Reviewed shared implementation of the portable component reference ABI."""
+
+    return r'''
+#ifndef SPX_REF_V1_DEFINED
+typedef struct spx_ref_v1 {
+  uint64_t domain;
+  uint64_t object;
+  uint64_t generation;
+  uint64_t offset;
+  uint64_t extent;
+  uint32_t permissions;
+} spx_ref_v1;
+typedef spx_ref_v1 spx_ref_v5;
+
+typedef struct spx_view_v1 {
+  void *context;
+  uint32_t (*read_u8)(void *, uint32_t, uint8_t *);
+  uint32_t (*write_u8)(void *, uint32_t, uint8_t);
+  spx_ref_v5 base;
+  uint64_t extent;
+  uint32_t element_width;
+  void *access_context;
+  uint32_t (*read)(void *, spx_ref_v1, uint64_t, uint32_t, uint64_t *);
+  uint32_t (*write)(void *, spx_ref_v1, uint64_t, uint32_t, uint64_t);
+} spx_view_v1;
+typedef spx_view_v1 spx_view_v5;
+#define SPX_REF_V1_DEFINED 1
+#endif
+
+static uint32_t spx_component_ref_is_null(spx_ref_v5 value) {
+  return value.domain == 0U && value.object == 0U &&
+      value.generation == 0U && value.offset == 0U &&
+      value.extent == 0U && value.permissions == 0U;
+}
+
+uint32_t spx_ref_derive(
+    spx_ref_v5 reference, uint64_t delta, uint32_t allow_one_past,
+    spx_ref_v5 *result) {
+  uint64_t offset;
+  if (result == 0 || spx_component_ref_is_null(reference) ||
+      UINT64_MAX - reference.offset < delta)
+    return 1U; /* SPX_REF_FAULT */
+  offset = reference.offset + delta;
+  if (offset > reference.extent ||
+      (offset == reference.extent && allow_one_past == 0U))
+    return 1U; /* SPX_REF_FAULT */
+  *result = reference;
+  result->offset = offset;
+  return 0U;
+}
+
+uint32_t spx_ref_difference(
+    spx_ref_v5 left, spx_ref_v5 right, int64_t *result) {
+  if (result == 0 || spx_component_ref_is_null(left) ||
+      spx_component_ref_is_null(right) || left.domain != right.domain ||
+      left.object != right.object || left.generation != right.generation ||
+      left.extent != right.extent || left.offset > INT64_MAX ||
+      right.offset > INT64_MAX)
+    return 3U; /* SPX_REF_WRONG_ORIGIN */
+  *result = (int64_t)left.offset - (int64_t)right.offset;
+  return 0U;
+}
+
+uint32_t spx_view_read_u8(
+    const spx_view_v5 *view, uint64_t index, uint8_t *result) {
+  uint64_t value;
+  if (view == 0 || result == 0 || index >= view->extent)
+    return 1U; /* SPX_REF_FAULT */
+  if (view->read_u8 != 0) {
+    if (index > UINT32_MAX)
+      return 1U; /* SPX_REF_FAULT */
+    return view->read_u8(view->context, (uint32_t)index, result) == 0U
+        ? 0U : 1U;
+  }
+  if (view->element_width != 1U || view->read == 0 ||
+      view->base.offset > UINT64_MAX - index)
+    return 4U; /* SPX_REF_PERMISSION */
+  if (view->read(
+          view->access_context, view->base, index, 1U, &value) != 0U)
+    return 1U; /* SPX_REF_FAULT */
+  *result = (uint8_t)value;
+  return 0U;
+}
+
+uint32_t spx_view_write_u8(
+    const spx_view_v5 *view, uint64_t index, uint8_t value) {
+  if (view == 0 || index >= view->extent)
+    return 1U; /* SPX_REF_FAULT */
+  if (view->write_u8 != 0) {
+    if (index > UINT32_MAX)
+      return 1U;
+    return view->write_u8(view->context, (uint32_t)index, value) == 0U ? 0U : 1U;
+  }
+  if (view->element_width != 1U || view->write == 0 ||
+      view->base.offset > UINT64_MAX - index)
+    return 4U; /* SPX_REF_PERMISSION */
+  return view->write(view->access_context, view->base, index, 1U, value) == 0U
+      ? 0U : 1U;
+}
+'''
+
+
 __all__ = [
     "CapabilityLifecycle",
     "CapabilityStatus",
@@ -394,4 +497,5 @@ __all__ = [
     "spx_capability_backend_source",
     "spx_reference_runtime_header",
     "spx_reference_runtime_source",
+    "spx_portable_reference_runtime_v5_source",
 ]

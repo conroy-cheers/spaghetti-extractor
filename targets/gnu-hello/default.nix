@@ -719,6 +719,12 @@ let
     bindingIntent = components.bindingIntentPaths.ascii-to-lower;
     interfacePackage = components.v5Interfaces.ascii-to-lower.derivation;
     sourcePackage = "${asciiToLowerLibraryBehaviorPack.behaviorPack}/source-package";
+    # The exact machine slice is independent of the replacement source.  Reuse
+    # the already-qualified component slice so the library adapter is proved
+    # through the same fail-closed contextual path instead of minting
+    # source-only authority.
+    exactCSlice =
+      "${asciiToLowerV6Provider.derivation}/exact-c/component-exact-c-slice-v1.json";
     transferPlan = workflow.transferPlan.plan;
     resolvedExternalEnvironment = "${workflow.resolvedEnvironment.derivation}/resolved-external-environment.json";
     semanticObject = workflow.semanticObject.derivation;
@@ -815,6 +821,14 @@ let
       suite = ./tests/program-name-selection-v6-candidate-suite.json;
       candidateBinary = workflow.nativeRealizations.program-name-selection-enabled.candidate;
       nativeRealization = workflow.nativeRealizations.program-name-selection-enabled.derivation;
+    };
+    "gnu-hello-string-pointer-v6-candidate" = sdk.candidate.testSuite {
+      id = "gnu-hello-string-pointer-v6-candidate";
+      configurationId = "string-pointer-enabled";
+      namePrefix = "spaghetti-extractor-gnu-hello-string-pointer-v6-semantic-v2";
+      suite = ./tests/string-pointer-v6-candidate-suite.json;
+      candidateBinary = workflow.nativeRealizations.string-pointer-enabled.candidate;
+      nativeRealization = workflow.nativeRealizations.string-pointer-enabled.derivation;
     };
   };
   semanticModuleV2Check =
@@ -1318,34 +1332,112 @@ let
   stringPointerV6ProviderSet = workflow.portableSemanticProviderSets.string-pointer-enabled;
   stringPointerV6SelectedIds =
     workflow.components.selectedComponentIdsByConfiguration.string-pointer-enabled;
-  stringPointerDirectInductionCheck =
+  stringPointerDirectBisimulationCheck =
     assert stringPointerV6ProviderSet.directIds == stringPointerV6SelectedIds;
-    pkgs.runCommand "spaghetti-extractor-gnu-hello-string-pointer-direct-induction-v6-check"
+    pkgs.runCommand "spaghetti-extractor-gnu-hello-string-pointer-direct-bisimulation-v6-check"
       { nativeBuildInputs = [ pkgs.jq ]; }
       ''
         set -euo pipefail
-        for provider in \
-          ${workflow.portableSemanticProvidersByComponent.bounded-string-length.derivation} \
-          ${workflow.portableSemanticProvidersByComponent.last-path-component.derivation} \
-          ${workflow.portableSemanticProvidersByComponent.ascii-string-compare.derivation}; do
+        for provider in ${pkgs.lib.concatMapStringsSep " "
+          (componentId:
+            workflow.portableSemanticProvidersByComponent.${componentId}.derivation)
+          stringPointerV6SelectedIds}; do
           jq -e '
             .format == "spaghetti-extractor-semantic-provider-qualification-v2" and
             .status == "complete" and
             .provider_kind == "qualified_portable_c" and
-            ([.facets[] | select(.name == "induction") | .status] == ["checked"]) and
+            ([.facets[] | select(.name == "bisimulation") | .status] == ["checked"]) and
             .blockers == []
           ' "$provider/semantic-provider-qualification.json" >/dev/null
-          jq -e '
+          jq -L ${../../nix/jq} -e '
+            include "strong-contextual-proof";
             .status == "satisfied" and
             .proof.status == "satisfied" and
-            .induction_receipt.status == "satisfied" and
+            .proof.activation_authorized == true and
+            spx_strong_contextual_proof and
+            ([.proof.shards[].nonvacuity.status] | all(. == "satisfied")) and
             .policy == {cbmc_required: true, tests_authorize: false}
           ' "$provider/contextual-refinement-result.json" >/dev/null
-          jq -e '
-            .format == "spaghetti-extractor-inductive-source-plan-v1" and
-            (.plan_sha256 | length) == 64
-          ' "$provider/induction-source-plan-v1.json" >/dev/null
+          jq -L ${../../nix/jq} -e '
+            include "strong-contextual-proof";
+            spx_strong_cutpoint_plan
+          ' "$provider/component-proof-plan-v1.json" >/dev/null
+          jq -L ${../../nix/jq} -e '
+            include "strong-contextual-proof";
+            spx_contextual_exact_c_slice
+          ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null
         done
+        touch "$out"
+      '';
+  stringPointerV6Selection =
+    workflow.semanticImplementationSelections.string-pointer-enabled;
+  stringPointerV6Realization = workflow.nativeRealizations.string-pointer-enabled;
+  stringPointerV6LinkageCheck =
+    pkgs.runCommand "spaghetti-extractor-gnu-hello-string-pointer-v6-linkage-check"
+      { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        set -euo pipefail
+        selection=${stringPointerV6Selection.artifact}
+        realization=${stringPointerV6Realization.receipt}
+        expected_provider_ids=${pkgs.lib.escapeShellArg (builtins.toJSON (
+          map (componentId: "gnu-hello.${componentId}.portable-c")
+            stringPointerV6SelectedIds
+        ))}
+        selection_sha256="$(jq -r '.selection_sha256' "$selection")"
+
+        jq -e --argjson provider_ids "$expected_provider_ids" '
+          .format == "spaghetti-extractor-implementation-selection-v2" and
+          .status == "complete" and
+          .ready_for_realization == true and
+          .mode == "hybrid" and
+          .blockers == [] and
+          ([.definition_selections[] | select(
+            .provider_kind == "qualified_portable_c"
+          ) | .provider_id] | unique | sort) == ($provider_ids | sort) and
+          ([.definition_selections[] | select(
+            .provider_kind == "qualified_portable_c"
+          )] | length) > ($provider_ids | length) and
+          ([.obligation_selections[].provider_kind] | unique) ==
+            ["qualified_runtime"]
+        ' "$selection" >/dev/null
+
+        jq -e \
+          --arg selection_sha256 "$selection_sha256" \
+          --argjson provider_ids "$expected_provider_ids" '
+          .format == "spaghetti-extractor-native-realization-v2" and
+          .status == "complete" and
+          .ready_for_observation == true and
+          .blockers == [] and
+          .bindings.implementation_selection_sha256 == $selection_sha256 and
+          ([.definitions[] | select(
+            .provider_kind == "qualified_portable_c"
+          ) | .provider_id] | unique | sort) == ($provider_ids | sort) and
+          ([.definitions[] | select(
+            .provider_kind == "qualified_portable_c"
+          )] | all(.implementation_rva > 0)) and
+          ([.native_objects[] | select(.role == "portable_c") |
+            .provider_ids[]] | unique | sort) == ($provider_ids | sort) and
+          .portable_dispatch_link_receipt.status == "complete" and
+          .portable_dispatch_link_receipt.activation_authorized == true and
+          .portable_dispatch_link_receipt.blockers == [] and
+          .portable_dispatch_link_receipt.policy.source_only_authority == false and
+          .portable_dispatch_link_receipt.bindings.implementation_selection_sha256 ==
+            $selection_sha256 and
+          .portable_dispatch_link_receipt.bindings.payload_sha256 ==
+            .link.payload_sha256 and
+          .portable_dispatch_link_receipt.bindings.linker_map_sha256 ==
+            .link.linker_map_sha256 and
+          ([.portable_dispatch_link_receipt.entries[].provider_id] |
+            unique | sort) == ($provider_ids | sort) and
+          ([.portable_dispatch_link_receipt.entries[]] |
+            all(.linked_rva > 0 and
+                (.implementation_object_sha256 | length) == 64)) and
+          .portable_dispatch_link_receipt.registry != null and
+          .candidate.filename == "hello.exe" and
+          .candidate.size > 0
+        ' "$realization" >/dev/null
+        test -s ${stringPointerV6Realization.candidate}
+        test -s ${stringPointerV6Realization.candidateInterface}
         touch "$out"
       '';
 in
@@ -1376,6 +1468,8 @@ sdk.target.pe32Bundle {
   extraArtifacts.hello-native-realization-v2 = nativeRealizationV2.derivation;
   extraArtifacts.hello-native-realization-v2-check = nativeRealizationV2Check;
   extraArtifacts.hello-ascii-to-lower-v6-provider = asciiToLowerV6Provider.derivation;
+  extraArtifacts.hello-ascii-string-compare-v6-provider =
+    workflow.portableSemanticProvidersByComponent.ascii-string-compare.derivation;
   extraArtifacts.hello-ascii-to-lower-library-provider = asciiToLowerLibraryProvider.derivation;
   extraArtifacts.hello-ascii-to-lower-v6-native-realization = asciiToLowerV6Realization.derivation;
   extraArtifacts.hello-startup-callback-v6-provider = startupCallbackV6Provider.derivation;
@@ -1385,7 +1479,12 @@ sdk.target.pe32Bundle {
   extraArtifacts.hello-memory-regions-equal-v6-provider = memoryRegionsEqualV6Provider.derivation;
   extraArtifacts.hello-program-name-selection-v6-native-realization =
     programNameSelectionV6Realization.derivation;
-  extraArtifacts.hello-string-pointer-direct-induction-v6 = stringPointerDirectInductionCheck;
+  extraArtifacts.hello-string-pointer-direct-bisimulation-v6 =
+    stringPointerDirectBisimulationCheck;
+  extraArtifacts.hello-string-pointer-v6-native-realization =
+    stringPointerV6Realization.derivation;
+  extraArtifacts.hello-string-pointer-v6-linkage-check =
+    stringPointerV6LinkageCheck;
   extraArtifacts.hello-linked-semantic-module-independent-replay =
     workflow.linkedSemanticModule.replayCheck;
   extraArtifacts.hello-executable-transfer-plan = workflow.transferPlan.derivation;
@@ -1426,7 +1525,11 @@ sdk.target.pe32Bundle {
     hello-program-name-selection-v6 = programNameSelectionV6Check;
     hello-program-name-selection-v6-candidate =
       candidateTests."gnu-hello-program-name-selection-v6-candidate".aggregate;
-    hello-string-pointer-direct-induction-v6 = stringPointerDirectInductionCheck;
+    hello-string-pointer-direct-bisimulation-v6 =
+      stringPointerDirectBisimulationCheck;
+    hello-string-pointer-v6-linkage = stringPointerV6LinkageCheck;
+    hello-string-pointer-v6-candidate =
+      candidateTests."gnu-hello-string-pointer-v6-candidate".aggregate;
     hello-candidate-v2 = candidateTests."gnu-hello-default-candidate".aggregate;
     hello-semantic-object-real-scale = semanticObjectRealHelloCheck;
   };

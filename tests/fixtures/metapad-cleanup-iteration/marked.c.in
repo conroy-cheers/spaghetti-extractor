@@ -1,0 +1,19 @@
+#include "portable-component-implementation.h"
+@REFERENCE_RUNTIME@
+#define SPX_PROOF_BEGIN(...)
+void region_loop(void){}
+void region_tail(void){}
+#define SPX_PROOF_SYNC(id,...) SPX_PROOF_SYNC_I(id,__VA_ARGS__)
+#define SPX_PROOF_SYNC_I(id,...) SPX_PROOF_SYNC_##id(__VA_ARGS__)
+#define SPX_PROOF_SYNC_loop(...) region_loop()
+#define SPX_PROOF_SYNC_tail(...) region_tail()
+#define SPX_PROOF_SYNC_allocated(...)
+#define SPX_PROOF_SYNC_lookahead_one(...)
+#define SPX_PROOF_SYNC_lookahead_two(...)
+#define SPX_PROOF_SYNC_advance(...)
+#define SPX_PROOF_SYNC_tail_second(...)
+#define SPX_PROOF_SYNC_tail_done(...)
+#define SPX_PROOF_SYNC_notice(...)
+#define SPX_PROOF_SYNC_notice_active(...)
+#define SPX_PROOF_SYNC_notice_finish(...)
+#include "authored.c"

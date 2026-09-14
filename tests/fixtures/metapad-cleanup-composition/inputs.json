@@ -1,0 +1,979 @@
+{
+  "contracts": {
+    "entry": {
+      "calls": {
+        "allocate": {
+          "entry": 21965,
+          "instruction": 21969,
+          "successor": 21975
+        },
+        "length_after": {
+          "entry": 21975,
+          "instruction": 21979,
+          "successor": 21981
+        },
+        "length_before": {
+          "entry": 21960,
+          "instruction": 21963,
+          "successor": 21965
+        }
+      },
+      "entry_cut": "entry",
+      "entry_rva": 21943,
+      "exit_cut": "loop",
+      "exit_rva": 22022,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "length_pointer": 4251992,
+      "parameter_roles": {
+        "caption": "caption",
+        "context": "context",
+        "edit_window": "edit_window",
+        "main_window": "main_window",
+        "suppress_notice": "suppress_notice",
+        "text": "text"
+      },
+      "profile": "local-text-cleanup-entry-v1",
+      "regions": [
+        "entry",
+        "prefix_iter"
+      ],
+      "runtime_revision": 1,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      }
+    },
+    "loop": {
+      "begin": {
+        "position": "before",
+        "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+      },
+      "clobbers": [
+        "eax",
+        "edx",
+        "esi",
+        "ecx",
+        "cf",
+        "zf",
+        "sf",
+        "of",
+        "pf",
+        "eflags"
+      ],
+      "entry_cut": "loop",
+      "entry_rva": 22022,
+      "exit_cut": "tail",
+      "exit_rva": 22029,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "private_cells": [
+        {
+          "name": "removed",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "b",
+          "offset": 7,
+          "width": 1
+        },
+        {
+          "name": "c",
+          "offset": 6,
+          "width": 1
+        }
+      ],
+      "private_extent": 8,
+      "profile": "local-byte-compaction-step-v1",
+      "regions": [
+        "loop",
+        "copy",
+        "advance"
+      ],
+      "registers": {
+        "input": "esi",
+        "output": "ecx",
+        "scratch": "ebx",
+        "text": "edi"
+      },
+      "runtime_revision": 3,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      },
+      "stack_offsets": {
+        "ebp": 8,
+        "esp": -16
+      },
+      "text_parameter": "text"
+    },
+    "tail": {
+      "begin": {
+        "position": "before",
+        "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+      },
+      "calls": {
+        "copy": {
+          "entry": 22058,
+          "instruction": 22060,
+          "successor": 22066
+        },
+        "focus": {
+          "entry": 22114,
+          "instruction": 22120,
+          "successor": 22126
+        },
+        "message": {
+          "entry": 22100,
+          "instruction": 22108,
+          "successor": 22114
+        },
+        "release": {
+          "entry": 22066,
+          "instruction": 22067,
+          "successor": 22073
+        },
+        "resource_text": {
+          "entry": 22086,
+          "instruction": 22095,
+          "successor": 22100
+        }
+      },
+      "entry_cut": "tail",
+      "entry_rva": 22029,
+      "graph_index": 0,
+      "image_base": 4194304,
+      "image_size": 225280,
+      "parameter_roles": {
+        "caption": "caption",
+        "context": "context",
+        "edit_window": "edit_window",
+        "main_window": "main_window",
+        "suppress_notice": "suppress_notice",
+        "text": "text"
+      },
+      "profile": "local-text-cleanup-tail-v1",
+      "regions": [
+        "tail",
+        "tail_iteration"
+      ],
+      "runtime_revision": 1,
+      "source_locals": {
+        "input": "input",
+        "output": "output",
+        "removed": "removed",
+        "scratch": "scratch"
+      },
+      "supplier_call": {
+        "entry_rva": 22086,
+        "instruction_rva": 22095,
+        "private_stack": {
+          "high": 4,
+          "low": -44
+        },
+        "region_index": 0,
+        "result_reference": {
+          "domain": 1,
+          "extent": 18272,
+          "generation": 1,
+          "object": 2134217653344611032,
+          "offset": 15648,
+          "permissions": 3
+        },
+        "return_rva": 22100,
+        "service_id": "resource_text",
+        "stack_delta": -12,
+        "stack_words": [
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 31
+            },
+            "offset": -12,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 4252580
+            },
+            "offset": -8,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "constant",
+              "value": 48
+            },
+            "offset": -4,
+            "writable": true
+          },
+          {
+            "exit": {
+              "kind": "preserved"
+            },
+            "offset": 0,
+            "writable": false
+          }
+        ]
+      },
+      "views": {
+        "caption": {
+          "address": 4252580,
+          "extent": 500
+        },
+        "edit": {
+          "address": 4260184,
+          "extent": 4
+        },
+        "notice": {
+          "address": 4263788,
+          "extent": 4
+        },
+        "window": {
+          "address": 4260180,
+          "extent": 4
+        }
+      }
+    }
+  },
+  "graph": {
+    "activation_authorized": false,
+    "authorizing": false,
+    "cut_sites": {
+      "advance": 145,
+      "copy": 127,
+      "entry": 0,
+      "loop": 69,
+      "prefix_iter": 25,
+      "tail": 150,
+      "tail_iteration": 154
+    },
+    "edges": [
+      {
+        "source": "entry",
+        "target": "loop"
+      },
+      {
+        "source": "entry",
+        "target": "prefix_iter"
+      },
+      {
+        "source": "prefix_iter",
+        "target": "loop"
+      },
+      {
+        "source": "prefix_iter",
+        "target": "prefix_iter"
+      },
+      {
+        "source": "loop",
+        "target": "advance"
+      },
+      {
+        "source": "loop",
+        "target": "copy"
+      },
+      {
+        "source": "loop",
+        "target": "tail"
+      },
+      {
+        "source": "copy",
+        "target": "advance"
+      },
+      {
+        "source": "advance",
+        "target": "loop"
+      },
+      {
+        "source": "tail",
+        "target": "tail_iteration"
+      },
+      {
+        "source": "tail_iteration",
+        "target": "tail_iteration"
+      }
+    ],
+    "function": "cleanup",
+    "functional_correctness_checked": false,
+    "memory_contracts_checked": false,
+    "progress_checked": false,
+    "reachable_instruction_count": 156,
+    "state_transport_checked": false,
+    "status": "projected-source-region-graph",
+    "uncovered_instruction_count": 117,
+    "uncovered_reachable_instruction_count": 0,
+    "unselected_cut_regions": [],
+    "whole_component_complete": false,
+    "regions": [
+      {
+        "entry": "entry",
+        "exits": [
+          [
+            "cut",
+            "loop"
+          ],
+          [
+            "cut",
+            "prefix_iter"
+          ]
+        ],
+        "external_interior_entries": [
+          {
+            "source_instruction": 63,
+            "target_instruction": 24
+          }
+        ],
+        "instruction_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          64,
+          65
+        ],
+        "semantic_sha256": "d5746b0478491af3685e34a279b60450bc5f8214eaf4ad3c1b0fe6384c6a4238"
+      },
+      {
+        "entry": "prefix_iter",
+        "exits": [
+          [
+            "cut",
+            "loop"
+          ],
+          [
+            "cut",
+            "prefix_iter"
+          ],
+          [
+            "return",
+            "SET_RETURN_VALUE"
+          ]
+        ],
+        "external_interior_entries": [
+          {
+            "source_instruction": 23,
+            "target_instruction": 24
+          }
+        ],
+        "instruction_indices": [
+          24,
+          26,
+          27,
+          28,
+          29,
+          30,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65
+        ],
+        "semantic_sha256": "2607e7a8d0071367be12d52917aea2f278163c87b5b1ea4548bd66699249dd61"
+      },
+      {
+        "entry": "loop",
+        "exits": [
+          [
+            "cut",
+            "advance"
+          ],
+          [
+            "cut",
+            "copy"
+          ],
+          [
+            "cut",
+            "tail"
+          ],
+          [
+            "return",
+            "SET_RETURN_VALUE"
+          ]
+        ],
+        "external_interior_entries": [],
+        "instruction_indices": [
+          70,
+          71,
+          72,
+          73,
+          74,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125
+        ],
+        "semantic_sha256": "e7a1191dc5b5c22d0ee5de0eebd2da491ff8d48042c6a74f4d57124c6fe0386e"
+      },
+      {
+        "entry": "copy",
+        "exits": [
+          [
+            "cut",
+            "advance"
+          ],
+          [
+            "return",
+            "SET_RETURN_VALUE"
+          ]
+        ],
+        "external_interior_entries": [],
+        "instruction_indices": [
+          128,
+          129,
+          130,
+          131,
+          132,
+          142,
+          143
+        ],
+        "semantic_sha256": "03a4307250d3ffb1958b472d716a4885d8bbdb12e5e6ffb65ba13b87fec946b4"
+      },
+      {
+        "entry": "advance",
+        "exits": [
+          [
+            "cut",
+            "loop"
+          ]
+        ],
+        "external_interior_entries": [],
+        "instruction_indices": [
+          146
+        ],
+        "semantic_sha256": "bab501a66d2dea0dcd569904102aa09c89c76890080cf7d53b770c30700921b7"
+      },
+      {
+        "entry": "tail",
+        "exits": [
+          [
+            "cut",
+            "tail_iteration"
+          ],
+          [
+            "return",
+            "SET_RETURN_VALUE"
+          ]
+        ],
+        "external_interior_entries": [
+          {
+            "source_instruction": 192,
+            "target_instruction": 153
+          }
+        ],
+        "instruction_indices": [
+          151,
+          152,
+          153,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          258,
+          259,
+          260,
+          261,
+          262
+        ],
+        "semantic_sha256": "85f47e799f8cd9accf6ebb10d7f5148f5a484edec8ae0e91f4f3a44513af64ee"
+      },
+      {
+        "entry": "tail_iteration",
+        "exits": [
+          [
+            "cut",
+            "tail_iteration"
+          ],
+          [
+            "return",
+            "SET_RETURN_VALUE"
+          ]
+        ],
+        "external_interior_entries": [
+          {
+            "source_instruction": 152,
+            "target_instruction": 153
+          }
+        ],
+        "instruction_indices": [
+          153,
+          155,
+          156,
+          157,
+          158,
+          159,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          187,
+          188,
+          189,
+          190,
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          258,
+          259,
+          260,
+          261,
+          262
+        ],
+        "semantic_sha256": "549e9ff7bca97752f0f15e192b218cd0d6cb053ea2727f62973de69867c3d63b"
+      }
+    ]
+  },
+  "postambles": {
+    "entry": "void check_iteration(void){\n uint32_t result=cleanup(&context,&text,0,0,0,0);\n __CPROVER_assert(a.phase==3U && b.phase==3U,\"entry-three-service-invocations\");\n __CPROVER_assert((step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX),\"entry-fault-correspondence\");\n __CPROVER_assert(spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe),\"entry-whole-post-memory\");\n uint32_t continuation_slot,continuation_byte;\n __CPROVER_assume(continuation_slot<8U && continuation_byte<10U);\n __CPROVER_assert(state.edi == initial.edi && state.df == initial.df && state.x87_control == initial.x87_control && state.x87_status == initial.x87_status && state.x87_pending_exception == initial.x87_pending_exception && state.x87_last_opcode == initial.x87_last_opcode && state.x87_instruction_pointer == initial.x87_instruction_pointer && state.x87_code_selector == initial.x87_code_selector && state.x87_data_pointer == initial.x87_data_pointer && state.x87_data_selector == initial.x87_data_selector && state.fs_base == initial.fs_base && state.x87_stack[continuation_slot].value_bytes[continuation_byte] == initial.x87_stack[continuation_slot].value_bytes[continuation_byte] && state.x87_stack[continuation_slot].empty == initial.x87_stack[continuation_slot].empty && state.x87_stack[continuation_slot].tag == initial.x87_stack[continuation_slot].tag,\"entry-preserved-machine-frame\");\n if(result!=UINT32_MAX){\n  __CPROVER_assert(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296),\"entry-consumer-text-span\");\n  __CPROVER_assert((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296),\"entry-consumer-scratch-span\");\n  __CPROVER_assert((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U),\"entry-consumer-nullable-scratch\");\n  __CPROVER_assert((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address,\"entry-consumer-disjoint-public-spans\");\n  __CPROVER_assert(state.esi<text_extent && state.ecx<=state.esi && memory.word_7==state.esi-state.ecx,\"entry-consumer-cursor-domain\");\n  __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent && scratch_extent<=text_extent && (spx_mutable_byte(&right,text_address+scratch_extent-1U))==0U),\"entry-consumer-allocation-domain\");\n  __CPROVER_assert(!(scratch_extent && probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (spx_mutable_byte(&right,probe))==0U,\"entry-consumer-zero-suffix\");\n  __CPROVER_assert(scratch_extent || state.esi==0U || ((uint64_t)state.esi+1U<text_extent && (spx_mutable_byte(&right,text_address+state.esi))==13U && (spx_mutable_byte(&right,text_address+state.esi+1U))==10U),\"entry-consumer-null-scratch-pending-crlf\");\n  __CPROVER_assert(result==22022U && step.target_rva==result,\"entry-loop-successor\");\n  __CPROVER_assert(state.esi<text_extent && state.ecx<=state.esi && memory.word_7==state.esi-state.ecx,\"entry-loop-cursor-domain\");\n  __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent && scratch_extent<=text_extent),\"entry-loop-allocation-domain\");\n  if(scratch_extent)__CPROVER_assert(spx_mutable_byte(&right,text_address+scratch_extent-1U)==0U,\"entry-loop-allocation-text-nul\");\n  if(probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent)__CPROVER_assert(spx_mutable_byte(&right,probe)==0U,\"entry-loop-zero-suffix\");\n  __CPROVER_assert(state.esp==stack-28U && state.ebp==stack-4U && state.edi==text_address && state.ebx==scratch_address,\"entry-loop-register-domain\");\n  __CPROVER_assert(memory.word_9==initial.ebp && memory.word_4==initial.ebx && memory.word_3==initial.esi && memory.word_10==return_word,\"entry-saved-frame\");\n }\n}\n",
+    "loop": "void check_iteration(void){\n uint32_t result=cleanup(0,&text,0,0,0,0);\n __CPROVER_assert((step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX),\"loop-fault-outcome\");\n __CPROVER_assert(spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe),\"loop-whole-post-memory\");\n if(result!=UINT32_MAX){\n  __CPROVER_assert(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296),\"loop-all-exits-text-span\");\n  __CPROVER_assert((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296),\"loop-all-exits-scratch-span\");\n  __CPROVER_assert((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U),\"loop-all-exits-nullable-scratch\");\n  __CPROVER_assert((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address,\"loop-all-exits-disjoint-public-spans\");\n  __CPROVER_assert(state.esi<text_extent && state.ecx<=state.esi && memory.private_removed==state.esi-state.ecx,\"loop-all-exits-cursor-domain\");\n  __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent && scratch_extent<=text_extent && (spx_mutable_byte(&right,text_address+scratch_extent-1U))==0U),\"loop-all-exits-allocation-domain\");\n  __CPROVER_assert(!(scratch_extent && probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (spx_mutable_byte(&right,probe))==0U,\"loop-all-exits-zero-suffix\");\n  __CPROVER_assert(scratch_extent || state.esi==0U || ((uint64_t)state.esi+1U<text_extent && (spx_mutable_byte(&right,text_address+state.esi))==13U && (spx_mutable_byte(&right,text_address+state.esi+1U))==10U),\"loop-all-exits-null-scratch-pending-crlf\");\n  __CPROVER_assert((step.kind==SPX_BRANCH || step.kind==SPX_FALLTHROUGH || step.kind==SPX_JUMP) && step.target_rva==result,\"loop-control-successor\");\n  if(scratch_extent && probe>=scratch_address+state.ecx && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent)\n   __CPROVER_assert(spx_mutable_byte(&right,probe)==0U,\"loop-zero-suffix-preserved\");\n  __CPROVER_assert(state.ecx<=state.esi && memory.private_removed==state.esi-state.ecx,\"loop-counter-invariant\");\n  if(result==22022U){\n   __CPROVER_assert(state.esi>input && state.esi<text_extent,\"loop-progress-and-domain\");\n   __CPROVER_assert((scratch_extent==0U && state.ecx==0U) || (scratch_extent>0U && state.esi<scratch_extent),\"loop-scratch-domain-preserved\");\n  }\n }\n uint32_t continuation_slot,continuation_byte;__CPROVER_assume(continuation_slot<8U && continuation_byte<10U);\n __CPROVER_assert(state.ebx == initial.ebx && state.edi == initial.edi && state.ebp == initial.ebp && state.esp == initial.esp && state.df == initial.df && state.x87_control == initial.x87_control && state.x87_status == initial.x87_status && state.x87_pending_exception == initial.x87_pending_exception && state.x87_last_opcode == initial.x87_last_opcode && state.x87_instruction_pointer == initial.x87_instruction_pointer && state.x87_code_selector == initial.x87_code_selector && state.x87_data_pointer == initial.x87_data_pointer && state.x87_data_selector == initial.x87_data_selector && state.fs_base == initial.fs_base && state.x87_stack[continuation_slot].value_bytes[continuation_byte] == initial.x87_stack[continuation_slot].value_bytes[continuation_byte] && state.x87_stack[continuation_slot].empty == initial.x87_stack[continuation_slot].empty && state.x87_stack[continuation_slot].tag == initial.x87_stack[continuation_slot].tag,\"loop-preserved-register-frame\");\n}\n",
+    "tail": "void check_iteration(void){\n uint32_t result=cleanup(&context,&text,&notice,&window,&edit,&caption);\n __CPROVER_assert((step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX),\"tail-fault-correspondence\");\n __CPROVER_assert(a.count==b.count && a.released==b.released,\"tail-complete-service-trace\");\n __CPROVER_assert(spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe),\"tail-whole-post-memory\");\n if(result!=UINT32_MAX){\n  __CPROVER_assert(step.kind==SPX_RETURN && state.eax==result && result==removed,\"tail-return-value\");\n  __CPROVER_assert(state.esp==stack+16U && state.esi==saved_esi && state.ebx==saved_ebx && state.ebp==saved_ebp && step.value==return_word,\"tail-return-frame\");\n }\n uint32_t continuation_slot,continuation_byte;__CPROVER_assume(continuation_slot<8U && continuation_byte<10U);\n __CPROVER_assert(state.edi == initial.edi && state.x87_control == initial.x87_control && state.x87_status == initial.x87_status && state.x87_pending_exception == initial.x87_pending_exception && state.x87_last_opcode == initial.x87_last_opcode && state.x87_instruction_pointer == initial.x87_instruction_pointer && state.x87_code_selector == initial.x87_code_selector && state.x87_data_pointer == initial.x87_data_pointer && state.x87_data_selector == initial.x87_data_selector && state.fs_base == initial.fs_base && state.x87_stack[continuation_slot].value_bytes[continuation_byte] == initial.x87_stack[continuation_slot].value_bytes[continuation_byte] && state.x87_stack[continuation_slot].empty == initial.x87_stack[continuation_slot].empty && state.x87_stack[continuation_slot].tag == initial.x87_stack[continuation_slot].tag,\"tail-preserved-machine-state\");\n}\n"
+  },
+  "private_transport": {
+    "high": 4,
+    "layouts": {
+      "entry": {
+        "anchor": "entry",
+        "anchor_delta": 0,
+        "cells": [
+          {
+            "field": "word_0",
+            "offset": -40,
+            "read": "if(address==m->entry-40U && width==4U)return m->word_0;",
+            "width": 4,
+            "write": "if(address==m->entry-40U && width==4U){m->word_0=value;return;}"
+          },
+          {
+            "field": "word_1",
+            "offset": -36,
+            "read": "if(address==m->entry-36U && width==4U)return m->word_1;",
+            "width": 4,
+            "write": "if(address==m->entry-36U && width==4U){m->word_1=value;return;}"
+          },
+          {
+            "field": "word_2",
+            "offset": -32,
+            "read": "if(address==m->entry-32U && width==4U)return m->word_2;",
+            "width": 4,
+            "write": "if(address==m->entry-32U && width==4U){m->word_2=value;return;}"
+          },
+          {
+            "field": "word_3",
+            "offset": -28,
+            "read": "if(address==m->entry-28U && width==4U)return m->word_3;",
+            "width": 4,
+            "write": "if(address==m->entry-28U && width==4U){m->word_3=value;return;}"
+          },
+          {
+            "field": "word_4",
+            "offset": -24,
+            "read": "if(address==m->entry-24U && width==4U)return m->word_4;",
+            "width": 4,
+            "write": "if(address==m->entry-24U && width==4U){m->word_4=value;return;}"
+          },
+          {
+            "field": "word_5",
+            "offset": -20,
+            "read": "if(address==m->entry-20U && width==4U)return m->word_5;",
+            "width": 4,
+            "write": "if(address==m->entry-20U && width==4U){m->word_5=value;return;}"
+          },
+          {
+            "field": "word_6",
+            "offset": -16,
+            "read": "if(address==m->entry-16U && width==4U)return m->word_6;",
+            "width": 4,
+            "write": "if(address==m->entry-16U && width==4U){m->word_6=value;return;}"
+          },
+          {
+            "field": "word_7",
+            "offset": -12,
+            "read": "if(address==m->entry-12U && width==4U)return m->word_7;",
+            "width": 4,
+            "write": "if(address==m->entry-12U && width==4U){m->word_7=value;return;}"
+          },
+          {
+            "field": "word_8",
+            "offset": -8,
+            "read": "if(address==m->entry-8U && width==4U)return m->word_8;",
+            "width": 4,
+            "write": "if(address==m->entry-8U && width==4U){m->word_8=value;return;}"
+          },
+          {
+            "field": "word_9",
+            "offset": -4,
+            "read": "if(address==m->entry-4U && width==4U)return m->word_9;",
+            "width": 4,
+            "write": "if(address==m->entry-4U && width==4U){m->word_9=value;return;}"
+          },
+          {
+            "field": "word_10",
+            "offset": 0,
+            "read": "if(address==m->entry+0U && width==4U)return m->word_10;",
+            "width": 4
+          }
+        ],
+        "direct_writes": [
+          "word_0",
+          "word_1",
+          "word_2",
+          "word_3",
+          "word_4",
+          "word_5",
+          "word_6",
+          "word_7",
+          "word_8",
+          "word_9"
+        ]
+      },
+      "loop": {
+        "anchor": "stack",
+        "anchor_delta": -12,
+        "cells": [
+          {
+            "field": "private_removed",
+            "offset": 0,
+            "read": "if(address==m->stack+0U && width==4U)return m->private_removed;",
+            "width": 4,
+            "write": "if(address==m->stack+0U && width==4U){m->private_removed=(uint32_t)value;return;}"
+          },
+          {
+            "field": "private_b",
+            "offset": 7,
+            "read": "if(address==m->stack+7U && width==1U)return m->private_b;",
+            "width": 1,
+            "write": "if(address==m->stack+7U && width==1U){m->private_b=(uint8_t)value;return;}"
+          },
+          {
+            "field": "private_c",
+            "offset": 6,
+            "read": "if(address==m->stack+6U && width==1U)return m->private_c;",
+            "width": 1,
+            "write": "if(address==m->stack+6U && width==1U){m->private_c=(uint8_t)value;return;}"
+          }
+        ],
+        "direct_writes": [
+          "private_b",
+          "private_c",
+          "private_removed"
+        ]
+      },
+      "tail": {
+        "anchor": "stack",
+        "anchor_delta": -12,
+        "cells": [
+          {
+            "field": "word_0",
+            "offset": -60,
+            "read": "if(address==m->stack-60 && width==4U)return m->word_0;",
+            "width": 4,
+            "write": "if(address==m->stack-60 && width==4U){m->word_0=value;return;}"
+          },
+          {
+            "field": "word_1",
+            "offset": -56,
+            "read": "if(address==m->stack-56 && width==4U)return m->word_1;",
+            "width": 4,
+            "write": "if(address==m->stack-56 && width==4U){m->word_1=value;return;}"
+          },
+          {
+            "field": "word_2",
+            "offset": -52,
+            "read": "if(address==m->stack-52 && width==4U)return m->word_2;",
+            "width": 4,
+            "write": "if(address==m->stack-52 && width==4U){m->word_2=value;return;}"
+          },
+          {
+            "field": "word_3",
+            "offset": -48,
+            "read": "if(address==m->stack-48 && width==4U)return m->word_3;",
+            "width": 4,
+            "write": "if(address==m->stack-48 && width==4U){m->word_3=value;return;}"
+          },
+          {
+            "field": "word_4",
+            "offset": -44,
+            "read": "if(address==m->stack-44 && width==4U)return m->word_4;",
+            "width": 4,
+            "write": "if(address==m->stack-44 && width==4U){m->word_4=value;return;}"
+          },
+          {
+            "field": "word_5",
+            "offset": -40,
+            "read": "if(address==m->stack-40 && width==4U)return m->word_5;",
+            "width": 4,
+            "write": "if(address==m->stack-40 && width==4U){m->word_5=value;return;}"
+          },
+          {
+            "field": "word_6",
+            "offset": -36,
+            "read": "if(address==m->stack-36 && width==4U)return m->word_6;",
+            "width": 4,
+            "write": "if(address==m->stack-36 && width==4U){m->word_6=value;return;}"
+          },
+          {
+            "field": "word_7",
+            "offset": -32,
+            "read": "if(address==m->stack-32 && width==4U)return m->word_7;",
+            "width": 4,
+            "write": "if(address==m->stack-32 && width==4U){m->word_7=value;return;}"
+          },
+          {
+            "field": "word_8",
+            "offset": -28,
+            "read": "if(address==m->stack-28 && width==4U)return m->word_8;",
+            "width": 4,
+            "write": "if(address==m->stack-28 && width==4U){m->word_8=value;return;}"
+          },
+          {
+            "field": "word_9",
+            "offset": -24,
+            "read": "if(address==m->stack-24 && width==4U)return m->word_9;",
+            "width": 4,
+            "write": "if(address==m->stack-24 && width==4U){m->word_9=value;return;}"
+          },
+          {
+            "field": "word_10",
+            "offset": -20,
+            "read": "if(address==m->stack-20 && width==4U)return m->word_10;",
+            "width": 4,
+            "write": "if(address==m->stack-20 && width==4U){m->word_10=value;return;}"
+          },
+          {
+            "field": "word_11",
+            "offset": -16,
+            "read": "if(address==m->stack-16 && width==4U)return m->word_11;",
+            "width": 4,
+            "write": "if(address==m->stack-16 && width==4U){m->word_11=value;return;}"
+          },
+          {
+            "field": "word_12",
+            "offset": -12,
+            "read": "if(address==m->stack-12 && width==4U)return m->word_12;",
+            "width": 4,
+            "write": "if(address==m->stack-12 && width==4U){m->word_12=value;return;}"
+          },
+          {
+            "field": "word_13",
+            "offset": -8,
+            "read": "if(address==m->stack-8 && width==4U)return m->word_13;",
+            "width": 4,
+            "write": "if(address==m->stack-8 && width==4U){m->word_13=value;return;}"
+          },
+          {
+            "field": "word_14",
+            "offset": -4,
+            "read": "if(address==m->stack-4 && width==4U)return m->word_14;",
+            "width": 4,
+            "write": "if(address==m->stack-4 && width==4U){m->word_14=value;return;}"
+          },
+          {
+            "field": "word_15",
+            "offset": 0,
+            "read": "if(address==m->stack+0 && width==4U)return m->word_15;",
+            "width": 4,
+            "write": "if(address==m->stack+0 && width==4U){m->word_15=value;return;}"
+          },
+          {
+            "field": "word_16",
+            "offset": 4,
+            "read": "if(address==m->stack+4 && width==4U)return m->word_16;",
+            "width": 4,
+            "write": "if(address==m->stack+4 && width==4U){m->word_16=value;return;}"
+          },
+          {
+            "field": "word_17",
+            "offset": 8,
+            "read": "if(address==m->stack+8 && width==4U)return m->word_17;",
+            "width": 4
+          },
+          {
+            "field": "word_18",
+            "offset": 12,
+            "read": "if(address==m->stack+12 && width==4U)return m->word_18;",
+            "width": 4
+          }
+        ],
+        "direct_writes": [
+          "word_0",
+          "word_1",
+          "word_10",
+          "word_11",
+          "word_12",
+          "word_13",
+          "word_14",
+          "word_15",
+          "word_16",
+          "word_2",
+          "word_3",
+          "word_4",
+          "word_5",
+          "word_6",
+          "word_7",
+          "word_8",
+          "word_9"
+        ]
+      }
+    },
+    "low": -72,
+    "profile": "cleanup-private-byte-transport-v1",
+    "removed": [
+      "word_7",
+      "private_removed",
+      "word_15"
+    ],
+    "requires": [
+      "Checked regional private accessor clauses under the proposed spatial envelope.",
+      "Normal entry saved-frame and terminal restoration guarantees from the imported regional proofs."
+    ],
+    "saved_frame": {
+      "ebp": [
+        "word_9",
+        "word_17"
+      ],
+      "ebx": [
+        "word_4",
+        "word_12"
+      ],
+      "esi": [
+        "word_3",
+        "word_11"
+      ],
+      "return_word": [
+        "word_10",
+        "word_18"
+      ]
+    },
+    "scope": "Inductive private-cell/byte correspondence and saved-frame transport only; physical accessibility, public heap contents and lifetimes remain unqualified."
+  },
+  "service_models": {
+    "entry": "static void entry_before_service(struct environment *e){\n __CPROVER_assert(e->world->count==0U,\"entry-service-current-memory-is-incoming\");\n}\n\nstatic uint8_t fresh_zero_byte(uint32_t address){\n return address>=fresh_address && (uint64_t)address<(uint64_t)fresh_address+fresh_extent ? 0U : __CPROVER_uninterpreted_readonly_byte(address);\n}\n\nstatic uint8_t spx_mutable_byte(const struct spx_mutable_world *world, uint32_t address) {\n  uint8_t result = fresh_zero_byte(address);\n  for (uint32_t j=0; j<2U; ++j) {\n    if (j < world->count) {\n      const struct spx_mutable_event *event = &world->events[j];\n      if (address >= event->address && (uint64_t)address < (uint64_t)event->address + event->extent)\n        result = event->service ? __CPROVER_uninterpreted_service_byte(event->position,address)\n          : (uint8_t)(event->value >> (8U * (address-event->address)));\n    }\n  }\n  return result;\n}\n\nstatic uint32_t length_contract(void *opaque,const spx_view_v5 *text){\n struct environment *e=opaque;\n __CPROVER_assert(e->phase==0U || e->phase==2U,\"entry-length-order\");\n __CPROVER_assert(text->base.domain==1U && text->base.object==1U && text->base.generation==1U && text->base.offset==0U && text->extent==e->extent && text->base.extent==e->extent,\"entry-length-source-view\");\n entry_before_service(e);\n ++e->phase;return e->length;\n}\n\nstatic spx_view_v5 allocate_contract(void *opaque,uint32_t flags,uint32_t size){\n struct environment *e=opaque;\n __CPROVER_assert(e->phase==1U && flags==64U && size==e->length+1U,\"entry-allocation-call\");\n entry_before_service(e);\n ++e->phase;e->allocated=1U;return e->view;\n}\n\nspx_call_status spx_invoke_call(spx_runtime *runtime,const spx_call_event *event,const spx_machine_state *input,spx_machine_state *output){\n struct machine *m=runtime->context;struct environment *e=m->env;uint32_t fault=0U;\n __CPROVER_assert(event->call_index==0U && event->arguments==0 && event->argument_count==0U,\"entry-call-event\");\n uint32_t first=machine_read(m,input->esp,4U,&fault);__CPROVER_assert(!fault,\"entry-call-first-word\");\n *output=*input;\n uint32_t ecx,edx;_Bool cf,zf,sf,of,pf;output->ecx=ecx;output->edx=edx;output->cf=cf;output->zf=zf;output->sf=sf;output->of=of;output->pf=pf;\n if(event->source_rva==21960U || event->source_rva==21975U){\n  __CPROVER_assert(event->kind==SPX_CALL_INDIRECT && event->target_rva==length_target && first==e->text,\"entry-native-length-binding\");\n  __CPROVER_assert((e->phase==0U && event->source_rva==21960U && event->instruction_rva==21963U && event->return_rva==21965U) || (e->phase==2U && event->source_rva==21975U && event->instruction_rva==21979U && event->return_rva==21981U),\"entry-native-length-order\");\n  entry_before_service(e);\n  ++e->phase;output->eax=e->length;output->esp+=4U;\n }else{\n  uint32_t second=machine_read(m,input->esp+4U,4U,&fault);__CPROVER_assert(!fault,\"entry-call-second-word\");\n  __CPROVER_assert(event->kind==SPX_CALL_EXTERNAL_IMPORT && event->source_rva==21965U && event->instruction_rva==21969U && event->return_rva==21975U && first==64U && second==e->length+1U && e->phase==1U,\"entry-native-allocation-binding\");\n  entry_before_service(e);\n  ++e->phase;e->allocated=1U;output->eax=e->scratch;output->esp+=8U;\n }\n spx_sync_eflags(output);return SPX_CALL_OK;\n}\n",
+    "loop": "spx_call_status spx_invoke_call(spx_runtime *r,const spx_call_event *e,const spx_machine_state *i,spx_machine_state *o){\n (void)r;(void)e;(void)i;(void)o;__CPROVER_assert(0,\"loop-no-service-call\");return SPX_CALL_UNIMPLEMENTED;\n}\n",
+    "tail": "static uint32_t transition(struct environment *e,uint32_t kind,uint32_t a,uint32_t b,uint32_t c,uint32_t d){\n __CPROVER_assert(e->count<5U,\"tail-call-capacity\");__CPROVER_assume(e->count<5U);\n if(!e->side){uint32_t result;calls[e->count]=(struct call_record){kind,a,b,c,d,spx_mutable_byte(e->world,probe),result};}\n else{\n  struct call_record expected=calls[e->count];\n  __CPROVER_assert(kind==expected.kind && a==expected.a && b==expected.b && c==expected.c && d==expected.d,\"tail-call-order-and-arguments\");\n  __CPROVER_assert(spx_mutable_byte(e->world,probe)==expected.byte,\"tail-call-current-memory\");\n }\n if(kind==1U){\n  __CPROVER_assert(!e->released && e->scratch && e->scratch_extent,\"tail-copy-live-source\");\n  spx_mutable_event(e->world,e->text,e->text_extent,0U,1U,e->count);\n }\n if(kind==2U){__CPROVER_assert(!e->released,\"tail-release-once\");e->released=1U;}\n if(kind==3U)spx_mutable_event(e->world,RESOURCE,500U,0U,1U,e->count);\n return calls[e->count++].result;\n}\n\nstatic spx_ref_v5 copy_contract(void *opaque,const spx_view_v5 *destination,const spx_view_v5 *source){\n struct environment *e=opaque;\n __CPROVER_assert(same_view(destination,e->text_view) && same_view(source,e->scratch_view),\"tail-copy-views\");\n transition(e,1U,e->text,e->scratch,0U,0U);return destination->base;\n}\n\nstatic uint32_t release_contract(void *opaque,spx_ref_v5 value){\n struct environment *e=opaque;__CPROVER_assert(same_reference(value,e->scratch_view->base),\"tail-release-reference\");\n return transition(e,2U,e->scratch,0U,0U,0U);\n}\n\nstatic spx_view_v5 resource_contract(void *opaque,uint32_t id){\n struct environment *e=opaque;transition(e,3U,id,0U,0U,0U);return e->resource;\n}\n\nstatic uint32_t message_contract(void *opaque,uint32_t window,const spx_view_v5 *message,const spx_view_v5 *caption,uint32_t flags){\n struct environment *e=opaque;__CPROVER_assert(same_view(message,&e->resource) && same_view(caption,e->caption_view),\"tail-message-views\");\n return transition(e,4U,window,RESOURCE,CAPTION,flags);\n}\n\nstatic uint32_t focus_contract(void *opaque,uint32_t window){struct environment *e=opaque;return transition(e,5U,window,0U,0U,0U);}\n\nspx_call_status spx_invoke_call(spx_runtime *runtime,const spx_call_event *event,const spx_machine_state *input,spx_machine_state *output){\n struct machine *m=runtime->context;struct environment *e=m->env;uint32_t fault=0,kind=0,arity=0,a=0,b=0,c=0,d=0,result=0;\n __CPROVER_assert(event->call_index==0U && event->arguments==0 && event->argument_count==0U,\"tail-native-event\");\n if(event->source_rva==22058U){kind=1U;arity=2U;__CPROVER_assert(event->instruction_rva==22060U && event->return_rva==22066U,\"tail-copy-site\");}\n if(event->source_rva==22066U){kind=2U;arity=1U;__CPROVER_assert(event->instruction_rva==22067U && event->return_rva==22073U,\"tail-free-site\");}\n if(event->source_rva==22086U){kind=3U;arity=1U;result=RESOURCE;__CPROVER_assert(event->instruction_rva==22095U && event->return_rva==22100U && event->target_rva==4740U,\"tail-resource-site\");}\n if(event->source_rva==22100U){kind=4U;arity=4U;__CPROVER_assert(event->instruction_rva==22108U && event->return_rva==22114U,\"tail-message-site\");}\n if(event->source_rva==22114U){kind=5U;arity=1U;__CPROVER_assert(event->instruction_rva==22120U && event->return_rva==22126U,\"tail-focus-site\");}\n __CPROVER_assert(kind && event->kind==(kind==3U?SPX_CALL_INTERNAL_DIRECT:SPX_CALL_EXTERNAL_IMPORT),\"tail-native-call-kind\");\n a=machine_read(m,input->esp,4U,&fault);__CPROVER_assert(!fault,\"tail-argument-a\");\n if(arity>=2U){b=machine_read(m,input->esp+4U,4U,&fault);__CPROVER_assert(!fault,\"tail-argument-b\");}\n if(arity>=3U){c=machine_read(m,input->esp+8U,4U,&fault);__CPROVER_assert(!fault,\"tail-argument-c\");}\n if(arity>=4U){d=machine_read(m,input->esp+12U,4U,&fault);__CPROVER_assert(!fault,\"tail-argument-d\");}\n result=transition(e,kind,a,b,c,d);\n if(kind==1U)result=e->text;\n if(kind==3U)result=RESOURCE;\n *output=*input;output->eax=result;\n if(kind==3U){\n  __CPROVER_assert(input->esp==m->stack-28U,\"tail-resource-checked-entry-stack\");\n  __CPROVER_assert(machine_read(m,m->stack-28U,4U,&fault)==31U && !fault,\"tail-supplier-live-word\");\n  __CPROVER_assert(machine_read(m,m->stack-24U,4U,&fault)==4252580U && !fault,\"tail-supplier-live-word\");\n  __CPROVER_assert(machine_read(m,m->stack-20U,4U,&fault)==48U && !fault,\"tail-supplier-live-word\");\n  /* Adapter return word plus the supplier's declared private writes. */\n  m->word_7=event->return_rva;\n  {uint32_t value; m->word_0=value;}\n  {uint32_t value; m->word_1=value;}\n  {uint32_t value; m->word_2=value;}\n  {uint32_t value; m->word_3=value;}\n  {uint32_t value; m->word_4=value;}\n  {uint32_t value; m->word_5=value;}\n  {uint32_t value; m->word_6=value;}\n  {uint32_t value; output->cf=value;}\n  {uint32_t value; output->df=value;}\n  {uint32_t value; output->ecx=value;}\n  {uint32_t value; output->edx=value;}\n  {uint32_t value; output->eflags=value;}\n  {uint32_t value; output->of=value;}\n  {uint32_t value; output->pf=value;}\n  {uint32_t value; output->sf=value;}\n  {uint32_t value; output->zf=value;}\n  return SPX_CALL_OK;\n }\n uint32_t ecx,edx;_Bool cf,zf,sf,of,pf;output->ecx=ecx;output->edx=edx;output->cf=cf;output->zf=zf;output->sf=sf;output->of=of;output->pf=pf;\n if(kind!=3U)output->esp+=4U*arity;\n spx_sync_eflags(output);return SPX_CALL_OK;\n}\n"
+  },
+  "observation_setups": {
+    "entry": "\n uint32_t text_address,text_extent,length,scratch_address,stack,probe;\n uint32_t target; length_target=target; __CPROVER_assume(length_target!=0U);\n __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296) && length<text_extent);\n __CPROVER_assume(__CPROVER_uninterpreted_readonly_byte(text_address+length)==0U);\n uint32_t scratch_extent=scratch_address ? length+1U : 0U;\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);\n __CPROVER_assume(stack>=40U && (uint64_t)stack+4U<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)stack+4U<=text_address || (uint64_t)text_address+text_extent<=stack-40U);\n __CPROVER_assume((uint64_t)stack+4U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-40U);\n __CPROVER_assume((uint64_t)stack+4U<=4251992U || stack-40U>=UINT64_C(4251996));\n __CPROVER_assume((uint64_t)text_address+text_extent<=4251992U || text_address>=UINT64_C(4251996));\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=4251992U || scratch_address>=UINT64_C(4251996));\n fresh_address=scratch_address;fresh_extent=scratch_extent;\n struct spx_mutable_world left={0},right={0};\n struct environment a={.world=&left,.text=text_address,.extent=text_extent,.length=length,.scratch=scratch_address};\n struct environment b={.world=&right,.text=text_address,.extent=text_extent,.length=length,.scratch=scratch_address};\n struct machine memory;__CPROVER_havoc_object(&memory);memory.env=&a;memory.entry=stack;\n uint32_t return_word=memory.word_10;\n spx_runtime runtime={.context=&memory,.image_base=4194304U,.read=machine_read,.write=machine_write};\n spx_machine_state initial,state;initial.esp=stack;initial.edi=text_address;\n __CPROVER_assume(initial.df<=1U);state=initial;\n spx_step_result step;uint32_t next=21943U;\n for(;;){\n  step=spx_sub_000055b7(&runtime,&state,next);\n  if(step.kind==SPX_MEMORY_FAULT || step.target_rva==22022U)break;\n  __CPROVER_assert(step.kind==SPX_BRANCH || step.kind==SPX_JUMP || step.kind==SPX_FALLTHROUGH,\"entry-native-step\");\n  next=step.target_rva;\n }\n observed=state;observed_removed=memory.word_7;\n struct spx_mutable_domain td={&right,text_address,text_extent,3U},sd={&right,scratch_address,scratch_extent,3U};\n spx_runtime tr={.context=&td,.read=spx_mutable_read,.write=spx_mutable_write},sr={.context=&sd,.read=spx_mutable_read,.write=spx_mutable_write};\n spx_component_view_context tc={&tr,text_address,text_extent,3U},sc={&sr,scratch_address,scratch_extent,3U};\n spx_view_v5 text={.base={1U,1U,1U,0U,text_extent,3U},.extent=text_extent,.element_width=1U,.context=&tc,.access_context=&tc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};\n b.view=(spx_view_v5){.base={1U,2U,1U,0U,scratch_extent,3U},.extent=scratch_extent,.element_width=1U,.context=&sc,.access_context=&sc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};\n spx_text_cleanup_services_v5 services={.context=&b,.length=length_contract,.allocate=allocate_contract};\n spx_text_cleanup_context_v5 context={.services=&services};\n observed_view=b.view;\n ",
+    "tail": "\n uint32_t text_address,text_extent,scratch_address,scratch_extent,stack,input,output,removed,arbitrary_probe;probe=arbitrary_probe;\n initial_scratch=scratch_address;initial_extent=scratch_extent;initial_output=output;\n __CPROVER_assume(text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296));\n __CPROVER_assume((scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U));\n __CPROVER_assume((uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address);\n __CPROVER_assume(input<text_extent && output<=input && removed==input-output);\n __CPROVER_assume((scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && (current_byte(text_address+scratch_extent-1U))==0U));\n __CPROVER_assume(!(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (current_byte(probe))==0U);\n __CPROVER_assume(scratch_extent || input==0U || ((uint64_t)input+1U<text_extent && (current_byte(text_address+input))==13U && (current_byte(text_address+input+1U))==10U));\n __CPROVER_assume(stack>=60U && (uint64_t)stack+16U<=UINT64_C(4294967296));\n __CPROVER_assume((uint64_t)stack+16U<=text_address || (uint64_t)text_address+text_extent<=stack-60U);\n __CPROVER_assume((uint64_t)stack+16U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-60U);\n __CPROVER_assume((uint64_t)stack+16U<=4194304U || stack-60U>=4419584U);\n __CPROVER_assume((uint64_t)text_address+text_extent<=4194304U || text_address>=4419584U);\n __CPROVER_assume((uint64_t)scratch_address+scratch_extent<=4194304U || scratch_address>=4419584U);\n struct spx_mutable_world left={0},right={0};\n struct environment a={.world=&left,.side=0U,.text=text_address,.text_extent=text_extent,.scratch=scratch_address,.scratch_extent=scratch_extent};\n struct environment b={.world=&right,.side=1U,.text=text_address,.text_extent=text_extent,.scratch=scratch_address,.scratch_extent=scratch_extent};\n struct machine memory;__CPROVER_havoc_object(&memory);memory.env=&a;memory.stack=stack;memory.word_15=removed;\n uint32_t saved_esi=memory.word_11,saved_ebx=memory.word_12,saved_ebp=memory.word_17,return_word=memory.word_18;\n spx_runtime runtime={.context=&memory,.read=machine_read,.write=machine_write,.image_base=4194304U};\n spx_machine_state initial,state;initial.esp=stack-16U;initial.ebp=stack+8U;initial.edi=text_address;initial.ebx=scratch_address;initial.esi=input;initial.ecx=output;state=initial;\n spx_step_result step;uint32_t next=22029U;\n for(;;){step=spx_sub_0000560d(&runtime,&state,next);if(step.kind==SPX_RETURN || step.kind==SPX_MEMORY_FAULT)break;\n  __CPROVER_assert(step.kind==SPX_BRANCH || step.kind==SPX_JUMP || step.kind==SPX_FALLTHROUGH,\"tail-native-step\");next=step.target_rva;}\n struct spx_mutable_domain td={&right,text_address,text_extent,3U},sd={&right,scratch_address,scratch_extent,3U},id={&right,4194304U,225280U,3U};\n spx_runtime tr={.context=&td,.read=spx_mutable_read,.write=spx_mutable_write},sr={.context=&sd,.read=spx_mutable_read,.write=source_scratch_write},ir={.context=&id,.read=spx_mutable_read,.write=spx_mutable_write};\n spx_component_view_context tc={&tr,text_address,text_extent,3U},sc={&sr,scratch_address,scratch_extent,3U},mc={&ir,RESOURCE,500U,3U},cc={&ir,CAPTION,500U,1U},wc={&ir,WINDOW,4U,1U},ec={&ir,EDIT,4U,1U},nc={&ir,SUPPRESS,4U,1U};\n spx_view_v5 text={.base={1U,1U,1U,0U,text_extent,3U},.extent=text_extent,.element_width=1U,.context=&tc,.access_context=&tc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};\n spx_view_v5 scratch={.base={1U,2U,1U,0U,scratch_extent,3U},.extent=scratch_extent,.element_width=1U,.context=&sc,.access_context=&sc,.read_u8=spx_component_view_read,.write_u8=spx_component_view_write,.read=spx_component_view_read_span,.write=spx_component_view_write_span};\n b.resource=(spx_view_v5){.base={UINT64_C(1),UINT64_C(2134217653344611032),UINT64_C(1),UINT64_C(15648),UINT64_C(18272),UINT64_C(3)},.extent=500U,.element_width=1U,.context=&mc,.access_context=&mc,.read=spx_component_view_read_span};\n spx_view_v5 caption={.base={1U,4U,1U,0U,500U,1U},.extent=500U,.element_width=1U,.context=&cc,.access_context=&cc,.read=spx_component_view_read_span};\n spx_view_v5 window={.base={1U,5U,1U,0U,4U,1U},.extent=4U,.element_width=1U,.context=&wc,.access_context=&wc,.read=spx_component_view_read_span};\n spx_view_v5 edit={.base={1U,6U,1U,0U,4U,1U},.extent=4U,.element_width=1U,.context=&ec,.access_context=&ec,.read=spx_component_view_read_span};\n spx_view_v5 notice={.base={1U,7U,1U,0U,4U,1U},.extent=4U,.element_width=1U,.context=&nc,.access_context=&nc,.read=spx_component_view_read_span};\n b.text_view=&text;b.scratch_view=&scratch;b.caption_view=&caption;source_environment=&b;\n spx_text_cleanup_services_v5 services={.context=&b,.copy=copy_contract,.release=release_contract,.resource_text=resource_contract,.message=message_contract,.focus=focus_contract};\n spx_text_cleanup_context_v5 context={.services=&services};spx_cut.input=input;spx_cut.output=output;spx_cut.removed=removed;spx_cut.scratch=scratch;\n "
+  }
+}

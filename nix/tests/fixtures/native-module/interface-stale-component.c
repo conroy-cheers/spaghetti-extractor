@@ -3,10 +3,11 @@
 uint32_t fixture_interface_stale_exercise(
     spx_fixture_interface_stale_context_v5 *context) {
   spx_resource_v2 root = {0};
-  uint32_t filled;
 
+  SPX_PROOF_BEGIN(exercise);
   (void)context->services->create(context->services->context, &root);
-  filled = context->services->fill_record(context->services->context, root);
+  const uint32_t filled =
+      context->services->fill_record(context->services->context, root);
   (void)context->services->release(context->services->context, root);
   return filled;
 }

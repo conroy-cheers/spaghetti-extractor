@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Mapping
 
 from .atomics import ATOMIC_OBJECT_RESOURCE_KIND
-from .interface_ir import ProofKernelComponentInterface, ProofKernelLogicalType
+from .interface_ir import (
+    ProofKernelComponentInterface,
+    ProofKernelLogicalType,
+    ProofKernelOperation,
+)
 
 
 class _UnsupportedRefinement(ValueError):
@@ -782,6 +786,28 @@ def _render_service_path_harness(
         ]
     )
     return "\n".join(lines)
+
+def _operation_result_c_type(
+    interface: ProofKernelComponentInterface,
+    operation: ProofKernelOperation,
+) -> str:
+    """Spell a checked operation result as the V5 implementation ABI does.
+
+    The private proof-kernel header gives enums named ``spx_*_v2`` typedefs,
+    while the public V5 component ABI deliberately exposes their fixed-width
+    underlying integer type.  Refinement compiles the latter, so using the
+    private spelling makes CBMC reject an otherwise valid harness before it can
+    check any property.
+    """
+
+    if not operation.results:
+        return "void"
+    if len(operation.results) == 1:
+        return _logical_c_type(
+            interface.type_index()[operation.results[0].type_id]
+        )
+    return interface.operation_c_result(operation)
+
 
 def _logical_c_type(logical_type: ProofKernelLogicalType) -> str:
     if logical_type.kind in {"scalar", "enum"} and logical_type.c_type is not None:

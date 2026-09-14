@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.testkit import plan_test_scaffold
+from spaghetti_extractor.testkit.scaffold import plan_test_scaffold
 
 
 class TestkitSmokeTests(unittest.TestCase):

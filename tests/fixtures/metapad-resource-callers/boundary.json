@@ -1,0 +1,38 @@
+{
+  "authorizing": false,
+  "scope": "Two actual caller proof regions; not independent production APIs or whole operations.",
+  "transfer_plan_file_sha256": "1d1eb428e0fd4a37fc41090ca8904cf83597ce561d3de2be773cf5618c798781",
+  "regions": [
+    {
+      "entry_rva": 22086,
+      "unit_id": "semantic-transfer:original-cutpoint-00005646-00005654",
+      "calls": [
+        {
+          "instruction_rva": 22095,
+          "return_rva": 22100,
+          "target_rva": 4740
+        }
+      ]
+    },
+    {
+      "entry_rva": 22286,
+      "unit_id": "semantic-transfer:original-cutpoint-0000570e-0000571c",
+      "calls": [
+        {
+          "instruction_rva": 22295,
+          "return_rva": 22300,
+          "target_rva": 4740
+        }
+      ]
+    }
+  ],
+  "files": {
+    "behavioral-fn-00005646.c": "73f983d163e333c0b7d5e9854e6fdeafca64a98f1bf4af0c6558e6edcb143abb",
+    "behavioral-fn-0000570e.c": "d7fc440f84de31a38525c6a7a6f9a7065879b4afd755cefa0a12636620d40ecd",
+    "behavioral-support.c": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca",
+    "behavioral-c.h": "6ec41882289f149c7ffdb45ebdb8ea02e22c364ad3d764e5eeba2ce951d4749c"
+  },
+  "supplier_exact_c_slice_sha256": "6a05a9fd9c1a4708d7295f38d528da91e7404f894207ef84fc2215366e15346b",
+  "supplier_binding_intent_sha256": "b2ad477ec2b1e54b6320d4def5e0746a57572cda535cd8005426f92c38dc1ce4",
+  "supplier_runtime_contract_sha256": "e749e4050c07e90bd42d9444f7d979624f23a023daf5de3147ea722cbb851338"
+}

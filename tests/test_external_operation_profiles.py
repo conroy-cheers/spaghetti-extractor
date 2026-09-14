@@ -427,6 +427,7 @@ class ExternalOperationProfileTests(unittest.TestCase):
             world_effects=[{
                 "kind": "dynamicRangeRelease",
                 "argument_index": 0,
+                "release": {"success": "always", "argument_equals": []},
             }],
         )
         parsed = parse_external_operation_contract(payload)
@@ -438,6 +439,21 @@ class ExternalOperationProfileTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             loaded = load_external_operation_contract(path)
         self.assertEqual(loaded, parsed)
+
+    def test_release_owner_must_fit_the_operation_argument_frame(self) -> None:
+        payload = profile()
+        effect = {"kind": "dynamicRangeRelease", "argument_index": 0,
+                  "release": {"success": "always", "argument_equals": [],
+                              "ownership": {"family": "heap", "owner_argument": 1}}}
+        payload["environment_contracts"].append(
+            environment_contract("owned-release", world_effects=[effect]))
+        release = next(row for row in payload["operations"] if row["id"] == "release")
+        release["environment_contract_id"] = "owned-release"
+        with self.assertRaisesRegex(ExternalOperationProfileError, "release owner argument"):
+            parse_external_operation_profile(payload)
+        effect["release"]["ownership"]["owner_argument"] = 0
+        parsed = parse_external_operation_profile(payload)
+        self.assertEqual(parsed.operations_by_id()["release"].argument_words, 1)
 
     def test_accepts_all_success_guard_variants(self) -> None:
         for guard in (

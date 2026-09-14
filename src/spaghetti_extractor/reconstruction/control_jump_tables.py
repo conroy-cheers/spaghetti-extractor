@@ -277,6 +277,7 @@ def recover_static_pe32_jump_table_inventory(
             "rva_end": remap_rva + source_upper_exclusive,
             "section": _section_name(remap_section),
             "bytes_sha256": sha256(remap_bytes).hexdigest(),
+            "bytes_le": list(remap_bytes),
             "possible_values": index_values,
         }
 
@@ -396,6 +397,7 @@ def recover_static_pe32_jump_table_inventory(
                 "entry_address": entry_address,
                 "entry_address_model": entry_address_model,
                 "entry_rva": entry_rva,
+                "bytes_le": list(raw),
                 "target_address": target_address,
                 "target_address_model": target_address_model,
                 "target_rva": target_rva,

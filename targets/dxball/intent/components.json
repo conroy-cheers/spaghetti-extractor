@@ -1,1 +1,131 @@
-{"components":[{"id":"startup-1000","label":"Startup unit 0x1000"},{"id":"startup-1005","label":"Startup unit 0x1005"},{"id":"startup-1010","label":"Startup unit 0x1010"},{"id":"startup-101c","label":"Startup unit 0x101c"},{"id":"startup-1026","label":"Startup unit 0x1026"},{"id":"directdraw-init","label":"DirectDraw initialization tail","source":{"files":["directdraw-init.c"],"operation_symbols":{"initialize":"dxball_directdraw_initialize"},"shared_inputs":[]}}],"configurations":[{"id":"startup-leaves","label":"Five independent startup units","selections":[{"activation":"draft","id":"startup-1000","kind":"component"},{"activation":"draft","id":"startup-1005","kind":"component"},{"activation":"draft","id":"startup-1010","kind":"component"},{"activation":"draft","id":"startup-101c","kind":"component"},{"activation":"draft","id":"startup-1026","kind":"component"}]},{"id":"startup-prefix","label":"Three-unit startup group","selections":[{"activation":"draft","id":"startup-prefix","kind":"group"}]},{"id":"startup-extended","label":"Five-unit startup group","selections":[{"activation":"draft","id":"startup-extended","kind":"group"}]},{"id":"directdraw-init-draft","label":"DirectDraw initialization draft","selections":[{"activation":"draft","id":"directdraw-init","kind":"component"}]}],"format":"spaghetti-extractor-component-lifting-intent-v1","groups":[{"id":"startup-prefix","label":"Three-unit startup prefix","members":["startup-1000","startup-1005","startup-1010"]},{"id":"startup-extended","label":"Five-unit startup prefix","members":["startup-prefix","startup-101c","startup-1026"]}],"intent_sha256":"7517f76a0e4b49aba25c53b19f8a2ef7de0429e13fe1808c119ac26e07388493","policy":{"machine_authority_from_v5_bindings_only":true,"operation_symbols_only":true,"tests_authorize":false},"program_id":"dxball-pe32-reference-v1"}
+{
+  "components": [
+    {
+      "id": "startup-1000",
+      "label": "Startup unit 0x1000"
+    },
+    {
+      "id": "startup-1005",
+      "label": "Startup unit 0x1005"
+    },
+    {
+      "id": "startup-1010",
+      "label": "Startup unit 0x1010"
+    },
+    {
+      "id": "startup-101c",
+      "label": "Startup unit 0x101c"
+    },
+    {
+      "id": "startup-1026",
+      "label": "Startup unit 0x1026"
+    },
+    {
+      "id": "directdraw-init",
+      "label": "DirectDraw initialization tail",
+      "source": {
+        "files": [
+          "directdraw-init.c"
+        ],
+        "operation_symbols": {
+          "initialize": "dxball_directdraw_initialize"
+        },
+        "shared_inputs": []
+      }
+    }
+  ],
+  "configurations": [
+    {
+      "id": "startup-leaves",
+      "label": "Five independent startup units",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "startup-1000",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-1005",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-1010",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-101c",
+          "kind": "component"
+        },
+        {
+          "activation": "draft",
+          "id": "startup-1026",
+          "kind": "component"
+        }
+      ]
+    },
+    {
+      "id": "startup-prefix",
+      "label": "Three-unit startup group",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "startup-prefix",
+          "kind": "group"
+        }
+      ]
+    },
+    {
+      "id": "startup-extended",
+      "label": "Five-unit startup group",
+      "selections": [
+        {
+          "activation": "draft",
+          "id": "startup-extended",
+          "kind": "group"
+        }
+      ]
+    },
+    {
+      "id": "directdraw-init-enabled",
+      "label": "Verified DirectDraw initialization tail",
+      "selections": [
+        {
+          "activation": "enabled",
+          "id": "directdraw-init",
+          "kind": "component"
+        }
+      ]
+    }
+  ],
+  "format": "spaghetti-extractor-component-lifting-intent-v1",
+  "groups": [
+    {
+      "id": "startup-prefix",
+      "label": "Three-unit startup prefix",
+      "members": [
+        "startup-1000",
+        "startup-1005",
+        "startup-1010"
+      ]
+    },
+    {
+      "id": "startup-extended",
+      "label": "Five-unit startup prefix",
+      "members": [
+        "startup-prefix",
+        "startup-101c",
+        "startup-1026"
+      ]
+    }
+  ],
+  "intent_sha256": "cf4ccdb5ff16e0d5490ded24f5fc6d3be5377b8ff30013b61a76051fbc66eb07",
+  "policy": {
+    "machine_authority_from_v5_bindings_only": true,
+    "operation_symbols_only": true,
+    "tests_authorize": false
+  },
+  "program_id": "dxball-pe32-reference-v1"
+}

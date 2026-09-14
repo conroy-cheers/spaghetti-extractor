@@ -108,7 +108,7 @@ def _external_range_rule(
     )
 
 
-def _inputs(root: Path) -> dict[str, Path]:
+def _inputs(root: Path, *, additional_object_rules=()) -> dict[str, Path]:
     machine = root / "machine-ir.jsonl"
     row = transfer_row()
     row["outcome"] = {
@@ -317,7 +317,7 @@ def _inputs(root: Path) -> dict[str, Path]:
             ),
             interior_pointers=True,
             evidence_sha256="b" * 64,
-        )],
+        ), *additional_object_rules],
     )
     authority_path = root / "machine-object-authority.json"
     write_json(authority_path, authority.to_payload())
@@ -382,6 +382,31 @@ def _inputs(root: Path) -> dict[str, Path]:
 
 
 class CanonicalRuntimeTests(unittest.TestCase):
+    def test_import_effects_are_explicit_and_not_defaulted_from_the_abi(self) -> None:
+        payload = {"id": "fixture:service", "abi_template": "pe32-stdcall-v1",
+                   "arity": {"kind": "fixed", "words": 1},
+                   "memory_effect": "readOnly", "world_effect": "opaqueResources"}
+        row = {"identity": {"dll": "fixture.dll", "symbol": "service", "ordinal": None},
+               "boundary": {}, "contract": {"payload": payload}}
+        call = SimpleNamespace(argument_nodes=(), instruction_rva=0x1000)
+        checked = _checked_contract(row=row, call=call, escape_index={})
+        self.assertEqual((checked.memory_effect, checked.world_effect), ("readOnly", "opaqueResources"))
+        for memory, world in (("none", "none"), ("nativeCallthrough", "nativeCallthrough")):
+            explicit = {**payload, "memory_effect": memory, "world_effect": world}
+            checked = _checked_contract(row={**row, "contract": {"payload": explicit}},
+                                        call=call, escape_index={})
+            self.assertEqual((checked.memory_effect, checked.world_effect), (memory, world))
+        for field in ("memory_effect", "world_effect"):
+            for value in (None, "", " ", False, 0, []):
+                mutated = {**payload, field: value}
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(CanonicalRuntimeError, field):
+                    _checked_contract(row={**row, "contract": {"payload": mutated}},
+                                      call=call, escape_index={})
+            absent = {key: value for key, value in payload.items() if key != field}
+            with self.subTest(field=field, absent=True), self.assertRaisesRegex(CanonicalRuntimeError, "ABI-only declaration"):
+                _checked_contract(row={**row, "contract": {"payload": absent}},
+                                  call=call, escape_index={})
+
     def test_checked_external_services_have_generic_runtime_routes(self) -> None:
         obligation_id = f"residual-obligation-v2:{'a' * 64}"
         linked_payload = {

@@ -1,0 +1,18 @@
+{
+  "operation_id": "cleanup",
+  "source": "cleanup.c",
+  "entry": {
+    "position": "before",
+    "text": "  for (uint32_t k = 0; k < 2U; ++k) {\n    if (spx_view_read_u8(text, input, &a)) return UINT32_MAX;\n"
+  },
+  "exits": {
+    "iteration": {
+      "position": "before",
+      "text": "    if (spx_view_read_u8(text, input, &a)) return UINT32_MAX;\n    if (a) {\n"
+    }
+  },
+  "regions": [
+    "entry",
+    "iteration"
+  ]
+}

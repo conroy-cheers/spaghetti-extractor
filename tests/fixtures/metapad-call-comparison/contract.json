@@ -1,0 +1,53 @@
+{
+  "region_index": 0,
+  "entry_rva": 22086,
+  "instruction_rva": 22095,
+  "return_rva": 22100,
+  "stack_delta": -12,
+  "service_id": "resource_text",
+  "stack_words": [
+    {
+      "offset": -12,
+      "writable": true,
+      "exit": {
+        "kind": "constant",
+        "value": 31
+      }
+    },
+    {
+      "offset": -8,
+      "writable": true,
+      "exit": {
+        "kind": "constant",
+        "value": 4252580
+      }
+    },
+    {
+      "offset": -4,
+      "writable": true,
+      "exit": {
+        "kind": "constant",
+        "value": 48
+      }
+    },
+    {
+      "offset": 0,
+      "writable": false,
+      "exit": {
+        "kind": "preserved"
+      }
+    }
+  ],
+  "result_reference": {
+    "domain": 1,
+    "object": 2134217653344611032,
+    "generation": 1,
+    "offset": 15648,
+    "extent": 18272,
+    "permissions": 3
+  },
+  "private_stack": {
+    "low": -44,
+    "high": 4
+  }
+}

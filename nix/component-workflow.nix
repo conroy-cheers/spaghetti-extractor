@@ -7,7 +7,6 @@
   interfaceRoot,
   sourceRoot,
   bindingIntentRoot,
-  inductionRoot ? null,
   relationRoot ? null,
   namePrefix,
   behavioralCPackage,
@@ -73,7 +72,7 @@ let
   # Direct-provider admission is a proof-supported machine-overlay shape, not
   # a target allowlist. Multi-unit operations, checked external/callback
   # services, component-operation services, and reviewed relation intents are
-  # and induction are handled by the direct qualifier. Explicit object
+  # and contextual bisimulation are handled by the direct qualifier. Explicit object
   # selectors remain transitional until their direct proof inputs migrate.
   directV6ProviderIds = builtins.filter (id:
     let
@@ -93,7 +92,11 @@ let
         (binding:
           let kind = binding.provider.kind or null;
           in builtins.elem (binding.mediation or null) [ "direct" "callback" ]
-            && builtins.elem kind [ "external_call" "component_operation" ])
+            && builtins.elem kind [
+              "external_call"
+              "interface_method"
+              "component_operation"
+            ])
         (((operation.machine_projection or { }).service_bindings or [ ]))
   ) sourceComponentIds;
 
@@ -115,14 +118,16 @@ let
   }) v5ComponentIds);
   directProviderNeedsLinkedModule = builtins.listToAttrs (map (id: {
     name = id;
-    value = proofClassifications.${id} == "encapsulated_owned"
+    value = builtins.any (candidateId:
+      proofClassifications.${candidateId} == "encapsulated_owned"
       || builtins.any
         (operation:
           (operation.callback_ids or [ ]) != [ ]
           || builtins.any
             (binding: (binding.mediation or null) == "callback")
             (((operation.machine_projection or { }).service_bindings or [ ])))
-        bindingIntentPayloads.${id}.operations;
+        bindingIntentPayloads.${candidateId}.operations
+    ) (dependencyClosure [ id ]);
   }) v5ComponentIds);
 
   v5Interfaces = builtins.listToAttrs (map (id: {
@@ -164,13 +169,13 @@ let
     name = id;
     value = intentRoot + "/${componentRowsById.${id}.relation_intent}";
   }) relationComponentIds);
-  inductionComponentIds = builtins.filter
-    (id: componentRowsById.${id} ? induction_intent)
+  bisimulationComponentIds = builtins.filter
+    (id: componentRowsById.${id} ? bisimulation_intent)
     sourceComponentIds;
-  inductionIntents = builtins.listToAttrs (map (id: {
+  bisimulationIntents = builtins.listToAttrs (map (id: {
     name = id;
-    value = intentRoot + "/${componentRowsById.${id}.induction_intent}";
-  }) inductionComponentIds);
+    value = intentRoot + "/${componentRowsById.${id}.bisimulation_intent}";
+  }) bisimulationComponentIds);
 
   componentDependencies = id: lib.unique (lib.concatMap
     (service:
@@ -222,8 +227,11 @@ let
         interfacePackage = v5Interfaces.${providerId}.derivation;
         bindingIntent = bindingIntentPaths.${providerId};
         semanticSlice = v6SemanticSlices.${providerId}.semanticSlice;
+        sourcePackage = sourcePackages.${providerId};
+        proofClassification = proofClassifications.${providerId};
       };
-    }) (componentDependencies id));
+    }) (builtins.filter (providerId: providerId != id)
+      (dependencyClosure [ id ])));
   }) v5ComponentIds);
 
   # V6 is the direct operator projection over the canonical semantic module.
@@ -246,23 +254,17 @@ let
   componentBoundarySubjects = lib.mapAttrs' (id: value:
     lib.nameValuePair "component:${id}" value
   ) v6WorkPackages;
-  componentSeedRows = lib.concatMap (id:
-    lib.concatMap (operation:
-      map (rva: {
-        subject = "component-seed:0x${lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString rva))}";
-        package = v6WorkPackages.${id};
-      }) operation.entry_rvas
-    ) bindingIntentPayloads.${id}.operations
-  ) v5ComponentIds;
-  componentSeedSubjects = builtins.listToAttrs (map (row: {
-    name = row.subject;
-    value = row.package;
-  }) componentSeedRows);
-  _uniqueComponentSeeds = assert
-    builtins.length componentSeedRows
-      == builtins.length (lib.unique (map (row: row.subject) componentSeedRows));
+  componentEntryRvas = lib.mapAttrs (_: payload:
+    builtins.sort builtins.lessThan (
+      lib.unique (lib.concatMap (operation: operation.entry_rvas) payload.operations)
+    )
+  ) bindingIntentPayloads;
+  allComponentEntryRvas = lib.concatLists (builtins.attrValues componentEntryRvas);
+  _uniqueComponentEntryRvas = assert
+    builtins.length allComponentEntryRvas
+      == builtins.length (lib.unique allComponentEntryRvas);
     true;
-  boundarySubjects = componentBoundarySubjects // componentSeedSubjects;
+  boundarySubjects = componentBoundarySubjects;
 
   sourceAssets = lib.concatMap (row:
     let source = row.source or null;
@@ -279,10 +281,10 @@ let
       owner = row.id;
     }
   ) intentPayload.components;
-  inductionAssets = lib.concatMap (row:
-    lib.optional (row ? induction_intent) {
-      path = toString (intentRoot + "/${row.induction_intent}");
-      role = "component_induction_intent";
+  bisimulationAssets = lib.concatMap (row:
+    lib.optional (row ? bisimulation_intent) {
+      path = toString (intentRoot + "/${row.bisimulation_intent}");
+      role = "component_bisimulation_intent";
       owner = row.id;
     }
   ) intentPayload.components;
@@ -308,7 +310,7 @@ let
     path = toString intent;
     role = "component_lifting_intent";
     owner = "component-workflow";
-  } ] ++ sourceAssets ++ relationAssets ++ inductionAssets
+  } ] ++ sourceAssets ++ relationAssets ++ bisimulationAssets
     ++ interfaceAssets ++ bindingAssets;
 
   liftUnitIndex = builtins.listToAttrs (map (row: {
@@ -316,6 +318,7 @@ let
     value = {
       kind = "component";
       label = row.label;
+      entryRvas = componentEntryRvas.${row.id} or [ ];
       members = [ ];
       hasSource = builtins.hasAttr row.id sourcePackages;
       hasInterfaceV5 = builtins.hasAttr row.id v5Interfaces;
@@ -329,6 +332,7 @@ let
     value = {
       kind = "group";
       label = row.label;
+      entryRvas = [ ];
       members = row.members;
       hasSource = false;
       hasInterfaceV5 = false;
@@ -382,16 +386,16 @@ assert interfaceIndex.format
   == "spaghetti-extractor-component-interface-index-v5";
 assert bindingIndex.format
   == "spaghetti-extractor-component-machine-binding-index-v5";
-assert _uniqueComponentSeeds;
+assert _uniqueComponentEntryRvas;
 {
   inherit liftingIntent interfaceIndexPhase bindingIndexPhase
     sourcePackages sourcePackagePhases
     v5Interfaces v6WorkPackages
     v6SemanticSlices bindingIntentPaths proofClassifications
     directProviderNeedsLinkedModule directProviderComponentsByConsumer
-    componentBoundarySubjects componentSeedSubjects boundarySubjects
+    componentBoundarySubjects boundarySubjects componentEntryRvas
     selectedComponentIdsByConfiguration directV6ProviderIds providerEntryUnits
-    relationIntents inductionIntents
+    relationIntents bisimulationIntents
     liftUnitIndex configurationIndex assetInventory bundle;
   v5InterfaceIndex = interfaceIndex;
   v5BindingIndex = bindingIndex;

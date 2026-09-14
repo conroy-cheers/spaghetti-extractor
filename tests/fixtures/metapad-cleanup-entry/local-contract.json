@@ -1,0 +1,46 @@
+{
+  "profile": "local-text-cleanup-entry-v1",
+  "runtime_revision": 1,
+  "graph_index": 0,
+  "entry_cut": "entry",
+  "exit_cut": "loop",
+  "regions": [
+    "entry",
+    "prefix_iter"
+  ],
+  "source_locals": {
+    "input": "input",
+    "output": "output",
+    "removed": "removed",
+    "scratch": "scratch"
+  },
+  "parameter_roles": {
+    "context": "context",
+    "text": "text",
+    "suppress_notice": "suppress_notice",
+    "main_window": "main_window",
+    "edit_window": "edit_window",
+    "caption": "caption"
+  },
+  "entry_rva": 21943,
+  "exit_rva": 22022,
+  "image_base": 4194304,
+  "length_pointer": 4251992,
+  "calls": {
+    "length_before": {
+      "entry": 21960,
+      "instruction": 21963,
+      "successor": 21965
+    },
+    "allocate": {
+      "entry": 21965,
+      "instruction": 21969,
+      "successor": 21975
+    },
+    "length_after": {
+      "entry": 21975,
+      "instruction": 21979,
+      "successor": 21981
+    }
+  }
+}

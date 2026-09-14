@@ -262,6 +262,8 @@ class SemanticInterfaceServiceTests(unittest.TestCase):
                         "id": contract_id,
                         "abi_template": "pe32-cdecl-v1",
                         "argument_words": 2,
+                        "memory_effect": "readOnly",
+                        "world_effect": "none",
                         "result_register_relations": [
                             {"register": "eax", "relation": "related_word"}
                         ],

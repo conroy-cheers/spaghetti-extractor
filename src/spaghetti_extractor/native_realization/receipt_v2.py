@@ -21,15 +21,21 @@ from ..semantic_providers.qualification_v2 import (
     SemanticProviderQualificationV2,
 )
 from ..semantic_providers.selection_v2 import ImplementationSelectionV2
+from ..semantic_providers.exact_context import exact_context_blockers
+from ..semantic_providers.slices_v2 import SemanticSliceV2, SemanticSliceV2Error
+from .context_link import ExactContextLinkError, validate_context_receipt, validate_realized_contexts
 from ..util import sha256_file, write_json
-from .formats import NATIVE_REALIZATION_V2_FORMAT
+from .formats import (
+    NATIVE_REALIZATION_V2_FORMAT,
+    PORTABLE_DISPATCH_LINK_RECEIPT_V1_FORMAT,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FIELDS = {
     "format", "status", "ready_for_observation", "bindings", "providers",
     "definitions", "obligations", "native_objects", "bridges", "runtime",
-    "link", "loader_surface", "candidate",
+    "link", "portable_dispatch_link_receipt", "loader_surface", "candidate",
     "pinned_code_layout_requirements", "blockers",
     "native_realization_sha256",
 }
@@ -40,6 +46,19 @@ _OBJECT_ROLES = frozenset({
 _ADDRESS_KINDS = frozenset({
     "linked_rva", "loader_import", "loader_resolved_export", "object_anchor",
 })
+_PORTABLE_DISPATCH_POLICY = {
+    "strong_module_registry_required_when_portable": True,
+    "one_strong_implementation_symbol_per_entry": True,
+    "exact_selected_object_membership_required": True,
+    "contextual_bisimulation_authority_required": True,
+    "weak_or_duplicate_fallback_forbidden": True,
+    "source_only_authority": False,
+}
+_PORTABLE_REGISTRY_SYMBOLS = {
+    "spx_region_override_count",
+    "spx_region_override_lookup",
+    "spx_region_overrides",
+}
 
 
 class NativeRealizationV2Error(ValueError):
@@ -226,6 +245,114 @@ def _shared_surface(payload: Mapping[str, Any]) -> None:
         _fail("V2 pinned code-layout requirements are noncanonical")
 
 
+def _portable_dispatch_link_receipt(value: object) -> dict[str, Any]:
+    receipt = _mapping(value, "portable dispatch link receipt")
+    if set(receipt) != {
+        "format", "status", "activation_authorized", "bindings", "registry",
+        "entries", "policy", "blockers", "receipt_sha256",
+    } or receipt.get("format") != PORTABLE_DISPATCH_LINK_RECEIPT_V1_FORMAT:
+        _fail("portable dispatch link receipt fields are incomplete")
+    identity = _digest(
+        receipt.get("receipt_sha256"), "portable dispatch link receipt identity"
+    )
+    if identity != canonical_sha256_v3({
+        key: item for key, item in receipt.items() if key != "receipt_sha256"
+    }):
+        _fail("portable dispatch link receipt self hash is stale")
+    bindings = _mapping(
+        receipt.get("bindings"), "portable dispatch link bindings"
+    )
+    if set(bindings) != {
+        "implementation_selection_sha256", "payload_sha256",
+        "linker_map_sha256",
+    }:
+        _fail("portable dispatch link bindings are incomplete")
+    for field, digest in bindings.items():
+        _digest(digest, f"portable dispatch link {field}")
+    if receipt.get("policy") != _PORTABLE_DISPATCH_POLICY:
+        _fail("portable dispatch link policy is unsupported")
+
+    entries = _rows(receipt.get("entries"), "portable dispatch link entries")
+    expected_entry_fields = {
+        "component_id", "operation_id", "entry_unit_id", "owned_unit_ids",
+        "entry_rva", "native_symbol", "provider_id", "qualification_sha256",
+        "contextual_refinement_sha256", "contextual_proof_sha256",
+        "provider_object_manifest_sha256", "implementation_source_sha256",
+        "implementation_object_sha256", "linked_rva",
+    }
+    entry_keys: list[tuple[int, str, str, str]] = []
+    owned: set[str] = set()
+    for row in entries:
+        if set(row) - {"exact_context"} != expected_entry_fields:
+            _fail("portable dispatch link entry fields are incomplete")
+        if "exact_context" in row:
+            try:
+                validate_context_receipt(row["exact_context"])
+            except ExactContextLinkError as exc:
+                _fail(str(exc))
+        for field in (
+            "component_id", "operation_id", "entry_unit_id", "native_symbol",
+            "provider_id",
+        ):
+            _text(row.get(field), f"portable dispatch entry {field}")
+        unit_ids = _texts(
+            row.get("owned_unit_ids"), "portable dispatch owned units"
+        )
+        if row["entry_unit_id"] not in unit_ids or owned & set(unit_ids):
+            _fail("portable dispatch owned-unit partition is ambiguous")
+        owned.update(unit_ids)
+        entry_rva = _uint(row.get("entry_rva"), "portable dispatch entry RVA")
+        _uint(row.get("linked_rva"), "portable dispatch linked RVA", positive=True)
+        for field in (
+            "qualification_sha256", "contextual_refinement_sha256",
+            "contextual_proof_sha256", "provider_object_manifest_sha256",
+            "implementation_source_sha256", "implementation_object_sha256",
+        ):
+            _digest(row.get(field), f"portable dispatch entry {field}")
+        entry_keys.append((
+            entry_rva, str(row["provider_id"]), str(row["component_id"]),
+            str(row["operation_id"]),
+        ))
+    if entry_keys != sorted(set(entry_keys)):
+        _fail("portable dispatch link entries are noncanonical or duplicated")
+
+    registry = receipt.get("registry")
+    if entries:
+        registry_row = _mapping(registry, "portable dispatch registry")
+        if set(registry_row) != {
+            "source_sha256", "object_sha256", "symbol_rvas",
+        }:
+            _fail("portable dispatch registry fields are incomplete")
+        _digest(registry_row.get("source_sha256"), "dispatch registry source")
+        _digest(registry_row.get("object_sha256"), "dispatch registry object")
+        symbol_rvas = _mapping(
+            registry_row.get("symbol_rvas"), "dispatch registry symbols"
+        )
+        if set(symbol_rvas) != _PORTABLE_REGISTRY_SYMBOLS:
+            _fail("portable dispatch registry symbol inventory is incomplete")
+        for symbol, rva in symbol_rvas.items():
+            _uint(rva, f"portable dispatch registry symbol {symbol}", positive=True)
+    elif registry is not None:
+        _fail("empty portable dispatch receipt carries a registry")
+
+    blockers = _rows(receipt.get("blockers"), "portable dispatch blockers")
+    if blockers != _canonical_rows(blockers) or any(
+        not isinstance(row.get("code"), str) or not row["code"]
+        for row in blockers
+    ):
+        _fail("portable dispatch blockers are malformed")
+    status = receipt.get("status")
+    authorized = receipt.get("activation_authorized")
+    if (
+        status not in {"complete", "incomplete"}
+        or not isinstance(authorized, bool)
+        or (status == "complete") != (not blockers)
+        or authorized != (status == "complete")
+    ):
+        _fail("portable dispatch link authority contradicts its blockers")
+    return receipt
+
+
 @dataclass(frozen=True)
 class NativeRealizationV2:
     payload: Mapping[str, Any]
@@ -265,12 +392,19 @@ class NativeRealizationV2:
         providers = _rows(payload.get("providers"), "V2 realization providers")
         provider_ids: list[str] = []
         for row in providers:
-            if set(row) != {
+            if set(row) - {"exact_context"} != {
                 "provider_id", "provider_kind", "qualification_sha256",
                 "artifact_sha256", "semantic_slice_sha256", "tool_sha256s",
                 "definition_ids", "obligation_ids",
             }:
                 _fail("V2 realization provider fields are incomplete")
+            if "exact_context" in row:
+                try:
+                    context = SemanticSliceV2.parse(row["exact_context"])
+                except SemanticSliceV2Error as exc:
+                    _fail(str(exc))
+                if row["provider_kind"] != "qualified_portable_c" or context.payload["obligations"]:
+                    _fail("V2 exact continuation provider context is invalid")
             provider_ids.append(_text(row.get("provider_id"), "V2 provider"))
             if row.get("provider_kind") not in SEMANTIC_PROVIDER_KINDS_V2:
                 _fail("V2 realization provider kind is unsupported")
@@ -359,6 +493,71 @@ class NativeRealizationV2:
         if object_hashes != sorted(set(object_hashes)):
             _fail("V2 native-object inventory is noncanonical or ambiguous")
 
+        portable_receipt = _portable_dispatch_link_receipt(
+            payload.get("portable_dispatch_link_receipt")
+        )
+        portable_bindings = portable_receipt["bindings"]
+        link = _mapping(payload.get("link"), "V2 native link")
+        if (
+            portable_bindings["implementation_selection_sha256"]
+            != bindings["implementation_selection_sha256"]
+            or portable_bindings["payload_sha256"] != link.get("payload_sha256")
+            or portable_bindings["linker_map_sha256"]
+            != link.get("linker_map_sha256")
+        ):
+            _fail("portable dispatch link receipt is stale for this realization")
+        portable_definitions = [
+            row for row in definitions
+            if row["provider_kind"] == "qualified_portable_c"
+        ]
+        portable_entries = portable_receipt["entries"]
+        try:
+            validate_realized_contexts(entries=portable_entries, providers=providers, definitions=definitions, objects=objects,
+                                      selection_sha256=bindings["implementation_selection_sha256"])
+        except (ExactContextLinkError, SemanticSliceV2Error) as exc:
+            _fail(str(exc))
+        if bool(portable_definitions) != bool(portable_entries):
+            _fail("portable dispatch link receipt coverage is incomplete")
+        object_by_hash = {
+            str(row["object_sha256"]): row for row in objects
+        }
+        registry = portable_receipt["registry"]
+        if registry is not None and registry["object_sha256"] not in object_by_hash:
+            _fail("portable dispatch registry object is absent from the link")
+        for definition in portable_definitions:
+            symbol_id = str(definition["symbol_id"])
+            prefix = "original:function:"
+            if not symbol_id.startswith(prefix):
+                _fail("portable realization contains a non-transfer definition")
+            unit_id = symbol_id[len(prefix) :]
+            matches = [
+                row for row in portable_entries
+                if unit_id in row["owned_unit_ids"]
+            ]
+            if len(matches) != 1:
+                _fail("portable definition has no unique linked dispatch entry")
+            entry = matches[0]
+            if any(
+                definition.get(field) != entry.get(field)
+                for field in (
+                    "provider_id", "qualification_sha256", "native_symbol",
+                )
+            ) or definition.get("implementation_rva") != entry.get("linked_rva"):
+                _fail("portable linked dispatch disagrees with its definition")
+            implementation_object = object_by_hash.get(
+                str(entry["implementation_object_sha256"])
+            )
+            if (
+                implementation_object is None
+                or entry["provider_id"]
+                not in implementation_object["provider_ids"]
+                or definition["definition_id"]
+                not in implementation_object["definition_ids"]
+            ):
+                _fail("portable implementation object membership is incomplete")
+        if portable_receipt["activation_authorized"] is not True:
+            _fail("native realization carries unauthorized portable dispatch")
+
         runtime = _mapping(payload.get("runtime"), "V2 realization runtime")
         if set(runtime) != {
             "qualification_sha256", "tls_layout_sha256", "private_stack_size",
@@ -421,6 +620,7 @@ def build_native_realization_v2(
     native_objects: Sequence[Mapping[str, Any]],
     bridges: Sequence[Mapping[str, Any]],
     runtime: Mapping[str, Any], link: Mapping[str, Any],
+    portable_dispatch_link_receipt: Mapping[str, Any],
     loader_surface: Mapping[str, Any], candidate: Mapping[str, Any],
     pinned_code_layout_requirements: Sequence[Mapping[str, Any]] = (),
     blockers: Sequence[Mapping[str, Any]] = (),
@@ -445,6 +645,9 @@ def build_native_realization_v2(
     normalized_bridges = sorted(
         (dict(row) for row in bridges),
         key=lambda row: str(row["bridge_class_id"]),
+    )
+    normalized_portable_dispatch = _portable_dispatch_link_receipt(
+        portable_dispatch_link_receipt
     )
     derived = [dict(row) for row in blockers]
     if linked_semantic_module.payload.get("status") != "complete":
@@ -627,6 +830,7 @@ def build_native_realization_v2(
         "bridges": normalized_bridges,
         "runtime": dict(runtime),
         "link": dict(link),
+        "portable_dispatch_link_receipt": normalized_portable_dispatch,
         "loader_surface": dict(loader_surface),
         "candidate": dict(candidate),
         "pinned_code_layout_requirements": _canonical_rows(
@@ -656,6 +860,13 @@ def write_native_realization_v2(
         for path in provider_qualifications
     ]
     qualifications = [item for _path, item in records]
+    context_blockers = exact_context_blockers(
+        qualifications=qualifications,
+        definition_selections=selection.payload["definition_selections"], linked=linked,
+        obligation_selections=selection.payload["obligation_selections"],
+    )
+    if context_blockers:
+        _fail(f"V2 selected provider exact context is unsatisfied: {context_blockers}")
     if len({item.provider_id for item in qualifications}) != len(qualifications):
         _fail("V2 provider qualification identities are ambiguous")
     by_id = {item.provider_id: (path, item) for path, item in records}
@@ -754,6 +965,7 @@ def write_native_realization_v2(
             str(row["obligation_id"])
             for row in qualification.payload["obligation_implementations"]
         ],
+        **({"exact_context": qualification.payload["exact_context"]} if "exact_context" in qualification.payload else {}),
     } for qualification in sorted(
         qualifications, key=lambda item: item.provider_id
     )]

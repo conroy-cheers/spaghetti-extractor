@@ -1,0 +1,4367 @@
+{
+  "domain": {
+    "additional_requirements": {
+      "allocator-image-separation": "(uint64_t)scratch_address+scratch_extent<=4194304U || scratch_address>=UINT64_C(4419584)",
+      "allocator-private-separation": "(uint64_t)stack+4U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-72U",
+      "caller-private-image-separation": "(uint64_t)stack+4U<=4194304U || (uint64_t)stack-72U>=UINT64_C(4419584)",
+      "caller-private-span": "stack>=72U && (uint64_t)stack+4U<=UINT64_C(4294967296)",
+      "caller-private-text-separation": "(uint64_t)stack+4U<=text_address || (uint64_t)text_address+text_extent<=stack-72U",
+      "caller-text-image-separation": "(uint64_t)text_address+text_extent<=4194304U || text_address>=UINT64_C(4419584)"
+    },
+    "regional_assumptions": {
+      "entry": [
+        "length_target!=0U",
+        "text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296) && length<text_extent",
+        "__CPROVER_uninterpreted_readonly_byte(text_address+length)==0U",
+        "(uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296)",
+        "(uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address",
+        "stack>=40U && (uint64_t)stack+4U<=UINT64_C(4294967296)",
+        "(uint64_t)stack+4U<=text_address || (uint64_t)text_address+text_extent<=stack-40U",
+        "(uint64_t)stack+4U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-40U",
+        "(uint64_t)stack+4U<=4251992U || stack-40U>=UINT64_C(4251996)",
+        "(uint64_t)text_address+text_extent<=4251992U || text_address>=UINT64_C(4251996)",
+        "(uint64_t)scratch_address+scratch_extent<=4251992U || scratch_address>=UINT64_C(4251996)"
+      ],
+      "loop": [
+        "text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296)",
+        "(uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296)",
+        "(scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U)",
+        "(uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address",
+        "input<text_extent && output<=input && removed==input-output",
+        "(scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && (__CPROVER_uninterpreted_readonly_byte(text_address+scratch_extent-1U))==0U)",
+        "!(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (__CPROVER_uninterpreted_readonly_byte(probe))==0U",
+        "scratch_extent || input==0U || ((uint64_t)input+1U<text_extent && (__CPROVER_uninterpreted_readonly_byte(text_address+input))==13U && (__CPROVER_uninterpreted_readonly_byte(text_address+input+1U))==10U)",
+        "stack>=16U && (uint64_t)stack+9U<=UINT64_C(4294967296)",
+        "(uint64_t)stack+8U<=text_address || (uint64_t)text_address+text_extent<=stack",
+        "(uint64_t)stack+8U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack"
+      ],
+      "tail": [
+        "text_address>0U && text_extent>0U && (uint64_t)text_address+text_extent<=UINT64_C(4294967296)",
+        "(uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296)",
+        "(scratch_extent==0U && scratch_address==0U) || (scratch_extent>0U && scratch_address>0U)",
+        "(uint64_t)text_address+text_extent<=scratch_address || (uint64_t)scratch_address+scratch_extent<=text_address",
+        "input<text_extent && output<=input && removed==input-output",
+        "(scratch_extent==0U && output==0U) || (scratch_extent>0U && input<scratch_extent && scratch_extent<=text_extent && (current_byte(text_address+scratch_extent-1U))==0U)",
+        "!(scratch_extent && probe>=scratch_address+output && (uint64_t)probe<(uint64_t)scratch_address+scratch_extent) || (current_byte(probe))==0U",
+        "scratch_extent || input==0U || ((uint64_t)input+1U<text_extent && (current_byte(text_address+input))==13U && (current_byte(text_address+input+1U))==10U)",
+        "stack>=60U && (uint64_t)stack+16U<=UINT64_C(4294967296)",
+        "(uint64_t)stack+16U<=text_address || (uint64_t)text_address+text_extent<=stack-60U",
+        "(uint64_t)stack+16U<=scratch_address || (uint64_t)scratch_address+scratch_extent<=stack-60U",
+        "(uint64_t)stack+16U<=4194304U || stack-60U>=4419584U",
+        "(uint64_t)text_address+text_extent<=4194304U || text_address>=4419584U",
+        "(uint64_t)scratch_address+scratch_extent<=4194304U || scratch_address>=4419584U"
+      ]
+    },
+    "control_transport": {
+      "regional_postconditions": {
+        "entry": {
+          "entry-consumer-allocation-domain": {
+            "expression": "(scratch_extent==0U&&state.ecx==0U)||(scratch_extent>0U&&state.esi<scratch_extent&&scratch_extent<=text_extent&&(spx_mutable_byte(&right,text_address+scratch_extent-1U))==0U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-cursor-domain": {
+            "expression": "state.esi<text_extent&&state.ecx<=state.esi&&memory.word_7==state.esi-state.ecx",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-disjoint-public-spans": {
+            "expression": "(uint64_t)text_address+text_extent<=scratch_address||(uint64_t)scratch_address+scratch_extent<=text_address",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-null-scratch-pending-crlf": {
+            "expression": "scratch_extent||state.esi==0U||((uint64_t)state.esi+1U<text_extent&&(spx_mutable_byte(&right,text_address+state.esi))==13U&&(spx_mutable_byte(&right,text_address+state.esi+1U))==10U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-nullable-scratch": {
+            "expression": "(scratch_extent==0U&&scratch_address==0U)||(scratch_extent>0U&&scratch_address>0U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-scratch-span": {
+            "expression": "(uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-text-span": {
+            "expression": "text_address>0U&&text_extent>0U&&(uint64_t)text_address+text_extent<=UINT64_C(4294967296)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-consumer-zero-suffix": {
+            "expression": "!(scratch_extent&&probe>=scratch_address+state.ecx&&(uint64_t)probe<(uint64_t)scratch_address+scratch_extent)||(spx_mutable_byte(&right,probe))==0U",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-fault-correspondence": {
+            "expression": "(step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX)",
+            "guards": []
+          },
+          "entry-loop-allocation-domain": {
+            "expression": "(scratch_extent==0U&&state.ecx==0U)||(scratch_extent>0U&&state.esi<scratch_extent&&scratch_extent<=text_extent)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-loop-allocation-text-nul": {
+            "expression": "spx_mutable_byte(&right,text_address+scratch_extent-1U)==0U",
+            "guards": [
+              "result!=UINT32_MAX",
+              "scratch_extent"
+            ]
+          },
+          "entry-loop-cursor-domain": {
+            "expression": "state.esi<text_extent&&state.ecx<=state.esi&&memory.word_7==state.esi-state.ecx",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-loop-register-domain": {
+            "expression": "state.esp==stack-28U&&state.ebp==stack-4U&&state.edi==text_address&&state.ebx==scratch_address",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-loop-successor": {
+            "expression": "result==22022U&&step.target_rva==result",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-loop-zero-suffix": {
+            "expression": "spx_mutable_byte(&right,probe)==0U",
+            "guards": [
+              "result!=UINT32_MAX",
+              "probe>=scratch_address+state.ecx&&(uint64_t)probe<(uint64_t)scratch_address+scratch_extent"
+            ]
+          },
+          "entry-preserved-machine-frame": {
+            "expression": "state.edi==initial.edi&&state.df==initial.df&&state.x87_control==initial.x87_control&&state.x87_status==initial.x87_status&&state.x87_pending_exception==initial.x87_pending_exception&&state.x87_last_opcode==initial.x87_last_opcode&&state.x87_instruction_pointer==initial.x87_instruction_pointer&&state.x87_code_selector==initial.x87_code_selector&&state.x87_data_pointer==initial.x87_data_pointer&&state.x87_data_selector==initial.x87_data_selector&&state.fs_base==initial.fs_base&&state.x87_stack[continuation_slot].value_bytes[continuation_byte]==initial.x87_stack[continuation_slot].value_bytes[continuation_byte]&&state.x87_stack[continuation_slot].empty==initial.x87_stack[continuation_slot].empty&&state.x87_stack[continuation_slot].tag==initial.x87_stack[continuation_slot].tag",
+            "guards": []
+          },
+          "entry-saved-frame": {
+            "expression": "memory.word_9==initial.ebp&&memory.word_4==initial.ebx&&memory.word_3==initial.esi&&memory.word_10==return_word",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "entry-three-service-invocations": {
+            "expression": "a.phase==3U&&b.phase==3U",
+            "guards": []
+          },
+          "entry-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          }
+        },
+        "loop": {
+          "loop-all-exits-allocation-domain": {
+            "expression": "(scratch_extent==0U&&state.ecx==0U)||(scratch_extent>0U&&state.esi<scratch_extent&&scratch_extent<=text_extent&&(spx_mutable_byte(&right,text_address+scratch_extent-1U))==0U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-cursor-domain": {
+            "expression": "state.esi<text_extent&&state.ecx<=state.esi&&memory.private_removed==state.esi-state.ecx",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-disjoint-public-spans": {
+            "expression": "(uint64_t)text_address+text_extent<=scratch_address||(uint64_t)scratch_address+scratch_extent<=text_address",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-null-scratch-pending-crlf": {
+            "expression": "scratch_extent||state.esi==0U||((uint64_t)state.esi+1U<text_extent&&(spx_mutable_byte(&right,text_address+state.esi))==13U&&(spx_mutable_byte(&right,text_address+state.esi+1U))==10U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-nullable-scratch": {
+            "expression": "(scratch_extent==0U&&scratch_address==0U)||(scratch_extent>0U&&scratch_address>0U)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-scratch-span": {
+            "expression": "(uint64_t)scratch_address+scratch_extent<=UINT64_C(4294967296)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-text-span": {
+            "expression": "text_address>0U&&text_extent>0U&&(uint64_t)text_address+text_extent<=UINT64_C(4294967296)",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-all-exits-zero-suffix": {
+            "expression": "!(scratch_extent&&probe>=scratch_address+state.ecx&&(uint64_t)probe<(uint64_t)scratch_address+scratch_extent)||(spx_mutable_byte(&right,probe))==0U",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-control-successor": {
+            "expression": "(step.kind==SPX_BRANCH||step.kind==SPX_FALLTHROUGH||step.kind==SPX_JUMP)&&step.target_rva==result",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-counter-invariant": {
+            "expression": "state.ecx<=state.esi&&memory.private_removed==state.esi-state.ecx",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "loop-fault-outcome": {
+            "expression": "(step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX)",
+            "guards": []
+          },
+          "loop-preserved-register-frame": {
+            "expression": "state.ebx==initial.ebx&&state.edi==initial.edi&&state.ebp==initial.ebp&&state.esp==initial.esp&&state.df==initial.df&&state.x87_control==initial.x87_control&&state.x87_status==initial.x87_status&&state.x87_pending_exception==initial.x87_pending_exception&&state.x87_last_opcode==initial.x87_last_opcode&&state.x87_instruction_pointer==initial.x87_instruction_pointer&&state.x87_code_selector==initial.x87_code_selector&&state.x87_data_pointer==initial.x87_data_pointer&&state.x87_data_selector==initial.x87_data_selector&&state.fs_base==initial.fs_base&&state.x87_stack[continuation_slot].value_bytes[continuation_byte]==initial.x87_stack[continuation_slot].value_bytes[continuation_byte]&&state.x87_stack[continuation_slot].empty==initial.x87_stack[continuation_slot].empty&&state.x87_stack[continuation_slot].tag==initial.x87_stack[continuation_slot].tag",
+            "guards": []
+          },
+          "loop-progress-and-domain": {
+            "expression": "state.esi>input&&state.esi<text_extent",
+            "guards": [
+              "result!=UINT32_MAX",
+              "result==22022U"
+            ]
+          },
+          "loop-scratch-domain-preserved": {
+            "expression": "(scratch_extent==0U&&state.ecx==0U)||(scratch_extent>0U&&state.esi<scratch_extent)",
+            "guards": [
+              "result!=UINT32_MAX",
+              "result==22022U"
+            ]
+          },
+          "loop-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          },
+          "loop-zero-suffix-preserved": {
+            "expression": "spx_mutable_byte(&right,probe)==0U",
+            "guards": [
+              "result!=UINT32_MAX",
+              "scratch_extent&&probe>=scratch_address+state.ecx&&(uint64_t)probe<(uint64_t)scratch_address+scratch_extent"
+            ]
+          }
+        },
+        "tail": {
+          "tail-complete-service-trace": {
+            "expression": "a.count==b.count&&a.released==b.released",
+            "guards": []
+          },
+          "tail-fault-correspondence": {
+            "expression": "(step.kind==SPX_MEMORY_FAULT)==(result==UINT32_MAX)",
+            "guards": []
+          },
+          "tail-preserved-machine-state": {
+            "expression": "state.edi==initial.edi&&state.x87_control==initial.x87_control&&state.x87_status==initial.x87_status&&state.x87_pending_exception==initial.x87_pending_exception&&state.x87_last_opcode==initial.x87_last_opcode&&state.x87_instruction_pointer==initial.x87_instruction_pointer&&state.x87_code_selector==initial.x87_code_selector&&state.x87_data_pointer==initial.x87_data_pointer&&state.x87_data_selector==initial.x87_data_selector&&state.fs_base==initial.fs_base&&state.x87_stack[continuation_slot].value_bytes[continuation_byte]==initial.x87_stack[continuation_slot].value_bytes[continuation_byte]&&state.x87_stack[continuation_slot].empty==initial.x87_stack[continuation_slot].empty&&state.x87_stack[continuation_slot].tag==initial.x87_stack[continuation_slot].tag",
+            "guards": []
+          },
+          "tail-return-frame": {
+            "expression": "state.esp==stack+16U&&state.esi==saved_esi&&state.ebx==saved_ebx&&state.ebp==saved_ebp&&step.value==return_word",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "tail-return-value": {
+            "expression": "step.kind==SPX_RETURN&&state.eax==result&&result==removed",
+            "guards": [
+              "result!=UINT32_MAX"
+            ]
+          },
+          "tail-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          }
+        }
+      }
+    },
+    "descriptor_transport": {
+      "runtime_requirements": {
+        "cleanup-access-hook-frame-v1": {
+          "requirement": "Access hooks preserve descriptor/context metadata and grants, and corresponding calls agree on current bytes, results, faults and effects.",
+          "status": "unverified"
+        },
+        "cleanup-nonretaining-services-v1": {
+          "requirement": "Length and copy preserve outstanding grants and retain no borrowed descriptor or context after returning.",
+          "status": "unverified"
+        },
+        "cleanup-physical-release-outcome-v1": {
+          "requirement": "Qualify the release result and physical allocation-state effects separately from this component relinquishing access.",
+          "status": "unverified"
+        },
+        "cleanup-scoped-scratch-borrow-v1": {
+          "requirement": "Allocation supplies the declared nullable descriptor and context storage that survives the complete borrow interval.",
+          "status": "unverified"
+        }
+      }
+    },
+    "runtime_view_transport": {
+      "requires": [
+        "Issued-reference realization is pure, preserves live origin coordinates and rejects expired or mismatched references.",
+        "Related views denote the same admitted byte span with read/write permission and live access contexts.",
+        "Corresponding memory hooks agree on current contents, faults and complete effects.",
+        "The owned source treats references opaquely, uses widths one, two or four, and cannot observe failed-read output values.",
+        "Services preserve the representation relation, including returned references and allocation failure."
+      ]
+    },
+    "observations": {
+      "checked_event_rules": {
+        "entry": "__CPROVER_assert(e->world->count==0U,\"entry-service-current-memory-is-incoming\");",
+        "loop": "(void)r;(void)e;(void)i;(void)o;__CPROVER_assert(0,\"loop-no-service-call\");returnSPX_CALL_UNIMPLEMENTED;",
+        "tail": "__CPROVER_assert(e->count<5U,\"tail-call-capacity\");__CPROVER_assume(e->count<5U);if(!e->side){uint32_tresult;calls[e->count]=(structcall_record){kind,a,b,c,d,spx_mutable_byte(e->world,probe),result};}else{structcall_recordexpected=calls[e->count];__CPROVER_assert(kind==expected.kind&&a==expected.a&&b==expected.b&&c==expected.c&&d==expected.d,\"tail-call-order-and-arguments\");__CPROVER_assert(spx_mutable_byte(e->world,probe)==expected.byte,\"tail-call-current-memory\");}if(kind==1U){__CPROVER_assert(!e->released&&e->scratch&&e->scratch_extent,\"tail-copy-live-source\");spx_mutable_event(e->world,e->text,e->text_extent,0U,1U,e->count);}if(kind==2U){__CPROVER_assert(!e->released,\"tail-release-once\");e->released=1U;}if(kind==3U)spx_mutable_event(e->world,RESOURCE,500U,0U,1U,e->count);returncalls[e->count++].result;"
+      },
+      "complete_call_limit": 8,
+      "entry_calls": [
+        "length",
+        "allocate",
+        "length"
+      ],
+      "entry_memory": "Every service entry has zero public write events, so the exact reader returns the shared incoming fresh-zero byte function.",
+      "helper_contracts": {
+        "entry:allocate_contract": "adc5fc7ae01783cf147f5662f6547d19d382913f72666262b699515f9f1b78ca",
+        "entry:fresh_zero_byte": "a6fada5d1e4918752d08e82b1057d141f502fdc41ecc6599fc89fd1e538a5a77",
+        "entry:length_contract": "127b27ae7d60687b1fbbe21ebe1f46be49c682a98f1ec60196b164706076e89d",
+        "entry:spx_invoke_call": "702f5cedbf38170545cc802b0d6d9b182ae66520bdc7ece6190ef0d98ff4f285",
+        "entry:spx_mutable_byte": "e1be8a966c10080361035afcf5a2b4c368040e6588f99fe1ff30f423da2753a1",
+        "tail:copy_contract": "646561b133b7615a1857a7463fe535e953aba36011b67bda99d9a1d24ab0d416",
+        "tail:focus_contract": "2d847d038c1ca984e97adb95c79ac44cba1c8a23bd6d56a95bc533070355c804",
+        "tail:message_contract": "1c4521f072b0ab2fdf31eb68b61c78b35a28bee8a99b887c09af9bd8d5eeccfa",
+        "tail:release_contract": "2e581baa1b0e17f8d710694b94fea4168d920ff0ce6af62f0cf4a11b1daf86e2",
+        "tail:resource_contract": "596cb6f17ac239d65ea2210c53ff5c39d44acd584ee84343134b973d31545914",
+        "tail:spx_invoke_call": "4cfe2b077afdb1b99a8c8fb3eeca8a1d945718f0dd031bbae0f387eb093ff71d"
+      },
+      "loop_calls": [],
+      "memory_relation": "Each segment starts from corresponding current contents and establishes equal complete post-memory on both normal and modeled memory-fault exits.",
+      "outcomes": [
+        "normal-return",
+        "modeled-memory-fault"
+      ],
+      "profile": "cleanup-memory-and-service-prefix-composition-v1",
+      "record_relation": "Ordered stage/kind, arguments, normalized results and public byte at each call; pointer results additionally use the checked view/reference relation.",
+      "regional_guarantees": {
+        "entry": {
+          "entry-three-service-invocations": {
+            "expression": "a.phase==3U&&b.phase==3U",
+            "guards": []
+          },
+          "entry-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          }
+        },
+        "loop": {
+          "loop-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          }
+        },
+        "tail": {
+          "tail-complete-service-trace": {
+            "expression": "a.count==b.count&&a.released==b.released",
+            "guards": []
+          },
+          "tail-whole-post-memory": {
+            "expression": "spx_mutable_byte(&left,probe)==spx_mutable_byte(&right,probe)",
+            "guards": []
+          }
+        }
+      },
+      "remaining": [
+        "Full concrete adapter, caller and runtime qualification.",
+        "Service invocation failures, nonreturning calls and observable native fault-register context.",
+        "A consumer proof that imports the complete conditional operation contract."
+      ],
+      "requires": [
+        "All imported regional guarantees and current-memory, private-state, descriptor, accessor and control transport checks apply.",
+        "Each regional byte probe ranges over every physical address; tail call records compare the same arbitrary probe.",
+        "Entry allocation issues an already-zero scratch span in the model; concrete pre-allocation heap contents and allocation effects need separate qualification.",
+        "The concrete service implementations satisfy the explicit regional runtime contracts and preserve the representation relation."
+      ],
+      "setup_contracts": {
+        "entry": "cf2ba2fff05465f64976125d2893809f841fc249ab179e00c39f308be9c9d771",
+        "tail": "d72c1f64752b4afea9ef6b1e95ba0a3542e0cc9e78de83234b5b6149f07bef07"
+      },
+      "tail_call_limit": 5
+    },
+    "private_transport": {
+      "low": -72,
+      "high": 4
+    }
+  },
+  "results": {
+    "entry": {
+      "inputs": {
+        "exact": "entry",
+        "contract": {
+          "calls": {
+            "allocate": {
+              "entry": 21965,
+              "instruction": 21969,
+              "successor": 21975
+            },
+            "length_after": {
+              "entry": 21975,
+              "instruction": 21979,
+              "successor": 21981
+            },
+            "length_before": {
+              "entry": 21960,
+              "instruction": 21963,
+              "successor": 21965
+            }
+          },
+          "entry_cut": "entry",
+          "entry_rva": 21943,
+          "exit_cut": "loop",
+          "exit_rva": 22022,
+          "graph_index": 0,
+          "image_base": 4194304,
+          "length_pointer": 4251992,
+          "parameter_roles": {
+            "caption": "caption",
+            "context": "context",
+            "edit_window": "edit_window",
+            "main_window": "main_window",
+            "suppress_notice": "suppress_notice",
+            "text": "text"
+          },
+          "profile": "local-text-cleanup-entry-v1",
+          "regions": [
+            "entry",
+            "prefix_iter"
+          ],
+          "runtime_revision": 1,
+          "source_locals": {
+            "input": "input",
+            "output": "output",
+            "removed": "removed",
+            "scratch": "scratch"
+          }
+        }
+      },
+      "proof_key": {
+        "bindings": {
+          "interface_intent": {
+            "effects": [],
+            "format": "spaghetti-extractor-component-interface-intent-v1",
+            "id": "text-cleanup",
+            "intent_sha256": "7c1fe855b3022bb9027323dcb4d6f9c7fd36551693e7b1dc1d5f3ac831417755",
+            "operations": [
+              {
+                "allowed_service_ids": [
+                  "length",
+                  "allocate",
+                  "copy",
+                  "release",
+                  "resource_text",
+                  "message",
+                  "focus"
+                ],
+                "checked_interaction_contract_ids": [],
+                "effect_ids": [],
+                "id": "cleanup",
+                "lifecycle_additional_roots": {
+                  "state": []
+                },
+                "lifecycle_bindings": [],
+                "post_states": [
+                  "ready"
+                ],
+                "pre_states": [
+                  "ready"
+                ],
+                "projection_entries": [
+                  {
+                    "source_id": "text",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "text"
+                    }
+                  },
+                  {
+                    "source_id": "suppress_notice",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "suppress_notice"
+                    }
+                  },
+                  {
+                    "source_id": "main_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "main_window"
+                    }
+                  },
+                  {
+                    "source_id": "edit_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "edit_window"
+                    }
+                  },
+                  {
+                    "source_id": "caption",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "caption"
+                    }
+                  },
+                  {
+                    "source_id": "removed",
+                    "target": {
+                      "fields": [],
+                      "root": "result",
+                      "value_id": "removed"
+                    }
+                  }
+                ],
+                "signature_id": "cleanup",
+                "source_values": [
+                  {
+                    "access": "read_write",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "text",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "suppress_notice",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "main_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "edit_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "caption",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "none",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "none",
+                      "value_id": null
+                    },
+                    "id": "removed",
+                    "interpretation": "value",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "u32"
+                  }
+                ]
+              }
+            ],
+            "protocol": {
+              "initial_state": "ready",
+              "states": [
+                "ready"
+              ]
+            },
+            "schema": {
+              "format": "spaghetti-extractor-boundary-schema-v1",
+              "schema_id": "metapad.text-cleanup",
+              "schema_sha256": "107d4f5bedecc04fee1944849bcf3057b19b1690b94a4edd0917974647f30c79",
+              "signatures": [
+                {
+                  "function_type_id": "allocate.fn",
+                  "id": "allocate",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "size",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "value",
+                        "value_id": "size"
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "cleanup.fn",
+                  "id": "cleanup",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "suppress_notice",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "main_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "edit_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "removed",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "copy.fn",
+                  "id": "copy",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "destination",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "source",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "focus.fn",
+                  "id": "focus",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "length.fn",
+                  "id": "length",
+                  "parameters": [
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "message.fn",
+                  "id": "message",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "release.fn",
+                  "id": "release",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "buffer",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "resource_text.fn",
+                  "id": "resource_text",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "id",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": 500,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                }
+              ],
+              "types": [
+                {
+                  "calling_convention": "cdecl",
+                  "id": "allocate.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "bytes",
+                  "kind": "pointer",
+                  "pointee_type_id": "u8",
+                  "qualifiers": []
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "cleanup.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "copy.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "focus.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "length.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "message.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "bytes",
+                    "bytes",
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "release.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "resource_text.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "u32",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 32
+                },
+                {
+                  "id": "u8",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 8
+                }
+              ]
+            },
+            "services": [
+              {
+                "effect_ids": [],
+                "id": "length",
+                "interaction_contract_id": "component-service.text-cleanup.length",
+                "signature_id": "length"
+              },
+              {
+                "effect_ids": [],
+                "id": "allocate",
+                "interaction_contract_id": "component-service.text-cleanup.allocate",
+                "signature_id": "allocate"
+              },
+              {
+                "effect_ids": [],
+                "id": "copy",
+                "interaction_contract_id": "component-service.text-cleanup.copy",
+                "signature_id": "copy"
+              },
+              {
+                "effect_ids": [],
+                "id": "release",
+                "interaction_contract_id": "component-service.text-cleanup.release",
+                "signature_id": "release"
+              },
+              {
+                "effect_ids": [],
+                "id": "resource_text",
+                "interaction_contract_id": "component-service.text-cleanup.resource_text",
+                "signature_id": "resource_text"
+              },
+              {
+                "effect_ids": [],
+                "id": "message",
+                "interaction_contract_id": "component-service.text-cleanup.message",
+                "signature_id": "message"
+              },
+              {
+                "effect_ids": [],
+                "id": "focus",
+                "interaction_contract_id": "component-service.text-cleanup.focus",
+                "signature_id": "focus"
+              }
+            ],
+            "state": [],
+            "status": "complete"
+          },
+          "runtime_contract": {
+            "compatibility": "Concrete length/allocation implementations, incoming contents and object lifetime, exported fault ABI, whole-image/private admission for the tail and entry/loop/tail receipt composition remain separate unqualified obligations.",
+            "id": "local-text-cleanup-entry-v1",
+            "incoming": "Live nonwrapping writable text view; length is below its extent and the corresponding text byte is NUL. Successful allocation produces a disjoint nonwrapping zero-filled span of length+1 bytes; failure is a null span. Private entry stack [-40,+4), public spans and the bound length-function pointer cell are disjoint. High unsigned lengths remain admitted.",
+            "memory": "Actual short-input byte accesses execute on both sides. Complete current public memory agrees at exit; the eight compaction revision-3 public predicates hold at the loop cut, including zero suffix and null-scratch pending CR/LF. Complete scratch descriptor transport and saved machine frame are asserted.",
+            "outgoing": "Matching loop cut with ESI/ECX/count/view correspondence, or matching memory fault encoded as UINT32_MAX. Every path and local loop retains complete safety and unwinding checks.",
+            "representation": "Entry EDI is text and ESP is stack, with valid DF. Text and scratch are domain 1, objects 1/2, generation 1, offset 0, permissions 3. Length function target is nonzero. At loop entry the stack anchor is stack-12: ESI=input, ECX=output, EBX=scratch, ESP=anchor-16 and EBP=anchor+8; removed is at anchor. Saved ESI/EBX/EBP/return are at anchor-16/-12/+8/+12.",
+            "revision": 1,
+            "services": "Two equal normal length results around one allocation call, flags 64 and size length+1. Both allocation outcomes are admitted. Text and unrelated current memory are preserved; successful new scratch bytes are zero. No callbacks, release, nonlocal exits or other service effects occur."
+          }
+        }
+      },
+      "source_transport": {
+        "local_cut_observer_arguments_checked": true,
+        "observer_function": "observe_entry"
+      }
+    },
+    "loop": {
+      "inputs": {
+        "exact": "loop",
+        "contract": {
+          "begin": {
+            "position": "before",
+            "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+          },
+          "clobbers": [
+            "eax",
+            "edx",
+            "esi",
+            "ecx",
+            "cf",
+            "zf",
+            "sf",
+            "of",
+            "pf",
+            "eflags"
+          ],
+          "entry_cut": "loop",
+          "entry_rva": 22022,
+          "exit_cut": "tail",
+          "exit_rva": 22029,
+          "graph_index": 0,
+          "image_base": 4194304,
+          "private_cells": [
+            {
+              "name": "removed",
+              "offset": 0,
+              "width": 4
+            },
+            {
+              "name": "b",
+              "offset": 7,
+              "width": 1
+            },
+            {
+              "name": "c",
+              "offset": 6,
+              "width": 1
+            }
+          ],
+          "private_extent": 8,
+          "profile": "local-byte-compaction-step-v1",
+          "regions": [
+            "loop",
+            "copy",
+            "advance"
+          ],
+          "registers": {
+            "input": "esi",
+            "output": "ecx",
+            "scratch": "ebx",
+            "text": "edi"
+          },
+          "runtime_revision": 3,
+          "source_locals": {
+            "input": "input",
+            "output": "output",
+            "removed": "removed",
+            "scratch": "scratch"
+          },
+          "stack_offsets": {
+            "ebp": 8,
+            "esp": -16
+          },
+          "text_parameter": "text"
+        }
+      },
+      "proof_key": {
+        "bindings": {
+          "interface_intent": {
+            "effects": [],
+            "format": "spaghetti-extractor-component-interface-intent-v1",
+            "id": "text-cleanup",
+            "intent_sha256": "7c1fe855b3022bb9027323dcb4d6f9c7fd36551693e7b1dc1d5f3ac831417755",
+            "operations": [
+              {
+                "allowed_service_ids": [
+                  "length",
+                  "allocate",
+                  "copy",
+                  "release",
+                  "resource_text",
+                  "message",
+                  "focus"
+                ],
+                "checked_interaction_contract_ids": [],
+                "effect_ids": [],
+                "id": "cleanup",
+                "lifecycle_additional_roots": {
+                  "state": []
+                },
+                "lifecycle_bindings": [],
+                "post_states": [
+                  "ready"
+                ],
+                "pre_states": [
+                  "ready"
+                ],
+                "projection_entries": [
+                  {
+                    "source_id": "text",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "text"
+                    }
+                  },
+                  {
+                    "source_id": "suppress_notice",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "suppress_notice"
+                    }
+                  },
+                  {
+                    "source_id": "main_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "main_window"
+                    }
+                  },
+                  {
+                    "source_id": "edit_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "edit_window"
+                    }
+                  },
+                  {
+                    "source_id": "caption",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "caption"
+                    }
+                  },
+                  {
+                    "source_id": "removed",
+                    "target": {
+                      "fields": [],
+                      "root": "result",
+                      "value_id": "removed"
+                    }
+                  }
+                ],
+                "signature_id": "cleanup",
+                "source_values": [
+                  {
+                    "access": "read_write",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "text",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "suppress_notice",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "main_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "edit_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "caption",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "none",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "none",
+                      "value_id": null
+                    },
+                    "id": "removed",
+                    "interpretation": "value",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "u32"
+                  }
+                ]
+              }
+            ],
+            "protocol": {
+              "initial_state": "ready",
+              "states": [
+                "ready"
+              ]
+            },
+            "schema": {
+              "format": "spaghetti-extractor-boundary-schema-v1",
+              "schema_id": "metapad.text-cleanup",
+              "schema_sha256": "107d4f5bedecc04fee1944849bcf3057b19b1690b94a4edd0917974647f30c79",
+              "signatures": [
+                {
+                  "function_type_id": "allocate.fn",
+                  "id": "allocate",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "size",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "value",
+                        "value_id": "size"
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "cleanup.fn",
+                  "id": "cleanup",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "suppress_notice",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "main_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "edit_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "removed",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "copy.fn",
+                  "id": "copy",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "destination",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "source",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "focus.fn",
+                  "id": "focus",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "length.fn",
+                  "id": "length",
+                  "parameters": [
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "message.fn",
+                  "id": "message",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "release.fn",
+                  "id": "release",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "buffer",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "resource_text.fn",
+                  "id": "resource_text",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "id",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": 500,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                }
+              ],
+              "types": [
+                {
+                  "calling_convention": "cdecl",
+                  "id": "allocate.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "bytes",
+                  "kind": "pointer",
+                  "pointee_type_id": "u8",
+                  "qualifiers": []
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "cleanup.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "copy.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "focus.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "length.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "message.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "bytes",
+                    "bytes",
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "release.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "resource_text.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "u32",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 32
+                },
+                {
+                  "id": "u8",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 8
+                }
+              ]
+            },
+            "services": [
+              {
+                "effect_ids": [],
+                "id": "length",
+                "interaction_contract_id": "component-service.text-cleanup.length",
+                "signature_id": "length"
+              },
+              {
+                "effect_ids": [],
+                "id": "allocate",
+                "interaction_contract_id": "component-service.text-cleanup.allocate",
+                "signature_id": "allocate"
+              },
+              {
+                "effect_ids": [],
+                "id": "copy",
+                "interaction_contract_id": "component-service.text-cleanup.copy",
+                "signature_id": "copy"
+              },
+              {
+                "effect_ids": [],
+                "id": "release",
+                "interaction_contract_id": "component-service.text-cleanup.release",
+                "signature_id": "release"
+              },
+              {
+                "effect_ids": [],
+                "id": "resource_text",
+                "interaction_contract_id": "component-service.text-cleanup.resource_text",
+                "signature_id": "resource_text"
+              },
+              {
+                "effect_ids": [],
+                "id": "message",
+                "interaction_contract_id": "component-service.text-cleanup.message",
+                "signature_id": "message"
+              },
+              {
+                "effect_ids": [],
+                "id": "focus",
+                "interaction_contract_id": "component-service.text-cleanup.focus",
+                "signature_id": "focus"
+              }
+            ],
+            "state": [],
+            "status": "complete"
+          },
+          "runtime_contract": {
+            "compatibility": "Caller admission, concrete runtime behavior, origin/lifetime transport and complete operation coverage remain separate obligations.",
+            "id": "local-byte-compaction-step-v1",
+            "incoming": "Live nonwrapping text span; disjoint live scratch or null allocation failure; input within text, output <= input, removed = input - output. Live scratch covers input, ends no later than text, and its corresponding last text byte is NUL. The text span may extend beyond this NUL. Scratch suffix from output is zero. Text has a complete writable descriptor. Null scratch requires input zero or in-span CR/LF bytes at input and input+1.",
+            "lifetime": "Text, live scratch, descriptors and byte-access context remain live and unchanged during the region. No allocation, release, callback or service invocation occurs in this local step.",
+            "memory": "Related arbitrary current public bytes; no contents reconstructed from pointers. One public byte store per iteration; exact private cells are disjoint from public spans. Unmodeled access fails.",
+            "outgoing": "Whole public memory and count/cursor relation agree; normal exits transport the complete scratch view. A repeated cut advances input strictly and preserves the incoming cursor/scratch domain. Regional memory faults correspond to UINT32_MAX, without qualifying that exported ABI. Both normal cuts preserve every incoming public-memory predicate, including the null-scratch pending CR/LF condition. Writable text metadata is preserved; it does not permit additional source effects.",
+            "revision": 3
+          }
+        }
+      },
+      "source_transport": {
+        "local_cut_observer_arguments_checked": true,
+        "observer_function": "observe_loop"
+      }
+    },
+    "tail": {
+      "inputs": {
+        "exact": "tail",
+        "contract": {
+          "begin": {
+            "position": "before",
+            "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+          },
+          "calls": {
+            "copy": {
+              "entry": 22058,
+              "instruction": 22060,
+              "successor": 22066
+            },
+            "focus": {
+              "entry": 22114,
+              "instruction": 22120,
+              "successor": 22126
+            },
+            "message": {
+              "entry": 22100,
+              "instruction": 22108,
+              "successor": 22114
+            },
+            "release": {
+              "entry": 22066,
+              "instruction": 22067,
+              "successor": 22073
+            },
+            "resource_text": {
+              "entry": 22086,
+              "instruction": 22095,
+              "successor": 22100
+            }
+          },
+          "entry_cut": "tail",
+          "entry_rva": 22029,
+          "graph_index": 0,
+          "image_base": 4194304,
+          "image_size": 225280,
+          "parameter_roles": {
+            "caption": "caption",
+            "context": "context",
+            "edit_window": "edit_window",
+            "main_window": "main_window",
+            "suppress_notice": "suppress_notice",
+            "text": "text"
+          },
+          "profile": "local-text-cleanup-tail-v1",
+          "regions": [
+            "tail",
+            "tail_iteration"
+          ],
+          "runtime_revision": 1,
+          "source_locals": {
+            "input": "input",
+            "output": "output",
+            "removed": "removed",
+            "scratch": "scratch"
+          },
+          "supplier_call": {
+            "entry_rva": 22086,
+            "instruction_rva": 22095,
+            "private_stack": {
+              "high": 4,
+              "low": -44
+            },
+            "region_index": 0,
+            "result_reference": {
+              "domain": 1,
+              "extent": 18272,
+              "generation": 1,
+              "object": 2134217653344611032,
+              "offset": 15648,
+              "permissions": 3
+            },
+            "return_rva": 22100,
+            "service_id": "resource_text",
+            "stack_delta": -12,
+            "stack_words": [
+              {
+                "exit": {
+                  "kind": "constant",
+                  "value": 31
+                },
+                "offset": -12,
+                "writable": true
+              },
+              {
+                "exit": {
+                  "kind": "constant",
+                  "value": 4252580
+                },
+                "offset": -8,
+                "writable": true
+              },
+              {
+                "exit": {
+                  "kind": "constant",
+                  "value": 48
+                },
+                "offset": -4,
+                "writable": true
+              },
+              {
+                "exit": {
+                  "kind": "preserved"
+                },
+                "offset": 0,
+                "writable": false
+              }
+            ]
+          },
+          "views": {
+            "caption": {
+              "address": 4252580,
+              "extent": 500
+            },
+            "edit": {
+              "address": 4260184,
+              "extent": 4
+            },
+            "notice": {
+              "address": 4263788,
+              "extent": 4
+            },
+            "window": {
+              "address": 4260180,
+              "extent": 4
+            }
+          }
+        }
+      },
+      "proof_key": {
+        "bindings": {
+          "interface_intent": {
+            "effects": [],
+            "format": "spaghetti-extractor-component-interface-intent-v1",
+            "id": "text-cleanup",
+            "intent_sha256": "7c1fe855b3022bb9027323dcb4d6f9c7fd36551693e7b1dc1d5f3ac831417755",
+            "operations": [
+              {
+                "allowed_service_ids": [
+                  "length",
+                  "allocate",
+                  "copy",
+                  "release",
+                  "resource_text",
+                  "message",
+                  "focus"
+                ],
+                "checked_interaction_contract_ids": [],
+                "effect_ids": [],
+                "id": "cleanup",
+                "lifecycle_additional_roots": {
+                  "state": []
+                },
+                "lifecycle_bindings": [],
+                "post_states": [
+                  "ready"
+                ],
+                "pre_states": [
+                  "ready"
+                ],
+                "projection_entries": [
+                  {
+                    "source_id": "text",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "text"
+                    }
+                  },
+                  {
+                    "source_id": "suppress_notice",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "suppress_notice"
+                    }
+                  },
+                  {
+                    "source_id": "main_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "main_window"
+                    }
+                  },
+                  {
+                    "source_id": "edit_window",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "edit_window"
+                    }
+                  },
+                  {
+                    "source_id": "caption",
+                    "target": {
+                      "fields": [],
+                      "root": "parameter",
+                      "value_id": "caption"
+                    }
+                  },
+                  {
+                    "source_id": "removed",
+                    "target": {
+                      "fields": [],
+                      "root": "result",
+                      "value_id": "removed"
+                    }
+                  }
+                ],
+                "signature_id": "cleanup",
+                "source_values": [
+                  {
+                    "access": "read_write",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "text",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "suppress_notice",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "main_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": 4,
+                      "kind": "fixed",
+                      "value_id": null
+                    },
+                    "id": "edit_window",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "read",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "nul_terminated",
+                      "value_id": null
+                    },
+                    "id": "caption",
+                    "interpretation": "view",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "bytes"
+                  },
+                  {
+                    "access": "none",
+                    "extent": {
+                      "bytes": null,
+                      "kind": "none",
+                      "value_id": null
+                    },
+                    "id": "removed",
+                    "interpretation": "value",
+                    "nullable": false,
+                    "provider_domain": null,
+                    "resource_kind": null,
+                    "type_id": "u32"
+                  }
+                ]
+              }
+            ],
+            "protocol": {
+              "initial_state": "ready",
+              "states": [
+                "ready"
+              ]
+            },
+            "schema": {
+              "format": "spaghetti-extractor-boundary-schema-v1",
+              "schema_id": "metapad.text-cleanup",
+              "schema_sha256": "107d4f5bedecc04fee1944849bcf3057b19b1690b94a4edd0917974647f30c79",
+              "signatures": [
+                {
+                  "function_type_id": "allocate.fn",
+                  "id": "allocate",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "size",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "value",
+                        "value_id": "size"
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "cleanup.fn",
+                  "id": "cleanup",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "suppress_notice",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "main_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": 4,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "edit_window",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "removed",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "copy.fn",
+                  "id": "copy",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "destination",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "source",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "focus.fn",
+                  "id": "focus",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "length.fn",
+                  "id": "length",
+                  "parameters": [
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "message.fn",
+                  "id": "message",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "window",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "text",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "read",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "nul_terminated",
+                        "value_id": null
+                      },
+                      "id": "caption",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    },
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "flags",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "release.fn",
+                  "id": "release",
+                  "parameters": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "buffer",
+                      "interpretation": "reference",
+                      "nullable": true,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ]
+                },
+                {
+                  "function_type_id": "resource_text.fn",
+                  "id": "resource_text",
+                  "parameters": [
+                    {
+                      "access": "none",
+                      "extent": {
+                        "bytes": null,
+                        "kind": "none",
+                        "value_id": null
+                      },
+                      "id": "id",
+                      "interpretation": "value",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "u32"
+                    }
+                  ],
+                  "results": [
+                    {
+                      "access": "read_write",
+                      "extent": {
+                        "bytes": 500,
+                        "kind": "fixed",
+                        "value_id": null
+                      },
+                      "id": "result",
+                      "interpretation": "view",
+                      "nullable": false,
+                      "provider_domain": null,
+                      "resource_kind": null,
+                      "type_id": "bytes"
+                    }
+                  ]
+                }
+              ],
+              "types": [
+                {
+                  "calling_convention": "cdecl",
+                  "id": "allocate.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "bytes",
+                  "kind": "pointer",
+                  "pointee_type_id": "u8",
+                  "qualifiers": []
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "cleanup.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "copy.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes",
+                    "bytes"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "focus.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "length.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "message.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32",
+                    "bytes",
+                    "bytes",
+                    "u32"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "release.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "bytes"
+                  ],
+                  "result_type_id": "u32",
+                  "variadic": false
+                },
+                {
+                  "calling_convention": "cdecl",
+                  "id": "resource_text.fn",
+                  "kind": "function",
+                  "parameter_type_ids": [
+                    "u32"
+                  ],
+                  "result_type_id": "bytes",
+                  "variadic": false
+                },
+                {
+                  "id": "u32",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 32
+                },
+                {
+                  "id": "u8",
+                  "kind": "integer",
+                  "signed": false,
+                  "width_bits": 8
+                }
+              ]
+            },
+            "services": [
+              {
+                "effect_ids": [],
+                "id": "length",
+                "interaction_contract_id": "component-service.text-cleanup.length",
+                "signature_id": "length"
+              },
+              {
+                "effect_ids": [],
+                "id": "allocate",
+                "interaction_contract_id": "component-service.text-cleanup.allocate",
+                "signature_id": "allocate"
+              },
+              {
+                "effect_ids": [],
+                "id": "copy",
+                "interaction_contract_id": "component-service.text-cleanup.copy",
+                "signature_id": "copy"
+              },
+              {
+                "effect_ids": [],
+                "id": "release",
+                "interaction_contract_id": "component-service.text-cleanup.release",
+                "signature_id": "release"
+              },
+              {
+                "effect_ids": [],
+                "id": "resource_text",
+                "interaction_contract_id": "component-service.text-cleanup.resource_text",
+                "signature_id": "resource_text"
+              },
+              {
+                "effect_ids": [],
+                "id": "message",
+                "interaction_contract_id": "component-service.text-cleanup.message",
+                "signature_id": "message"
+              },
+              {
+                "effect_ids": [],
+                "id": "focus",
+                "interaction_contract_id": "component-service.text-cleanup.focus",
+                "signature_id": "focus"
+              }
+            ],
+            "state": [],
+            "status": "complete"
+          },
+          "runtime_contract": {
+            "compatibility": "Entry/loop coverage, actual image/private admission, concrete copy/allocator/service and callback behavior, string validity and exported fault ABI remain separate unqualified obligations.",
+            "id": "local-text-cleanup-tail-v1",
+            "incoming": "Compaction revision-3 public byte domain, including nullable scratch, pending CR/LF and zero suffix. Text/scratch/private stack are nonwrapping, mutually disjoint and outside the bound image. Current image bytes are arbitrary.",
+            "lifetime": "Text/image/descriptors/service table stay live. Scratch is live or null and released at most once; copy and writes require live scratch. No callbacks, origin rebinding or nonlocal exits are admitted.",
+            "memory": "Whole current public memory corresponds at every service call and return. Two byte copies at most; copy may replace text contents and resource may replace its checked borrowed view. Preserved image spans require write-frame assertions. Full copy/message descriptors and release references must match.",
+            "outgoing": "Matching normal count result, return word, saved machine frame and whole public memory, or corresponding memory fault encoded as UINT32_MAX. All native/source loops retain complete unwinding assertions.",
+            "representation": "ESI=input, ECX=output, EDI=text, EBX=scratch, ESP=stack-16, EBP=stack+8, removed at stack. Private words cover [-60,+16); saved ESI/EBX/EBP/return at -16/-12/+8/+12. Text/scratch are byte views in domain 1, objects 1/2, generation 1, offset 0, permissions 3; image descriptor roles are exact model bindings.",
+            "revision": 1,
+            "services": "Exact ordered normal copy/release/resource/message/focus interactions. Copy returns destination reference/address. Release/message/focus share arbitrary scalar results. Resource consumes a validated supplier domain, complete reference, clobbers and private writes; its bodies are absent."
+          }
+        }
+      },
+      "source_transport": {}
+    }
+  },
+  "models": {
+    "entry": "static void observe_entry(void){\n __CPROVER_assert(cut==22022U,\"entry-source-cut\");\n __CPROVER_assert(input==observed.esi && output==observed.ecx && removed==observed_removed,\"entry-source-cursors\");\n __CPROVER_assert(scratch->extent==fresh_extent && scratch->base.extent==fresh_extent && scratch->base.offset==0U && scratch->base.domain==1U && scratch->base.object==2U && scratch->base.generation==1U,\"entry-source-view\");\n __CPROVER_assert(scratch->base.domain==observed_view.base.domain,\"entry-full-view-base.domain\");\n __CPROVER_assert(scratch->base.object==observed_view.base.object,\"entry-full-view-base.object\");\n __CPROVER_assert(scratch->base.generation==observed_view.base.generation,\"entry-full-view-base.generation\");\n __CPROVER_assert(scratch->base.offset==observed_view.base.offset,\"entry-full-view-base.offset\");\n __CPROVER_assert(scratch->base.extent==observed_view.base.extent,\"entry-full-view-base.extent\");\n __CPROVER_assert(scratch->base.permissions==observed_view.base.permissions,\"entry-full-view-base.permissions\");\n __CPROVER_assert(scratch->extent==observed_view.extent,\"entry-full-view-extent\");\n __CPROVER_assert(scratch->element_width==observed_view.element_width,\"entry-full-view-element_width\");\n __CPROVER_assert(scratch->context==observed_view.context,\"entry-full-view-context\");\n __CPROVER_assert(scratch->access_context==observed_view.access_context,\"entry-full-view-access_context\");\n __CPROVER_assert(scratch->read_u8==observed_view.read_u8,\"entry-full-view-read_u8\");\n __CPROVER_assert(scratch->write_u8==observed_view.write_u8,\"entry-full-view-write_u8\");\n __CPROVER_assert(scratch->read==observed_view.read,\"entry-full-view-read\");\n __CPROVER_assert(scratch->write==observed_view.write,\"entry-full-view-write\");\n}\n",
+    "loop": "static void observe_loop(void){\n __CPROVER_assert(cut==observed_step.target_rva,\"loop-observer-cut\");\n __CPROVER_assert(input==observed_state.esi,\"loop-observer-input\");\n __CPROVER_assert(output==observed_state.ecx,\"loop-observer-output\");\n __CPROVER_assert(removed==observed_removed,\"loop-observer-count\");\n __CPROVER_assert(output<=input,\"loop-observer-cursor-order\");\n __CPROVER_assert(removed==input-output,\"loop-observer-count-invariant\");\n __CPROVER_assert((cut!=22022U) | ((input>spx_cut.input) & (input<observed_extent)),\"loop-observer-progress\");\n __CPROVER_assert(scratch->base.domain==spx_cut.scratch.base.domain,\"loop-observer-view-base.domain\");\n __CPROVER_assert(scratch->base.object==spx_cut.scratch.base.object,\"loop-observer-view-base.object\");\n __CPROVER_assert(scratch->base.generation==spx_cut.scratch.base.generation,\"loop-observer-view-base.generation\");\n __CPROVER_assert(scratch->base.offset==spx_cut.scratch.base.offset,\"loop-observer-view-base.offset\");\n __CPROVER_assert(scratch->base.extent==spx_cut.scratch.base.extent,\"loop-observer-view-base.extent\");\n __CPROVER_assert(scratch->base.permissions==spx_cut.scratch.base.permissions,\"loop-observer-view-base.permissions\");\n __CPROVER_assert(scratch->extent==spx_cut.scratch.extent,\"loop-observer-view-extent\");\n __CPROVER_assert(scratch->element_width==spx_cut.scratch.element_width,\"loop-observer-view-element_width\");\n __CPROVER_assert(scratch->context==spx_cut.scratch.context,\"loop-observer-view-context\");\n __CPROVER_assert(scratch->access_context==spx_cut.scratch.access_context,\"loop-observer-view-access_context\");\n __CPROVER_assert(scratch->read_u8==spx_cut.scratch.read_u8,\"loop-observer-view-read_u8\");\n __CPROVER_assert(scratch->write_u8==spx_cut.scratch.write_u8,\"loop-observer-view-write_u8\");\n __CPROVER_assert(scratch->read==spx_cut.scratch.read,\"loop-observer-view-read\");\n __CPROVER_assert(scratch->write==spx_cut.scratch.write,\"loop-observer-view-write\");\n}\n",
+    "tail": ""
+  },
+  "manifests": {
+    "entry": {
+      "bindings": {
+        "bisimulation_intent_sha256": "b1968534da0459a8f664e1f91c7928b2a1672f7489eceba3f70ef08013a51044",
+        "dependency_binding_intent_sha256s": {},
+        "executable_transfer_plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590"
+      },
+      "component_id": "text-cleanup",
+      "dependency_components": [],
+      "entry_rvas": [
+        21943
+      ],
+      "files": [
+        {
+          "path": "behavioral-c.h",
+          "sha256": "432cca6a28c54ea3dce3436e80fc4b3046f19e81a5ceaf1a6c0f439d7198e2d1"
+        },
+        {
+          "path": "behavioral-dispatch.c",
+          "sha256": "82c78a3aa2fc8c128ed517065e12796e534506a30f3b2a30e9e83c37aa0ef2bb"
+        },
+        {
+          "path": "behavioral-fn-000055b7.c",
+          "sha256": "1ff30e37684e5779285466f374a2c01d875378a00b15589732328940c5982320"
+        },
+        {
+          "path": "behavioral-support.c",
+          "sha256": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca"
+        },
+        {
+          "path": "state-machine-runtime.h",
+          "sha256": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+        }
+      ],
+      "forced_label_rvas": [
+        22022
+      ],
+      "format": "spaghetti-extractor-component-exact-c-slice-v1",
+      "functions": [
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            21943
+          ],
+          "id": "behavioral-c-function:000055b7",
+          "symbol": "spx_sub_000055b7",
+          "unit_rvas": [
+            21943,
+            21950,
+            21960,
+            21965,
+            21975,
+            21981,
+            21993,
+            21999,
+            22006,
+            22008,
+            22010,
+            22017,
+            22021,
+            22022,
+            22133
+          ]
+        }
+      ],
+      "internal_direct_call_closure": {
+        "call_edges": [],
+        "entry_rvas": [],
+        "unit_ids": []
+      },
+      "policy": {
+        "connected_component_closure_bound": true,
+        "exact_checked_transfers_only": true,
+        "forced_labels_are_step_barriers": true,
+        "production_run_semantics_preserved": true
+      },
+      "root_context_unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-00005675-00005679"
+      ],
+      "root_entry_rvas": [
+        21943
+      ],
+      "root_unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005675-00005679"
+      ],
+      "slice_sha256": "df174d9053fb28f0ffc650426dc388415c6ef8934e7d30ea40f9d503adda1e2c",
+      "source_map": [
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 405,
+          "line_start": 318,
+          "rva": 21943,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055b7-000055be"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 491,
+          "line_start": 406,
+          "rva": 21950,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055be-000055c8"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 674,
+          "line_start": 492,
+          "rva": 21960,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055c8-000055cd"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 918,
+          "line_start": 675,
+          "rva": 21965,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055cd-000055d7"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1127,
+          "line_start": 919,
+          "rva": 21975,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055d7-000055dd"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1200,
+          "line_start": 1128,
+          "rva": 21981,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055dd-000055e9"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1279,
+          "line_start": 1201,
+          "rva": 21993,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055e9-000055ef"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1373,
+          "line_start": 1280,
+          "rva": 21999,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055ef-000055f6"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1383,
+          "line_start": 1374,
+          "rva": 22006,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055f6-000055f8"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1398,
+          "line_start": 1384,
+          "rva": 22008,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055f8-000055fa"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1481,
+          "line_start": 1399,
+          "rva": 22010,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055fa-00005601"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1544,
+          "line_start": 1482,
+          "rva": 22017,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005601-00005605"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1587,
+          "line_start": 1545,
+          "rva": 22021,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005605-00005606"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1672,
+          "line_start": 1588,
+          "rva": 22022,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005606-0000560d"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1688,
+          "line_start": 1673,
+          "rva": 22133,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005675-00005679"
+        }
+      ],
+      "unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-00005675-00005679"
+      ]
+    },
+    "loop": {
+      "bindings": {
+        "bisimulation_intent_sha256": "b64ae9c70aee94fe224a6a4d2049ed20c8a57a83fabd6f6c065516e1b0cea4ba",
+        "dependency_binding_intent_sha256s": {},
+        "executable_transfer_plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590"
+      },
+      "component_id": "text-cleanup",
+      "dependency_components": [],
+      "entry_rvas": [
+        22022
+      ],
+      "files": [
+        {
+          "path": "behavioral-c.h",
+          "sha256": "e16680963e409ea78c6608fe6c582103334a0eafe59a28206a1e849ae8fcc1c1"
+        },
+        {
+          "path": "behavioral-dispatch.c",
+          "sha256": "a38d37ee6b749e8702d9f31063134ca61b12c349b59b7acb4814d641e5af7da6"
+        },
+        {
+          "path": "behavioral-fn-00005601.c",
+          "sha256": "3f9d9f015be398058a1f0e01941d599c9d82d40500f563cc61ca304816c4f405"
+        },
+        {
+          "path": "behavioral-support.c",
+          "sha256": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca"
+        },
+        {
+          "path": "state-machine-runtime.h",
+          "sha256": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+        }
+      ],
+      "forced_label_rvas": [
+        22022,
+        22029
+      ],
+      "format": "spaghetti-extractor-component-exact-c-slice-v1",
+      "functions": [
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            22022
+          ],
+          "id": "behavioral-c-function:00005606",
+          "symbol": "spx_sub_00005606",
+          "unit_rvas": [
+            22017,
+            22021,
+            22022,
+            22029,
+            22137,
+            22148,
+            22163,
+            22171,
+            22180,
+            22189
+          ]
+        }
+      ],
+      "internal_direct_call_closure": {
+        "call_edges": [],
+        "entry_rvas": [],
+        "unit_ids": []
+      },
+      "policy": {
+        "connected_component_closure_bound": true,
+        "exact_checked_transfers_only": true,
+        "forced_labels_are_step_barriers": true,
+        "production_run_semantics_preserved": true
+      },
+      "root_context_unit_ids": [
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ],
+      "root_entry_rvas": [
+        22022
+      ],
+      "root_unit_ids": [
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ],
+      "slice_sha256": "d9f4692f3ad2254498f9a6f167372d8a9e3289ec76b57869e0361b422db64cb1",
+      "source_map": [
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 284,
+          "line_start": 222,
+          "rva": 22017,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005601-00005605"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 327,
+          "line_start": 285,
+          "rva": 22021,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005605-00005606"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 412,
+          "line_start": 328,
+          "rva": 22022,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005606-0000560d"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 495,
+          "line_start": 413,
+          "rva": 22029,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-0000560d-00005614"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 600,
+          "line_start": 496,
+          "rva": 22137,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005679-00005684"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 705,
+          "line_start": 601,
+          "rva": 22148,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005684-00005693"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 764,
+          "line_start": 706,
+          "rva": 22163,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-00005693-0000569b"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 837,
+          "line_start": 765,
+          "rva": 22171,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-0000569b-000056a4"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 896,
+          "line_start": 838,
+          "rva": 22180,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-000056a4-000056ad"
+        },
+        {
+          "file": "behavioral-fn-00005601.c",
+          "function_id": "behavioral-c-function:00005606",
+          "line_end": 956,
+          "line_start": 897,
+          "rva": 22189,
+          "symbol": "spx_sub_00005606",
+          "unit_id": "semantic-transfer:original-cutpoint-000056ad-000056b5"
+        }
+      ],
+      "unit_ids": [
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ]
+    },
+    "tail": {
+      "bindings": {
+        "bisimulation_intent_sha256": "2fd5424123a6b13fe56ec1f82320fba4e5530188a35ec85d6792bdb8f99d7833",
+        "dependency_binding_intent_sha256s": {},
+        "executable_transfer_plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590"
+      },
+      "component_id": "text-cleanup",
+      "dependency_components": [],
+      "entry_rvas": [
+        22029
+      ],
+      "files": [
+        {
+          "path": "behavioral-c.h",
+          "sha256": "c74ae03239caf3978453ecdebb3ed04641d6d310633e3d8f45406256cf604f93"
+        },
+        {
+          "path": "behavioral-dispatch.c",
+          "sha256": "7d1da471bc7bb5415b6d2320834efba6277874c753e328e5176f1e0963fc1880"
+        },
+        {
+          "path": "behavioral-fn-00001284.c",
+          "sha256": "04309b094dffb8d27995ea06160b336877050757d7ed92036ae6f497afe43d9d"
+        },
+        {
+          "path": "behavioral-fn-0000560d.c",
+          "sha256": "44ed8ad2287171e3b0a92bff6cfb0e0f8a1b94448f54c26016124f2cd4d06cde"
+        },
+        {
+          "path": "behavioral-support.c",
+          "sha256": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca"
+        },
+        {
+          "path": "state-machine-runtime.h",
+          "sha256": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+        }
+      ],
+      "forced_label_rvas": [],
+      "format": "spaghetti-extractor-component-exact-c-slice-v1",
+      "functions": [
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            4740
+          ],
+          "id": "behavioral-c-function:00001284",
+          "symbol": "spx_sub_00001284",
+          "unit_rvas": [
+            4740,
+            4749,
+            4764,
+            4770
+          ]
+        },
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            22029
+          ],
+          "id": "behavioral-c-function:0000560d",
+          "symbol": "spx_sub_0000560d",
+          "unit_rvas": [
+            22029,
+            22036,
+            22041,
+            22048,
+            22051,
+            22058,
+            22066,
+            22073,
+            22078,
+            22086,
+            22100,
+            22114,
+            22126,
+            22132
+          ]
+        }
+      ],
+      "internal_direct_call_closure": {
+        "call_edges": [
+          {
+            "call_index": 0,
+            "instruction_rva": 22095,
+            "return_rva": 22100,
+            "source_rva": 22086,
+            "source_unit_id": "semantic-transfer:original-cutpoint-00005646-00005654",
+            "target_rva": 4740,
+            "target_unit_id": "semantic-transfer:original-cutpoint-00001284-0000128d"
+          }
+        ],
+        "entry_rvas": [
+          4740
+        ],
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-00001284-0000128d",
+          "semantic-transfer:original-cutpoint-0000128d-0000129c",
+          "semantic-transfer:original-cutpoint-0000129c-000012a2",
+          "semantic-transfer:original-cutpoint-000012a2-000012a7"
+        ]
+      },
+      "policy": {
+        "connected_component_closure_bound": true,
+        "exact_checked_transfers_only": true,
+        "forced_labels_are_step_barriers": true,
+        "production_run_semantics_preserved": true
+      },
+      "root_context_unit_ids": [
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675"
+      ],
+      "root_entry_rvas": [
+        22029
+      ],
+      "root_unit_ids": [
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675"
+      ],
+      "slice_sha256": "a2cbb4d658cc700602e80ac5e008ec704c6ff1a6ae9afce2942f3e4a43ac45dd",
+      "source_map": [
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 155,
+          "line_start": 90,
+          "rva": 4740,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-00001284-0000128d"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 233,
+          "line_start": 156,
+          "rva": 4749,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-0000128d-0000129c"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 400,
+          "line_start": 234,
+          "rva": 4764,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-0000129c-000012a2"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 473,
+          "line_start": 401,
+          "rva": 4770,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-000012a2-000012a7"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 459,
+          "line_start": 377,
+          "rva": 22029,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-0000560d-00005614"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 556,
+          "line_start": 460,
+          "rva": 22036,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005614-00005619"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 639,
+          "line_start": 557,
+          "rva": 22041,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005619-00005620"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 668,
+          "line_start": 640,
+          "rva": 22048,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005620-00005623"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 760,
+          "line_start": 669,
+          "rva": 22051,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005623-0000562a"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 970,
+          "line_start": 761,
+          "rva": 22058,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-0000562a-00005632"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1163,
+          "line_start": 971,
+          "rva": 22066,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005632-00005639"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1226,
+          "line_start": 1164,
+          "rva": 22073,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005639-0000563e"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1287,
+          "line_start": 1227,
+          "rva": 22078,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-0000563e-00005646"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1514,
+          "line_start": 1288,
+          "rva": 22086,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005646-00005654"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1749,
+          "line_start": 1515,
+          "rva": 22100,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005654-00005662"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 1946,
+          "line_start": 1750,
+          "rva": 22114,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005662-0000566e"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 2036,
+          "line_start": 1947,
+          "rva": 22126,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-0000566e-00005674"
+        },
+        {
+          "file": "behavioral-fn-0000560d.c",
+          "function_id": "behavioral-c-function:0000560d",
+          "line_end": 2061,
+          "line_start": 2037,
+          "rva": 22132,
+          "symbol": "spx_sub_0000560d",
+          "unit_id": "semantic-transfer:original-cutpoint-00005674-00005675"
+        }
+      ],
+      "unit_ids": [
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675"
+      ]
+    },
+    "root": {
+      "bindings": {
+        "bisimulation_intent_sha256": "2fd5424123a6b13fe56ec1f82320fba4e5530188a35ec85d6792bdb8f99d7833",
+        "dependency_binding_intent_sha256s": {},
+        "executable_transfer_plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590"
+      },
+      "component_id": "text-cleanup",
+      "dependency_components": [],
+      "entry_rvas": [
+        21943
+      ],
+      "files": [
+        {
+          "path": "behavioral-c.h",
+          "sha256": "e4a3fb52f6af093f2d70f18e6f439ebaf266efb6a0e3d73dfed41663cf93440b"
+        },
+        {
+          "path": "behavioral-dispatch.c",
+          "sha256": "ae6ebdbe874365f7b2eed08357907738c405e385ae4b8340f1df7e97e99adfcc"
+        },
+        {
+          "path": "behavioral-fn-00001284.c",
+          "sha256": "04309b094dffb8d27995ea06160b336877050757d7ed92036ae6f497afe43d9d"
+        },
+        {
+          "path": "behavioral-fn-000055b7.c",
+          "sha256": "47d5e3dbdb962c916b4015f97baa45a512e0bcc210ab2ffff3d68f6ff6d5f93b"
+        },
+        {
+          "path": "behavioral-support.c",
+          "sha256": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca"
+        },
+        {
+          "path": "state-machine-runtime.h",
+          "sha256": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+        }
+      ],
+      "forced_label_rvas": [],
+      "format": "spaghetti-extractor-component-exact-c-slice-v1",
+      "functions": [
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            4740
+          ],
+          "id": "behavioral-c-function:00001284",
+          "symbol": "spx_sub_00001284",
+          "unit_rvas": [
+            4740,
+            4749,
+            4764,
+            4770
+          ]
+        },
+        {
+          "control_form": "direct_labels_and_structured_branches_v1",
+          "entries": [
+            21943
+          ],
+          "id": "behavioral-c-function:000055b7",
+          "symbol": "spx_sub_000055b7",
+          "unit_rvas": [
+            21943,
+            21950,
+            21960,
+            21965,
+            21975,
+            21981,
+            21993,
+            21999,
+            22006,
+            22008,
+            22010,
+            22017,
+            22021,
+            22022,
+            22029,
+            22036,
+            22041,
+            22048,
+            22051,
+            22058,
+            22066,
+            22073,
+            22078,
+            22086,
+            22100,
+            22114,
+            22126,
+            22132,
+            22133,
+            22137,
+            22148,
+            22163,
+            22171,
+            22180,
+            22189
+          ]
+        }
+      ],
+      "internal_direct_call_closure": {
+        "call_edges": [
+          {
+            "call_index": 0,
+            "instruction_rva": 22095,
+            "return_rva": 22100,
+            "source_rva": 22086,
+            "source_unit_id": "semantic-transfer:original-cutpoint-00005646-00005654",
+            "target_rva": 4740,
+            "target_unit_id": "semantic-transfer:original-cutpoint-00001284-0000128d"
+          }
+        ],
+        "entry_rvas": [
+          4740
+        ],
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-00001284-0000128d",
+          "semantic-transfer:original-cutpoint-0000128d-0000129c",
+          "semantic-transfer:original-cutpoint-0000129c-000012a2",
+          "semantic-transfer:original-cutpoint-000012a2-000012a7"
+        ]
+      },
+      "policy": {
+        "connected_component_closure_bound": true,
+        "exact_checked_transfers_only": true,
+        "forced_labels_are_step_barriers": true,
+        "production_run_semantics_preserved": true
+      },
+      "root_context_unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675",
+        "semantic-transfer:original-cutpoint-00005675-00005679",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ],
+      "root_entry_rvas": [
+        21943
+      ],
+      "root_unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675",
+        "semantic-transfer:original-cutpoint-00005675-00005679",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ],
+      "slice_sha256": "5ee1613dc23164631ac3ba8959352460867e9842b8a46d1ebd7ed2a608a9f1c6",
+      "source_map": [
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 155,
+          "line_start": 90,
+          "rva": 4740,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-00001284-0000128d"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 233,
+          "line_start": 156,
+          "rva": 4749,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-0000128d-0000129c"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 400,
+          "line_start": 234,
+          "rva": 4764,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-0000129c-000012a2"
+        },
+        {
+          "file": "behavioral-fn-00001284.c",
+          "function_id": "behavioral-c-function:00001284",
+          "line_end": 473,
+          "line_start": 401,
+          "rva": 4770,
+          "symbol": "spx_sub_00001284",
+          "unit_id": "semantic-transfer:original-cutpoint-000012a2-000012a7"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 901,
+          "line_start": 814,
+          "rva": 21943,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055b7-000055be"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 987,
+          "line_start": 902,
+          "rva": 21950,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055be-000055c8"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1170,
+          "line_start": 988,
+          "rva": 21960,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055c8-000055cd"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1414,
+          "line_start": 1171,
+          "rva": 21965,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055cd-000055d7"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1623,
+          "line_start": 1415,
+          "rva": 21975,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055d7-000055dd"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1696,
+          "line_start": 1624,
+          "rva": 21981,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055dd-000055e9"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1775,
+          "line_start": 1697,
+          "rva": 21993,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055e9-000055ef"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1869,
+          "line_start": 1776,
+          "rva": 21999,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055ef-000055f6"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1879,
+          "line_start": 1870,
+          "rva": 22006,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055f6-000055f8"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1894,
+          "line_start": 1880,
+          "rva": 22008,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055f8-000055fa"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 1977,
+          "line_start": 1895,
+          "rva": 22010,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000055fa-00005601"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2040,
+          "line_start": 1978,
+          "rva": 22017,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005601-00005605"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2083,
+          "line_start": 2041,
+          "rva": 22021,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005605-00005606"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2168,
+          "line_start": 2084,
+          "rva": 22022,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005606-0000560d"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2251,
+          "line_start": 2169,
+          "rva": 22029,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-0000560d-00005614"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2348,
+          "line_start": 2252,
+          "rva": 22036,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005614-00005619"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2431,
+          "line_start": 2349,
+          "rva": 22041,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005619-00005620"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2460,
+          "line_start": 2432,
+          "rva": 22048,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005620-00005623"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2552,
+          "line_start": 2461,
+          "rva": 22051,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005623-0000562a"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2762,
+          "line_start": 2553,
+          "rva": 22058,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-0000562a-00005632"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 2955,
+          "line_start": 2763,
+          "rva": 22066,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005632-00005639"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3018,
+          "line_start": 2956,
+          "rva": 22073,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005639-0000563e"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3079,
+          "line_start": 3019,
+          "rva": 22078,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-0000563e-00005646"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3306,
+          "line_start": 3080,
+          "rva": 22086,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005646-00005654"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3541,
+          "line_start": 3307,
+          "rva": 22100,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005654-00005662"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3738,
+          "line_start": 3542,
+          "rva": 22114,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005662-0000566e"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3828,
+          "line_start": 3739,
+          "rva": 22126,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-0000566e-00005674"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3853,
+          "line_start": 3829,
+          "rva": 22132,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005674-00005675"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3869,
+          "line_start": 3854,
+          "rva": 22133,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005675-00005679"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 3974,
+          "line_start": 3870,
+          "rva": 22137,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005679-00005684"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 4079,
+          "line_start": 3975,
+          "rva": 22148,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005684-00005693"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 4138,
+          "line_start": 4080,
+          "rva": 22163,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-00005693-0000569b"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 4211,
+          "line_start": 4139,
+          "rva": 22171,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-0000569b-000056a4"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 4270,
+          "line_start": 4212,
+          "rva": 22180,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000056a4-000056ad"
+        },
+        {
+          "file": "behavioral-fn-000055b7.c",
+          "function_id": "behavioral-c-function:000055b7",
+          "line_end": 4330,
+          "line_start": 4271,
+          "rva": 22189,
+          "symbol": "spx_sub_000055b7",
+          "unit_id": "semantic-transfer:original-cutpoint-000056ad-000056b5"
+        }
+      ],
+      "unit_ids": [
+        "semantic-transfer:original-cutpoint-000055b7-000055be",
+        "semantic-transfer:original-cutpoint-000055be-000055c8",
+        "semantic-transfer:original-cutpoint-000055c8-000055cd",
+        "semantic-transfer:original-cutpoint-000055cd-000055d7",
+        "semantic-transfer:original-cutpoint-000055d7-000055dd",
+        "semantic-transfer:original-cutpoint-000055dd-000055e9",
+        "semantic-transfer:original-cutpoint-000055e9-000055ef",
+        "semantic-transfer:original-cutpoint-000055ef-000055f6",
+        "semantic-transfer:original-cutpoint-000055f6-000055f8",
+        "semantic-transfer:original-cutpoint-000055f8-000055fa",
+        "semantic-transfer:original-cutpoint-000055fa-00005601",
+        "semantic-transfer:original-cutpoint-00005601-00005605",
+        "semantic-transfer:original-cutpoint-00005605-00005606",
+        "semantic-transfer:original-cutpoint-00005606-0000560d",
+        "semantic-transfer:original-cutpoint-0000560d-00005614",
+        "semantic-transfer:original-cutpoint-00005614-00005619",
+        "semantic-transfer:original-cutpoint-00005619-00005620",
+        "semantic-transfer:original-cutpoint-00005620-00005623",
+        "semantic-transfer:original-cutpoint-00005623-0000562a",
+        "semantic-transfer:original-cutpoint-0000562a-00005632",
+        "semantic-transfer:original-cutpoint-00005632-00005639",
+        "semantic-transfer:original-cutpoint-00005639-0000563e",
+        "semantic-transfer:original-cutpoint-0000563e-00005646",
+        "semantic-transfer:original-cutpoint-00005646-00005654",
+        "semantic-transfer:original-cutpoint-00005654-00005662",
+        "semantic-transfer:original-cutpoint-00005662-0000566e",
+        "semantic-transfer:original-cutpoint-0000566e-00005674",
+        "semantic-transfer:original-cutpoint-00005674-00005675",
+        "semantic-transfer:original-cutpoint-00005675-00005679",
+        "semantic-transfer:original-cutpoint-00005679-00005684",
+        "semantic-transfer:original-cutpoint-00005684-00005693",
+        "semantic-transfer:original-cutpoint-00005693-0000569b",
+        "semantic-transfer:original-cutpoint-0000569b-000056a4",
+        "semantic-transfer:original-cutpoint-000056a4-000056ad",
+        "semantic-transfer:original-cutpoint-000056ad-000056b5"
+      ]
+    }
+  }
+}

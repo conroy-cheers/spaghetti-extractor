@@ -589,6 +589,7 @@ def _build_dependency_graph(
     duplicate_rvas: set[int],
     max_states: int,
     synchronized: bool,
+    initial_live: frozenset[_Location] = frozenset(),
 ) -> tuple[
     dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
 ]:
@@ -596,7 +597,7 @@ def _build_dependency_graph(
         tuple[_Node, frozenset[_Location], tuple[int, ...], tuple[str, ...]]
     ] = deque()
     for source_id in source_ids:
-        queue.append((nodes[source_id], frozenset(), (), (source_id,)))
+        queue.append((nodes[source_id], initial_live, (), (source_id,)))
     seen: dict[tuple[str, frozenset[_Location], tuple[int, ...]], str] = {}
     graph_nodes: list[dict[str, Any]] = []
     roots: list[str] = []

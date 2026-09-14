@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from spaghetti_extractor.candidate.runtime_canonical_common import _checked_contract
+from spaghetti_extractor.components.bisimulation_typed_services import _proof_call_specs
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.boundary._canonical import BoundaryModelError
@@ -22,7 +25,12 @@ from spaghetti_extractor.components.interface_package_v5 import (
     compile_component_interface_v5,
 )
 from spaghetti_extractor.components.machine_binding import ServiceMachineBindingV1
+from spaghetti_extractor.components.machine_overlay_external_v5 import (
+    _external_service_thunk,
+)
 from spaghetti_extractor.components.machine_overlay_v5 import (
+    _common_owned_boundary_exit,
+    _logical_operation_thunk,
     render_component_dispatch_registry_v1,
     render_component_machine_overlay_v5,
 )
@@ -42,6 +50,7 @@ TESTKIT = {
         "targets/gnu-hello/intent/interfaces-v5",
         "targets/gnu-hello/intent/bindings-v5",
         "targets/dxball/intent/interfaces-v5",
+        "targets/jq/intent/interfaces-v5",
     ),
 }
 
@@ -59,6 +68,7 @@ def _component_overlay(
     code_capabilities: dict[str, dict[str, object]] | None = None,
     authority_selectors: dict[str, list[dict[str, str]]] | None = None,
     object_authority_rule_ids: tuple[str, ...] | None = None,
+    external_service_thunk_renderer=None,
 ):
     interface = ComponentInterfaceIntentV1.parse(
         json.loads(
@@ -115,7 +125,7 @@ def _component_overlay(
     )
     transfers = []
     for unit_id in unit_ids:
-        match = re.search(r"original-cutpoint-([0-9a-f]{8})", unit_id)
+        match = re.search(r"(?:original-cutpoint|rooted-view)-([0-9a-f]{8})", unit_id)
         assert match is not None
         transfer = _transfer(unit_id, int(match.group(1), 16))
         transfers.append(
@@ -147,6 +157,7 @@ def _component_overlay(
             else resolved_external_environment
         ),
         code_capabilities=code_capabilities,
+        external_service_thunk_renderer=external_service_thunk_renderer,
     )
 
 
@@ -169,6 +180,8 @@ def _external_contract(
                 "abi_template": abi_template,
                 "argument_words": argument_words,
                 "result_register_relations": [],
+                "memory_effect": "readOnly",
+                "world_effect": "none",
             },
         },
         "boundary": {"fixture": True},
@@ -232,6 +245,66 @@ def _resolved_environment(
 
 
 class ComponentMachineOverlayV5Tests(unittest.TestCase):
+    def test_common_exit_uses_only_outgoing_edges_and_preserves_kind(self):
+        def transfer(identity, rva, action):
+            return _Transfer(identity, 'a' * 64, 'b' * 64, rva, (), (), (action,), (), ())
+        head = transfer('head', 0x1000, _Action('outcome_branch', (0, 0x2000, 0x1010)))
+        step = transfer('step', 0x1010, _Action('outcome_branch', (0, 0x1010, 0x2000)))
+        checked = lambda candidate: _common_owned_boundary_exit((head, candidate),
+            owned_units=('head', 'step'), transfer_index={'head': head, 'step': candidate})
+        self.assertEqual(checked(step), ('SPX_BRANCH', 0x2000))
+        for action in (_Action('outcome_branch', (0, 0x1010, 0x3000)),
+                       _Action('outcome_branch', (0, 0x2000, 0x3000)),
+                       _Action('outcome_branch', (0, 0x1000, 0x1010)),
+                       _Action('outcome_jump', (0x2000,)),
+                       _Action('outcome_return', (0,)),
+                       _Action('outcome_branch', (0, True, 0x2000))):
+            with self.subTest(action=action):
+                self.assertIsNone(checked(transfer('step', 0x1010, action)))
+
+    def test_multiple_branch_exits_render_one_checked_boundary_outcome(self):
+        interface = ComponentInterfaceIntentV1.parse(json.loads(
+            (ROOT/'targets/gnu-hello/intent/interfaces-v5/ascii-to-lower.json').read_text()))
+        raw = json.loads((ROOT/'targets/gnu-hello/intent/bindings-v5/ascii-to-lower.json').read_text())['operations'][0]
+        head, step = raw['transfer_ids']
+        raw['unit_ids'] = [head, step]
+        raw['machine_projection']['operation']['exit_unit_ids'] = [head, step]
+        def render(other_target):
+            binding = ComponentMachineBindingIntentV1.create(component_id=interface.component_id,
+                operations=[copy.deepcopy(raw)])
+            bundle = compile_component_interface_v5(interface)
+            contract = NormalizedComponentContract.create(interface=bundle.interface,
+                machine_semantics=[op.semantics for op in binding.operations])
+            transfers = [_Transfer(head, 'a'*64, 'b'*64, 0x933d, (), (),
+                (_Action('outcome_branch', (0, 0x9400, 0x934a)),), (), ()),
+                _Transfer(step, 'a'*64, 'b'*64, 0x934a, (), (),
+                (_Action('outcome_branch', (0, 0x934a, other_target)),), (), ())]
+            return render_component_machine_overlay_v5(bundle=bundle, contract=contract,
+                operation_symbols={'convert': 'convert'}, transfers=transfers)
+        rendered = render(0x9400)
+        self.assertIn('return (spx_step_result){ SPX_BRANCH, UINT32_C(37888), 0U };', rendered.source)
+        self.assertEqual(rendered.entries[0]['owned_unit_ids'], [head, step])
+        with self.assertRaisesRegex(BoundaryModelError, 'common-boundary equivalence'):
+            render(0x9500)
+
+    def test_logical_record_has_one_named_portable_c_value_type(self) -> None:
+        interface = ComponentInterfaceIntentV1.parse(
+            json.loads(
+                (
+                    ROOT / "targets/jq/intent/interfaces-v5/output-value-pipeline.json"
+                ).read_text(encoding="utf-8")
+            )
+        )
+        headers = render_component_c_headers_v5(
+            compile_component_interface_v5(interface),
+            {"run": "jq_output_value_pipeline_run"},
+        )
+        public = headers["portable-component.h"]
+        self.assertEqual(public.count("typedef struct spx_jv_value_v2"), 1)
+        self.assertIn("uint32_t metadata;", public)
+        self.assertIn("uint32_t payload_high;", public)
+        self.assertIn("typedef spx_jv_value_v2 spx_jv_value_v5;", public)
+
     def test_scalar_stack_parameter_and_register_result_use_faithful_exit(self) -> None:
         interface = ComponentInterfaceIntentV1.parse(
             json.loads(
@@ -261,9 +334,16 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
                     "semantic-transfer:original-cutpoint-0000933d-0000934a",
                     0x933D,
                 ),
-                _transfer(
+                _Transfer(
                     "semantic-transfer:original-cutpoint-0000934a-00009352",
+                    "a" * 64,
+                    "b" * 64,
                     0x934A,
+                    (),
+                    (),
+                    (_Action("outcome_return", (0,)),),
+                    (),
+                    (),
                 ),
             ),
         )
@@ -273,8 +353,9 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
             ["semantic-transfer:original-cutpoint-0000933d-0000934a"],
         )
         self.assertIn("state->esp + UINT32_C(4)", rendered.source)
-        self.assertIn("state->eax = ((uint32_t)logical_result)", rendered.source)
-        self.assertIn("SPX_FALLTHROUGH, 0x0000934aU", rendered.source)
+        self.assertIn("state->eax = ((uint32_t)(logical_result_word))", rendered.source)
+        self.assertIn("state->esp += UINT32_C(4)", rendered.source)
+        self.assertIn("SPX_RETURN, 0U, return_address", rendered.source)
 
         registry = render_component_dispatch_registry_v1(
             entries=rendered.entries,
@@ -285,9 +366,12 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertIn("spx_region_override_lookup", registry)
         self.assertIn("const spx_region_override spx_region_overrides[]", registry)
         self.assertIn("const uint32_t spx_region_override_count", registry)
+        self.assertIn('#include "state-machine-runtime.h"', registry)
+        self.assertNotIn('#include "behavioral-c.h"', registry)
         self.assertNotIn("spx_portable_overrides", registry)
         self.assertNotIn("spx_native_machine_fallback_allowed", registry)
-        self.assertNotIn("fallback_on_unimplemented", registry)
+        self.assertIn("uint32_t fallback_on_unimplemented;", registry)
+        self.assertIn(", UINT32_C(0),", registry)
 
     def test_control_result_uses_exact_machine_branch_targets(self) -> None:
         unit_id = "semantic-transfer:original-cutpoint-000011ac-000011b3"
@@ -300,16 +384,32 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
             rendered.source,
         )
         self.assertIn("(void)rt;", rendered.source)
-        self.assertIn("(void)spx_component_read;", rendered.source)
+        # Suppress the unused-helper warning without adding a runtime function
+        # pointer target to the generated proof model.
+        self.assertIn("(void)sizeof(&spx_component_read);", rendered.source)
         self.assertIn("SPX_BRANCH", rendered.source)
 
     def test_finite_control_target_is_total_and_fails_closed(self) -> None:
         rendered = _component_overlay("finite-selector-dispatch")
         self.assertIn("switch ((uint32_t)logical_result)", rendered.source)
         self.assertIn("case UINT32_C(11)", rendered.source)
-        self.assertIn("SPX_JUMP, UINT32_C(15128)", rendered.source)
+        self.assertIn(
+            "SPX_INDIRECT_JUMP, 0U, rt->image_base + UINT32_C(15128)",
+            rendered.source,
+        )
         self.assertIn(
             "default: return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+            rendered.source,
+        )
+
+    def test_operation_inlines_unconditional_exit_control(self) -> None:
+        exit_unit = "semantic-transfer:original-cutpoint-00013d07-00013d08"
+        rendered = _component_overlay(
+            "bounded-string-length",
+            action_by_unit={exit_unit: (_Action("outcome_jump", (0x1CDB,)),)},
+        )
+        self.assertIn(
+            "return (spx_step_result){ SPX_JUMP, UINT32_C(7387), 0U };",
             rendered.source,
         )
 
@@ -320,6 +420,12 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertIn("argument_buffer_machine.extent", rendered.source)
         self.assertIn("offset >= view->extent", rendered.source)
         self.assertNotIn("static spx_bounded_string_length_context_v5", rendered.source)
+
+    def test_result_codec_encodes_logical_offset_back_to_machine_pointer(self) -> None:
+        rendered = _component_overlay("last-path-component")
+        self.assertIn("argument_value_view.base.object", rendered.source)
+        self.assertIn("+ (logical_result_word)", rendered.source)
+        self.assertIn("state->eax = ((uint32_t)", rendered.source)
 
     def test_atomic_object_calls_shared_runtime_directly(self) -> None:
         exit_unit = "semantic-transfer:original-cutpoint-0000105a-0000105c"
@@ -337,8 +443,48 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         )
 
     def test_component_operation_service_uses_typed_provider_thunk(self) -> None:
-        rendered = _component_overlay("ascii-string-compare")
+        call_units = {
+            "semantic-transfer:original-cutpoint-000067dc-000067e7": (
+                _Call(
+                    "internal_call",
+                    0x67E2,
+                    0,
+                    None,
+                    0x933D,
+                    0x67E7,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    ((0, 4, 0),),
+                ),
+            ),
+            "semantic-transfer:original-cutpoint-000067e7-000067f4": (
+                _Call(
+                    "internal_call",
+                    0x67EF,
+                    0,
+                    None,
+                    0x933D,
+                    0x67F4,
+                    None,
+                    None,
+                    None,
+                    (),
+                    (),
+                    (),
+                    ((0, 4, 0),),
+                ),
+            ),
+        }
+        rendered = _component_overlay("ascii-string-compare", call_by_unit=call_units)
         provider_overlay = _component_overlay("ascii-to-lower")
+        self.assertEqual(provider_overlay.source.count(
+            "spx_ascii_to_lower_services_v5 logical_services = {"), 2)
+        self.assertEqual(provider_overlay.source.count(
+            "(&logical_context)->services = &logical_services;"), 2)
         provider = "spx_component_logical_ascii_to_lower_convert"
         self.assertIn(f"extern uint32_t {provider}(void *, uint32_t);", rendered.source)
         self.assertIn(
@@ -353,6 +499,16 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertEqual(
             rendered.entries[0]["service_bindings"][0]["abi_sha256"],
             provider_overlay.entries[0]["logical_abi_sha256"],
+        )
+        self.assertEqual(
+            [
+                event["unit_id"]
+                for event in rendered.entries[0]["service_bindings"][0]["events"]
+            ],
+            [
+                "semantic-transfer:original-cutpoint-000067dc-000067e7",
+                "semantic-transfer:original-cutpoint-000067e7-000067f4",
+            ],
         )
         unit_rvas = {}
         for entry in (*rendered.entries, *provider_overlay.entries):
@@ -378,6 +534,40 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
                 entries=(*incompatible, *provider_overlay.entries),
                 portable_unit_rvas=unit_rvas,
             )
+
+    def test_logical_provider_thunk_normalizes_value_bounded_views(self) -> None:
+        intent = ComponentInterfaceIntentV1.parse(
+            json.loads(
+                (
+                    ROOT
+                    / "targets/gnu-hello/intent/interfaces-v5/memory-regions-equal.json"
+                ).read_text(encoding="utf-8")
+            )
+        )
+        bundle = compile_component_interface_v5(intent)
+        source = "\n".join(
+            _logical_operation_thunk(
+                bundle=bundle,
+                component="memory_regions_equal",
+                operation=bundle.interface.operations[0],
+                source_symbol="test_memory_regions_equal",
+                logical_symbol="test_logical_memory_regions_equal",
+                service_bindings=[
+                    {
+                        "service_id": "compare_memory",
+                        "symbol": "test_compare_memory",
+                    }
+                ],
+            )
+        )
+
+        self.assertIn("spx_view_v5 logical_left_bounded;", source)
+        self.assertIn("logical_left_requested = (uint64_t)logical_count;", source)
+        self.assertIn("logical_right_requested = (uint64_t)logical_count;", source)
+        self.assertIn(
+            "logical_left_argument, logical_right_argument, logical_count)",
+            source,
+        )
 
     def test_external_service_uses_authorized_call_frame_and_reference_realization(
         self,
@@ -445,6 +635,19 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
                 )
             ),
         )
+        explicit_production_renderer = _component_overlay(
+            "memory-regions-equal",
+            call_by_unit={unit_id: (call,)},
+            resolved_external_environment=_resolved_environment(
+                _external_contract(
+                    dict(site["identity"]),
+                    abi_template="pe32-cdecl-v1",
+                    argument_words=3,
+                )
+            ),
+            external_service_thunk_renderer=_external_service_thunk,
+        )
+        self.assertEqual(rendered, explicit_production_renderer)
         source = rendered.source
         self.assertIn(
             "spx_component_external_memory_regions_equal_compare_memory", source
@@ -456,6 +659,36 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertIn("spx_invoke_call", source)
         self.assertIn("saved_frame_word_2", source)
         self.assertIn("SPX_EXTERNAL_FAULT", source)
+
+        selected_payload = _external_contract(dict(site["identity"]),
+            abi_template="pe32-cdecl-v1", argument_words=3)["contract"]["payload"]
+        self.assertEqual(rendered.entries[0]["service_bindings"][0]["external_effect_contract"],
+                         selected_payload)
+
+        selected_row = _external_contract(dict(site["identity"]),
+            abi_template="pe32-cdecl-v1", argument_words=3)
+        native_contract = _checked_contract(row=selected_row, call=call, escape_index={})
+        proof_binding = rendered.entries[0]["service_bindings"][0]
+        self.assertEqual(proof_binding["external_contract_identity_sha256"],
+                         native_contract.identity_sha256())
+        original_spec = _proof_call_specs([proof_binding])[0]
+        # A profile-only change must reach the proof transcript even though
+        # import address, logical service and effect payload all stay the same.
+        selected_row["contract"]["profile_sha256"] = "6" * 64
+        altered_overlay = _component_overlay("memory-regions-equal",
+            call_by_unit={unit_id: (call,)},
+            resolved_external_environment=_resolved_environment(selected_row))
+        altered_binding = altered_overlay.entries[0]["service_bindings"][0]
+        self.assertEqual(proof_binding["external_effect_contract"], altered_binding["external_effect_contract"])
+        self.assertNotEqual(original_spec["spec_id"], _proof_call_specs([altered_binding])[0]["spec_id"])
+
+        for field in ("memory_effect", "world_effect"):
+            incomplete = _external_contract(dict(site["identity"]),
+                abi_template="pe32-cdecl-v1", argument_words=3)
+            del incomplete["contract"]["payload"][field]
+            with self.subTest(field=field), self.assertRaisesRegex(BoundaryModelError, field):
+                _component_overlay("memory-regions-equal", call_by_unit={unit_id: (call,)},
+                    resolved_external_environment=_resolved_environment(incomplete))
 
         stale_site = dict(site)
         stale_site["identity"] = {
@@ -737,6 +970,11 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertIn("physical_out_interface_1", rendered.source)
         self.assertIn("resolved_out_interface_1", rendered.source)
         self.assertIn("interface_vtable + UINT32_C(16)", rendered.source)
+        self.assertNotIn(
+            "interface_vtable > UINT32_MAX - UINT32_C(16)", rendered.source
+        )
+        self.assertIn("*service->memory_fault = UINT32_C(1)", rendered.source)
+        self.assertIn("*service->service_fault = UINT32_C(1)", rendered.source)
         self.assertIn("SPX_CALL_INDIRECT", rendered.source)
         self.assertRegex(
             rendered.source,
@@ -744,9 +982,6 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
             r"&service_context, [^,]+, 0\s*\};",
         )
         self.assertIn(method_sha256, json.dumps(rendered.entries))
-
-
-
 
 
 if __name__ == "__main__":

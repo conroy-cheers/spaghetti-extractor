@@ -66,6 +66,31 @@ class SemanticObjectPackageTests(unittest.TestCase):
             }
             self.assertEqual(object_files, direct_files)
 
+    def test_incomplete_behavioral_review_keeps_mapped_source_but_cannot_qualify(self) -> None:
+        from spaghetti_extractor.semantic_providers.generated_c import _materialize_generated_functions
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = support.transfer_row()
+            missing = support.transfer_row()
+            missing.update({"id": "semantic-transfer:missing", "status": "incomplete",
+                            "original": {"rva_start": 0x1003, "rva_end": 0x1004, "size": 1}})
+            _, _, semantic = self._fixture(root, image=support.pe32_image(b"\x40\x40\xc3\xc3"),
+                                           transfer=[first, missing])
+            review = root / "review"
+            package = write_spx_behavioral_c_package_from_semantic_object(
+                semantic_object=semantic, out=review, entry_rvas=(0x1000,))
+            self.assertEqual(package["status"], "incomplete")
+            self.assertEqual(package["counts"]["required_units"], 2)
+            self.assertEqual(package["counts"]["lowered_units"], 1)
+            source_map = json.loads((review / "behavioral-c-source-map.json").read_text())
+            self.assertEqual([row["unit_id"] for row in source_map["units"]], [first["id"]])
+            self.assertTrue((review / source_map["units"][0]["file"]).is_file())
+            with self.assertRaisesRegex(ValueError, "generated Behavioral-C inputs are incomplete"):
+                _materialize_generated_functions(behavioral_c_package=review,
+                    compiler=root / "compiler-must-not-run", out=root / "provider", expected_symbols=set())
+            self.assertFalse((root / "provider").exists())
+
     def test_corruption_matrix_fails_closed_after_rehashing_outer_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

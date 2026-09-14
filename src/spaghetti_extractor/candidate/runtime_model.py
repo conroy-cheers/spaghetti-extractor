@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from ..external.range_release import RangeRelease
+from ..external.range_ownership import RangeOwnership
+from ..external.range_allocation import RangeAllocation
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,6 +247,10 @@ class NativeExternalRangeRule:
     element_unit_bytes: int
     element_max_units: int
     contract_id: str
+    release: RangeRelease | None = None
+    contract_identity_sha256: str | None = None
+    ownership: RangeOwnership | None = None
+    allocation: RangeAllocation | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -269,6 +277,10 @@ class NativeExternalRangeRule:
             "element_unit_bytes": self.element_unit_bytes,
             "element_max_units": self.element_max_units,
             "contract_id": self.contract_id,
+            "contract_identity_sha256": self.contract_identity_sha256,
+            **({"allocation": self.allocation.payload()} if self.allocation is not None else {}),
+            **({"ownership": self.ownership.payload()} if self.ownership is not None else {}),
+            **({"release": self.release.payload()} if self.release is not None else {}),
         }
 
 
@@ -371,6 +383,15 @@ class NativeObjectAuthorityRule:
     locator_offset: int
     locator_subject_rva: int
     interior_pointers: bool
+    extent_mode: str = "fixed"
+
+    @property
+    def extent_mode_code(self) -> int:
+        if self.extent_mode == "fixed":
+            return 0
+        if self.extent_mode == "instance_remainder" and self.locator_kind in {"external_allocation", "resource"}:
+            return 1
+        raise CandidateRuntimeError("native object authority extent mode is invalid")
 
     @property
     def locator_code(self) -> int:
@@ -399,6 +420,7 @@ class NativeObjectAuthorityRule:
                 "subject_rva": self.locator_subject_rva,
             },
             "interior_pointers": self.interior_pointers,
+            **({"extent_mode": self.extent_mode} if self.extent_mode != "fixed" else {}),
         }
 
 

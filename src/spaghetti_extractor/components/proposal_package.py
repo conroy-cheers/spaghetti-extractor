@@ -52,6 +52,58 @@ class ComponentProposalPackageV2:
     unit_bindings: Mapping[str, Mapping[str, str]]
     summaries_by_id: Mapping[str, Mapping[str, Any]]
 
+    def proposals_at_rva(self, rva: int) -> list[dict[str, Any]]:
+        """Read the bounded alternatives generated for the actual containing units.
+
+        A proposal's enclosing span can contain holes. Navigate through graph
+        membership and the seed index, never through that enclosing span alone.
+        Recheck the sidecars on use so editable packages cannot silently drift.
+        """
+        if type(rva) is not int or not 0 <= rva <= 0xFFFFFFFF:
+            raise ComponentProposalPackageError("proposal RVA is outside PE32")
+        files = self.manifest["files"]
+        graph = _read_object(
+            _checked_file(self.root, files["graph_facts"]), "proposal graph facts"
+        )
+        units = set()
+        for node in _sequence(graph.get("nodes"), "proposal graph nodes"):
+            node = _mapping(node, "proposal graph node")
+            start, end = node.get("rva_start"), node.get("rva_end")
+            if (type(start) is not int or type(end) is not int
+                    or not 0 <= start < end <= 0x100000000):
+                raise ComponentProposalPackageError("proposal graph RVA span is invalid")
+            if start <= rva < end:
+                identity = node.get("unit_id")
+                if identity not in self.unit_bindings:
+                    raise ComponentProposalPackageError("proposal graph unit is unbound")
+                units.add(identity)
+        seeds = _read_array(
+            _checked_file(self.root, files["seed_index"]), "proposal seed index"
+        )
+        selected_seeds = {"unit:" + identity for identity in units}
+        identities = set()
+        for seed in seeds:
+            seed = _mapping(seed, "proposal seed")
+            if seed.get("seed_id") in selected_seeds:
+                proposals = _sequence(seed.get("proposal_ids"), "seed proposals")
+                if len(proposals) > 12 or any(not isinstance(p, str) for p in proposals):
+                    raise ComponentProposalPackageError("proposal seed alternatives are invalid")
+                identities.update(proposals)
+        candidates = [self.get_proposal(identity) for identity in sorted(identities)]
+        for candidate in candidates:
+            if not units.intersection(candidate["membership"]["unit_ids"]):
+                raise ComponentProposalPackageError("proposal seed does not contain its unit")
+
+        def rank(candidate: Mapping[str, Any]) -> tuple:
+            rankings = [row for row in candidate["score"].get("seed_rankings", [])
+                        if row.get("seed_id") in selected_seeds]
+            position = min(((int(row["front"]), int(row["rank"])) for row in rankings),
+                           default=(1 << 30, 1 << 30))
+            return (*position, len(candidate.get("blockers", [])),
+                    -candidate["membership"]["unit_count"], candidate["id"])
+
+        return sorted(candidates, key=rank)
+
     def get_proposal(self, proposal_id: str) -> dict[str, Any]:
         summary = self.summaries_by_id.get(proposal_id)
         if summary is None:

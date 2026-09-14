@@ -331,7 +331,11 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "world_effect_release": {
+        "success": "eax_nonzero",
+        "argument_equals": [{ "argument_index": 1, "value": 0 }, { "argument_index": 2, "value": 32768 }]
+      }
     },
     {
       "id": 18,
@@ -390,7 +394,11 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "world_effect_release": {
+        "success": "eax_nonzero",
+        "argument_equals": []
+      }
     },
     {
       "id": 21,
@@ -403,7 +411,11 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
-      "world_effect_argument": 0
+      "world_effect_argument": 0,
+      "world_effect_release": {
+        "success": "eax_nonzero",
+        "argument_equals": []
+      }
     },
     {
       "id": 22,
@@ -437,8 +449,9 @@
         {
           "register": "eax",
           "relation": "dynamic_range_base",
+          "ownership": {"family": "kernel32.heap", "owner_argument": 0},
           "size": {"kind": "argument", "argument": 2, "scale": 1},
-          "minimum_size": 1,
+          "minimum_size": 0,
           "nullable": true
         }
       ],
@@ -457,7 +470,12 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "dynamicRangeRelease",
-      "world_effect_argument": 2
+      "world_effect_argument": 2,
+      "world_effect_release": {
+        "ownership": {"family": "kernel32.heap", "owner_argument": 0},
+        "success": "eax_nonzero",
+        "argument_equals": []
+      }
     }
   ]
 }

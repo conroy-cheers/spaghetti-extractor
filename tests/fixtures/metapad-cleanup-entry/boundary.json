@@ -1,0 +1,22 @@
+{
+  "operation_id": "cleanup",
+  "source": "cleanup.c",
+  "entry": {
+    "position": "before",
+    "text": "  uint32_t length = context->services->length(context->services->context, text);\n"
+  },
+  "exits": {
+    "prefix_iter": {
+      "position": "after",
+      "text": "    for (uint32_t k = 0; k < 2U; ++k) {\n"
+    },
+    "loop": {
+      "position": "before",
+      "text": "  for (;;) {\n"
+    }
+  },
+  "regions": [
+    "entry",
+    "prefix_iter"
+  ]
+}

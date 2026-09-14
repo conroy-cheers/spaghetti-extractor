@@ -89,6 +89,10 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(result["status"], "recovered")
         self.assertEqual(result["index"]["upper_exclusive"], 36)
         self.assertEqual(result["table"]["expression_form"], "multiply_4")
+        self.assertEqual(
+            result["entries"][0]["bytes_le"],
+            list((IMAGE_BASE + target_rvas[0]).to_bytes(4, "little")),
+        )
 
     def test_guard_binds_exact_predecessor_register_output(self) -> None:
         target_rvas = [0x1100, 0x1110]
@@ -278,6 +282,7 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         self.assertEqual(result["index"]["upper_exclusive"], 3)
         self.assertEqual(result["index"]["remap"]["source_upper_exclusive"], 5)
         self.assertEqual(result["index"]["remap"]["possible_values"], [0, 1, 2])
+        self.assertEqual(result["index"]["remap"]["bytes_le"], list(remap_values))
         self.assertEqual(
             result["index"]["remap"]["bytes_sha256"],
             sha256(remap_values).hexdigest(),

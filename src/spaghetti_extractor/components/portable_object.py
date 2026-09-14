@@ -36,6 +36,7 @@ def compile_portable_component_objects(
     host_compiler: Path,
     pe32_compiler: Path,
     output: Path | None,
+    summary_dependencies=(),
 ) -> tuple[list[Mapping[str, object]], str, str | None]:
     """Compile and content-bind every authored and generated translation unit."""
 
@@ -72,6 +73,11 @@ def compile_portable_component_objects(
         generated = render_component_c_headers_v5(
             bundle, operation_symbols, induction_source
         )
+        if summary_dependencies:
+            # Declarations are compilation inputs, not proof authority. The
+            # enclosing checker validates supplier evidence separately.
+            from .bisimulation_source_dependencies import dependency_headers
+            generated = dependency_headers(generated, summary_dependencies)
         if machine_overlay is not None:
             generated["component-machine-overlay.c"] = machine_overlay.source
         else:

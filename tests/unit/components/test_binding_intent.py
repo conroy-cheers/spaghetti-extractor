@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 
 from spaghetti_extractor.boundary import BoundaryModelError
 from spaghetti_extractor.components.binding_intent import (
@@ -15,7 +16,44 @@ from spaghetti_extractor.components.normalized_component import (
     NormalizedComponentContract,
     NormalizedMachineBinding,
 )
+from spaghetti_extractor.components.machine_binding import (
+    ComponentMachineBindingError, OperationMachineBindingV1,
+)
 from tests.unit.boundary._support import schema, value
+
+
+class EffectFactReferenceTests(unittest.TestCase):
+    def projection(self):
+        return {"operation_id": "run", "entry_unit_ids": ["loop"],
+            "exit_unit_ids": ["tail"], "parameters": [], "results": [],
+            "state": [], "preserved_state_ids": [], "callback_operation_ids": [],
+            "continuation_unit_ids": [], "effects": [
+                {"effect_id": "text_written", "unit_id": unit, "family": "memory_event",
+                 "index": index, "fact_sha256": digest * 64}
+                for unit, index, digest in (("loop", 0, "a"), ("loop", 1, "b"), ("tail", 0, "c"))]}
+
+    def test_one_logical_effect_retains_every_machine_fact(self):
+        projection = self.projection()
+        parsed = OperationMachineBindingV1.parse(projection, "operation")
+        self.assertEqual(len(parsed.effects), 3)
+        self.assertEqual(parsed.to_payload(), projection)
+        for count in (0, 1):
+            projection = self.projection()
+            projection["effects"] = projection["effects"][:count]
+            self.assertEqual(OperationMachineBindingV1.parse(projection, "operation").to_payload(), projection)
+
+    def test_duplicate_fact_identity_or_unordered_references_fail_closed(self):
+        for mutation in ("duplicate", "changed_digest", "reversed"):
+            with self.subTest(mutation=mutation):
+                projection = self.projection()
+                if mutation == "reversed":
+                    projection["effects"].reverse()
+                else:
+                    duplicate = deepcopy(projection["effects"][0])
+                    if mutation == "changed_digest": duplicate["fact_sha256"] = "d" * 64
+                    projection["effects"].insert(1, duplicate)
+                with self.assertRaisesRegex(ComponentMachineBindingError, "fact references"):
+                    OperationMachineBindingV1.parse(projection, "operation")
 
 
 def _bundle():

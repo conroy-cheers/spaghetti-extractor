@@ -16,6 +16,7 @@ from ..build_support.python_module_index import (
 )
 
 from .diagnostics import Diagnostic, TestkitError, fail_on_errors
+from .fixtures import FIXTURE_CATALOG_FORMAT, parse_fixture_definitions
 from .model import (
     ImpactIndex,
     ModuleRecord,
@@ -600,6 +601,17 @@ def _resource_dependency_closure(
             )
             payload = json.loads(source)
         except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, Mapping) and payload.get("format") == FIXTURE_CATALOG_FORMAT:
+            # Capability names such as "nix" are not references to repository
+            # directories. Validate through the owner before omitting edges.
+            try:
+                parse_fixture_definitions(payload)
+            except RuntimeError as error:
+                raise TestkitError(Diagnostic(
+                    "error", "invalid_fixture_catalog", str(error), location=relative,
+                    remediation="Repair the fixture catalog through its declared schema.",
+                )) from error
             continue
         strings: list[str] = []
         stack = [payload]

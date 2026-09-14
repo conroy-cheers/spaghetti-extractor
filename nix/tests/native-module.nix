@@ -263,6 +263,15 @@ let
     linkedSemanticModule = fixtureLinkedSemanticModule.linkedSemanticModule;
     bindingIntent = ./fixtures/native-module/interface-stale-binding.json;
   };
+  interfaceStaleExactCSlice = import ../component-exact-c-slice-v1.nix {
+    inherit pkgs;
+    pythonEnv = context.transferPythonEnv;
+    namePrefix = "spaghetti-extractor-native-module-fixture";
+    componentId = "fixture-interface-stale";
+    transferPlan =
+      "${fixture}/machine-ir-transfer/executable-transfer-plan.json";
+    bindingIntent = ./fixtures/native-module/interface-stale-binding.json;
+  };
   interfaceStaleSourcePackage = import ../component-source-package-v3.nix {
     inherit pkgs;
     pythonEnv = context.transferPythonEnv;
@@ -283,6 +292,7 @@ let
       bindingIntent = ./fixtures/native-module/interface-stale-binding.json;
       interfacePackage = interfaceStalePackage.derivation;
       sourcePackage = interfaceStaleSourcePackage.package;
+      exactCSlice = interfaceStaleExactCSlice.exactCSlice;
       transferPlan =
         "${fixture}/machine-ir-transfer/executable-transfer-plan.json";
       resolvedExternalEnvironment =
@@ -657,6 +667,9 @@ pkgs.runCommand "spaghetti-extractor-native-module-check"
     jq -e '
       .format == "spaghetti-extractor-native-realization-v2" and
       .status == "complete" and .ready_for_observation == true and
+      .portable_dispatch_link_receipt.status == "complete" and
+      .portable_dispatch_link_receipt.activation_authorized == true and
+      .portable_dispatch_link_receipt.policy.source_only_authority == false and
       .blockers == [] and
       (.providers | length) == 3 and
       (.definitions | length) == 85 and
@@ -670,6 +683,9 @@ pkgs.runCommand "spaghetti-extractor-native-module-check"
     jq -e '
       .format == "spaghetti-extractor-native-realization-v2" and
       .status == "complete" and .ready_for_observation == true and
+      .portable_dispatch_link_receipt.status == "complete" and
+      .portable_dispatch_link_receipt.activation_authorized == true and
+      .portable_dispatch_link_receipt.policy.source_only_authority == false and
       .blockers == [] and
       ([.providers[] | select(
         .provider_id == "fixture.interface-stale.portable-c" and

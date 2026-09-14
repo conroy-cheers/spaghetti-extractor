@@ -79,6 +79,22 @@ class CutpointValueRelationV1:
         if kind not in {"parameter", "source_state"}:
             raise InductiveRelationError(f"{context} kind is unsupported")
         mode = _text(row["mode"], f"{context} mode")
+        if mode == "native_view":
+            encoding = row["encoding"]
+            if (row["decoding"] is not None or
+                    not isinstance(encoding, Mapping) or set(encoding) != {"op", "access", "nullable"} or
+                    encoding["op"] != "view" or encoding["access"] not in {"read", "write", "read_write"} or
+                    type(encoding["nullable"]) is not bool):
+                raise InductiveRelationError(f"{context} native view requires explicit access and nullability")
+            projection = MachineProjectionV1.parse(row["projection"], f"{context} projection")
+            if projection.payload.get("kind") != "view" or projection.payload.get("at") != "entry":
+                raise InductiveRelationError(f"{context} native view requires an entry view projection")
+            if kind == "parameter":
+                from .machine_overlay_result_views import checked_nullable_input_projection
+                if encoding["nullable"] is not True:
+                    raise InductiveRelationError(f"{context} native parameter requires nullable input transport")
+                checked_nullable_input_projection(projection.payload)
+            return cls(kind, _identifier(row["id"], f"{context} id"), mode, projection, dict(encoding), None)
         if mode == "logical_carry":
             if kind != "source_state" or any(
                 row[field] is not None
@@ -180,13 +196,18 @@ class CutpointDerivedRelationV1:
     def parse(cls, value: object, context: str) -> "CutpointDerivedRelationV1":
         row = _object(value, {"id", "projection", "expression"}, context)
         expression, sort = _parse_relation_expression(
-            row["expression"], f"{context} expression"
+            row["expression"], f"{context} expression", allow_exact_machine=True
         )
         if sort != "word":
             raise InductiveRelationError(f"{context} expression must be a word")
+        projection = MachineProjectionV1.parse(row["projection"], f"{context} projection")
+        if expression.get("op") == "exact_projection":
+            left = _machine_fact_projection(row["projection"], f"{context} projection")
+            if left["width"] != expression["projection"]["width"]:
+                raise InductiveRelationError(f"{context} machine fact widths differ")
         return cls(
             _identifier(row["id"], f"{context} id"),
-            MachineProjectionV1.parse(row["projection"], f"{context} projection"),
+            projection,
             expression,
         )
 
@@ -319,9 +340,9 @@ class InductiveCutpointRelationV1:
             for index, item in enumerate(raw_cutpoints)
         )
         ids = [item.unit_id for item in cutpoints]
-        if not cutpoints or ids != sorted(ids) or len(ids) != len(set(ids)):
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise InductiveRelationError(
-                "cutpoint relations must be nonempty, ordered, and unique"
+                "cutpoint relations must be ordered and unique"
             )
         raw_completions = row["completion_segments"]
         if not isinstance(raw_completions, list):
@@ -445,6 +466,8 @@ class InductiveCutpointRelationV1:
                     f"cutpoint {cutpoint.unit_id!r} does not relate every logical value"
                 )
             for value in cutpoint.values:
+                if value.mode == "native_view":
+                    raise InductiveRelationError("native view cuts require the contextual bisimulation engine")
                 if value.mode == "logical_carry":
                     continue
                 assert value.encoding is not None
@@ -488,6 +511,14 @@ class InductiveCutpointRelationV1:
                         f"cutpoint {cutpoint.unit_id!r} value {value.identity!r} "
                         "encoding has a non-byte address reference"
                     )
+                if any(
+                    parameter_types.get(item) != "resource"
+                    for item in encoding_refs["resource_identity"]
+                ):
+                    raise InductiveRelationError(
+                        f"cutpoint {cutpoint.unit_id!r} value {value.identity!r} "
+                        "encoding has a non-resource identity reference"
+                    )
                 if value.decoding is not None:
                     decoding_refs = _relation_expression_references(value.decoding)
                     if decoding_refs["state_input"]:
@@ -517,6 +548,14 @@ class InductiveCutpointRelationV1:
                             f"cutpoint {cutpoint.unit_id!r} value {value.identity!r} "
                             "decoding has a non-byte address reference"
                         )
+                    if any(
+                        parameter_types.get(item) != "resource"
+                        for item in decoding_refs["resource_identity"]
+                    ):
+                        raise InductiveRelationError(
+                            f"cutpoint {cutpoint.unit_id!r} value {value.identity!r} "
+                            "decoding has a non-resource identity reference"
+                        )
             for derived in cutpoint.derived:
                 references = _relation_expression_references(derived.expression)
                 if references["parameter"] - parameter_ids:
@@ -538,6 +577,14 @@ class InductiveCutpointRelationV1:
                     raise InductiveRelationError(
                         f"cutpoint {cutpoint.unit_id!r} derived value "
                         f"{derived.identity!r} has a non-byte address reference"
+                    )
+                if any(
+                    parameter_types.get(item) != "resource"
+                    for item in references["resource_identity"]
+                ):
+                    raise InductiveRelationError(
+                        f"cutpoint {cutpoint.unit_id!r} derived value "
+                        f"{derived.identity!r} has a non-resource identity reference"
                     )
         if observed_phases != set(source_plan.phase_ids):
             raise InductiveRelationError(
@@ -589,9 +636,42 @@ class InductiveCutpointRelationV1:
                 )
 
 
+def _machine_fact_projection(value: object, context: str) -> dict[str, object]:
+    """Current cut scalars, with no source decoding or historical-slot claim."""
+    projection = MachineProjectionV1.parse(value, context).to_payload()
+    if (projection.get("kind") not in {"register", "static_slot", "stack"}
+            or projection.get("at") != "entry" or projection.get("width") not in {8, 16, 32}
+            or projection.get("register") == "eip"):
+        raise InductiveRelationError(f"{context} requires an entry register, image scalar or stack word")
+    if projection['kind'] == 'stack' and not -4096 <= projection['offset'] <= 4096:
+        raise InductiveRelationError(f"{context} stack fact offset is outside the supported cut window")
+    return projection
+
+
 def _parse_relation_expression(
-    value: object, context: str
+    value: object, context: str, *, allow_exact_machine: bool = False
 ) -> tuple[dict[str, object], str]:
+    if isinstance(value, Mapping) and value.get("op") == "exact_projection":
+        if not allow_exact_machine or set(value) != {"op", "projection"}:
+            raise InductiveRelationError(f"{context} exact projection is only valid in a derived relation")
+        return {"op": "exact_projection", "projection": _machine_fact_projection(
+            value["projection"], f"{context} exact projection")}, "word"
+    if isinstance(value, Mapping) and value.get("op") == "exact_stack_address":
+        if not allow_exact_machine or set(value) != {"op", "offset"}:
+            raise InductiveRelationError(
+                f"{context} exact stack address is only valid in a derived relation"
+            )
+        offset = value["offset"]
+        if (
+            not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or offset < -4096
+            or offset > 4096
+        ):
+            raise InductiveRelationError(
+                f"{context} exact stack address offset is invalid"
+            )
+        return {"op": "exact_stack_address", "offset": offset}, "word"
     try:
         return parse_value_codec_expression(value, context)
     except ValueCodecError as exc:
@@ -601,6 +681,10 @@ def _parse_relation_expression(
 def _relation_expression_references(
     value: Mapping[str, object],
 ) -> dict[str, set[str]]:
+    if value.get("op") in {"exact_stack_address", "exact_projection"}:
+        return value_codec_expression_references(
+            {"op": "const", "value": 0, "width": 32}
+        )
     return value_codec_expression_references(value)
 
 

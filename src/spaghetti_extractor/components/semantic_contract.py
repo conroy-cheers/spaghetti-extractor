@@ -17,6 +17,9 @@ from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..artifacts.machine_abi import build_pe32_normal_call_abi_premise
+from ..external.contracts import CheckedExternalSiteContractError, require_machine_import_effects
+from ..external.lifetime_effects import LifetimeEffectError, checked_lifetime_effect
+from ..external.terminated_reads import RELATION as TERMINATED_READ_RELATION, WRITTEN_RELATION, checked_terminated_read, checked_terminated_write
 from ..external.resolved import (
     ExternalEnvironmentError,
     ResolvedExternalEnvironmentV1,
@@ -76,7 +79,7 @@ def load_transfer_v2_refinement_universe(
     """Select exact contract-bound rows without serializing a second IR."""
 
     transfer_path = Path(transfer_plan)
-    payload, _ = load_executable_transfer_plan(transfer_path, require_complete=True)
+    payload, _ = load_executable_transfer_plan(transfer_path, require_complete=False)
     transfer_sha256 = sha256_file(transfer_path)
     reachable_unit_ids = {str(item) for item in required_unit_ids}
     if (
@@ -100,6 +103,34 @@ def load_transfer_v2_refinement_universe(
         raise ComponentSemanticContractError(
             "canonical transfer unit inventory is ambiguous"
         )
+    compiled_ids = {str(row["identity"]) for row in raw_transfers}
+    blocked_ids: set[str] = set()
+    selected_ranges = [inventory_by_id[item] for item in reachable_unit_ids if item in inventory_by_id]
+    # An unrelated failed lowering cannot invalidate an otherwise exact region.
+    # Global/ambiguous failures and any intersecting unit still prevent proof.
+    # The original incomplete plan is retained, never promoted to complete.
+    for raw in payload["semantic_blockers"]:
+        blocker = _object(raw, "canonical transfer blocker")
+        identity = blocker.get("transfer_id")
+        row = inventory_by_id.get(identity) if isinstance(identity, str) else None
+        if (
+            row is None
+            or any(not isinstance(row.get(key), int) or isinstance(row.get(key), bool)
+                   for key in ("rva_start", "rva_end"))
+            or not 0 <= row["rva_start"] < row["rva_end"] <= 0x100000000
+            or blocker.get("failure_phase") not in {"semantic_qualification", "semantic_lowering"}
+            or blocker.get("rva_start") != row["rva_start"]
+            or identity in reachable_unit_ids
+            or identity in compiled_ids
+            or any(row["rva_start"] < selected["rva_end"] and selected["rva_start"] < row["rva_end"]
+                   for selected in selected_ranges)
+        ):
+            raise ComponentSemanticContractError(
+                "component transfer selection has a selected, overlapping, or unscoped blocker"
+            )
+        blocked_ids.add(identity)
+    if set(inventory_by_id) - compiled_ids != blocked_ids:
+        raise ComponentSemanticContractError("canonical transfer omissions lack scoped blockers")
     atomic_by_unit: dict[str, list[Mapping[str, object]]] = {}
     for raw in _array(
         payload.get("atomic_effect_authority"),
@@ -243,6 +274,7 @@ def build_proof_kernel_semantic_contract(
     resolved_external_environment: Path | str | Mapping[str, object] | None = None,
     component_resolution: Path | str | Mapping[str, object] | None = None,
     machine_image: Mapping[str, object] | None = None,
+    operation_unit_ids: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, object]:
     """Build an exact selected-unit contract without executing the original."""
 
@@ -250,6 +282,11 @@ def build_proof_kernel_semantic_contract(
     portable = ProofKernelComponentInterface.parse(interface_payload)
     binding_payload = _load(binding, "component machine binding")
     machine_binding = ProofKernelMachineBinding.parse(binding_payload)
+    if operation_unit_ids is not None and (
+        not isinstance(operation_unit_ids, Mapping)
+        or set(operation_unit_ids) != {op.operation_id for op in machine_binding.operations}
+    ):
+        raise ComponentSemanticContractError("operation ownership inventory differs from bound operations")
     if isinstance(machine_ir, CanonicalTransferRefinementUniverseV2):
         if machine_ir_manifest is not None:
             raise ComponentSemanticContractError(
@@ -352,7 +389,8 @@ def build_proof_kernel_semantic_contract(
                 operation_id=operation.operation_id,
             )
             continue
-        operation_units = _operation_units(operation, selected)
+        operation_units = _operation_units(operation, selected,
+            owned_unit_ids=None if operation_unit_ids is None else operation_unit_ids[operation.operation_id])
         if operation_units is None:
             issue(
                 "incomplete",
@@ -374,6 +412,10 @@ def build_proof_kernel_semantic_contract(
                 "effects": [row.to_payload() for row in operation.effects],
                 "callback_operation_ids": list(operation.callback_operation_ids),
                 "continuation_unit_ids": list(operation.continuation_unit_ids),
+                **({"continuation_units": [
+                    _contract_unit(selected[unit_id]) for unit_id in operation.continuation_unit_ids
+                    if unit_id in selected
+                ]} if operation.continuation_unit_ids else {}),
                 "units": [_contract_unit(row) for row in operation_units],
                 **(
                     {}
@@ -401,10 +443,6 @@ def build_proof_kernel_semantic_contract(
                     )
                 )
                 resolved_environment_sha256 = resolved.identity
-                if resolved.payload["status"] != "complete":
-                    raise ExternalEnvironmentError(
-                        "resolved external environment is incomplete"
-                    )
                 external_contracts = _resolved_external_contract_index(resolved)
                 interface_method_contracts = resolved_interface_method_index_v1(
                     resolved
@@ -690,6 +728,13 @@ def build_proof_kernel_semantic_contract(
         contract_payload = _object(
             contract.get("payload"), "resolved machine-import contract payload"
         )
+        try:
+            require_machine_import_effects(contract_payload, context="bound external call")
+        except CheckedExternalSiteContractError as exc:
+            issue("incomplete", "bound_external_call_effect_contract_missing",
+                  service_id=service.service_id, identity=dict(identity), detail=str(exc))
+            services.append(service.to_payload())
+            continue
         stack_inputs = [
             _object(row, "machine external stack input")
             for row in _array(
@@ -793,8 +838,27 @@ def build_proof_kernel_semantic_contract(
                     # portable scalar values. Their declared wrapper supplies
                     # the authority needed to interpret the word.
                     accepted_relations = {"exact", "related_word"}
+                    if logical_result.kind in {"reference", "view"} and any(
+                        isinstance(row, Mapping) and row.get("relation") == "dynamic_range_base"
+                        for row in contract_payload.get("result_register_relations", [])
+                    ):
+                        try:
+                            effect = checked_lifetime_effect(contract_payload, argument_words=argument_words)
+                            if effect["action"] == "add_result_range":
+                                accepted_relations.add("dynamic_range_base")
+                        except LifetimeEffectError as exc:
+                            issue("incomplete", "external_call_service_allocation_result_unsupported",
+                                  service_id=service.service_id, detail=str(exc))
                 else:
                     accepted_relations = {"exact"}
+                    try:
+                        if checked_terminated_read(contract_payload, argument_words=argument_words) is not None:
+                            accepted_relations.add(TERMINATED_READ_RELATION)
+                        if checked_terminated_write(contract_payload, argument_words=argument_words) is not None:
+                            accepted_relations.add(WRITTEN_RELATION)
+                    except ValueError as exc:
+                        issue("violated", "external_call_service_result_projection_invalid",
+                              service_id=service.service_id, detail=str(exc))
                 relations = [
                     row
                     for row in _array(

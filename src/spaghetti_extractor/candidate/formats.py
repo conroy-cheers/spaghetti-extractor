@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from ..artifacts.format_spec import FormatSpecV1
+from ..transfer.behavioral_c_model import (
+    BEHAVIORAL_C_LAYOUT_INTENT_FORMAT as _BEHAVIORAL_C_LAYOUT_INTENT_FORMAT,
+)
 
 
 _OWNER = __name__
@@ -12,7 +15,7 @@ SPX_RUNTIME_STATE_LAYOUT_FORMAT = (
 
 FORMAT_SPECS = (
     FormatSpecV1(
-        literal="spaghetti-extractor-behavioral-c-layout-intent-v1",
+        literal=_BEHAVIORAL_C_LAYOUT_INTENT_FORMAT,
         version=1,
         owner=_OWNER,
         codec="spaghetti_extractor.candidate.behavioral_c_package",

@@ -90,6 +90,7 @@
               ../profiles
               ../tools
               ../targets
+              ../tests/fixtures
             ];
           };
           testRunner = pkgs.writeShellApplication {
@@ -131,13 +132,19 @@
               ${sdk.validation.testRunner}/bin/spaghetti-extractor-test \
                 smoke --repository "$toolkit_repository"
 
+              target_flake="path:${consumerSource}?dir=targets"
+              spaghetti-extractor component list \
+                --target-flake "$target_flake" --local "$target" >/dev/null
+              spaghetti-extractor candidate list \
+                --target-flake "$target_flake" --local "$target" >/dev/null
+
               check_flags=()
               if [ "$mode" = acceptance ]; then
                 check_flags=(--acceptance)
               fi
               spaghetti-extractor project check \
                 "''${check_flags[@]}" \
-                --target-flake "path:${consumerSource}?dir=targets" \
+                --target-flake "$target_flake" \
                 "$target"
             '';
           };

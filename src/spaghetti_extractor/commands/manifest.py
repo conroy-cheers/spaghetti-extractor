@@ -28,7 +28,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "component list",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "list independently buildable component units and configurations",
+        "help": "list authored component units and their available products",
     },
     {
         "name": "component status",
@@ -38,22 +38,17 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "component build",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "build one unit work package or configuration runtime",
+        "help": "build one component unit work package",
     },
     {
-        "name": "component bind",
+        "name": "component start",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "check one portable interface against its exact machine binding",
+        "help": "materialize checked component scaffolding or start its source intent",
     },
     {
         "name": "component check",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "require the component's checked machine-derived authority",
-    },
-    {
-        "name": "component relation",
-        "group": "spaghetti_extractor.commands.workflows",
-        "help": "propose, inspect, adopt, or check a machine/logical relation",
+        "help": "require component qualification, or check source with --source",
     },
     {
         "name": "boundary status",
@@ -108,17 +103,12 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "candidate status",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "show semantic-module and provider-selection readiness",
+        "help": "show provider-selection readiness for one configuration",
     },
     {
         "name": "candidate build",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "build the target's default static candidate",
-    },
-    {
-        "name": "candidate check",
-        "group": "spaghetti_extractor.commands.workflows",
-        "help": "require hybrid closure or portable-only component readiness",
     },
     {
         "name": "candidate test",
@@ -168,7 +158,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "expert semantic-diagnose",
         "group": "spaghetti_extractor.commands.semantic_diagnostics",
-        "help": "inspect blocker causes, one demand slice, or a closure delta",
+        "help": "inspect semantic blockers, caller sites, input dependencies, slices, or deltas",
     },
     {
         "name": "expert roundtrip-generate",
@@ -256,9 +246,8 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "component list": "operator",
     "component status": "operator",
     "component build": "operator",
-    "component bind": "operator",
+    "component start": "operator",
     "component check": "operator",
-    "component relation": "operator",
     "boundary status": "operator",
     "boundary inspect": "operator",
     "boundary propose": "operator",
@@ -271,7 +260,6 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "candidate list": "operator",
     "candidate status": "operator",
     "candidate build": "operator",
-    "candidate check": "operator",
     "candidate test": "operator",
     "expert static-inventory-binary": "proposal",
     "expert static-export-roots": "proposal",

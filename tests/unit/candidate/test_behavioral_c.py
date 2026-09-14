@@ -604,6 +604,40 @@ int main(void) {
 
         self.assertEqual(caught.exception.code, "behavioral_c_layout_unknown_rva")
 
+    def test_forced_label_is_a_step_barrier_without_changing_run_semantics(self) -> None:
+        first = _transfer(
+            0x1000,
+            actions=(_Action("outcome_fallthrough", (0x1010,)),),
+        )
+        second = _transfer(
+            0x1010,
+            nodes=(_Node("const", immediate=7),),
+            actions=(
+                _Action("set_reg", (0,), aux=0),
+                _Action("outcome_return", (0,)),
+            ),
+        )
+        intent = BehavioralCLayoutIntent.from_payload(
+            {
+                "format": BEHAVIORAL_C_LAYOUT_INTENT_FORMAT,
+                "roots": [0x1000],
+                "names": {},
+                "forced_labels": [0x1010],
+            }
+        )
+        plan = build_behavioral_c_plan((first, second), intent=intent)
+
+        source, _spans = behavioral_c_source((first, second), plan)
+
+        self.assertIn(
+            "return (spx_step_result){ SPX_FALLTHROUGH, 0x00001010U, 0U };",
+            source,
+        )
+        self.assertIn(
+            "if (result.kind <= SPX_BRANCH) { rva = result.target_rva; continue; }",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

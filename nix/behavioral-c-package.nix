@@ -7,6 +7,7 @@
   namePrefix,
   layoutIntent ? null,
   compiler ? pkgs.stdenv.cc,
+  reviewOnly ? false,
 }:
 
 let
@@ -19,7 +20,7 @@ let
   layoutArgument = if layoutIntent == null then "-" else toString layoutIntent;
 in
 pkgs.runCommand
-  "${namePrefix}-behavioral-c-v2"
+  "${namePrefix}-behavioral-c${pkgs.lib.optionalString reviewOnly "-review"}-v2"
   {
     nativeBuildInputs = [ pythonEnv pkgs.jq pkgs.coreutils compiler ];
     preferLocalBuild = false;
@@ -51,6 +52,18 @@ pkgs.runCommand
         layout_intent=layout,
     )
     PY
+    # Operator review may inspect the mapped, faithfully lowered units while
+    # other parts of the application remain unsupported. Retain the producer's
+    # incomplete status and blockers. Provider readers still require ready
+    # packages and their own exact object/link evidence.
+    if ${if reviewOnly then "true" else "false"}; then
+      jq -e '
+        .format == "spaghetti-extractor-behavioral-c-package-v2" and
+        (.status == "ready" or .status == "incomplete") and
+        .input_mode == "semantic_object_v1"
+      ' "$out/behavioral-c-package.json" >/dev/null
+      exit 0
+    fi
     jq -e '
       .format == "spaghetti-extractor-behavioral-c-package-v2" and
       .status == "ready" and

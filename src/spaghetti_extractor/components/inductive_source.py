@@ -58,9 +58,12 @@ def _c_identifier(value: object, context: str) -> str:
     return result
 
 
-def _ids(value: object, context: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
-        raise InductiveSourceError(f"{context} must be a nonempty array")
+def _ids(
+    value: object, context: str, *, allow_empty: bool = False
+) -> tuple[str, ...]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        qualifier = "an array" if allow_empty else "a nonempty array"
+        raise InductiveSourceError(f"{context} must be {qualifier}")
     result = tuple(_portable_id(item, context) for item in value)
     if list(result) != sorted(result) or len(result) != len(set(result)):
         raise InductiveSourceError(f"{context} must be ordered and unique")
@@ -173,7 +176,7 @@ class InductiveSourcePlanV1:
             _digest(row["interface_sha256"], "source-plan interface digest"),
             _portable_id(row["operation_id"], "source-plan operation id"),
             state,
-            _ids(row["phase_ids"], "inductive phase ids"),
+            _ids(row["phase_ids"], "inductive phase ids", allow_empty=True),
             _ids(row["completion_ids"], "inductive completion ids"),
             InductiveSourceSymbolsV1.parse(row["symbols"]),
             digest,

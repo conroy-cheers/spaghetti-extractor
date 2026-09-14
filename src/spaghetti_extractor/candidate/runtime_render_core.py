@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from .runtime_memory_access import access_predicates_source
 from .runtime_model import SharedModuleRuntimePlan
+from ..transfer.reference_namespace import reference_namespace_source
+from .runtime_allocation_lifetime import allocation_lifetime_source
+from .runtime_range_release import range_release_source
+from .runtime_range_ownership import range_allocation_result_source
 
 
 def _native_runtime_source_core(plan: SharedModuleRuntimePlan) -> str:
@@ -18,106 +23,14 @@ def _native_runtime_source_core(plan: SharedModuleRuntimePlan) -> str:
 }}
 
 uint32_t spx_native_machine_fallback_allowed(uint32_t rva) {{
-  uint32_t low = 0U, high = spx_native_implementation_dispatch_count;
-  while (low < high) {{
-    uint32_t middle = low + (high - low) / 2U;
-    uint32_t observed = spx_native_implementation_dispatches[middle].rva;
-    if (observed < rva) low = middle + 1U;
-    else high = middle;
-  }}
-  return low < spx_native_implementation_dispatch_count &&
-      spx_native_implementation_dispatches[low].rva == rva &&
-      spx_native_implementation_dispatches[low].implementation_class == 0U;
+  const spx_region_override *override =
+      spx_region_override_lookup == 0
+      ? (const spx_region_override *)0
+      : spx_region_override_lookup(rva);
+  return override == 0 || override->fallback_on_unimplemented != 0U;
 }}
 
-static uint32_t spx_native_write_allowed(uint32_t address, uint32_t width) {{
-  spx_native_context *context = &spx_native_context_value;
-  uint32_t end, image_end, i, matched = 0U;
-  uint32_t physical_frame_access = spx_native_physical_frame_memory_access(
-      address, width, 1U);
-  uint32_t captured_stack_access = spx_native_captured_stack_memory_access(
-      address, width, 1U);
-  uint32_t unwind_access = spx_native_unwind_service_memory_access(
-      address, width, 1U);
-  uint32_t service_access = spx_native_exception_service_memory_access(
-      address, width, 1U);
-  uint32_t exception_access = spx_native_exception_memory_access(
-      address, width, 1U);
-  if (physical_frame_access != 0U) return physical_frame_access == 1U;
-  if (captured_stack_access != 0U) return captured_stack_access == 1U;
-  if (unwind_access != 0U) return unwind_access == 1U;
-  if (service_access != 0U) return service_access == 1U;
-  if (exception_access != 0U) return exception_access == 1U;
-  if (!spx_native_range_end(address, width, &end) ||
-      !spx_native_range_end(context->image_base, context->image_size, &image_end))
-    return 0U;
-  if (spx_native_inside_external_range(context, address, end)) return 1U;
-  if (spx_native_inside_thread_environment(context, address, end)) return 1U;
-  if (end <= context->image_base || address >= image_end)
-    return address >= context->stack_low && end <= context->stack_high;
-  for (i = 0U; i < context->section_count; ++i) {{
-    uint32_t section = context->section_table + i * 40U;
-    uint32_t virtual_size = spx_native_u32(section + 8U);
-    uint32_t raw_size = spx_native_u32(section + 16U);
-    uint32_t rva = spx_native_u32(section + 12U);
-    uint32_t size = virtual_size > raw_size ? virtual_size : raw_size;
-    uint32_t section_start;
-    if (rva > 0xffffffffU - context->image_base) return 0U;
-    section_start = context->image_base + rva;
-    if (spx_native_inside(address, end, section_start, size)) {{
-      if ((spx_native_u32(section + 36U) &
-          SPX_NATIVE_IMAGE_SCN_MEM_EXECUTE) != 0U)
-        return 0U;
-      matched = 1U;
-    }}
-  }}
-  return matched;
-}}
-
-static uint32_t spx_native_read_allowed(uint32_t address, uint32_t width) {{
-  spx_native_context *context = &spx_native_context_value;
-  uint32_t end, image_end, i;
-  uint32_t physical_frame_access = spx_native_physical_frame_memory_access(
-      address, width, 0U);
-  uint32_t captured_stack_access = spx_native_captured_stack_memory_access(
-      address, width, 0U);
-  uint32_t unwind_access = spx_native_unwind_service_memory_access(
-      address, width, 0U);
-  uint32_t service_access = spx_native_exception_service_memory_access(
-      address, width, 0U);
-  uint32_t exception_access = spx_native_exception_memory_access(
-      address, width, 0U);
-  if (physical_frame_access != 0U) return physical_frame_access == 1U;
-  if (captured_stack_access != 0U) return captured_stack_access == 1U;
-  if (unwind_access != 0U) return unwind_access == 1U;
-  if (service_access != 0U) return service_access == 1U;
-  if (exception_access != 0U) return exception_access == 1U;
-  if (!spx_native_range_end(address, width, &end) ||
-      !spx_native_range_end(context->image_base, context->image_size, &image_end))
-    return 0U;
-  if (address >= context->stack_low && end <= context->stack_high)
-    return 1U;
-  if (spx_native_inside_external_range(context, address, end)) return 1U;
-  if (spx_native_inside_thread_environment(context, address, end)) return 1U;
-  if (address < context->image_base || end > image_end)
-    return 0U;
-  if (end <= context->image_base + context->headers_size)
-    return 1U;
-  for (i = 0U; i < context->section_count; ++i) {{
-    uint32_t section = context->section_table + i * 40U;
-    uint32_t virtual_size = spx_native_u32(section + 8U);
-    uint32_t raw_size = spx_native_u32(section + 16U);
-    uint32_t rva = spx_native_u32(section + 12U);
-    uint32_t size = virtual_size > raw_size ? virtual_size : raw_size;
-    uint32_t section_start;
-    if (rva > 0xffffffffU - context->image_base) return 0U;
-    section_start = context->image_base + rva;
-    if (spx_native_inside(address, end, section_start, size)) return 1U;
-  }}
-  return 0U;
-}}
-
-static uint32_t spx_native_state_register(
+{access_predicates_source()}static uint32_t spx_native_state_register(
     const spx_machine_state *state, uint32_t index, uint32_t *value) {{
   if (state == 0 || value == 0) return 0U;
   switch (index) {{
@@ -467,6 +380,8 @@ static uint32_t spx_native_external_range_rule_matches(
       rule->target_catalog_index);
 }}
 
+{range_release_source()}
+
 static uint32_t spx_native_external_site_authorized(uint32_t rva) {{
   uint32_t low = 0U, high = spx_native_authorized_external_site_count;
   while (low < high) {{
@@ -601,7 +516,7 @@ spx_call_status spx_native_runtime_capture_external_call(
       return SPX_CALL_UNIMPLEMENTED;
     }}
   }}
-  return SPX_CALL_OK;
+  return spx_native_validate_release_calls(event, snapshot);
 }}
 
 static uint32_t spx_native_external_argument(
@@ -689,95 +604,8 @@ static uint32_t spx_native_range_size(
   return *size >= rule->minimum_size;
 }}
 
-static uint32_t spx_native_next_external_lifecycle_sequence(
-    spx_native_context *context) {{
-  if (context->external_lifecycle_sequence != 0xffffffffU)
-    ++context->external_lifecycle_sequence;
-  return context->external_lifecycle_sequence;
-}}
-
-static void spx_native_record_external_lifecycle(
-    spx_native_context *context, uint32_t operation,
-    spx_call_status status, uint32_t instruction_rva,
-    uint32_t start, uint32_t size, uint32_t producer_rva,
-    uint32_t producer_action, uint32_t generation) {{
-  spx_native_external_lifecycle_event *event;
-  if (context == 0) return;
-  event = &context->external_lifecycle_events[context->external_lifecycle_next];
-  event->sequence = spx_native_next_external_lifecycle_sequence(context);
-  event->operation = operation;
-  event->status = (uint32_t)status;
-  event->instruction_rva = instruction_rva;
-  event->start = start;
-  event->size = size;
-  event->producer_rva = producer_rva;
-  event->producer_action = producer_action;
-  event->generation = generation;
-  context->external_lifecycle_next =
-      (context->external_lifecycle_next + 1U) %
-      SPX_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS;
-  if (context->external_lifecycle_count <
-      SPX_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS)
-    ++context->external_lifecycle_count;
-}}
-
-static spx_call_status spx_native_add_external_range(
-    uint32_t start, uint32_t size, uint32_t producer_rva,
-    uint32_t producer_action, uint32_t external_range_rule_selector,
-    uint64_t object_id) {{
-  spx_native_context *context = &spx_native_context_value;
-  uint32_t end, generation, i;
-  if (!spx_native_range_end(start, size, &end)) {{
-    spx_native_record_external_lifecycle(
-        context, 1U, SPX_CALL_UNIMPLEMENTED, producer_rva,
-        start, size, producer_rva, producer_action, 0U);
-    return SPX_CALL_UNIMPLEMENTED;
-  }}
-  generation = context->external_lifecycle_sequence == 0xffffffffU
-      ? 0xffffffffU : context->external_lifecycle_sequence + 1U;
-  if (object_id == 0U) {{
-    if (context->external_object_sequence != 0xffffffffU)
-      ++context->external_object_sequence;
-    object_id = context->external_object_sequence;
-  }}
-  for (i = 0U; i < context->external_range_count; ++i) {{
-    if (context->external_ranges[i].start == start) {{
-      context->external_ranges[i].size = size;
-      context->external_ranges[i].producer_rva = producer_rva;
-      context->external_ranges[i].producer_action = producer_action;
-      context->external_ranges[i].generation = generation;
-      context->external_ranges[i].external_range_rule_selector =
-          external_range_rule_selector;
-      context->external_ranges[i].object_id = object_id;
-      spx_native_record_external_lifecycle(
-          context, 2U, SPX_CALL_OK, producer_rva,
-          start, size, producer_rva, producer_action, generation);
-      return SPX_CALL_OK;
-    }}
-  }}
-  if (context->external_range_count == SPX_NATIVE_MAX_EXTERNAL_RANGES) {{
-    spx_native_record_external_lifecycle(
-        context, 1U, SPX_CALL_UNIMPLEMENTED, producer_rva,
-        start, size, producer_rva, producer_action, generation);
-    return SPX_CALL_UNIMPLEMENTED;
-  }}
-  context->external_ranges[context->external_range_count].start = start;
-  context->external_ranges[context->external_range_count].size = size;
-  context->external_ranges[context->external_range_count].producer_rva = producer_rva;
-  context->external_ranges[context->external_range_count].producer_action =
-      producer_action;
-  context->external_ranges[context->external_range_count].generation = generation;
-  context->external_ranges[context->external_range_count].external_range_rule_selector =
-      external_range_rule_selector;
-  context->external_ranges[context->external_range_count].object_id = object_id;
-  ++context->external_range_count;
-  spx_native_record_external_lifecycle(
-      context, 1U, SPX_CALL_OK, producer_rva,
-      start, size, producer_rva, producer_action, generation);
-  return SPX_CALL_OK;
-}}
-
-static spx_call_status spx_native_add_external_range_for_rule(
+{range_allocation_result_source()}
+{allocation_lifetime_source()}static spx_call_status spx_native_add_external_range_for_rule(
     const spx_native_external_range_rule *rule,
     uint32_t start, uint32_t size) {{
   uint32_t external_range_rule_selector;
@@ -796,8 +624,11 @@ static spx_call_status spx_native_add_external_range_for_rule(
         rule->object_rule_selector - 1U];
     if ((object_rule->locator_kind != 5U &&
          object_rule->locator_kind != 6U) ||
-        object_rule->locator_subject_rva != external_range_rule_selector)
+        rule->allocation_group_selector == 0U ||
+        rule->allocation_group_selector > spx_native_external_range_rule_count ||
+        object_rule->locator_subject_rva != rule->allocation_group_selector)
       return SPX_CALL_UNIMPLEMENTED;
+    external_range_rule_selector = rule->allocation_group_selector;
     object_id = object_rule->object_id;
   }}
   return spx_native_add_external_range(
@@ -1162,7 +993,7 @@ spx_call_status spx_native_runtime_record_external_result(
     const spx_native_external_range_rule *rule =
         &spx_native_external_range_rules[i];
     spx_call_status status;
-    uint32_t pointer, size;
+    uint32_t pointer = 0U;
     if (!spx_native_external_range_rule_matches(rule, event) ||
         rule->target_iat_rva != snapshot->target_iat_rva ||
         rule->target_catalog_index != snapshot->target_catalog_index)
@@ -1170,22 +1001,9 @@ spx_call_status spx_native_runtime_record_external_result(
     if (rule->action == 0U) {{
       continue;
     }} else if (rule->action == 1U) {{
-      if (!spx_native_state_register(output, rule->register_index, &pointer) ||
-          (!rule->nullable && pointer == 0U) ||
-          !spx_native_range_size(rule, event, snapshot, pointer, &size)) {{
-        spx_native_diagnostic_reason = 0x2101U;
-        return SPX_CALL_UNIMPLEMENTED;
-      }}
-      if (pointer == 0U || size == 0U) continue;
-      status = spx_native_add_external_range_for_rule(rule, pointer, size);
+      status = spx_native_record_range_allocation(rule, event, snapshot, output);
     }} else if (rule->action == 2U) {{
-      if (!spx_native_external_argument(
-              rule, event, snapshot, rule->argument, &pointer)) {{
-        spx_native_diagnostic_reason = 0x2201U;
-        return SPX_CALL_UNIMPLEMENTED;
-      }}
-      status = spx_native_release_external_range(
-          pointer, rule->instruction_rva);
+      status = spx_native_apply_range_release(rule, event, snapshot, output);
     }} else if (rule->action == 3U) {{
       if (!spx_native_state_register(
               output, rule->register_index, &pointer)) {{
@@ -1694,182 +1512,7 @@ static uint32_t spx_native_object_rule_base(
   return 1U;
 }}
 
-static uint32_t spx_native_object_rule_identity_equal(
-    const char *left, const char *right) {{
-  uint32_t index = 0U;
-  if (left == 0 || right == 0) return 0U;
-  while (left[index] != 0 && left[index] == right[index]) ++index;
-  return left[index] == right[index];
-}}
-
-static uint32_t spx_native_dynamic_external_object_instance(
-    const spx_native_object_authority_rule *rule,
-    const spx_native_external_range *range,
-    uint32_t *base, uint64_t *generation) {{
-  uint32_t candidate;
-  if (rule == 0 || range == 0 || base == 0 || generation == 0 ||
-      (rule->locator_kind != 5U && rule->locator_kind != 6U) ||
-      rule->locator_subject_rva == 0U ||
-      range->external_range_rule_selector != rule->locator_subject_rva ||
-      range->object_id != rule->object_id ||
-      rule->locator_offset > range->size ||
-      rule->extent > range->size - rule->locator_offset ||
-      range->start > 0xffffffffU - rule->locator_offset)
-    return 0U;
-  candidate = range->start + rule->locator_offset;
-  if (candidate > 0xffffffffU - rule->extent) return 0U;
-  *base = candidate;
-  *generation = range->generation;
-  return 1U;
-}}
-
-static spx_boundary_status spx_native_resolve_reference(
-    void *opaque, uint32_t address, uint32_t requested_extent,
-    uint32_t permissions, const char *authority_selector,
-    uint32_t nullable, uint32_t allow_one_past,
-    spx_machine_reference_v1 *result) {{
-  spx_native_context *context = (spx_native_context *)opaque;
-  const spx_native_object_authority_rule *selected = 0;
-  uint32_t count = 0U, selected_base = 0U, selector_known, i;
-  uint64_t selected_generation = 0U;
-  if (context == 0 || result == 0) return SPX_BOUNDARY_UNSUPPORTED;
-  selector_known = authority_selector == 0;
-  if (address == 0U) {{
-    if (nullable == 0U) return SPX_BOUNDARY_MEMORY_FAULT;
-    result->domain = result->object = result->generation = 0U;
-    result->offset = result->extent = 0U;
-    result->permissions = 0U;
-    return SPX_BOUNDARY_OK;
-  }}
-  for (i = 0U; i < spx_native_object_authority_rule_count; ++i) {{
-    const spx_native_object_authority_rule *rule =
-        &spx_native_object_authority_rules[i];
-    uint32_t base, end, offset, inside, one_past;
-    uint64_t generation;
-    if (authority_selector != 0 &&
-        !spx_native_object_rule_identity_equal(
-            authority_selector, rule->identity))
-      continue;
-    selector_known = 1U;
-    if (rule->locator_kind == 5U || rule->locator_kind == 6U) {{
-      uint32_t range_index;
-      for (range_index = 0U; range_index < context->external_range_count;
-           ++range_index) {{
-        uint32_t dynamic_base, dynamic_end, dynamic_offset;
-        uint32_t dynamic_inside, dynamic_one_past;
-        uint64_t dynamic_generation;
-        if (!spx_native_dynamic_external_object_instance(
-                rule, &context->external_ranges[range_index],
-                &dynamic_base, &dynamic_generation) ||
-            !spx_native_range_end(dynamic_base, rule->extent, &dynamic_end))
-          continue;
-        dynamic_inside = address >= dynamic_base && address < dynamic_end;
-        dynamic_one_past = allow_one_past != 0U &&
-            rule->interior_pointers != 0U && address == dynamic_end;
-        if (!dynamic_inside && !dynamic_one_past) continue;
-        dynamic_offset = address - dynamic_base;
-        if ((dynamic_offset != 0U && rule->interior_pointers == 0U) ||
-            requested_extent > rule->extent - dynamic_offset ||
-            (rule->permissions & permissions) != permissions)
-          continue;
-        ++count; selected = rule; selected_base = dynamic_base;
-        selected_generation = dynamic_generation;
-      }}
-      continue;
-    }}
-    if (!spx_native_object_rule_base(context, rule, &base, &generation) ||
-        !spx_native_range_end(base, rule->extent, &end))
-      continue;
-    inside = address >= base && address < end;
-    one_past = allow_one_past != 0U &&
-        rule->interior_pointers != 0U && address == end;
-    if (!inside && !one_past) continue;
-    offset = address - base;
-    if ((offset != 0U && rule->interior_pointers == 0U) ||
-        requested_extent > rule->extent - offset ||
-        (rule->permissions & permissions) != permissions)
-      continue;
-    ++count; selected = rule; selected_base = base;
-    selected_generation = generation;
-  }}
-  if (selector_known == 0U) return SPX_BOUNDARY_TYPE_MISMATCH;
-  if (count == 0U) return SPX_BOUNDARY_MEMORY_FAULT;
-  if (count != 1U) return SPX_BOUNDARY_TYPE_MISMATCH;
-  result->domain = selected->domain;
-  result->object = selected->object_id;
-  result->generation = selected_generation;
-  result->offset = address - selected_base;
-  result->extent = selected->extent;
-  result->permissions = selected->permissions;
-  return SPX_BOUNDARY_OK;
-}}
-
-static spx_boundary_status spx_native_realize_reference(
-    void *opaque, const spx_machine_reference_v1 *reference,
-    uint32_t permissions, uint32_t nullable, uint32_t allow_one_past,
-    uint32_t *address) {{
-  spx_native_context *context = (spx_native_context *)opaque;
-  const spx_native_object_authority_rule *selected = 0;
-  uint32_t base = 0U, found = 0U, dynamic_domain_seen = 0U, i;
-  uint64_t selected_generation = 0U;
-  if (context == 0 || reference == 0 || address == 0)
-    return SPX_BOUNDARY_UNSUPPORTED;
-  if (reference->domain == 0U && reference->object == 0U) {{
-    if (nullable == 0U || reference->generation != 0U ||
-        reference->offset != 0U || reference->extent != 0U ||
-        reference->permissions != 0U)
-      return SPX_BOUNDARY_MEMORY_FAULT;
-    *address = 0U;
-    return SPX_BOUNDARY_OK;
-  }}
-  for (i = 0U; i < spx_native_object_authority_rule_count; ++i) {{
-    const spx_native_object_authority_rule *rule =
-        &spx_native_object_authority_rules[i];
-    uint32_t candidate_base;
-    uint64_t candidate_generation;
-    if (rule->domain != reference->domain) continue;
-    if (rule->locator_kind == 5U || rule->locator_kind == 6U) {{
-      uint32_t range_index;
-      dynamic_domain_seen = 1U;
-      if (rule->object_id != reference->object) continue;
-      for (range_index = 0U; range_index < context->external_range_count;
-           ++range_index) {{
-        if (!spx_native_dynamic_external_object_instance(
-                rule, &context->external_ranges[range_index],
-                &candidate_base, &candidate_generation) ||
-            candidate_generation != reference->generation)
-          continue;
-        ++found; selected = rule; base = candidate_base;
-        selected_generation = candidate_generation;
-      }}
-      continue;
-    }}
-    if (rule->object_id != reference->object ||
-        !spx_native_object_rule_base(
-            context, rule, &candidate_base, &candidate_generation))
-      continue;
-    ++found; selected = rule; base = candidate_base;
-    selected_generation = candidate_generation;
-  }}
-  if (found == 0U && dynamic_domain_seen != 0U)
-    return SPX_BOUNDARY_EXPIRED;
-  if (found != 1U) return SPX_BOUNDARY_TYPE_MISMATCH;
-  if (reference->generation != selected_generation)
-    return SPX_BOUNDARY_EXPIRED;
-  if (reference->extent != selected->extent ||
-      reference->permissions != selected->permissions ||
-      reference->offset > selected->extent ||
-      (reference->offset != 0U && selected->interior_pointers == 0U) ||
-      (reference->offset == selected->extent &&
-       (allow_one_past == 0U || selected->interior_pointers == 0U)) ||
-      (selected->permissions & permissions) != permissions ||
-      reference->offset > 0xffffffffU - base)
-    return SPX_BOUNDARY_MEMORY_FAULT;
-  *address = base + (uint32_t)reference->offset;
-  return SPX_BOUNDARY_OK;
-}}
-
-static const spx_native_interface_class *spx_native_exact_interface_class(
+{reference_namespace_source()}static const spx_native_interface_class *spx_native_exact_interface_class(
     const char *profile_sha256, const char *interface_id) {{
   const spx_native_interface_class *result = 0;
   uint32_t i;

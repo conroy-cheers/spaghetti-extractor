@@ -24,6 +24,31 @@ from spaghetti_extractor.testkit.runner import (
 
 
 class TestNixFirstRunner(unittest.TestCase):
+    def test_public_scheduling_options_preserve_failure_and_smoke_gate(self) -> None:
+        commands = (("nix", "build", "smoke"), ("nix", "build", "affected"))
+        for failure_position in (0, 1):
+            calls = []
+
+            def run(command, repository):
+                calls.append(command)
+                return 7 if len(calls) - 1 == failure_position else 0
+
+            with self.subTest(failure_position=failure_position), patch(
+                "spaghetti_extractor.testkit.runner.check_repository_metadata"
+            ), patch("spaghetti_extractor.testkit.runner.build_commands", return_value=commands):
+                status = main(["affected", "--max-jobs", "2", "--keep-going"], run=run)
+            self.assertEqual(status, 7)
+            self.assertEqual(len(calls), failure_position + 1)
+            for command in calls:
+                self.assertEqual(command[command.index("--max-jobs") + 1], "2")
+                self.assertEqual(command.count("--keep-going"), 1)
+
+    def test_public_scheduling_options_reject_nonpositive_job_limit(self) -> None:
+        for value in ("0", "-1"):
+            with self.subTest(value=value), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+                main(["affected", "--max-jobs", value])
+            self.assertEqual(raised.exception.code, 2)
+
     def test_runner_fails_fast_with_canonical_metadata_remediation(self) -> None:
         error = TestkitError(
             Diagnostic(
@@ -121,6 +146,9 @@ class TestNixFirstRunner(unittest.TestCase):
             )
             self.assertNotIn("test-shard-smoke", rendered[1][4])
             self.assertIn('import (source + "/nix/test-suite.nix")', rendered[1][4])
+            # Affected and full validation must exercise the same native kernel;
+            # the lighter developer environment silently skips its consumers.
+            self.assertIn("pythonEnv = context.transferPythonEnv;", rendered[1][4])
             self.assertIn("planPayload = builtins.fromJSON", rendered[1][4])
             self.assertNotIn("legacyPackages.x86_64-linux.test-shards", rendered[1][4])
             self.assertEqual(rendered[1][-1:], ("--no-link",))
@@ -176,6 +204,8 @@ class TestNixFirstRunner(unittest.TestCase):
             "builders-use-substitutes",
             "true",
             "--keep-going",
+            "--max-jobs",
+            "2",
             "--no-link",
         )
         with patch("spaghetti_extractor.testkit.runner.subprocess.run") as run:
@@ -198,6 +228,7 @@ class TestNixFirstRunner(unittest.TestCase):
         self.assertNotIn("--impure", rendered)
         self.assertIn("--builders", rendered)
         self.assertIn("--keep-going", rendered)
+        self.assertEqual(rendered[rendered.index("--max-jobs") + 1], "2")
 
     def test_evaluation_receipt_rejects_corruption_and_wrong_identity(self) -> None:
         derivation = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"

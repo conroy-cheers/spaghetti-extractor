@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from ..boundary import render_boundary_header
 from ..boundary._canonical import BoundaryModelError, canonical
 from ..semantic_link.module_v2 import LinkedSemanticModuleV2
 from ..semantic_providers.slices_v2 import (
@@ -29,7 +28,6 @@ from ..transfer.plan import load_executable_transfer_plan
 from ..util import sha256_file, sha256_text, write_json
 from .binding_intent import ComponentMachineBindingIntentV1
 from .formats import (
-    COMPONENT_ADOPTION_INTENT_V1_FORMAT,
     COMPONENT_WORK_PACKAGE_V6_FORMAT,
 )
 from .interface_package_v5 import (
@@ -81,88 +79,6 @@ def _digest(value: object, context: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         _fail(f"{context} must be lowercase SHA-256")
     return value
-
-
-@dataclass(frozen=True)
-class ComponentAdoptionIntentV1:
-    """Digest-free operator intent emitted from a machine-derived seed."""
-
-    payload: Mapping[str, Any]
-
-    @classmethod
-    def parse(cls, value: object) -> "ComponentAdoptionIntentV1":
-        payload = dict(_mapping(value, "component adoption intent V1"))
-        if set(payload) != {
-            "format", "component_id", "proof_classification", "operations",
-            "proposal_kinds",
-        }:
-            _fail("component adoption intent V1 fields are incomplete")
-        if payload.get("format") != COMPONENT_ADOPTION_INTENT_V1_FORMAT:
-            _fail("component adoption intent V1 format is unsupported")
-        component_id = payload.get("component_id")
-        if (
-            not isinstance(component_id, str)
-            or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", component_id) is None
-        ):
-            _fail("component adoption intent V1 component identity is invalid")
-        if payload.get("proof_classification") not in {
-            "machine_overlay", "encapsulated_owned",
-        }:
-            _fail("component adoption intent V1 proof classification is invalid")
-        operations = _rows(
-            payload.get("operations"), "component adoption intent operations"
-        )
-        operation_ids: list[str] = []
-        for operation in operations:
-            if set(operation) != {"id", "symbol", "entry_rvas"}:
-                _fail("component adoption intent operation fields are incomplete")
-            operation_id = operation.get("id")
-            symbol = operation.get("symbol")
-            entry_rvas = operation.get("entry_rvas")
-            if (
-                not isinstance(operation_id, str)
-                or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", operation_id) is None
-                or not isinstance(symbol, str)
-                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol) is None
-                or not isinstance(entry_rvas, list)
-                or not entry_rvas
-                or any(
-                    not isinstance(rva, int) or isinstance(rva, bool)
-                    or rva < 0 or rva > 0xFFFFFFFF
-                    for rva in entry_rvas
-                )
-                or entry_rvas != sorted(set(entry_rvas))
-            ):
-                _fail("component adoption intent operation is malformed")
-            operation_ids.append(operation_id)
-        if not operations or operation_ids != sorted(set(operation_ids)):
-            _fail("component adoption intent operations are empty or duplicated")
-        proposal_kinds = payload.get("proposal_kinds")
-        if (
-            not isinstance(proposal_kinds, list)
-            or any(not isinstance(item, str) or not item for item in proposal_kinds)
-            or proposal_kinds != sorted(set(proposal_kinds))
-        ):
-            _fail("component adoption intent proposal kinds are malformed")
-        return cls(payload)
-
-    @classmethod
-    def for_seed(
-        cls, rva: int, proposal_kinds: Sequence[object]
-    ) -> "ComponentAdoptionIntentV1":
-        if isinstance(rva, bool) or rva < 0 or rva > 0xFFFFFFFF:
-            _fail("component adoption seed RVA is invalid")
-        return cls.parse({
-            "format": COMPONENT_ADOPTION_INTENT_V1_FORMAT,
-            "component_id": f"component-{rva:08x}",
-            "proof_classification": "machine_overlay",
-            "operations": [{
-                "id": "operation",
-                "symbol": f"spx_component_{rva:08x}_operation",
-                "entry_rvas": [rva],
-            }],
-            "proposal_kinds": sorted({str(item) for item in proposal_kinds}),
-        })
 
 
 @dataclass(frozen=True)
@@ -1435,17 +1351,17 @@ def _default_operation_symbols(
 def _render_public_header(
     bundle: CompiledComponentInterfaceV5, symbols: Mapping[str, str]
 ) -> str:
-    base = render_boundary_header(bundle.intent.schema)
-    marker = "#endif /*"
-    position = base.rfind(marker)
-    declarations = ["/* Component operation entry points. */"]
-    for operation in bundle.interface.operations:
-        signature = bundle.intent.schema.signature_index[operation.signature_id]
-        declarations.append(
-            f"extern spx_{_schema_c_identifier(signature.function_type_id)} "
-            f"{symbols[operation.identity]};"
-        )
-    return base[:position] + "\n".join(declarations) + "\n\n" + base[position:]
+    from .atomics import spx_atomics_header
+    from .component_c_v5 import render_component_c_headers_v5
+
+    headers = render_component_c_headers_v5(bundle, symbols)
+    public = headers["portable-component.h"]
+    if '#include "spx-atomics.h"' in public:
+        public = public.replace('#include "spx-atomics.h"', spx_atomics_header())
+    # A writable package exposes the same context/view ABI used when its source
+    # is installed. Inline its dependencies to retain the two-file package.
+    return headers["portable-component-implementation.h"].replace(
+        '#include "portable-component.h"', public)
 
 
 def _render_operation_skeleton(
@@ -1472,10 +1388,6 @@ def _render_operation_skeleton(
 def _identifier_fragment(value: str) -> str:
     result = re.sub(r"[^A-Za-z0-9_]", "_", value)
     return result if result and not result[0].isdigit() else f"spx_{result}"
-
-
-def _schema_c_identifier(value: str) -> str:
-    return _identifier_fragment(value)
 
 
 __all__ = [
