@@ -9,8 +9,8 @@ losing coverage of the original program.
 
 The toolkit does not claim an unrestricted whole-program equivalence theorem.
 Its assurance comes from exact binary binding, independently qualified machine
-semantics, fail-closed static closure, complete fallback ownership, and
-machine-derived component refinement. Candidate-only behavior tests are
+semantics, fail-closed semantic closure, total provider ownership, and
+contextual component bisimulation. Candidate-only behavior tests are
 optional veto diagnostics. Runtime execution of the original binary is
 forbidden during repair iteration.
 
@@ -47,11 +47,10 @@ analysis frontiers. It does not authorize execution and is not a container
 around independently authoritative subsystems. All execution consumers use
 its transfer-v2 bodies and checked relations directly.
 
-The authority-v3 fixed-point graph, `structural-executable-v1`, and the older
-component/build/deployment receipts described below are migration inputs only.
-They remain fail-closed until their facts have moved into the semantic object
-and passed exact parity gates; they are not the destination architecture and
-must not regain new consumers.
+The historical authority-v3 fixed-point graph, `structural-executable-v1`, and
+the older component/build/deployment receipts are no longer production inputs.
+Their retained fixtures are migration evidence only and must not regain new
+consumers.
 
 Extraction and proposal phases may use Capstone, `pefile`, Z3, SDK catalogs,
 library signatures, and operator-authored hints. Those inputs are not authority.
@@ -158,32 +157,30 @@ Dependent fallout uses explicit `blocked_by` relationships. Operator progress
 is measured using primary unresolved certificates, SCCs, external sites, ISA
 forms, and environment frontiers rather than duplicated downstream errors.
 
-## Static Closure And Fallback
+## Semantic Closure And Provider Selection
 
-Candidate generation requires structural executability:
+Candidate realization requires a complete `linked-semantic-module-v2`, a total
+`implementation-selection-v2`, and exactly one selected provider for every
+reachable definition and residual obligation. Generated Behavioral C remains
+the explicit owner of every unselected Portable-C definition; there is no
+component-local fallback decision.
 
-- every executable byte is classified;
-- every structurally discovered unit has exact machine IR;
-- every rooted transfer remains inside the structural universe;
-- direct, indirect, callback, call, return, and exceptional exits are closed;
-- every external site has a checked machine-level contract;
-- every structural unit has exactly one fallback or reviewed-source owner;
-- the fallback engine can lower every selected machine-IR form; and
-- the independently reduced `structural-executable-v1` receipt matches all
-  exact inputs and is complete.
+A selected Portable-C provider must carry a satisfied contextual-refinement
+receipt bound to its proof plan, exact-C slice, interface, source, machine
+binding, and connected provider summaries. Native linking generates the sole
+strong module dispatch registry, rejects weak or duplicate definitions, and
+binds every implementation RVA to the exact payload, linker map, and selection
+in `portable-dispatch-link-receipt-v1`. `native-realization-v2` reopens and
+validates that receipt before reporting readiness.
+The shared qualified runtime remains selection-independent: it checks the
+linked registry's structural integrity against the Behavioral-C transfer
+universe, while the receipt alone owns provider and object identity. This
+avoids embedding an earlier, contradictory copy of provider selection in the
+runtime object package.
 
-Release acceptance additionally requires qualified reachable ISA forms, the
-exact activation or legacy qualification receipt selected for every enabled
-component, and no disputed oracle results. Candidate-only tests do not enter
-the acceptance reducer.
-
-The fallback engine interprets canonical machine IR and uses explicit native
-bridges for PE32 ABI and external operations. While structural closure is
-incomplete, the toolkit may compile one portable component against its reviewed
-interface, but cannot execute it as evidence, compose a PE candidate, or invoke
-the original program. Whole-candidate source, object code, and PE composition
-require structural executability. Optional Wine tests run only after static
-release acceptance and cannot feed that gate.
+Release acceptance additionally requires qualified reachable ISA forms and no
+disputed oracle results. Optional Wine tests run only after static acceptance;
+they can veto a candidate but cannot feed any authority reducer.
 
 ## External Operations
 
@@ -207,30 +204,31 @@ an exact projection back to machine ranges and events.
 
 The component development contract is intentionally weaker than the activation
 contract. It binds the operator-declared selector or group membership, source
-operation map, and reviewed portable interface V2, then renders deterministic C
+operation map, and reviewed portable interface V5, then renders deterministic C
 headers. It does not resolve machine members, consume target proposals, or
 assert that machine effects or external sites are closed, and can never
 authorize activation. This small boundary keeps local compile/test iteration
 independent of whole-target analysis.
 
-A portable V2 replacement must provide:
+A Portable-C replacement must provide:
 
 - a reviewed architecture-independent operation interface;
 - an exact content-bound source package with one symbol per operation;
 - host and PE32 compile receipts and no component-owned mutable globals;
-- machine-derived semantic refinement for every bound operation;
+- a satisfied contextual-refinement receipt for every bound operation;
 - a checked machine binding for arguments, results, effects, and continuations;
 - a checked service graph for component and external dependencies;
-- a checked activation receipt for the exact selected configuration;
-- a checked universal implementation and complete contract dependency graph;
+- a checked provider qualification and complete contract dependency graph;
+- exact selection and a strong linked dispatch receipt for the selected
+  configuration;
 - complete, exclusive ownership of its selected machine units;
 - no loss of machine-IR fallback coverage outside the replacement.
 
-The component runtime package is the sole executable source authority. It
-generates ABI adapters, cross-compiles portable source, and supplies one
-portable-selection artifact to dispatch, fallback coverage, candidate
-authority, and completion checks. Diagnostic contracts and source bundles
-cannot authorize candidate code independently.
+Provider qualification generates ABI adapters and cross-compiles portable
+source, but those objects are executable only after total selection and native
+linkage produce the strong dispatch receipt. Diagnostic contracts, source
+bundles, compiled objects, and source-only receipts cannot authorize candidate
+code independently.
 
 ## Library Recognition
 
@@ -244,7 +242,7 @@ can authorize executable source.
 Each complete selected island generates one ordinary portable component. Its
 machine-binding checker requires exact equality between the checked island's
 machine-unit inventory and the component inventory and binds the checked-island
-hash into the candidate package. Compile, semantic refinement, service graph,
+hash into the candidate package. Compile, contextual refinement, service graph,
 ownership, and activation checks remain unchanged. Code outside explicitly
 selected islands stays in machine-IR fallback, so recognizing one library never
 requires classifying the entire application.
@@ -301,6 +299,18 @@ bytes, and realization receipt. The synthetic PE32/Wine vertical uses this path
 exclusively and observes the realization-owned candidate. The SDK, Hello, jq,
 DX-Ball, and native fixtures all consume this V2 path; the V1 provider,
 selection, and realization codecs and constructors are retired tombstones.
+
+Selected Portable-C definitions add one closed activation proof inside this
+same realization. A contextual-bisimulation receipt binds ordinary source to
+the exact Behavioral-C cutpoint graph without enumerating paths. Native
+construction then generates one strong module dispatch registry, verifies one
+strong implementation-symbol owner per overlay, and binds the selection,
+qualification/proof lineage, exact object hashes, linker-map RVAs, and payload
+hash in `portable-dispatch-link-receipt-v1`. The V2 realization and every
+execution gate require that receipt and reject weak, duplicate, partial, or
+source-only authority. See
+[`portable-c-contextual-bisimulation.md`](portable-c-contextual-bisimulation.md)
+for the proof and scaling contract.
 
 Runtime and environment providers use the same ownership rule. The V2
 generated-C, qualified-runtime, and external-environment constructors emit
@@ -438,16 +448,25 @@ ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
 not invalidate authority evidence.
 
 Operator status follows the same dependency discipline. Project status is a
-non-authorizing `operator-work-status-v1` projection whose sole semantic input
+non-authorizing `operator-work-status-v2` projection whose sole semantic input
 is the materialized `linked-semantic-module-v2`; it does not read the legacy
 authority diagnostics, component configurations, candidate source, or
-candidate tests. Candidate status uses the same projector and public format,
-adding exactly one configuration's `implementation-selection-v2`; it no longer
-reduces structural-executable-v2, activation-v4, or test metadata. The module
-and configuration remain separate subjects rather than a synthetic combined
-authority. A broken provider selection may block its configuration subject,
-but cannot prevent an operator from inspecting the semantic module's exact
-blockers.
+candidate tests. Boundary status is the other persisted V2 view. Component and
+candidate status are local projections of one indexed V6 work package or V2
+qualification/selection, so the SDK does not derive or cache duplicate status
+artifacts for them. Summary views contain source bindings and grouped blocker
+counts; source-native blocker rows are loaded only after an explicit filtered
+`--details` request. A broken provider selection cannot prevent an operator
+from inspecting the semantic module's exact blockers.
+
+The pure `operator-index-v1` is the only discovery contract. It lists the exact
+products present under `operatorTargets.<target>` without realizing them.
+Project, component-unit, boundary-subject, optional library, and candidate-
+configuration namespaces are disjoint. In particular, components have no
+configuration aliases and candidates have no parallel build/check/status maps.
+Authored component identities are canonical boundary subjects; a
+`component-seed:<rva>` spelling resolves to that identity when its entry RVA is
+known and remains a dynamic proposal selector only when unmatched.
 
 Component resolution follows the same rule. The full checked catalog owns
 configuration overlap checks, but each component contract consumes a canonical

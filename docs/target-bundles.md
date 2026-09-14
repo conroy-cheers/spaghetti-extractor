@@ -20,6 +20,10 @@ A bundle starts with:
 
 `target.json` uses `spaghetti-extractor-target-bundle-v3`. Its `paths.components`
 and `workflow.default_configuration` fields are either both set or both `null`.
+The optional `paths.component_sources` names the source root used by writable
+operator transitions and is valid only when component intent exists. Targets
+must declare it before `component start UNIT --apply`; read-only package
+materialization with `--output` does not require a local target checkout.
 This lets a new target run extraction, authority analysis, and component
 discovery before the operator has authored component intent. Once set, the
 default configuration must exist in the component intent and selects the
@@ -77,14 +81,31 @@ spaghetti-extractor candidate status gnu-hello \
   --configuration ascii-to-lower-enabled
 ```
 
-`project status` consumes only `linked-semantic-module-v1` and remains usable
+`project status` consumes only `linked-semantic-module-v2` and remains usable
 when component intent is absent, broken, or expensive to realize. `component
-status` reports one independently selected leaf, group, or configuration.
-`candidate status` reads that same linked module plus one exact
-`implementation-selection-v1` and reports separate module and configuration
-subjects in `operator-work-status-v1`. It does not read activation, structural,
-runtime, realization, or candidate-test products. All three reports are
-diagnostic and cannot open an authority or runtime gate.
+status` locally projects one independently selected authored unit from its V6
+work package or V2 qualification. `candidate status` locally projects one exact
+`implementation-selection-v2`; it does not reread the linked module or inspect
+activation, structural, runtime, realization, or candidate-test products.
+Its provider-coverage projection separately shows exact/fallback-free selection
+and portable-C progress, including counts for generated C, runtime, environment,
+and pinned-binary providers.
+Project and boundary status are persisted `operator-work-status-v2` artifacts;
+component and candidate views use that same bounded schema without adding SDK
+derivations. All reports are diagnostic and cannot open an authority or runtime
+gate.
+
+Discovery uses the pure `spaghetti-extractor-operator-index-v1` document. Its
+product lists exactly match the paths present in `operatorTargets.<id>`:
+`project.<product>`, `components.units.<unit>.<product>`,
+`boundaries.subjects.<subject>.<product>`, optional
+`libraries[.selections.<id>].<product>`, and
+`candidate.configurations.<configuration>.<product>` plus candidate test suites.
+Targets without library catalogs expose `libraries: null`; they do not build a
+synthetic empty catalog, target-signature graph, or release-hypothesis set, and
+their generated artifact family has no `libraries` branch.
+`component list --json` (without `--near`) and `candidate list --json` both emit this complete
+validated index, rather than inventing command-specific partial wire formats.
 
 Public realization commands resolve builders in this order: explicit CLI
 arguments, `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest ignored
@@ -117,8 +138,10 @@ PE derivation and expected hash are supplied.
 4. Instantiate `sdk.workflow.pe32`; do not import private files under `nix/`.
 5. Return `sdk.target.pe32Bundle` with acquired inputs and target-specific
    checks. Standard component and acceptance checks are added automatically.
-6. Add component intent, set its path and default configuration atomically,
-   then add portable source only through reviewed component entries.
+6. Add component intent, set its path and default configuration atomically, and
+   declare `paths.component_sources` for the target's source root. After the
+   interface and binding produce a checked V6 package, use `component start`
+   to materialize or apply its source skeleton.
 
 No root-flake, generic Nix-module, Python, or Lean change is required unless the
 new target demonstrates a genuinely reusable missing capability.

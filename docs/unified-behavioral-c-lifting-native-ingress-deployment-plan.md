@@ -4715,7 +4715,9 @@ otherwise available RAM.
 
 Memory-policy implementation checkpoint (2026-08-28): the ordinary shard
 runner no longer exports a memory limit or turns peak RSS into a verdict. It
-records `peak_rss_kib` for diagnosis and gates only test correctness. The suite
+records `peak_rss_kib` in the build log for diagnosis and gates only test
+correctness. The stored content-addressed report excludes this varying measurement
+so repeated runs can retain the same output identity. The suite
 aggregate no longer reinterprets resource classes as memory authority. This is
 a deletion of policy and machinery, not a new cache subsystem: canonical
 phases may retain one decoded, indexed, content-bound working set for as long
