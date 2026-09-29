@@ -1,7 +1,7 @@
 {
   "counts": {
-    "active": 73,
-    "formats": 131,
+    "active": 79,
+    "formats": 137,
     "retired": 58
   },
   "formats": [
@@ -414,6 +414,34 @@
       "version": 1
     },
     {
+      "codec": "spaghetti_extractor.components.comparison_package",
+      "literal": "spaghetti-extractor-component-comparison-plan-v1",
+      "literal_readers": [
+        "nix/component-comparison-package.nix"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "plan",
+      "state": "active",
+      "symbol": "COMPONENT_COMPARISON_PLAN_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/comparison_package.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.components.comparison_run",
+      "literal": "spaghetti-extractor-component-comparison-result-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "COMPONENT_COMPARISON_RESULT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/comparison_run.py"
+      ],
+      "version": 1
+    },
+    {
       "codec": "spaghetti_extractor.components.formats",
       "literal": "spaghetti-extractor-component-contract-v4",
       "literal_readers": [],
@@ -441,13 +469,21 @@
       "literal_readers": [
         "nix/component-exact-c-slice-v1.nix",
         "tests/fixtures/hand-defined-boundaries/resource-text/original-machine/boundary.json",
+        "tests/fixtures/hello-quoting-state/caller/exact/component-exact-c-slice-v1.json",
+        "tests/fixtures/hello-quoting-state/character-exact/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-call-comparison/exact/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-cleanup-entry/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-cleanup-iteration/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-cleanup-replace/exact/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-cleanup-save/exact/component-exact-c-slice-v1.json",
         "tests/fixtures/metapad-cleanup-summary/inputs.json",
-        "tests/fixtures/metapad-cleanup-tail/exact/component-exact-c-slice-v1.json"
+        "tests/fixtures/metapad-cleanup-tail/exact/component-exact-c-slice-v1.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/exact/component-exact-c-slice-v1.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/supplier-exact.json",
+        "tests/fixtures/metapad-resource-callers/finite-caller/exact/component-exact-c-slice-v1.json",
+        "tests/fixtures/metapad-resource-callers/finite-caller/supplier-exact.json",
+        "tests/fixtures/metapad-resource-callers/following-service/exact/component-exact-c-slice-v1.json",
+        "tests/fixtures/metapad-resource-callers/following-service/supplier-exact.json"
       ],
       "owner": "spaghetti_extractor.components.formats",
       "role": "source_package",
@@ -461,6 +497,7 @@
         "src/spaghetti_extractor/components/bisimulation_fresh_buffer_inputs.py",
         "src/spaghetti_extractor/components/bisimulation_shared_original_check.py",
         "src/spaghetti_extractor/components/component_exact_c_slice.py",
+        "src/spaghetti_extractor/components/work_package_v6.py",
         "src/spaghetti_extractor/semantic_providers/portable_c_inputs.py"
       ],
       "version": 1
@@ -552,6 +589,11 @@
         "targets/jq/intent/interfaces-v5/wide-argument-conversion-tail.json",
         "targets/jq/intent/interfaces-v5/windows-path-info-scan.json",
         "tests/fixtures/hand-defined-boundaries/resource-text/interface.json",
+        "tests/fixtures/hello-quoting-state/caller/component-interface-intent-v1.json",
+        "tests/fixtures/hello-quoting-state/caller/supplier-facts.json",
+        "tests/fixtures/hello-quoting-state/component-interface-intent-v1.json",
+        "tests/fixtures/jq-array-append/component-interface-intent-v1.json",
+        "tests/fixtures/jq-array-concat/component-interface-intent-v1.json",
         "tests/fixtures/metapad-authored-call/component-interface-intent-v1.json",
         "tests/fixtures/metapad-cleanup-iteration/component-interface-intent-v1.json",
         "tests/fixtures/metapad-cleanup-replace/component-interface-intent-v1.json",
@@ -560,6 +602,11 @@
         "tests/fixtures/metapad-cleanup-save/component-interface-intent-v1.json",
         "tests/fixtures/metapad-cleanup-save/summary-input.json",
         "tests/fixtures/metapad-cleanup-summary/inputs.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/component-interface-intent-v1.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/transition.json",
+        "tests/fixtures/metapad-resource-callers/finite-caller/component-interface-intent-v1.json",
+        "tests/fixtures/metapad-resource-callers/following-service/component-interface-intent-v1.json",
+        "tests/fixtures/metapad-resource-callers/following-service/transition.json",
         "tests/fixtures/metapad-resource-callers/transition.json"
       ],
       "owner": "spaghetti_extractor.components.formats",
@@ -655,7 +702,11 @@
         "targets/jq/intent/bindings-v5/wide-argument-conversion-tail.json",
         "targets/jq/intent/bindings-v5/windows-path-info-scan.json",
         "tests/fixtures/hand-defined-boundaries/resource-text/original-machine/boundary.json",
+        "tests/fixtures/hello-quoting-state/caller/supplier-facts.json",
+        "tests/fixtures/hello-quoting-state/character-binding.json",
         "tests/fixtures/metapad-cleanup-runtime/inputs.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/transition.json",
+        "tests/fixtures/metapad-resource-callers/following-service/transition.json",
         "tests/fixtures/metapad-resource-callers/transition.json"
       ],
       "owner": "spaghetti_extractor.components.formats",
@@ -677,6 +728,22 @@
       "symbol": "RETIRED_COMPONENT_MACHINE_BINDING_V5_FORMAT",
       "symbol_readers": [],
       "version": 5
+    },
+    {
+      "codec": "spaghetti_extractor.components.partition_inventory",
+      "literal": "spaghetti-extractor-component-partition-intent-v1",
+      "literal_readers": [
+        "targets/gnu-hello/intent/whole-program-partition.json"
+      ],
+      "owner": "spaghetti_extractor.components.formats",
+      "role": "intent",
+      "state": "active",
+      "symbol": "COMPONENT_PARTITION_INTENT_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/components/partition_inventory.py",
+        "tests/unit/components/test_partition_inventory.py"
+      ],
+      "version": 1
     },
     {
       "codec": "spaghetti_extractor.components.bisimulation",
@@ -718,6 +785,8 @@
         "targets/gnu-hello/intent/relations/program-name-selection.json",
         "tests/fixtures/hand-defined-boundaries/resource-text/original-machine/boundary.json",
         "tests/fixtures/hand-defined-boundaries/resource-text/relation.json",
+        "tests/fixtures/metapad-resource-callers/error-notice/transition.json",
+        "tests/fixtures/metapad-resource-callers/following-service/transition.json",
         "tests/fixtures/metapad-resource-callers/transition.json"
       ],
       "owner": "spaghetti_extractor.components.formats",
@@ -743,7 +812,8 @@
       "symbol": "COMPONENT_SOURCE_PACKAGE_V3_FORMAT",
       "symbol_readers": [
         "src/spaghetti_extractor/components/bisimulation_readonly_evidence.py",
-        "src/spaghetti_extractor/components/source.py"
+        "src/spaghetti_extractor/components/source.py",
+        "src/spaghetti_extractor/components/source_handoff.py"
       ],
       "version": 3
     },
@@ -834,6 +904,7 @@
       "codec": "spaghetti_extractor.components.contextual_bisimulation",
       "literal": "spaghetti-extractor-contextual-refinement-v2",
       "literal_readers": [
+        "nix/portable-c-work-package-provider-v2.nix",
         "src/spaghetti_extractor/components/bisimulation.py"
       ],
       "owner": "spaghetti_extractor.components.formats",
@@ -959,6 +1030,62 @@
         "tests/unit/candidate/test_native_reference_routes.py"
       ],
       "version": 2
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.experimental_manifest",
+      "literal": "spaghetti-extractor-experimental-component-execution-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "execution_manifest",
+      "state": "active",
+      "symbol": "EXPERIMENTAL_COMPONENT_EXECUTION_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/experimental_build.py",
+        "src/spaghetti_extractor/candidate/experimental_manifest.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.experimental_manifest",
+      "literal": "spaghetti-extractor-experimental-component-policy-v1",
+      "literal_readers": [
+        "tests/fixtures/jq-array-append/experimental-policy.json",
+        "tests/fixtures/jq-path-network/prepare.py",
+        "tests/fixtures/jq-value-transport/experimental-policy.json"
+      ],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "policy",
+      "state": "active",
+      "symbol": "EXPERIMENTAL_COMPONENT_POLICY_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/experimental_manifest.py",
+        "src/spaghetti_extractor/candidate/experimental_policy.py",
+        "tests/fixtures/dxball-graphics-network/walkthrough.py",
+        "tests/fixtures/hello-allocation-growth/walkthrough.py",
+        "tests/fixtures/hello-multibyte/walkthrough.py",
+        "tests/fixtures/hello-native-quoting/terminal_walkthrough.py",
+        "tests/fixtures/hello-native-quoting/walkthrough.py",
+        "tests/fixtures/jq-array-storage/assemble.py",
+        "tests/fixtures/jq-string-slice/walkthrough.py",
+        "tests/integration/native/test_pe32_program.py",
+        "tests/unit/candidate/test_experimental.py",
+        "tests/unit/components/test_comparison_domain.py",
+        "tests/unit/components/test_practical_contracts.py"
+      ],
+      "version": 1
+    },
+    {
+      "codec": "spaghetti_extractor.candidate.experimental_run",
+      "literal": "spaghetti-extractor-experimental-component-run-v1",
+      "literal_readers": [],
+      "owner": "spaghetti_extractor.candidate.formats",
+      "role": "receipt",
+      "state": "active",
+      "symbol": "EXPERIMENTAL_COMPONENT_RUN_V1_FORMAT",
+      "symbol_readers": [
+        "src/spaghetti_extractor/candidate/experimental_run.py"
+      ],
+      "version": 1
     },
     {
       "codec": "spaghetti_extractor.external.environment",
@@ -1510,13 +1637,14 @@
         "nix/portable-c-work-package-provider-v2.nix",
         "nix/target-sdk.nix",
         "nix/tests/boundary-workbench.nix",
-        "tests/unit/cli/test_public_commands.py"
+        "tests/unit/cli/public_command_fixture.py"
       ],
       "owner": "spaghetti_extractor.operator.formats",
       "role": "operator_view",
       "state": "active",
       "symbol": "OPERATOR_WORK_STATUS_FORMAT",
       "symbol_readers": [
+        "src/spaghetti_extractor/commands/workflow_status.py",
         "src/spaghetti_extractor/commands/workflows.py",
         "src/spaghetti_extractor/operator/conditional_check.py",
         "src/spaghetti_extractor/operator/source_check.py",
@@ -1837,8 +1965,8 @@
         "tests/fixtures/metapad-cleanup-runtime/inputs.json",
         "tests/unit/candidate/test_native_ingress_exports.py",
         "tests/unit/candidate/test_native_ingress_protocols.py",
+        "tests/unit/components/machine_overlay_fixture.py",
         "tests/unit/components/test_machine_overlay_resources_v5.py",
-        "tests/unit/components/test_machine_overlay_v5.py",
         "tests/unit/components/test_semantic_external_services.py",
         "tests/unit/components/test_semantic_interface_services.py",
         "tests/unit/libraries/test_v4_activation.py",
@@ -2074,7 +2202,7 @@
       "version": 1
     }
   ],
-  "registry_sha256": "1d21738185443a615bd15c4d309bf2ba0c086c084d981d3aad765101d9a6fffa",
+  "registry_sha256": "079104e25e18c3b281df2cd6e2c0e1cf67e326e86f8d1ffd233a5123a5217284",
   "registry_version": 1,
   "spec_modules": [
     "spaghetti_extractor.abi.formats",

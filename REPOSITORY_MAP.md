@@ -19,15 +19,44 @@ experiments remain available in Git history and are not supported interfaces.
 | `targets/flake.nix`, `targets/flake.lock` | Independent in-tree validation-consumer flake. |
 | `targets/registry.nix`, `targets/<id>/` | Explicit target registry and authored GNU Hello, jq, and DX-Ball bundles. |
 | `docs/` | Canonical architecture and workflow documentation. |
+| `docs/component-workflow.md` | Operator entry guide: workspace preparation, local C editing, discrepancy replay, consumer checks, source export and manual boundary authoring with existing APIs. |
+| `docs/component-module-workflow.md` | Practical C storage eligibility and reusable portable assembly bindings for grouped operations, with parser integration, local edit reuse and transfer evidence. |
+| `docs/jq-lifting-continuation.md` | Source-assisted serializer and interpreter lifting trial, native and two-architecture program comparisons, and the original generated-frontend source-profile limitation. |
+| `docs/compiler-backed-practical-c.md` | Compiler-backed practical admission, active-source views, jq frontend refactoring/replay and transfer through existing interfaces and assembly. |
+| `docs/jq-compiler-lifting-continuation.md` | Bytecode compiler replacement through the existing workflow, two-architecture program integration, and the allocator module/thread-state admission limit. |
+| `docs/stateful-component-workflow.md` | Practical state-owner declarations, shared provider selection and lifecycle observations through the jq allocator workflow. |
+| `docs/jq-module-loader-continuation.md` | Module-loader replacement, native and two-architecture integration, and the shared filesystem/text-input portability stopping point. |
+| `docs/jq-file-runtime-continuation.md`, `tests/fixtures/jq-file-input/`, `tests/fixtures/jq-input-stream/` | Reusable C file runtime, independent jq file/input-state components, shared stdin and callback bindings, native comparisons and two-architecture source assembly through existing tooling. |
+| `docs/jq-value-continuation.md`, `tests/fixtures/jq-value-algorithms/`, `tests/fixtures/jq-value-relations/` | Value algorithms, recursive relations and object merging through existing boundaries; reusable CRT sorting, shared-view observations and native/portable source integration. |
+| `docs/jq-ir-continuation.md`, `tests/fixtures/jq-compiler-ir/`, `tests/fixtures/jq-execution-lifecycle/` | Compiler instruction graphs and execution lifecycle through shared layouts and ordinary C; native/portable comparisons and the incremental assembly boundary-refinement gap. |
 | `docs/call-protocols.md` | Checked semantic, layout, transport, lifecycle, evidence, and source-view model for calls and callbacks. |
 | `docs/native-ingress.md` | Generic native entry, object/data-export authority, SEH outcomes, PE32 deployment, and multi-image completion contracts. |
 | `docs/canonical-boundaries.md` | Shared type, data-layout, evidence, lifecycle, projection, call, callback, and component-boundary model. |
 | `docs/boundary-transducers.md` | Typed relations between logical component values, machine places, object authority, and checked effects. |
 | `docs/callbacks.md` | Provider-neutral callback registration, lifetime, delivery, cardinality, and invocation semantics. |
 | `docs/portable-c-contextual-bisimulation.md` | Universal cutpoint proof, scaling, migration, and strong native-dispatch activation contract for ordinary Portable-C. |
-| `docs/current-goal.md` | Current milestone outcome and chronological execution journal; links the audited conditional demonstration and preserves broader migration exits. |
+| `docs/current-goal.md` | Practical operator-workflow and standalone-program milestone, current work queue, earlier scoped milestones and separate G1–G7 strong-qualification objectives. |
+| `docs/behavior-faithful-component-workflow-plan.md` | Accepted implementation sequence for contract-specific resource diagnostics, reusable services, resolved composition, precise reuse, C support and bounded runtime sessions; preserves scoped original defects. |
 | `docs/interactive-portable-lifting-roadmap.md` | Planned path from contextual-proof migration through assisted lifting, reusable platform contracts, standalone source export, and unfamiliar-application trials. |
-| `docs/independent-portable-lifting-plan.md` | Active implementation sequence for checked boundary contracts, body-independent memory composition, local editing and neighboring-proof reuse. |
+| `docs/independent-portable-lifting-plan.md` | Independent-component plan and formal composition roadmap, with the subsequent practical workflow sequencing update. |
+| `docs/practical-independent-lifting-design.md` | Proposed local differential validation, explicit assurance, optional proof and experimental execution design; maps the workflow onto existing component and native infrastructure. |
+| `docs/practical-lifting-workbench-review.md` | Proposed restricted-C authoring workflow, concrete operator examples, incremental dependency isolation and a smaller first implementation sequence. |
+| `docs/practical-lifting-validation.md` | Current G1–G6 completion audit, exact retained operator evidence, cost measurements, negative controls and outstanding authority gates. |
+| `docs/practical-product-audit.md` | Requirement-by-requirement practical delivery audit, current operator/program evidence, explicit target scopes and repository validation findings. |
+| `docs/jq-path-network-assessment.md`, `tests/fixtures/jq-path-network/` | Larger four-operation jq practical workflow, interpreter consumers, edit/reuse and ownership negative controls, measured costs and limitations. |
+| `nix/headless-wayland.nix` | Shared isolated Weston headless desktop and Xwayland runner for Wine applications; preserves command streams, exit status and cleanup. |
+| `tests/fixtures/hello-standalone/`, `tests/fixtures/portable-runtime/` | Practical standalone Hello source assembly, reusable UTF-8 arguments, Windows-1252 redirected streams and experimental UTF-8 terminal text. Normal-program/memory/failure comparisons, native console/PTY observations and retained replay; explicit runtime limits and a remaining control-character mismatch, not qualification authority. |
+| `tests/fixtures/jq-portable/` | Source-assisted portable assembly of the selected jq storage/path/string subsystem, explicit unlifted runtime, import-callback identity binding, normal CLI/live-object and real allocation-failure comparisons, and public local updates on x86-64/AArch64. Partial lifting and finite evidence, not complete jq recovery. |
+| `tests/fixtures/jq-string-length/` | Fresh boundary and workspace trial using existing live string services/adapters: malformed-byte and interpreter comparisons, public edit/replay/neighbor reuse, and reviewed portable source integration. |
+| `src/spaghetti_extractor/operator/comparison_guidance.py` | Local workspace projection of existing interfaces, shared objects, services, assumptions, requirements and examples; generated guides and `component status --comparison-package`, without assurance authority. |
+| `src/spaghetti_extractor/candidate/source_export_bindings.py` | Standalone source-handoff reader and batch use of the existing service bridge generator with explicit reviewed backend mappings; no native comparison environment or inherited qualification. |
+| `nix/component-comparison-package.nix`, `src/spaghetti_extractor/components/comparison_package.py` | Concrete comparison setup exposed by `sdk.lifting.comparisonPackage`; generated component APIs, original/source execution, retained observations and replay without qualification authority. |
+| `src/spaghetti_extractor/components/comparison_resources.py`, `src/spaghetti_extractor/components/comparison_resource_runtime.py` | Contract-bound reference instrumentation and observations; separates resource findings, failed premises and behavioral comparison without heap-proof authority. |
+| `src/spaghetti_extractor/components/service_authoring.py`, `src/spaghetti_extractor/components/service_c.py`, `src/spaghetti_extractor/components/comparison_services.py` | Canonical reusable service declarations, generated C transport and outcome checks, and concrete service-protocol observations. |
+| `src/spaghetti_extractor/components/comparison_composition.py`, `src/spaghetti_extractor/components/comparison_dependencies.py` | Transitive explicit selections, exact contract and representation requirements, deduplicated implementations, declared recursion and integration impact; no checked-summary authority. |
+| `src/spaghetti_extractor/components/comparison_compile_cache.py`, `src/spaghetti_extractor/components/comparison_build.py`, `src/spaghetti_extractor/components/comparison_reuse.py` | Per-translation-unit reuse, literal include-search probes, unread-header exclusion and separately admitted observation reuse; retained objects remain experimental evidence. |
+| `src/spaghetti_extractor/components/practical_contracts.py` | Optional existing read-only, mutable and shared-view/service local theorems beside finite comparisons; exact premise/source binding and independent assurance/reuse. |
+| `src/spaghetti_extractor/components/partition_inventory.py`, `docs/whole-target-independent-lifting.md` | Practical stateful subsystem and whole-program acceptance plan; manual ownership audit over linked-module facts, complete Hello routine partition and visible crossings without qualification authority. |
 | `docs/component-boundary-design.md` | Proposed relational contract and proof-cut design, worked counterexamples, compatibility rules and implementation acceptance gates; not proof authority. |
 | `docs/component-boundary-design-review.md` | Broad-target review correcting storage, open-protocol, pending-work, nonlocal-control and history assumptions; capability matrix and finite countermodels. |
 | `docs/baselines/2026-09-07-independent-lifting-experiment.md` | Exact Metapad cleanup experiment, caller contexts, proposed boundaries, current blockers and separated preparation/proof costs. |
@@ -92,10 +121,22 @@ definitions to reproducible realizations; either side rejects metadata drift.
 | `candidate` | `list`, `status`, `build`, `test` |
 | `expert` | Explicit low-level static analysis, ISA, reconstruction, authority, runtime, component, source, and validation leaves from `commands/*.py`. |
 
-`commands/workflows.py` maps operator commands only to stable target-SDK Nix
-attributes. `commands/common.py` owns the expert handler protocol. A low-level
+`commands/workflow_options.py` defines operator CLI options;
+`commands/workflows.py` owns their handlers for stable target-SDK Nix artifacts
+and retained practical comparison packages. `commands/common.py` owns the expert handler protocol. A low-level
 leaf outside `expert` is a repository-boundary failure; retired commands are
 not retained as aliases.
+
+`components/work_package_editing.py` binds editable canonical interface, binding
+and cutpoint declarations to V6 packages. `commands/component_review.py` normalizes
+seed and configured-component drafts through the same codecs.
+`commands/component_apply.py` applies reviewed declarations to the SDK-discovered
+target indexes with stale-input checks, a shared authoring lock and rollback.
+This editing path grants no proof or activation authority.
+`components/bisimulation_selection.py` checks ordinary diagnostic selections and
+deferred-region records within existing contextual receipts. `operator/proof_check.py`
+validates and displays those results; native qualification requires a complete
+check without diagnostic selection.
 
 The status namespaces also define dependency ownership: `project status` is a
 persisted non-authorizing one-subject view over the linked semantic module;
@@ -112,6 +153,7 @@ Core support modules are deliberately small:
 |---|---|
 | `__init__.py` | Package identity and version surface. |
 | `errors.py` | Shared user-input and phase failure types. |
+| `execution.py` | Dependency-free bounded process termination and pipe capture used by comparisons and candidate execution. |
 | `util.py` | Canonical JSON, hashing, and atomic artifact helpers. |
 | `operator/index_v1.py` | Strict pure discovery codec tying every advertised product to the V5 target SDK tree. |
 | `operator/work_status.py`, `operator/projections.py` | Bounded V2 status summaries, source-bound on-demand blocker details, and local component/candidate projections. |
@@ -243,6 +285,12 @@ unique domain-local formats remain with their owner.
 | `candidate/runtime_helpers.py` | Shared C helper text used by canonical transfer-plan renderers; it contains no machine-IR adapter or behavioral model. |
 | `transfer/model.py`, `transfer/compiler.py`, `transfer/values.py`, `transfer/atomics.py`, `transfer/plan.py`, `transfer/evaluator.py`, `transfer/exception_projection.py` | Renderer-neutral exact transfer model, lowering, canonical executable-transfer plan codec, shared exception-record projection vocabulary, and veto-only host evaluator. |
 | `candidate/build.py`, `candidate/build_model.py`, `candidate/build_validation.py`, `candidate/build_objects.py`, `candidate/build_workflow.py`, `candidate/build_values.py` | Freestanding PE32 build facade, canonical-transfer package validation, object DAG, final workflow, and strict values; it never reopens raw machine IR and receives recovered image bytes through their narrow realization contract. |
+| `candidate/source_export.py` | Exports matching practical comparisons as existing V3 component source packages and a conventional C library build. Retains interfaces, contracts and compiled include closure; original runtime, application entry and service implementation are not supplied. Its provenance report grants no qualification. |
+| `components/source_handoff.py`, `candidate/source_export_bindings.py` | Shared source-provenance and editable-draft reading belongs to components; candidate bindings consume it to generate executable C service bridges. Existing public reader imports remain available. |
+| `components/source_dialect.py` | Practical C admission using compiler-produced storage sections, separate from the unchanged formal source profile. Immutable static tables keep their lifetime; writable storage requires explicit context. |
+| `candidate/source_assembly.py` | Reviewed portable adapter sources, grouped entry mappings, replacement definitions and lifetime descriptions shared by jq and Hello source recipes; independent of comparison harness bindings. |
+| `candidate/source_replacements.py` | Exact file-scoped C body retirement/restoration, preserving surrounding edits and checking legacy body hashes. |
+| `candidate/source_project_apply.py` | `candidate apply`: stages source export, target assembly and optional checks; preserves the working project on failure and retains a full backup on publication. |
 | `candidate/linked_skeleton_model.py`, `candidate/linked_skeleton_merge.py`, `candidate/module_composer.py` | Internal linked-payload merge primitives plus the sole public PE32 loader-surface composer. |
 | `transfer/capability_analysis.py`, `machine_ir/fallback_capability.py` | Non-executable transfer-lowering analysis and strict capability identity projected into static authority without source or object bytes. |
 | `machine_ir/definedness.py` | Undefined-value and dependency-frontier analysis shared without importing extraction or candidate layers backwards. |
@@ -261,8 +309,11 @@ unique domain-local formats remain with their owner.
 | `components/bisimulation_cleanup_composition.py` | Consumes guarded regional postconditions, complete source-region ownership and private-cell layouts to check coarse cleanup control, loop ranking and normal return-frame composition. Rejects weakened scopes, hidden assumptions, interior crossings and saved-word overlap. |
 | `components/bisimulation_cleanup_observations.py` | Binds checked regional service helpers and all-outcome memory guarantees to ordered event-prefix composition, including memory-fault prefixes. Concrete service and caller qualification remain separate. |
 | `components/bisimulation_cleanup_summary.py` | Checks complete original-operation coverage and assembles the regional composition evidence into a conditional paired-call contract. Supports checked withdrawal of normal-frame guarantees without changing the stronger proof domain; binds exported contracts separately from implementation receipts and native activation. |
-| `components/bisimulation_cleanup_save.py`, `operator/source_operation_call_check.py` | Compare complete ordinary-C consumers against actual original transfers using checked dependency contracts with supplier bodies absent. Declare required normal-frame facts, keep all other contract terms bound, and distinguish selective proof reuse from missing-guarantee invalidation through the existing caller-check product. |
-| `components/bisimulation_cleanup_replace.py` | Compare the second guarded cleanup consumer and its following UI interaction. Preserve both mode bypasses, complete message results, current-memory arguments and fault prefixes while keeping checked private argument words out of public-memory history. |
+| `components/caller_definition_document.py`, `components/bisimulation_caller_definition.py`, `operator/source_operation_call_check.py` | Load finite caller definitions through the existing source-check product. Validate exact ownership and entry/call coverage, stateless interface semantics, source view permissions, checked supplier guarantees and explicit unverified runtime contracts; no caller profile or interface hash selects semantics. |
+| `components/bisimulation_supplier_call.py`, `tests/fixtures/metapad-cleanup-save/caller-contract.json`, `tests/fixtures/metapad-cleanup-replace/caller-contract.json` | Instantiate mandatory supplier entry, view and private-frame checks at each actual invocation against current memory. Real save/UI callers are data definitions; fact references derive image views and shared admission without replacing the ordinary C computation. |
+| `components/bisimulation_native_calls.py`, `components/bisimulation_caller_interface.py` | Shared caller ABI instantiation: validate native events and argument storage, apply selected normal-return facts, derive portable service signatures and typed projections from compiled interfaces, and check complete source view/context frames. These adapters consume checked or named premises; signatures and declarations do not grant supplier guarantees. |
+| `components/bisimulation_supplier_facts.py` | Normalize supported facts from an evidence-validated paired supplier: typed entry relations, selected normal frames, current-memory/view correspondence, explicit fault and private-frame transport. Bind named runtime assumptions separately from guarantees; check the consumer service value contract and native view extents. The legacy supplier producer is still a supported-rule boundary, not a universal summary format. |
+| `components/bisimulation_caller_boundary.py` | Common outer caller model over typed entry/view/service/exit definitions. Executes the actual original and authored C, checks current memory and continuation transport, proves an exhaustive/disjoint outcome partition, and emits a separately checked nonempty-entry witness. Public definitions select admission and observations; supplier/runtime authority is bound separately. SDK preparation is shared through sourceCheck; writable definition transport and the real save/UI edit/check/reuse round trip are demonstrated. Exact slices can supply presentation source maps, and ownership-only bindings are derived as explicitly incomplete bookkeeping. Consumes validated fixed-image borrowed suppliers as well as cleanup summaries. View-valued operation results and current private continuation slots are checked; the already exercised ID-31 resource prefix passes public edit/reuse checks. The untouched third-consumer and final qualification audit remain open. |
 | `tests/integration/native/consumer_runtime_adapter.py`, `tests/integration/native/consumer_resource_adapter.py`, `tests/integration/native/test_consumer_runtime_adapter.py`, `tests/fixtures/metapad-consumer-runtime/` | Finite PE32/Wine comparison of both actual original callers and ordinary-C consumers through generated cleanup adapters, live native origins, the original mapped PE resources and actual EDIT-window/notice services. Exercises mutable callback state, aliases, lifetime, mode/uint32 boundaries and fault prefixes; keeps fixture-owned admission and unsupported runtime scope explicit. |
 | `components/bisimulation_runtime_view_transport.py` | Relates actual production returned-view callbacks to regional accessors under explicit issued-reference and hook contracts, including null views, interior coordinates, outcomes and complete single-hook effects. Imports validate literal code without regenerating headers. |
 | `tests/fixtures/metapad-authored-call/cleanup-regions.json`, `tests/unit/operator/test_source_entry_region_check.py` | One manually defined graph for the actual entry/loop/tail; public entry error/repair and scoped reuse checks. Graph feedback distinguishes reachable coverage holes from compiler records after returns. |
@@ -312,8 +363,9 @@ content-addressed component workflow DAG.
 | `components/source.py`, `components/component_c_v5.py`, `components/errors.py` | Package exact V3 operation-symbol source, compile host and PE32 objects, and share strict component-artifact failures. |
 | `components/semantic_contract.py`, `components/component_exact_c_slice.py`, `components/bisimulation.py`, `components/bisimulation_refinement.py`, `components/contextual_bisimulation.py` | Select exact contract-bound transfer-v2 rows, emit exact Behavioral-C slices, build linear forced-cutpoint proof plans, and check independently sharded contextual equivalence against arbitrary admitted shared worlds without path enumeration or test authority. |
 | `components/semantic_external_transducers.py`, `components/semantic_paths.py`, `components/refinement.py`, `components/refinement_v5.py` | Retain the exact transducer and legacy finite-path kernels for unmigrated fixtures; migrated providers cannot use them as activation authority. |
+| `components/aggregate_result_binding.py`, `components/semantic_record_transducers.py` | Share compiler-checked hidden record return lowering between overlays and semantic contracts; retain complete word-record arguments and initialized result projections, rejecting incomplete transport and unsupported finite expression consumers. |
 | `semantic_providers/portable_c_work_package.py`, `semantic_providers/encapsulated_owned.py` | Qualify V6 portable providers through that same refinement kernel; representation-changing providers add only a conservative total-transfer/object-alias admission receipt and image-lifetime storage adapter, never another semantic proof pipeline. |
-| `components/work_package_v6.py`, `components/relation_v5.py`, `components/proof_facet.py`, `components/portable_object.py` | Emit non-authorizing V6 work packages, check local relations and proof facets in memory, and compile exact portable objects without a public V4/V5 reducer stack. |
+| `components/work_package_v6.py`, `components/relation_v5.py`, `components/proof_facet.py`, `components/portable_object.py` | Emit non-authorizing V6 work packages, including optional scope-bound caller definitions for writable copying and dependency inspection; check local relations and proof facets in memory, and compile exact portable objects without a public V4/V5 reducer stack. |
 | `reconstruction/finite_values.py` | Explicit bounded scalar/pointer domains. |
 | `external/source_operations.py` | Non-authoritative rendering of recovered operations as C. |
 
@@ -407,8 +459,10 @@ The corpus is an untrusted regression system, not a candidate equivalence claim.
 | `candidate/functional.py` | Curated expected-output cases and sharded candidate execution. |
 | `extraction/ghidra.py` | Optional headless static proposal exporter; its output cannot authorize candidate generation. |
 
-Wine execution is candidate-only and must run headlessly. Nix constructors
-enforce this with `xvfb-run` where Wine is used.
+Wine applications run in a headless Wayland desktop through the shared
+`spaghetti-headless-wayland` runner. This includes candidate validation and
+explicitly bound original/source comparison drivers. Reuse comparisons share
+one desktop session so its environment remains stable across checks.
 
 ## Nix Constructors
 
@@ -418,7 +472,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `target-sdk.nix` | Stable v5 target interface with `environment.pe32`, high-level `workflow.pe32`, a strict pure operator index, and one exact operator product tree for analysis, lifting, semantic linking, selection, realization, and validation. |
 | `component-workflow.nix` | Content-addressed direct V6 component DAG: V5 interfaces and binding intents, V3 source, V2 semantic slices, V6 operator packages, dependency closure, and direct-provider eligibility. It exposes no V4 contract, implementation, or dependency graph. |
 | `component-source-check.nix` | Operator source-feedback phase depending only on the selected interface, source and compilers; incomplete machine bindings do not prevent source editing, and passing compilation grants no qualification authority. |
-| `component-source-call-check.nix` | Conditional original/source caller-region proof consuming independently cached source preparation and checked supplier contracts; reuses unchanged consumer proofs across supplier edits and reports remaining caller/runtime obligations without granting activation. |
+| `component-source-call-check.nix` | Conditional original/source caller-region proof consuming independently cached source preparation and checked supplier contracts. Public SDK `lifting.sourceCheck` and bundle `callerCompositions` wire it through `component-source-check.nix`, derive shared preparation and permit previous evidence for reuse. Remaining caller/runtime obligations do not grant activation. |
 | `component-source-region-check.nix` | Conditional original/source byte-compaction region comparison consuming cached manual graph preparation; selects Z3 or Cadical and exposes exact proof import and remaining entry/runtime/coverage obligations through sourceContractCheck. |
 | `component-source-composition-check.nix` | Composition admission phase over retained entry/loop/tail products; checks spatial implication and nonvacuity, reuses independent proof evidence and exposes unresolved caller, allocator and state obligations through the existing sourceContractCheck workflow. |
 | `component-source-edit-check.nix` | Configured baseline/current source comparison at manual boundaries, with portability checks, exact local-query reuse and separate baseline-proof eligibility; source comparison does not import application proofs or authorize activation. |
@@ -427,6 +481,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `boundary-workbench.nix` | Unifies checked call protocols and supplied canonical boundary packages behind stable subjects and emits non-authorizing operator work status. |
 | `external-environment-intent.nix`, `resolved-external-environment.nix` | Compile external-environment intent and its authority-free analysis projection, then resolve exact module, profile, boundary, and static-authority bindings. |
 | `header-machine-abi-profile.nix` | Derive checked PE32 machine-call shapes from pinned public C headers through Clang and the shared content-addressed JSON phase. |
+| `machine-import-effect-profile.nix` | Compose explicit native call-through effect contracts with checked header ABIs through `sdk.environment.nativeCallthroughProfile`; reject physical disagreement and retain both input bindings. |
 | `external-environment-provider-v2.nix` | Qualify and package exact V2 residual external-environment definitions without turning analysis projections into authority. |
 | `portable-c-work-package-provider-v2.nix` | Build receipt-bound per-component portable-C semantic providers directly from semantic slices, interface/binding intent, and source V3. |
 | `qualified-runtime-provider-v2.nix` | Qualifies shared runtime definitions as explicit V2 semantic providers; runtime support never appears as an implicit fallback. |

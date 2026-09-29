@@ -1,9 +1,3564 @@
 # Performance And Invalidation
 
+The prepared-prefix experiment at `build/component-runtime-startup-2026-09-24/`
+is closed without a production change. Copying initialized Wine state reduced
+isolated startup from **4.460s to 0.383s**, but retaining and restoring it was costly.
+The compressed-state prototype initially took **10.677s** for the jq edit/check;
+streaming one archive into both private prefixes reduced this to **5.685s**, versus
+the preceding fresh-prefix edit's **6.659s**. Restoration still took **3.321s**.
+Each retained comparison gained a **328 MiB** runtime input. Unchanged checks took
+**1.093s** instead of **0.479s**, and initial preparation took **11.195s**. These are
+single runs, so the modest edit-time difference is not a general speed guarantee.
+The three retained cases and edit/defect/replay/repair loop worked; there was no
+solver or pilot rebuild. The prototype and its tests are retained only in the
+experiment directory. Its comparison-engine rollback matches the previous
+completed checkpoint's hashes. This approach is not a supported CLI option.
+Revisit runtime caching only if whole-command latency and retained-storage costs
+justify it; the current priority is reusable boundary preparation and assembly.
+
+The follow-up at `build/component-receipt-preparation-2026-09-24/` removes repeated
+receipt and contract parsing before execution. The comparison reader can return
+the plan it has already checked alongside the receipt. One check shares those
+values across its preparation decisions, while retaining fresh validation after
+execution and on every independently requested read. This does not cache state
+across checks or weaken contract, input, object or observation bindings.
+
+On the retained native jq consumer, installed warm commands take **2.998s before
+and 2.063s after**, both with zero compiler/link/model/solver/execution work. The
+first new-engine run also reuses all 42 compiled translation units, relinks and
+refreshes runtime observations. No pilot or source-program rebuild is involved.
+The same pinned environment and selected case are used through headless Wayland.
+These are single end-to-end measurements. Phase totals now include the initial
+prior-receipt validation, which was previously unreported, so their evidence-
+validation totals should not be compared as identical accounting. Existing
+comparison/cache/domain regressions pass. Two optional-proof failures also
+reproduce with the preceding installed toolkit; their logs remain explicit in
+this checkpoint rather than blocking the practical workflow optimization.
+
+The retained jq consumer at `build/component-reuse-overhead-2026-09-24/` exposed
+repeated include-path probes across its 42 translation units. One validation pass
+made 11,256 filesystem probes for 6,526 distinct paths, and computed each path's
+relative form twice. Validation now computes that form once and shares probe
+observations within the pass. Every entry still checks its input byte hashes and
+object hash. Probe observations are discarded after a compiler invocation and
+before a later check; there is no persistent filesystem cache or mtime shortcut.
+
+On the same retained inputs, three read-only measurements reduce median include
+validation from **0.457s to 0.252s**, with the same valid result and all distinct
+paths checked. The isolated probe measurement omits configuration comparison so
+it can compare readers against the same old receipt; executable checks retain
+all configuration and environment checks. Installed end-to-end warm checks move
+from **3.226s to 3.004s**, both with zero compiler/link/model/solver/execution work.
+This is a modest total reduction: repeated receipt and contract parsing remain
+visible in the profile. The first check after changing the cache engine correctly
+rebuilds all 42 translation units before the new warm measurement. Both native
+executions match, using headless Wayland. Existing regressions cover read-header
+edits, new shadowing/optional includes, unread headers and reuse after compiler
+errors. No pilot or source-program rebuild is part of this measurement.
+
+The shared-object handoff at `build/component-object-lookup-2026-09-24/` exposed
+source-program invalidation caused by diagnostic counter ordinals in generated
+bindings. Adding `object-get` shifted the sorted component list and recompiled
+eighteen binding/observation files. Bindings now identify counters by stable names
+and cache their slot after the first call. Following a one-time counter migration,
+the same addition compiles two such files: the new binding and counter table.
+All 25 prior binding C files, 26 application objects and 18 lifted objects preserve
+hashes and mtimes. The changed backend `jv.c` still recompiles to remove the original
+operation. Incremental x86-64 build time changes from **1.015s** to **0.565s**;
+normal program output and component participation remain correct. This changes
+only the source recipe's diagnostic coupling, not component contracts or evidence
+invalidation. The new lookup's local edit independently compiles one C file
+(**0.016s**) and reuses its five supporting objects; a repeated matching check
+takes **0.764s** with no compiler/link/model/solver/execution work.
+
+The SDK follow-up at `build/component-sdk-invalidation-2026-09-24/` removes two
+whole-checkout `PYTHONPATH` inputs from its validation fixtures. The semantic-link
+fixture reuses the existing discovered unit-test source closure, and the native
+receipt fixture uses the checked Python module closure. The complete SDK check
+passes. Isolated Nix evaluations preserve its derivation identity after a
+documentation edit and an operator-reporting edit, while an actual fixture edit
+still changes it. This avoids rescheduling unrelated fixture/selection/status
+work during routine development; it does not skip required SDK checks or claim
+that changes to the toolkit's implementation can reuse the installed toolkit.
+No target execution or pilot rebuild is involved in this invalidation experiment.
+
+Retaining the development environment at
+`build/component-shell-invalidation-2026-09-24/` now demonstrates a practical way
+to avoid broad C recompilation during Python toolkit development. Two fresh
+`.#lifting` shells with the same toolkit produce identical compiler fingerprints.
+Changing the toolkit package also changes the shell's `NIX_CFLAGS_COMPILE`, `PATH`,
+`nativeBuildInputs` and `NIX_GCROOT`; the compiler cache correctly binds those
+actual process inputs. The retained Nix descriptions include different random-seed
+flags. The existing `nix develop --profile` command freezes the environment while
+the operator runs updated Python tooling through it; commands are in the
+[component workflow](component-workflow.md).
+
+The measured native jq edit changes the toolkit version and one supplier C body
+across separate headless desktops using that saved environment. Compiler
+configurations remain equal. One file compiles (**0.032s**), indexing its inputs
+takes **0.024s**, and all 35 neighboring objects reuse unchanged. One link takes
+**0.064s** and both executions take **0.128s**. Total command time is **9.027s**,
+including **5.265s** concurrent Wine startup wall time, **1.522s** validating retained
+evidence and **0.373s** checking cached compiler inputs. The baseline reuses all
+36 objects in **7.168s**; variable Wine startup prevents claiming a total-time
+improvement from this pair. This demonstrates controlled compiler invalidation,
+not full execution reuse. This profile experiment needs no cache policy,
+compiler environment filtering, model, solver or pilot changes. Environment probes retain hashes and changed
+variable names, never values; original and source runtime environments remain
+fully fingerprinted.
+
+The subsequent checkout preview exposes a separate accidental dependency on
+`SHLVL`: redirecting output changed that shell-nesting counter and made every
+object ineligible. Compiler and linker processes now omit it from their actual
+environment. Runtime processes still inherit it and invalidate their observations
+normally. Other compiler flags and inputs keep their existing binding rules.
+The installed follow-up changes the counter from 2 to 7 and redirects the edited
+native caller check. The initial policy revalidation compiles 36 files in
+**9.946s**. The edit passes in **8.497s** with one compilation (**0.032s**),
+35 reused objects and **4.642s** Wine startup wall time. The checkout-module
+preview under redirection then reports all 36 objects reusable. Thirteen focused
+cache tests, metadata/module closure and production lint pass; exact evidence is
+in the experiment's `shell-level/` directory. This isolates shell administration
+from the compiler processes while keeping runtime changes observable.
+
+Selected-supplier revision at `build/component-selected-revision-2026-09-24/`
+keeps jq's existing consumer instead of reconstructing a local fixture to change
+array-search C file structure and assumptions. Preparation, including a rejected
+missing caller review and successful explicit refinement, takes **0.525s**.
+Opening/inspection take **1.146s/1.618s**. The one retained native interpreter case
+matches in **11.475s**, with 36 compilations after a build-environment change,
+one link and two executions. This is revalidation, not warm compiler reuse.
+Public partial export takes **1.002s**. The standalone build itself takes **0.164s**:
+one component compilation (**0.025s**), two program links (**0.085s**), no backend
+compilation, and fifteen preserved neighboring objects. Normal x86-64 entry matches
+the retained workload. No model, solver, pilot rebuild or additional native case
+matrix is involved; no rerun is added just to manufacture a warm-cache measurement.
+
+Python-launcher isolation at `build/component-compiler-launcher-2026-09-24/`
+removes another avoidable source of C recompilation. Compiler and linker processes
+now omit `PYTHONPATH`, `PYTHONHOME`, `PYTHONHASHSEED`, `PYTHONNOUSERSITE` and
+`PYTHONDONTWRITEBYTECODE`; their cache fingerprints describe that actual environment.
+Runtime processes still receive and fingerprint the complete environment. In one
+retained jq array-search interpreter case, initial revalidation under the new policy
+compiles 36 objects in **12.174s**. Moving only the installed toolkit's import path
+then takes **8.757s**, reusing all 36 objects, linking once and executing both sides.
+Compiler configurations and object hashes remain identical; runtime environment
+fingerprints differ. The second run spends **0.363s** preparing, **1.571s** validating
+evidence, **0.373s** validating compiler inputs, **0.064s** linking, **5.011s** in
+concurrent Wine startup wall time and **0.128s** executing. There is no model, solver
+or pilot work. This controlled change does not identify the sole cause of earlier
+aggregate environment differences, or remove invalidation for C flags, tools and
+other inherited inputs. The 13 focused cache tests include an actual runtime read
+of the changed Python environment and a compiler-flag change that alters behavior.
+All Wine runs use headless Wayland; no expanded workload matrix is needed here.
+
+Preparing jq's getter directly from the selected network at
+`build/component-retained-suppliers-2026-09-24/` takes **0.967s**, retaining its
+eight current suppliers without their standalone preparation folders. The initial
+local comparison takes **8.788s** (28 compilations). The existing negative-index
+defect/repair checks take **7.546s**/**7.436s**, each compiling one file and reusing
+27 objects. Final checks after the toolkit update encounter a changed compiler
+environment and recompile the local/network selections, taking **10.136s** and
+**11.247s**. The final consumer spends **0.435s** in preparation, **1.137s** in
+evidence validation, **1.545s** compiling, **1.989s** indexing compiler dependencies,
+**0.064s** linking, **4.719s** in concurrent Wine startup and **0.128s** executing.
+Those environment revalidation costs are not warm-edit costs. Compiler cache
+validity remains tied to its actual configuration. Model/solver and pilot costs
+are zero; two retained cases and the existing component selection are used.
+
+Shared-supplier refinement at `build/component-network-refinement-2026-09-24/`
+updates jq's `path-get/get` and `path-set/get` together in **1.467s**, preserving
+all selected C/adapters and an independently edited bundled storage getter. Its
+existing `nested` native comparison takes **7.188s** with **zero compilations**
+and 34 reused objects. A subsequent getter edit checks the existing local
+`negative` case in **6.256s**; defect detection, repair and retained replay take
+**6.392s**, **6.410s** and **6.525s**. Those checks compile one C file and reuse
+27 objects. The edited connected consumer takes **7.597s**, with one compilation
+and 33 reused objects: **0.440s** preparation, **1.449s** evidence validation,
+**0.360s** cache validation, **0.032s** compilation, **0.026s** include indexing,
+**0.064s** linking, **3.841s** concurrent Wine startup wall time and **0.128s**
+execution. One headless Wayland desktop covers the whole sequence.
+The initial network/local baselines take **10.007s**/**7.967s**, compiling 34/28
+objects in the fresh toolkit/environment. Updating the supplier and two reviewed
+caller records in the source project takes **0.880s**; its one-object library
+build takes **0.032s**, preserving neighboring objects and mtimes. These timings
+exclude call-site review and shell setup. Model/solver and pilot work are zero;
+no cases or components are added.
+
+Reopening a root component after a file refactor at
+`build/component-root-refactor-2026-09-24/` takes **0.377s** from the authored
+workspace and **0.360s** from the exported project, including a private helper
+rename. The first local recheck takes **1.291s** (ten compiled objects); a wrong
+rectangle extent is detected in **0.601s** and repair takes **0.605s**, compiling
+one file and retaining nine objects. The repaired comparison spends **0.019s**
+preparing, **0.084s** validating prior evidence, **0.071s** validating compiler
+inputs, **0.016s** compiling, **0.020s** indexing, **0.032s** linking and **0.005s**
+executing. Integration takes **1.006s**, with two compilations and fourteen reused
+objects. Its **1.865s** initial consumer recheck compiles all fifteen old objects
+in the new toolkit/environment and is not a warm-edit timing. Export takes
+**0.434s** and the two-object library build **0.019s**; neighbor objects and mtimes
+stay intact. The retained `seed-7` cases exclude manual refactoring and shell
+setup. Model/solver and new native/pilot work are zero.
+
+Network-to-local setup at `build/component-local-setup-2026-09-24/` prepares an
+independent DX-Ball blit package in **0.391s**, using only its retained network and
+an explicitly reviewed local driver selection. The first local comparison takes
+**1.169s** (nine compiled objects); a warm implementation edit takes **0.579s**
+(one compilation, eight reused objects). A wrong coordinate is detected in
+**0.604s**, repaired in **0.598s** and replayed from the retained failure after
+repair. The connected consumer takes **1.034s**, compiling blit and retaining
+fourteen objects. Exporting that unit takes **0.435s**; its one-object library
+rebuild takes **0.020s**, preserving neighboring objects and their mtimes.
+The initial consumer recheck takes **1.855s** and compiles all fifteen objects in
+this toolkit/environment handoff; it is separate from warm-edit reuse. These
+existing `seed-7` costs exclude manual boundary/adapter review and shell setup.
+Phase costs are retained in `timings.json`; model/solver work and new native/pilot
+work are zero.
+
+Private-header editing at `build/component-private-headers-2026-09-24/` declares
+the existing DX-Ball helper role in **0.231s** and refines its caller in **0.548s**.
+The one-time reviewed source update takes **0.427s**; its metadata-only build takes
+**0.001s** without compilation. The subsequent helper/header edit checks locally
+in **0.664s** and in its retained-C consumer in **1.156s**, with two compilations
+and thirteen reused consumer objects. A deliberate exported-header defect is
+detected in **1.180s**; repair takes **1.184s**, including **0.064s** compilation,
+**0.056s** include indexing, **0.110s** compiler-cache validation, **0.345s** prior
+evidence validation, **0.064s** linking and **0.009s** execution. Exporting the
+matching edit takes **0.442s** and its three-object library build **0.031s**;
+initializer/blit objects and mtimes remain intact. These prepared `seed-7` timings
+exclude manual header-use analysis and shell setup. Model/solver and new native/
+pilot work are zero.
+
+Component file refactoring at `build/component-c-files-2026-09-24/` prepares the
+existing DX-Ball state component in **0.231s** and previews the consumer handoff
+in **0.664s**. The local and first connected retained-C checks take **1.859s** and
+**2.688s**; the latter recompiles all fifteen objects in this toolkit/environment
+handoff, so it is not a warm-edit timing. A wrong helper takes **1.128s** to detect;
+repair takes **1.103s**, compiling one C file (**0.016s**) and retaining fourteen
+objects. Repair spends **0.026s** indexing, **0.117s** validating compiler inputs,
+**0.339s** validating prior evidence, **0.064s** linking and **0.009s** executing.
+Updating just that unit in the existing source library takes **0.442s**; its
+three-object build takes **0.032s**, preserving initializer/blit objects and mtimes.
+Reopening the refactored exported source in the old consumer takes **0.527s**.
+These existing `seed-7` cases exclude manual C refactoring and shell setup. Model,
+solver and new native/pilot work are zero.
+
+Shared-input revision after regrouping DX-Ball at
+`build/component-shared-inputs-2026-09-24/` prepares its three-member group in
+**0.461s** for the host consumer and **0.472s** for the native consumer. The existing
+local case takes **1.840s** and its connected consumer **2.570s**, including
+**1.243s** compilation, **0.509s** include indexing, **0.064s** linking and **0.009s**
+execution. This shared-boundary handoff rebuilds all fourteen consumer objects;
+it is not a warm-edit reuse measurement.
+The original-x86 check takes **7.429s** under headless Wayland: **0.339s** compilation,
+**0.501s** indexing, **0.064s** linking, **0.178s** execution and **5.494s** concurrent
+runtime startup wall time. Source update takes **0.426s** and the four-object library
+build **0.043s**. These prepared `seed-7` timings exclude manual layout/adapter
+review and shell/desktop setup. Model/solver work is zero; no pilot or case matrix
+is added.
+
+Named C import in jq's existing twelve-unit network at
+`build/component-local-source-2026-09-24/` checks a `value-get` edit in **8.426s**
+under headless Wayland. Only its C file recompiles (**0.032s**); **33 objects**
+reuse. Include indexing is **0.026s**, cache validation **0.353s**, retained-evidence
+validation **1.471s**, preparation **0.495s**, linking **0.064s**, execution
+**0.128s** and concurrent Wine startup wall time **4.619s**. The existing `nested`
+case detects the wrong-index edit in **9.112s** and matches after repair in
+**7.594s**. Preview takes **0.980s**, editable-workspace preparation **1.270s**,
+source export **0.722s** and library build **0.167s**. Neighbor C/adapters and the
+boundary graph stay unchanged. Measurements exclude initial boundary analysis and
+desktop/shell setup; model/solver work is zero and no pilot is rebuilt.
+
+Complete DX-Ball preparation retry at
+`build/component-preparation-retry-2026-09-24/` takes **0.584s** after correcting a
+late missing-source error, with **0.456s** inside the existing recipe. Retained-PE
+recovery costs **0.116s**: extraction **0.063s**, lowering **0.036s**, rendering
+**0.004s**. Staging keeps an incomplete network out of the output directory, so
+correcting the input no longer requires cleanup. The resulting local C edit takes
+**0.549s**, including one compilation (**0.016s**), linking **0.032s** and execution
+**0.005s**. Its existing consumer checks in **1.629s**, source export takes
+**0.414s** and the ordinary library build **0.038s**. No new cases, model/solver
+work, native run or pilot rebuild are introduced. Boundary analysis and adapter
+authoring are not included in these repeated preparation/edit measurements.
+
+Repeatable check history at `build/component-check-history-2026-09-24/` uses one
+unchanged public command for DX-Ball's grouped state component across baseline,
+edit, discrepancy, repair and unchanged reuse. A reversed reset loop checks in
+**0.566s**, compiling one file (**0.032s**) and retaining nine objects. Include
+indexing costs **0.020s**, cache validation **0.068s**, linking **0.032s** and execution
+**0.005s**. The deliberate count defect takes **0.553s**, repair **0.563s**, retained
+failure replay **0.590s**, and unchanged reuse **0.486s** with zero compiler/link/
+execution/model/solver work. Earlier results remain unchanged after `latest` moves.
+
+The edited initializer consumer takes **1.073s**, with one compilation (**0.016s**)
+and thirteen retained objects, **0.022s** indexing, **0.117s** cache validation,
+**0.032s** linking and **0.017s** execution. Source update using `CHECKS/latest`
+takes **0.358s**; its **0.020s** make invocation recompiles the two files in the
+edited component and preserves the initializer/blit objects. History changes
+destination management and automatic previous-result selection, not cache or
+assurance semantics. These prepared `seed-7` measurements exclude initial boundary
+analysis and shell setup. No native run, recovery, pilot or wider matrix is added.
+
+Component regrouping at `build/component-regrouping-2026-09-24/` combines DX-Ball's
+existing reset and bind entries while retaining initializer/blit C. The reviewed
+host/native preparation takes **0.412s/0.198s**. The existing local `seed-7` check
+takes **1.154s** and the connected retained-C check **1.843s**: fourteen compilations
+cost **0.646s**, include indexing **0.376s**, linking **0.032s**, execution **0.017s**.
+That first check retains no compiled objects; this is a boundary regrouping and
+toolkit handoff, not a warm implementation-edit measurement.
+
+The native check takes **6.371s** in the lifting shell under headless Wayland,
+including **0.355s** compilation, **0.507s** include indexing, **0.064s** linking,
+**0.229s** execution and **4.092s** concurrent runtime startup wall time. An initial
+attempt outside the lifting shell failed linking the MinGW `mcfgthread` dependency;
+its retained result is separate from this terminal match. Model/solver work is zero.
+These timings exclude manual boundary/C-adapter review and shell/desktop setup.
+
+Reviewed source update takes **0.428s**; the **0.023s** library build compiles just
+the two regrouped source files, preserving initializer/blit object bytes and mtimes.
+Old reset/bind objects are removed, and the archive is regenerated without them.
+A **0.023s** consumer link uses the exported archive plus retained adapter objects,
+with matching original/source observations. Updating native comparison provenance
+takes **0.439s**, followed by **0.001s** make with no compilation. The experiment
+uses one existing case and unchanged original inputs; it adds no pilot or case
+matrix. It demonstrates an explicit regrouping handoff, not arbitrary boundary
+compatibility or a complete portable game.
+
+Shared-layout handoff at `build/component-layout-handoff-2026-09-24/` revises
+DX-Ball's existing four-member graphics group through the installed authoring APIs.
+Preparing the reviewed header and caller requirements takes **0.474s** for the host
+consumer and **0.457s** for the native consumer. The existing local reset case takes
+**1.142s**. The connected retained-C check takes **1.482s**, compiling ten affected
+files (**0.270s**) and retaining five objects; include indexing takes **0.344s**,
+linking **0.032s** and execution **0.017s**. This is a shared-header change, so the
+affected group recompiles even though its implementation C is preserved.
+
+The original-x86 comparison takes **6.138s** in headless Wayland, including
+**0.387s** compilation, **0.553s** include indexing, **0.064s** linking, **0.178s**
+execution and **3.775s** concurrent runtime startup wall time. The reviewed source
+export takes **0.437s** and its four-object rebuild **0.039s**. Updating that library
+from the native comparison takes **0.435s**; the subsequent **0.002s** make invocation
+compiles nothing because source inputs are unchanged. Model and solver work are
+zero. These costs exclude manual layout/adapter review and shell/desktop setup.
+The trial uses the existing `seed-7` case, selected C and original inputs; it adds
+no pilot rebuild or wider runtime matrix. It measures a prepared operator handoff,
+not first-time boundary analysis or general representation-change coverage.
+
+Public requirement refinement at `build/component-requirement-command-2026-09-24/`
+uses `component start --refine-requirement` for the existing reviewed DX-Ball reset
+package. It retains caller edits and notes, changes only the named requirement,
+and prepares editor commands/guides in **0.571s**. Its existing `seed-7` consumer
+check takes **1.122s**, compiling one changed supplier file and retaining fourteen
+objects. Unchanged reuse takes **0.917s** with zero work; source export **0.403s**.
+These costs exclude the prior boundary analysis and shell setup. The shared
+refinement implementation is unchanged; the operator no longer writes Python for
+this reviewed handoff. No new cases, recovered original inputs or pilot rebuild
+are needed. The generated source remains experimental finite-comparison evidence.
+
+Compiler-error recovery at `build/component-compile-recovery-2026-09-24/` retains
+successful objects and still-valid neighbors in the failed result. Using that
+result with `--reuse-comparison` after fixing C no longer loses the compilation
+cache. In the existing DX-Ball `seed-7` retained-C consumer, repair falls from
+**15 compilations / 1.887s** to **1 compilation / 0.996s**, retaining fourteen
+objects. Compilation takes **0.016s**, new include indexing **0.019s**, cache
+validation **0.132s**, linking **0.032s** and execution **0.017s** after the fix.
+These are one before/after operator trial, excluding shell setup. Unchanged reuse
+takes **0.935s** with zero compiler/link/execution/model/solver work; public source
+export takes **0.424s**. The failure itself retains no matching observations, and
+the repair runs both sides again. No pilot, native execution or new case matrix
+is involved. One focused regression covers successful new work before a later
+error and cached neighbors after an error in the first file.
+
+Supplier addition at `build/component-supplier-addition-2026-09-24/` uses the
+existing revision/resolution path to adopt seven already authored array-storage
+components into an edited jq caller. The reviewed selection and binding revision
+takes **0.382s**, retaining caller C, cases, notes and original inputs. The existing
+nested-case check takes **6.933s**, including **0.807s** compilation, **1.181s**
+include indexing, **0.064s** linking, **0.128s** execution and **3.509s** concurrent
+runtime startup wall time. A subsequent length edit takes **5.746s**, compiling
+one file (**0.016s**) and retaining 22 objects; its runtime startup takes **3.641s**.
+Unchanged reuse takes **1.339s** with zero compiler/link/execution/model/solver work,
+and source export **0.478s**. These costs exclude shell/desktop setup and initial
+binding analysis: the trial reuses reviewed storage adapters and one existing get
+transcript. Every Wine process uses headless Wayland. No pilot, new operation or
+larger runtime suite is added for this authoring improvement.
+
+Include indexing at `build/component-include-index-2026-09-24/` deduplicates literal
+directory/name searches before resolving paths. It preserves the original input
+hashes, relative include searches, absent-header probes and unsupported-input
+diagnostics. Reindexing the same retained Hello inputs produces identical records
+for all 23 translation units. The three-unit local index falls from **1.120s** to
+**0.565s**, and the twenty-unit program index from **2.242s** to **1.261s**.
+Those isolated measurements exclude dependency-file hashing, compiler and runtime
+work; they do not claim the same reduction in total check time.
+
+The installed DX-Ball handoff uses its existing retained-C `seed-7` consumer. Its
+fresh check takes **2.496s**; a compatible reset edit takes **1.178s**, compiling
+one file (**0.032s**) and retaining fourteen objects. The edited file's indexing
+cost is **0.029s**, cache validation **0.133s**, linking **0.064s**, and execution
+**0.009s**. Unchanged reuse takes **0.934s**, with zero compiler/link/execution/
+model/solver work. Shell setup is excluded. Eleven existing invalidation regressions
+cover body/header edits, header shadowing, optional/computed includes, environment
+changes and explicit reruns. No new native execution, case matrix or pilot is used.
+
+Disjoint native entry preparation at
+`build/component-native-fragments-2026-09-24/` removes Hello string conversion's
+manual relocation/protection/trap code. The existing helper generates both reviewed
+hot/cold ranges and adjusts the entry's HIGHLOW word for the loaded image. The
+same adapter passes the existing 192-sequence local case and normal Hello default
+startup, with unchanged portable C and contract. Local/program preparation takes
+**0.199s/0.414s**; public checks take **8.957s/15.031s**. Compilation costs
+**0.344s/0.922s**, linking **0.064s/0.064s** and execution **0.128s/0.128s**;
+fresh runtime startup accounts for **6.515s/10.406s** wall time. Unchanged program
+reuse takes **1.159s** with zero compiler/link/execution/model/solver work. The
+recorded command costs exclude shell/desktop setup and manual boundary analysis.
+These are fresh checks, not compatible-edit timings. All Wine processes use
+headless Wayland. No wider case matrix, recovery, pilot or formal campaign is run.
+Existing snapshots remain replayable; regenerating entry headers binds the revised
+adapter glue and correctly invalidates affected compilation.
+
+Generated native entry setup at
+`build/component-native-entry-authoring-2026-09-24/` replaces repeated prefix,
+storage and trap-check code in three existing jq drivers. Installed preparation
+takes **0.224s** for byte length, **0.050s** for codepoint length and **0.063s** for
+string-indexes. Their existing interpreter cases match in **6.609s/6.908s/6.560s**.
+The compatible indexes edit takes **5.037s**, compiling only its changed C file
+(**0.032s**) and retaining the other objects. Unchanged reuse takes **0.638s** with
+zero compiler/link/execution/model/solver work; source export takes **0.364s**.
+Exact remaining compile/link/runtime phase costs are retained. These are recipe
+and command costs excluding shell/desktop setup and manual boundary analysis;
+the helper does not infer ranges or replace memory/ABI work. Every Wine invocation
+uses headless Wayland. No new target operation, runtime matrix, original recovery
+or pilot rebuild is involved.
+
+Recipe-driven binding refresh at
+`build/component-binding-refresh-2026-09-24/` removes the manual integration-file
+copies and project-metadata edits from the source-addition experiment below.
+Public export takes **0.529s**, the reviewed recipe refresh **0.255s** and an
+unchanged refresh **0.264s**, preserving source/object mtimes. A local Makefile
+conflict leaves the project untouched; the subsequent explicit merge is preserved.
+The **0.715s** incremental build retains all fourteen previous component objects:
+one new component compilation (**0.028s**), one backend compilation (**0.336s**),
+six binding/observation compilations (**0.279s** summed), and two links (**0.086s**
+summed). Five normal CLI searches match the previous program and retained native
+values. Initial and incremental binding generation share one recipe, with unchanged
+initial compiled inputs. These costs exclude shell setup, project copying and
+first-time boundary/backend analysis. No original recovery, native execution,
+backend configuration, model, solver or pilot rebuild is performed.
+
+Incremental component addition at
+`build/component-source-addition-2026-09-24/` extends an already built jq source
+project using a retained string-indexes comparison. Reviewed partial export takes
+**0.523s** and preserves the fourteen existing components' provenance and object
+bytes/mtimes. The operator applies nine already reviewed C/header/build integration
+files; first-time adapter analysis and copying the prepared project are not timed.
+The incremental build takes **0.765s** wall time: one new component compilation
+(**0.025s**), one changed backend compilation (**0.340s**), six binding/observation
+compilations (**0.287s** summed) and two program links (**0.087s** summed).
+Five normal CLI searches match retained native values and the previous program;
+the new entry executes five times. This measures extension of an existing host
+project, not a new boundary, full jq lift or cross-architecture run. Original
+recovery, native execution, model, solver and pilot work are zero. Backend entry
+wiring remains explicit; changed observation indices explain four binding rebuilds.
+
+Independent program-entry revision at
+`build/component-program-entry-revision-2026-09-24/` reuses the same authoring path
+for Hello's normal-entry setup. Base preparation takes **0.137s** and preparation
+with the separately edited string entry **0.192s**. Both have identical consumed
+inputs to the former recipe. Current C and neighboring selections stay intact;
+shared suppliers use the existing composition resolver. The focused default
+workload takes **11.668s**, unchanged reuse **1.131s** and source export **0.467s**.
+The edited string entry and both TLS callbacks execute; original/replacement state
+and streams match. Reuse performs zero compiler/link/execution/model/solver work.
+These are retained-input preparation and command costs, excluding shell/desktop
+setup and first-boundary analysis. No larger workload matrix, original recovery
+or pilot rebuild is added for this API migration.
+
+Reviewed driver revision at `build/component-driver-revision-2026-09-24/` removes
+manual generated-plan/hash/composition editing from the DX-Ball native recipe.
+The existing package revision API retains selected C and neighbors while replacing
+reviewed root execution inputs. Preparation takes **0.109s** versus **0.324s** for
+the former recipe in this run. Consumed executable inputs remain identical after
+resolving equivalent tool paths, including a preexisting local supplier edit.
+Public start/status/check/reuse/export take **0.429s/0.345s/7.525s/0.967s/0.412s**.
+The single retained `seed-7` native case matches; unchanged reuse does zero
+compiler/link/execution/model/solver work. Exact phase costs and commands are
+retained. These measurements exclude shell/desktop setup and semantic adapter
+analysis. No new target recovery, pilot build or larger runtime matrix is used.
+
+Fresh-shell reuse at `build/component-shell-reuse-2026-09-24/` addresses the
+invalidation observed in the grouped supplier handoff below. Two independent
+lifting shells differ in five temporary-directory compiler variables. Interactive
+compiler/linker processes now omit `NIX_BUILD_TOP`, `TMPDIR`, `TMP`, `TEMP` and
+`TEMPDIR`, using their default temporary directory. Pure Nix builds retain them
+for input-path filtering. Actual build inputs remain hashed, including flags;
+runtime evidence continues to bind the complete execution environment.
+
+The installed public workflow checks nine retained host allocation cases, then
+edits one C file in a fresh shell. Baseline checking takes **1.323s**, compiling
+six files; the edit takes **0.719s**, compiling one and retaining five objects.
+The **0.453s** read-only preview correctly predicts that compilation. Both sides'
+observations match. Command times exclude shell/desktop setup, which is recorded
+separately. No Wine, original recovery, pilot rebuild, model or solver work is
+needed. This demonstrates cross-shell compiler reuse, not runtime evidence reuse
+or another native-program qualification.
+
+The grouped supplier's real-consumer handoff at
+`build/component-group-consumer-2026-09-24/` uses public dependency selection,
+preview, check, reuse and export. A retained native Hello quoting case includes
+twenty allocation success/failure probes across the eight entries and two aliases.
+Baseline checking takes **7.495s**, replacement checking **7.194s**, unchanged reuse
+**0.926s** and source export **0.414s**, excluding Nix/desktop setup. The selected
+component's implementation and adapter change while caller/neighbor inputs and
+every boundary contract remain unchanged. Subsequent reuse does zero compiler,
+link, execution, model or solver work.
+
+The trial resumed after correcting a reporting-script preview key; it retained the
+successful baseline rather than repeating it. The new Nix shell changes the build
+environment beyond the excluded desktop connection variables, so its preview
+correctly predicts **fourteen compiler invocations** for the selected check.
+No same-environment two-file compilation claim is made, and no extra native run
+is added merely to obtain a cache hit. Full-environment compiler invalidation
+outside desktop connection variables is a measured limitation of that checkpoint,
+addressed for disposable shell directories by the subsequent experiment above.
+No compiler-cache policy or implementation changes accompany this integration.
+
+Manual-entry service wiring at
+`build/component-manual-entry-bindings-2026-09-24/` replaces custom table/trace
+generation in Hello's grouped allocation recipe with the existing package's
+generated service binding. The recipe records **2.300s** reading the pinned
+transfer plan, **0.064s** rendering the owned original C and **0.029s** packaging.
+Public start/check/repair/export take **0.352s/0.915s/0.544s/0.337s**. Nine retained
+cases have identical behavioral observations to the previous allocation handoff.
+Removing a required scope-end call is rejected in **0.675s** despite matching
+values: the service observation is incomplete. The restored adapter reuses the
+passing result with zero compiler/link/execution work. The first reporting
+assertion expected a behavioral mismatch; reporting was corrected without
+repeating completed execution. Preparation costs are the retained recipe phases;
+the interrupted script's outer preparation wall time is not reconstructed.
+Source exports regenerate the same manual-entry bindings, and ordinary jq bindings
+stay byte-identical. The final diagnostic-only guard also preserves generated C.
+No Wine, pilot build, model or solver is needed for this authoring/binding change.
+
+Grouped-entry authoring at `build/component-operation-groups-2026-09-24/` reduces
+Hello's allocation declaration from **62 to 39 lines**, retaining exactly the
+same interface payload, service contracts and generated headers. The existing
+`component_interface` helper now accepts named operations and shared context state;
+an author no longer constructs signature/projection payloads for each entry.
+The public retained-input handoff prepares in **0.016s**, opens/inspects in
+**0.324s/0.307s**, checks nine selected cases in **0.891s**, checks a compatible
+private-helper edit in **0.569s**, and exports in **0.323s**. These are prepared
+boundary costs, not first-time semantic analysis or an independent human trial.
+The edited check compiles one file (**0.016s**), reuses five objects, links once
+(**0.032s**) and runs eighteen original/source executions (**0.023s**).
+Preparation/evidence validation/cache validation take **0.015s/0.072s/0.051s**
+within that command. No original recovery, Wine, pilot, standalone program,
+model or solver work is performed. A small compiled state-sharing example and
+the existing service-authoring checks exercise the helper; no larger runtime
+matrix is needed merely to regenerate identical boundary inputs.
+
+Separate-desktop compilation reuse at
+`build/component-desktop-build-reuse-2026-09-24/` removes an avoidable rebuild from
+the component editing loop. The compiler and linker now receive an environment
+without `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, `XAUTHORITY`,
+`XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS`; the cache hashes that actual
+environment. These variables are withheld from the processes, not merely omitted
+from a cache key. Every other environment input, including compiler flags and
+loader/search overrides, retains its existing treatment. Old compilation metadata
+invalidates once. Runtime execution still uses and fingerprints the full environment.
+
+The installed public workflow opens a retained native consumer, checks it, checks
+unchanged C in a second headless desktop, then edits one supplier and checks it in
+a third. Each target uses one retained case, with unchanged contracts and adapters:
+
+| Target | Baseline | New desktop, unchanged C | New desktop, supplier edit |
+|---|---|---|---|
+| jq `path-set` / `path-get`, `nested` | 34 compiles; 9.659s | 0 compiles; 7.380s | 1 compile; 7.085s |
+| DX-Ball initializer / bind, `seed-7` | 10 compiles; 6.323s | 0 compiles; 5.514s | 1 compile; 5.387s |
+
+All six comparisons match. Each reruns both sides and links once; execution
+environment digests differ across desktops while compiler configurations match.
+The edited jq/DX-Ball commands spend **0.016s/0.016s** compiling,
+**0.033s/0.024s** indexing new compiler inputs, **0.311s/0.080s** validating
+cached objects, **0.064s/0.064s** linking and **0.128s/0.178s** executing cases.
+Concurrent Wine startup takes **3.859s/3.859s** wall time and remains the largest
+cost. Public command times include preparation and evidence work, excluding Nix
+and desktop launch/cleanup; the latter commands are timed separately in the
+retained handoff. Model/solver work, pilot rebuilds and standalone rebuilds are zero.
+Focused checks also verify that a real compiler-flag change still recompiles and
+detects changed behavior. This improves object reuse, not runtime evidence reuse
+or proof authority. Other environment changes may still require recompilation.
+
+Edit-impact preview at `build/component-change-preview-2026-09-23/` reads the
+existing jq and DX-Ball consumer results and selected supplier drafts without
+execution. JSON/text views take **1.704s/1.415s** for jq and **0.294s/0.290s** for
+DX-Ball within one installed Python process, excluding the trial's inventories.
+The preview distinguishes the single changed C file from environment invalidation:
+the current environment makes all 34/10 compiled files ineligible for reuse, while
+the retained same-environment edits compiled one each. It does not run that
+recompilation. The focused regression verifies that a warm one-file prediction
+agrees with actual compiler work. That checkpoint left compilation cache policy unchanged;
+checker input preparation and reuse decisions are now shared with inspection.
+
+Preparation retry at `build/component-preparation-retry-2026-09-23/` reproduces a
+jq input-path mistake that previously left 26 files and blocked correction.
+Staged preparation now rejects it without publishing partial inputs and succeeds
+on the corrected retry in **0.016s**. Wrapping the complete jq recipe, including
+its generated adapter, takes **0.032s** after correction. All 39 package inputs
+match the retained working setup. Timings exclude interpreter/environment setup;
+compiler/model/solver/link and target execution are zero. The change is authoring
+only, although the existing conservative execution fingerprint includes the
+modified comparison-package module; no cross-engine receipt reuse is claimed.
+
+Named publication at `build/component-publish-drafts-2026-09-23/` updates jq
+`path-get` and DX-Ball `graphics-bind` from retained consumer evidence in
+**0.745s/0.129s**, preserving unfinished neighboring C. Supplier inspection takes
+**0.560s/0.092s**; publishing the restored, previously compared consumer takes
+**0.741s/0.127s**. Timings cover installed CLI handlers within one process,
+including source/evidence validation, copying, guide generation and backups;
+they exclude environment setup and trial retention. Compiler/model/solver/link
+and runtime work are all zero, with subprocess execution prohibited. Dirty
+neighbors keep their prior provenance and lose stale build outputs; clean
+neighbors retain build reuse. No pilot rebuild is needed for this handoff.
+
+Runtime feedback at `build/component-runtime-feedback-2026-09-23/` inspects two
+retained DX-Ball failures through the installed `component status` command in
+**0.304s/0.072s** within one process. It performs no compiler/model/solver/link or
+runtime execution. Comparison-engine file hashes and all 168 files per result
+remain unchanged. The measurements include retained-evidence validation and text
+rendering, excluding environment setup and the handoff's before/after inventory.
+Operator presentation alone does not require rebuilding a pilot or rerunning Wine.
+
+The exported-supplier handoff at `build/component-supplier-source-2026-09-23/`
+imports only the named C draft into its existing consumer. jq/DX-Ball preview takes
+**0.820s/0.390s**, and workspace preparation **1.042s/0.444s**. Fresh baselines
+take **11.225s/6.294s** in the changed engine/environment; the compatible edit
+checks take **6.840s/5.566s**. Each edit compiles one file in about **0.016s**,
+links in **0.064s**, and reuses all other compilation. Execution is
+**0.128s/0.178s**; Wine startup wall time is **3.611s/3.990s**.
+The bad DX-Ball handle produces a retained runtime rejection, reproduced on replay;
+repair reuses in **0.825s** with zero compiler/model/solver/link/execution work.
+Public commands total **44.809s**, excluding environment setup and retention.
+Reporting corrections reuse completed runs. No standalone program, full runtime
+matrix or pilot is rebuilt; this measures integration of an existing boundary.
+
+The source-backend dependency handoff at
+`build/component-backend-dependencies-2026-09-23/` prepares the jq project from its
+retained source export in **5.282s**, preserving all **278** C/header/build inputs
+from the successful build. A missing declared helper header rejects in **0.107s**
+before backend unpacking/configuration. This recipe change needs no compilation,
+modeling, solving, linking or program/pilot rerun. Initial comparison used the old
+preparation manifest, which predates its recorded header repair; the continuation
+uses the successful build inventory and does not repeat preparation.
+
+Resource-role authoring at `build/component-resource-authoring-2026-09-23/` uses
+the existing validator through a separate authoring module. The comparison-engine
+file hashes are unchanged. Three migrated jq recipes reproduce all prepared files;
+the fourth preserves every executable input and lifecycle declaration, with an
+already changed boundary note recorded separately. Automatic preparation takes
+**0.247s/0.279s/0.286s/0.229s** for index search/byte length/codepoint length/slice.
+One retained interpreter case passes in **6.500s**: **0.503s** compiler,
+**0.064s** link, **3.640s** Wine startup wall and **0.228s** execution. The
+**8.178s** command total includes preparation and workspace start, excluding
+development-shell/headless-desktop setup. This is cold validation in a new
+environment; preserving generated contracts does not bypass environment checks.
+No source-program or pilot rebuild is needed for this authoring-only change.
+
+The new two-input jq search handoff at `build/jq-string-indexes-2026-09-23/`
+separates manual preparation from warm editing. First retained disassembly to the
+first local result takes **285.068s**, including authoring and execution but
+excluding earlier exploration. Automatic preparation takes **0.239s**. The local
+workflow totals **25.375s**, including a deliberate lifetime defect and replay;
+its four scenarios contain 21 direct searches and five interpreter searches.
+The compatible edit takes **5.613s**, compiling one file in **0.016s**, linking in
+**0.064s** and executing in **0.612s**. Fresh Wine startup wall time is **3.909s**;
+the summed concurrent startup duration overlaps that wall interval. Restoring the
+checked C reuses with zero compiler/link/execution/model/solver work.
+
+Source assembly takes **6.735s**. Initial host/ARM builds stop at the same missing
+adapter header after **0.314s/5.473s**; their completed objects are retained.
+After explicitly including that lower-service header, builds take
+**18.242s/215.060s**. ARM configuration and compilation run under emulation;
+summed compiler times are retained separately from wall time. One normal CLI
+workload with five searches passes on each architecture. These are fresh assembly
+and focused integration measurements, not a new whole-jq qualification or a
+rerun of every previous case. No semantic engine change or pilot rebuild occurs.
+
+Adding a local setup to an unchanged experimental selection at
+`build/component-network-local-2026-09-23/` needs no program rebuild or rerun.
+The existing external DX-Ball recipe prepares matching inputs in **0.427s**.
+The eight-case bind check takes **1.890s**: **1.050s** compiler, **0.064s** link,
+**0.022s** execution; model/solver work is zero. Attaching that check with
+`candidate build --reuse-experimental` takes **1.503s**, including one symbol
+inventory, with zero compiler/model/solver/link/execution work. It preserves the
+program binary, policy and neighboring reset receipt exactly.
+
+Named reopening takes **0.698s**. Its printed check passes in **1.998s**, with
+fresh compilation/execution because the continuation entered a new Nix environment
+and its execution-context digest changed. Public commands total **6.770s**;
+preparation, shell setup and evidence copying are separate. This is a prepared
+boundary handoff using retained machine C, with unchanged prior native-program
+evidence. No wider runtime coverage, warm cache hit or new-boundary analysis is
+claimed; no extra run was added merely to obtain a cache hit.
+
+Named workspace recovery at `build/component-experiment-workspace-2026-09-23/`
+uses `component start --experimental-package`. Opening Hello's multibyte component
+and its program workspace takes **2.183s / 2.334s**; DX-Ball's reset and program
+workspaces take **0.672s / 0.801s**. Opening only validates retained evidence and
+prepares the editable workspace/guides: no compiler, model, solver, linker or
+program execution is invoked. C and comparison declarations are preserved.
+
+The printed commands pass one local and one program case per target, in
+**17.698s / 13.199s** for Hello and **1.971s / 17.250s** for DX-Ball. These cold
+checks perform fresh compilation in the new environment; no warm reuse speedup
+is claimed. Wine startup wall time dominates: **12.873s / 9.084s** for Hello and
+**14.407s** for the DX-Ball program. Actual execution is **0.128s / 0.160s** and
+**0.003s / 0.178s**, respectively. Concurrent startup sums overlap those wall times.
+Public commands total **58.918s**, including the two missing-local-setup diagnostics,
+excluding staging and Nix/desktop setup. Earlier full matrices supply their own
+retained scope; this handoff does not expand them or rebuild a pilot.
+
+The local-edit-to-experiment loop at
+`build/component-experiment-edit-2026-09-23/` uses `candidate build
+--reuse-experimental` to retain policy and unchanged component receipts.
+Hello's 27-case multibyte check takes **12.178s** after the edit; its twelve-case
+program comparison takes **10.518s**. DX-Ball's eight-case reset check takes
+**0.630s**, and its 37-case controlled program comparison takes **11.640s**.
+Each of these four checks compiles only the edited C file: **0.032s / 0.032s**
+compiler time for Hello and **0.032s / 0.016s** for DX-Ball, with about **0.064s**
+link per check. Hello startup wall time is **4.325s / 7.298s** and execution
+**3.454s / 1.209s**; DX-Ball program startup is **3.674s** and execution **6.233s**.
+Startup-wall and summed concurrent startup durations overlap.
+
+Repackaging takes **7.671s / 1.475s**, with zero compiler/model/solver/link work;
+Hello retains five unchanged component receipts without rerunning those checks.
+DX-Ball retains its existing network-only status for the other units. The final
+program runs take **11.578s / 8.677s** after supplied comparison folders are removed.
+The successful continuation takes **110.634s**, including fresh baselines needed
+for the new desktop context. The initial stopped walkthrough had spent **26.020s**
+in public commands before discovering a stale textual edit pattern. Both attempts
+are retained; no toolkit failure or pilot rebuild occurred. These are prepared
+edit/integration measurements, not new-boundary analysis or wider runtime coverage.
+
+Public policy preparation at `build/component-policy-handoff-2026-09-23/` replaces
+the previous custom Python policy assembly with `candidate policy`. It reads
+retained evidence and generates the existing policy plus its review guide in
+**2.065s** for Hello and **0.446s** for DX-Ball. The default drafts, which retain
+missing local-check requirements, take **2.104s / 0.473s**. These are alternative
+preparations, not phases to add for a normal invocation. Generated policy values
+match the previous reviewed policies exactly; no compiler/model/solver/link or
+execution work is done during preparation, and no separate local check is rerun.
+
+The printed build commands take **6.170s / 1.109s** and retain the same selection
+bindings. The resulting twelve-case Hello and 37-case controlled DX-Ball runs
+take **12.587s / 8.969s**, after deleting the supplied comparison folders. No pilot
+rebuild or expanded runtime matrix is involved. Times exclude Nix/desktop setup
+and staging; this measures policy handoff, not initial boundary-analysis effort.
+
+Installed experimental program handoff at
+`build/component-experimental-program-2026-09-23/` packages existing PE program
+comparisons without compiling, linking, modeling or solving. Hello packaging
+takes **5.729s**, including **3.981s** evidence validation and **1.629s** retention;
+DX-Ball takes **1.093s**, including **0.944s / 0.030s** for those phases. The twelve
+Hello cases run in **11.646s** (**7.427s** validation, **3.438s** Wine startup,
+**0.451s** execution); the 37 controlled DX-Ball cases take **8.786s** (**2.839s**
+validation, **3.489s** startup, **2.114s** execution). Startup-wall measurements
+overlap the runtime-startup measurements; do not add both. Validation/retention
+and runtime startup dominate this small workflow; no solver campaign is involved.
+
+The initial Hello relocation changed pathname-dependent allocations and failed.
+Explicit preparation with a stable `P:\hello.exe` invocation takes **0.405s**;
+its fresh twelve-case original/control/source comparison takes **12.269s**,
+including 18 compiles totaling **0.708s**, **1.634s** cache indexing, **0.064s**
+link, **7.046s** concurrent startup wall time and **1.177s** execution. This is a
+changed program input, so its observations are rerun, not normalized or inherited.
+The existing separate local receipts are reused without execution. Packages run
+after their supplied comparison directories are removed. Times exclude Nix and
+desktop setup; they measure prepared handoff, not new-boundary analysis. No pilot
+rebuild, new component or expanded locale/terminal matrix is involved.
+
+Installed native process-helper handoff at
+`build/component-native-helper-handoff-2026-09-23/` removes a checkout-relative
+header from external component preparation. The helper's C bytes and resulting
+Hello comparison inputs are unchanged. Fresh recipe invocation takes **0.303s**
+(**0.221s** inside preparation); this is automated setup, not first-boundary analysis.
+One actual abort-path comparison takes **6.080s**, including **0.344s** compiler,
+**1.135s** compile-cache indexing, **0.064s** link, **3.724s** concurrent Wine startup
+wall time and **0.128s** execution. The two startup durations sum to **7.438s** and
+must not be added to wall time. Unchanged reuse takes **0.451s** with zero work;
+export and source-library make take **0.312s / 0.030s**. No pilot/model/solver work
+runs, and unrelated packages keep the original default entry/import header set.
+
+Boundary guides at `build/component-source-guides-2026-09-23/` are generated from
+existing source-export declarations and the shared workspace renderer. Installed
+partial exports take **0.459s** for Hello and **0.492s** for jq; their unchanged
+libraries take **0.002s / 0.003s** to report no make work. These costs include the
+existing export validation/update, not only Markdown rendering. Implementation
+identities, contracts, C/headers, objects and timestamps remain unchanged. Guides
+for retained neighbors need no old comparison directories. No native/program
+execution, Wine, compiler/link, pilot, model or solver work ran in this handoff;
+the focused test shards separately exercised the changed export/workspace paths.
+
+Local source refactoring at `build/component-source-refactor-2026-09-23/` uses
+`revise_comparison_package(source_files=...)` to retain Hello's native comparison
+setup while splitting string conversion into two C files and a helper header.
+The declared contract identity stays unchanged. The 192-sequence local check takes
+**4.962s**, with two C compiles totaling **0.032s**, **0.064s** link and **0.128s**
+execution. Unchanged-neighbor and repaired-local reuse take **0.593s / 0.645s** with
+zero compiler/link/execution work. A helper-only defect compiles one file and is
+detected through a changed service input, then replayed from retained inputs.
+
+Partial publication takes **0.414s** after explicit header review and preserves
+nine neighbors' existing objects. Library make takes **0.030s**. Separate clean
+standalone builds take **0.421s** on x86-64 and **12.055s** for AArch64 under QEMU;
+both pass one normal greeting comparison against the original. Public commands
+total **31.115s**, excluding program build/run, staging and Nix/desktop setup.
+The continuation, including publication and both program builds/runs, takes
+**20.398s**; this overlaps those command totals and must not be added as an
+independent phase. The original revision-call duration was not retained. No
+first-boundary authoring speedup, broader case coverage or solver work is claimed.
+
+Installed original preparation at `build/component-original-preparation-2026-09-23/`
+removes the need for an operator recipe to wire extraction, normalization and
+rendering internals together. Fresh external DX-Ball package preparation takes
+**0.413s** with byte-identical generated C and semantic inputs. The recovery itself
+records **0.004s** input preparation, **0.060s** extraction, **0.036s** lowering and
+**0.004s** rendering. Diagnostic timings stay outside bound comparison inputs, so
+repreparation does not invalidate neighbors merely because elapsed time changed.
+
+The focused installed workflow takes **18.517s** of public commands, excluding
+staging, Nix/desktop setup and manual boundary/adapter analysis. The local reset
+edit takes **0.627s**: **0.032s** compiler, **0.064s** link and **0.003s** execution.
+The initializer consumer takes **1.149s**, also compiling just the edited file.
+Unchanged-neighbor and repaired-local reuse take **0.483s / 0.477s** with zero
+compiler/link/execution work. A missing bank-slot update is detected and replayed;
+the generated source library builds in **0.039s**. This is controlled retained-C
+execution, not normal game/DirectDraw execution.
+
+jq's selected original-C recovery reports unsupported `call_memory_load`; its
+existing native-original local comparison passes in **6.411s** without depending
+on that recovery. The failure is retained as a capability limit, not converted
+into a matching comparison. No solver, new proof rule or pilot rebuild is involved.
+
+Direct source-project editing at `build/component-source-roundtrip-2026-09-23/`
+uses `component start --reuse-source` to import one exported component's edited C
+into the existing native comparison boundary. Hello imports take **0.298–0.316s**.
+The complete focused edit/check/reuse/export/program/defect/replay/repair walkthrough
+takes **48.846s**, excluding staging and Nix/desktop setup. The warm edit check
+takes **6.165s** with one C compile; unchanged-neighbor reuse takes **0.592s** and
+repaired-local reuse **0.610s**, both with zero compiler/link/execution work.
+Two exports take **0.390s / 0.388s**; the three clean program builds take
+**0.424s / 0.418s / 0.408s**. The focused native case contains 192 sequences and
+the program uses the normal greeting. These are prepared-boundary edit costs,
+not first-boundary authoring measurements.
+
+jq uses the same import in **0.331s**, one freshly compiled native local case in
+**7.537s**, and partial publication in **0.427s**. Its seven native translation
+units are a fresh local baseline, not an incremental compile claim. The portable
+project then recompiles only string-byte-length and links in **0.076s**, preserving
+13 neighboring component objects and the source backend. Real portable CLI output
+matches byte-for-byte before/after. No new native whole-program jq run, architecture
+matrix, pilot, model or solver work is included. Importing alone does not refresh
+assurance or modify source-export provenance.
+
+Partial source-project updates at `build/component-partial-export-2026-09-23/`
+remove the need to gather all comparison directories for one C edit. The installed
+Hello edit/check/update/program/replay/repair workflow takes **48.725s**, excluding
+staging and Nix/desktop setup. Its two partial exports take **0.380s / 0.402s** and
+retain nine neighbors' 18 object/dependency outputs. Local checking takes **6.069s**
+for the edited 192-sequence case; neighbor and repaired-local reuse take
+**0.587s / 0.611s** with zero compiler/link/execution work. The three clean x86-64
+program builds take **0.417s / 0.413s / 0.414s**. These evidence builds are separate
+from the updater's preservation of existing make objects.
+
+The same update of the AArch64 project takes **0.394s**; its clean compiler/link
+step takes **12.488s** under QEMU, followed by one passing original/program
+comparison. jq's local component update takes **0.430s**, retaining 13 neighbors.
+Ordinary make recompiles one component and links in **0.067s**; the backend stays
+built and normal CLI output is byte-identical before/after. That transfer check
+reuses the component's native receipt and does not rerun the original jq program.
+No pilot, model or solver work runs. First-boundary/adapter preparation costs are
+not included in these measurements. One regression also changes a unit's source
+file layout and verifies that neighbor make outputs survive the regenerated recipe.
+
+Independent program-entry integration at
+`build/component-program-entries-2026-09-23/` brings the existing Hello string
+component into the public normal-program workflow. Preparation takes **0.410s**,
+and 14 installed-tool commands outside the checkout take **93.170s**, excluding
+input staging, Nix/desktop setup and original boundary/adapter authoring. Complete
+orchestration takes **94.054s**; the exported library builds in **0.370s**.
+The focused local case contains 192 sequences; program checks use one greeting.
+
+| Action | Command wall time | Work |
+|---|---|---|
+| Compatible local edit | 6.344s | One compiled C unit, two case processes |
+| Edited program consumer | 10.702s | One compiled unit, 19 reused objects, three case processes |
+| Unchanged conversion neighbor | 0.587s | Zero compiler/link/execution work |
+| Wrong program / retained replay | 11.334s / 11.385s | Same output defect after draft repair; replay compiles nothing |
+| Repaired local / program | 0.671s / 1.113s | Zero compiler/link/execution work |
+
+For the program edit, preparation is **0.103s**, compiler **0.016s**, link
+**0.064s**, PE preparation **0.030s**, evidence validation **0.443s** and execution
+**0.128s**. Fresh Wine startup takes **8.650s wall**; its overlapping child times
+must not be summed as elapsed time. Model and solver work remain zero. The graph
+reports string input changes and program invalidation separately from unchanged
+neighbor inputs. No new component, pilot rebuild or startup investigation was
+needed to remove the separate assembly/runner step.
+
+Program-output diagnosis at `build/component-output-diagnosis-2026-09-23/` uses
+the installed public status command on retained Hello and jq failures. Reading
+and rendering take **0.300s / 0.046s** in process, excluding Python/Nix startup
+and the before/after input inventory audit. Process execution is forbidden during
+inspection; observations, JSON and retained files stay unchanged. Readable escaped
+byte excerpts avoid a program rerun or manual byte-array decoding. This is an
+operator display change, with zero compiler/link/execution/model/solver work;
+Wine initialization and its parked performance investigation remain unchanged.
+
+Installed routine-image preparation at `build/component-routine-image-2026-09-23/`
+removes a private quoting-recipe import from the string and stream boundary
+setups. Their external preparation commands take **0.292s / 0.337s**, including
+Python startup and compiler-runtime discovery; selected public native checks take
+**6.931s / 6.305s**. These are prepared-example costs, excluding original boundary
+analysis and C adapter authoring. The string case contains 192 existing sequences;
+the stream case exercises a closed descriptor with pending output. No model or
+solver runs. The prior quoting image, header and report reproduce byte-for-byte;
+their broader consumer matrix and the pilots are not rebuilt for this extraction.
+
+Hello's export-to-program handoff at `build/hello-export-assembly-2026-09-23/`
+assembles the existing ten-component selection from an exported library in
+**0.105s**, without comparison-package, checkout or original-oracle reads or any
+preparation subprocess. This excludes the preceding public export, input staging,
+Nix shell setup and original analysis/backend authoring. Clean compiler/link work
+takes **0.434s on x86-64 / 12.672s on AArch64**; the AArch64 tools execute under
+QEMU. The default normal-entry comparisons take **3.758s / 3.784s**. No model,
+solver or pilot work runs. These two selected program checks validate the source
+handoff; they do not rerun the previous 82-case runtime or failure matrices.
+Both Hello and jq now assemble through the same installed source-export reader.
+
+The normal-program public workflow at
+`build/component-normal-program-2026-09-23/` replaces the Hello example's separate
+bundle/build/run loop with the existing comparison engine. An installed toolkit
+and staged packages outside the checkout perform **15 public commands in
+85.276s**; complete orchestration takes **88.464s**, excluding input staging and
+Nix shell setup. Package preparation takes **0.336s**, and the exported source
+library builds in **0.347s**. These are prepared-example costs, not first-boundary
+analysis or adapter-authoring effort.
+
+| Action | Command wall time | Work |
+|---|---|---|
+| Initial normal program matrix | 13.455s | 12 cases, 36 processes, 18 compiled units |
+| Compatible local edit | 12.348s | 27 cases, one compiled unit |
+| Edited program consumer | 11.129s | One selected case, three processes, one compiled unit |
+| Unaffected allocation neighbor reuse | 0.447s | Zero compiler/link/execution/model/solver work |
+| Wrong program / retained replay | 9.844s / 11.113s | Same stdout discrepancy; replay compiles zero units |
+| Repaired program reuse | 1.108s | Zero compiler/link/execution/model/solver work |
+
+For the program edit, compiler work is **0.032s**, link **0.064s**, PE preparation
+**0.029s**, and case execution **0.192s**. Three fresh private Wine prefixes take
+**8.904s wall** with bounded concurrent startup; child startup durations overlap
+and must not be added to wall time. Model/solver work is zero. The full baseline
+matrix includes three expected exit-one outcomes; edited, faulty, replayed and
+repaired program runs select only the existing default workload. Neighbor reuse
+covers one explicitly selected existing case. This checks the usable edit and
+diagnosis path without repeating unrelated pilot or portability builds. The local
+27-case repaired receipt takes **4.142s** to validate/reuse despite zero execution;
+receipt processing and Wine startup remain the main latency costs here.
+
+Independent DX-Ball native checks are retained at
+`build/dxball-independent-native-2026-09-23/`. Preparing all four existing
+component packages takes **0.428s**, and explicit caller requirement refinement
+takes **0.106s**. The public native edit/replay/reuse/export sequence takes
+**60.708s**, excluding Nix/desktop startup, preparation and the **0.162s** source
+library build. Each local reset/bind/blit comparison compiles just one authored
+unit plus three adapters; no neighboring implementation is needed.
+
+The reset edit takes **7.282s**, compiling one file in **0.016s**, linking in
+**0.064s**, preparing the program in **0.016s**, starting Wine in **5.294s** wall
+time and executing eight paired cases in **1.023s**. Its affected initializer
+consumer takes **6.628s**, with one compilation and **0.178s** paired execution.
+Unchanged bind/blit reuse takes **0.469s / 0.511s**, and repaired reset reuse
+**0.462s**, all with zero compiler/link/execution/model/solver work. The detected
+memory defect and printed replay take **6.043s / 6.143s**; replay compiles nothing.
+No pilot rebuild or new component was required. The oracle's changed experimental
+premises require a one-time explicit caller review; ordinary C edits then retain
+the boundary and use normal supplier selection.
+
+The public PE program-driver walkthrough at
+`build/component-program-driver-2026-09-23/` prepares an editable native DX-Ball
+package in **0.315s** without compiling or executing it. The installed public
+command sequence takes **38.818s**, excluding Nix/desktop startup, copying and
+source-library building. Its 37-case baseline takes **26.597s**: **0.386s** compiler,
+**0.064s** link, **0.016s** PE preparation, **5.465s** concurrent Wine startup wall
+time and **19.105s** paired case execution. Keep the concurrent startup wall metric
+separate from the sum of per-prefix startup durations.
+
+Selecting one defective reset file takes **6.165s**, with one compilation and
+nine reused objects. Native paired execution is **0.178s**; Wine startup wall time
+is **4.710s**. Retained replay takes **4.888s**, compiles nothing and still reports
+the defect after the editable draft is repaired. Restoring the original selection
+reuses all passing evidence in **0.817s**, with zero compiler/link/execution/model/
+solver work. Source export/build succeeds. This integrates an existing native
+scope into public editing commands; it does not expand cases or rebuild a pilot.
+
+Reviewed source updates at `build/component-source-refinement-2026-09-23/` take
+**1.228s** for the existing x86-64 jq project and **1.275s** for AArch64. The full
+component/export command sequence takes **19.609s**, excluding Nix/desktop startup,
+cloning, program linking/execution and retained harness corrections. Its native
+interpreter check takes **7.846s** initially and **6.663s** after declaration
+revision. The latter compiles no files; paired Wine startup wall time dominates
+at **5.693s**, with **0.064s** linking and **0.228s** paired execution. A separately
+repeated declaration revision takes **0.012s**.
+
+All component, binding and backend objects reuse. Ordinary program make still
+relinks because the recipe's library prerequisite is phony: **0.052s / 0.579s**.
+Fresh normal-entry execution takes **0.027s** for the original, **0.001s** on the
+host and **0.036s** under AArch64 QEMU, excluding their retained Wine startup.
+The host relink changes the executable hash; byte identity is not assumed and its
+behavior is compared afresh. Existing sources and library objects remain exact.
+The first focused fixture added a new header path and correctly invalidated all
+objects through the changed Makefile; the final focused check edits an existing
+header and confirms that unaffected objects remain. The implementation keeps that
+conservative recipe rule. No model, solver, backend compilation or pilot runs.
+
+Named caller refinement at `build/component-caller-refinement-2026-09-23/` takes
+**0.090s**, with subprocess execution forbidden. The installed public DX-Ball
+sequence takes **2.953s** plus that authoring step, excluding Python startup:
+start **0.402s**, baseline consumer **1.361s**, preview **0.153s**, unreviewed
+selection rejection **0.039s**, revised workspace **0.190s**, revised consumer
+**0.725s**, and source export **0.083s**. These are retained-input editing costs,
+not first-boundary analysis. Only the plan changes. The revised check reuses all
+15 compiled objects and spends **0.032s** linking and **0.017s** executing the
+existing original/source case; evidence validation takes **0.364s** and cache
+validation **0.116s**. Unrelated supplier inputs remain byte-identical. The later
+assumption-preview correction is exercised separately through the installed CLI;
+it changes display text, not the measured refinement/selection implementation.
+No model, solver, Wine, pilot or program rebuild runs in this checkpoint.
+
+Boundary revision at `build/component-boundary-revision-2026-09-23/installed/`
+takes **0.010s** using the installed authoring helper outside the checkout, with
+subprocess execution forbidden. Existing prepared DX-Ball inputs are reused;
+initial analysis and adapter authoring are not included. The public sequence
+takes **1.466s** excluding that revision and Python startup: workspace start
+**0.240s**, one-case baseline **0.906s**, revised start **0.021s**, revised check
+**0.260s**, and changed-contract rejection by the initializer **0.040s**.
+The initial check compiles nine files. Revision changes only the plan and reuses
+all compiled objects; it performs one link (**0.032s**) and the original/source
+executions (**0.005s**). Evidence validation takes **0.110s** and compiler-cache
+validation **0.063s**. The first checkout-module run is retained separately at
+the evidence root. Neither run invokes a model, solver, Wine, pilot or program
+rebuild. This removes repeated setup work without treating a changed declaration
+as compatible or reusing its prior behavioral result unchanged.
+
+The retained-selection workflow at `build/component-selected-workspace-2026-09-23/`
+takes **5.677s** total command time, excluding Nix/Python startup and the **0.014s**
+factory preparation of a revised contract. Starting the selected caller while
+preserving local C takes **0.227s**, with subprocess execution forbidden. The
+single existing initializer case takes **2.280s** initially. Selecting a wrong
+reset takes **0.225s** and checking it **0.803s**, compiling one file. Retained
+replay takes **0.770s** with no compilation; restoring the selection takes
+**0.233s**, then baseline reuse **0.572s** with no compiler/link/execution work.
+Both the initial stale-graph negative and corrected valid-contract rejection are
+retained. This is workspace preparation and existing-consumer validation, without
+Wine, model, solver, additional program assembly or pilot work.
+
+The new-input workflow at `build/component-case-inputs-2026-09-23/` takes **5.361s**
+through the installed in-process CLI, excluding Nix/Python startup. Starting a
+workspace takes **0.235s**, the first new DX-Ball input **1.590s**, a one-file defect
+check **0.280s**, retained replay **0.275s**, and repaired-result reuse **0.144s**.
+Keeping the input through public start takes **0.021s**; checking the expanded
+nine-case suite takes **0.310s** with no compilations and 18 executions. The same
+new input through the initializer consumer takes **2.408s**. Exact phase timings
+remain in each receipt. Existing C drivers and boundaries are reused; no new
+manual boundary analysis, Wine, model, solver or pilot work is measured here.
+
+The operator-guide rehearsal at `build/component-workflow-guide-2026-09-23/`
+executes the guide's existing DX-Ball commands in **10.163s** total command time,
+excluding Nix startup and a retained **0.509s** harness path-substitution failure.
+Fresh package preparation takes **0.638s** and the first eight-case check
+**2.210s**. The one-file defect check takes **0.733s** with one compilation;
+printed suite replay takes **0.737s** with no compilation; repaired inputs reuse
+in **0.555s** with no compiler/link/execution work. The 37-case consumer check
+takes **3.184s**, source export **0.482s**, and library Make compilation **0.083s**.
+This is a prepared-example rehearsal with retained original bytes, not a measure
+of manual boundary analysis. No model, solver, Wine or pilot is run.
+
+The replay correction at `build/component-suite-replay-2026-09-23/` preserves
+the original suite selection so earlier runtime setup is not lost. Existing
+DX-Ball defect inspection takes **0.030s** and its eight-case retained-C replay
+**1.859s**, including nine compilations (**1.167s**), one link (**0.064s**) and
+16 executions (**0.022s**). The old compiler engine/environment differs, so this is
+revalidation rather than zero-work cache reuse. The focused state-dependent
+regression replays after source repair with **zero compilations**, one link and
+four executions. An explicitly selected single case still replays alone.
+There is no model, solver, Wine or pilot work in this checkpoint. The change
+trades an incorrect isolated replay for the original suite's setup and ordering;
+it does not add cases or claim to isolate external services.
+
+The service-input handoff at `build/component-service-inputs-2026-09-23/` replaces
+duplicated preparation wiring with explicit reuse of reviewed services and C
+files. The external-project sequence takes **8.088s**, excluding staging, original
+boundary analysis and Python/Nix startup. In-process public start takes **0.037s**,
+status **0.012s**, the existing native jq interpreter case **6.004s**, and eight
+DX-Ball retained-C cases **1.679s**. This measures authoring API availability and
+real consumers, not a new performance optimization or native graphics coverage.
+Prepared inputs are byte-identical across all **37 jq / 30 DX-Ball files**;
+prior program receipts remain applicable. No model, solver, pilot or additional
+architecture rebuild is needed. The practical gain is a four-file local recipe
+whose shared inputs come from the reviewed workspace rather than sibling fixtures.
+
+Source navigation at `build/component-source-navigation-2026-09-23/final/` uses
+public start/status on the retained old/current jq adapters and the four-unit
+DX-Ball graphics workspace. Current-source inspection takes **0.013s** for each
+jq workspace and **0.141s** for DX-Ball through the in-process CLI, excluding
+Python/Nix startup. It reads selected C/header files and hashes those knowledge
+inputs; it starts no subprocess and performs no compiler/link/execution/model/
+solver work. A local line edit refreshes locations and the source fingerprint
+in **0.013s**. The source is restored and original inputs stay unchanged.
+Navigation is authoring guidance and does not alter semantic contracts or evidence
+reuse. Existing target receipts remain the behavior evidence; no pilot or program
+rebuild was required for this view.
+
+The byte-length boundary at `build/jq-string-byte-length-2026-09-23/` removes a real
+native dependency through existing interfaces and a shared C object view. Prepared
+package construction takes **0.218s**, public start **0.327s**, and the first native
+check **6.683s**: seven compiler calls (**0.471s**), compiler-cache indexing
+**1.339s**, linking **0.064s**, paired execution **0.485s**, and concurrent Wine
+startup wall time **3.610s**. A compatible C edit checks in **5.117s**, compiling
+one file (**0.016s**) and reusing six objects. The unchanged codepoint-length
+neighbor reuses in **0.562s** with zero compiler/link/execution/model/solver work.
+The omitted-release replay takes **4.934s** with zero compiler calls, one link
+and two executions; repair reuses the positive result in **0.595s**. The complete
+local sequence takes **30.458s**. These warm/prepared costs exclude initial
+boundary analysis and C adapter authoring, recorded separately in the checkpoint.
+
+Fresh program assembly for the changed selection takes **7.149s**. Clean builds
+take **22.154s** on x86-64 and **246.474s** with the AArch64 compiler under QEMU.
+The existing 61 CLI plus 32 live-value comparisons take **6.017s / 7.756s**;
+seven allocation-failure cases take **4.170s / 3.969s**. The new operation runs
+8,697 times in each CLI suite. This is one integration/portability check after
+removing a source-backend definition, not a rebuild for each local edit. No
+extraction/proof pilot, model or solver work was added. Native codepoint/slice
+regressions cover the changed shared view without extending their case matrices.
+
+Retained-result inspection at `build/component-result-inspection-2026-09-23/`
+uses `component status --comparison-result` on two existing jq string-length
+failures and a repaired result. The in-process public CLI takes **0.272s** for the
+truncated-string discrepancy, **0.022s** for the interpreter discrepancy and
+**0.145s** for the repaired JSON receipt. These timings exclude Python/Nix startup
+and original boundary preparation. Inspection launches no subprocesses, changes
+no retained evidence and does no compiler, link, execution, model or solver work.
+The new surrounding-observation display avoids reopening large JSON files or
+rerunning a case merely to inspect it. Historical work/reuse fields still describe
+the saved run; inspection does not decide reuse against a changed workspace.
+
+The installed program-helper handoff at
+`build/installed-program-helper-2026-09-23/` runs the existing Hello and DX-Ball
+assembly recipes outside the checkout. The unchanged PE import function reproduces
+the retained images in **0.030s / 0.016s** using their existing original/DLL bytes.
+Hello preparation takes **0.618s** and its existing default normal-entry workload
+**9.588s**; DX-Ball native preparation takes **1.694s** and the existing `seed-1`
+comparison **5.664s**. The combined sequence takes **17.612s**, excluding the staging
+copy and original boundary/adapter authoring. This tests installed API availability
+and two real consumers, with no new test matrix, model, solver or pilot rebuild.
+Python checkout reads and test-fixture imports are blocked during the external
+sequence. Prior behavior scopes remain unchanged; no general startup or graphics
+coverage is inferred from moving the helper.
+
+The supplier-preview checkpoint at `build/component-contract-preview-2026-09-23/`
+uses public status to identify the exact shared header behind a real DX-Ball
+contract rejection. Preview takes **0.386s**, rejection before compilation
+**0.364s**, and source-preserving boundary restart **0.354s**. After the operator
+chooses the reviewed current boundary, preview reports equal declared contracts;
+the 37 existing connected host-C cases pass in **3.103s**. The whole six-command
+sequence takes **5.356s**. Both input workspaces remain unchanged. These are
+inspection/preparation/integration costs, not newly established proof reuse or
+automated semantic compatibility. No Wine, model, solver or pilot runs. Shared
+file hashes remain exact; the change makes conservative invalidation actionable
+instead of hiding its cause behind a contract fingerprint.
+
+The original-x86 DX-Ball checkpoint at
+`build/dxball-native-components-2026-09-23/final-workflow/` extends the existing
+four-component selection with a native integration recipe. Preparation takes
+**1.764s**, including ten compiler invocations (**0.370s**), compiler-cache indexing
+(**0.904s**) and two links (**0.128s**). The existing compiler first links its normal
+comparison image, then the recipe links the same objects as the imported observer
+DLL. No machine-derived C body is compiled. The 37 existing connected cases take
+**10.598s**: **6.383s** across 74 executions and **3.558s** concurrent Wine startup.
+A one-file reset defect prepares in **0.537s**, compiling one file (**0.016s**),
+reusing nine objects and linking in **0.128s**. Native single-case replay takes
+**4.590s**, with **0.178s** execution and **3.916s** startup. The selected prepared
+workflow takes **23.315s**; these measurements exclude manual native adapter work.
+There is no new component, model, solver or pilot work. The fixed-base original is
+loaded as a program because routine-DLL loading failed; game startup and actual
+DirectDraw remain outside this controlled component comparison. The trial is
+complete; extending runtime fidelity is not the next delivery criterion.
+
+The boundary-restart checkpoint at `build/component-boundary-restart-2026-09-23/`
+uses `component start --reuse-source` to preserve an edited jq implementation under
+a revised input declaration/resource path. Automatic package preparation takes
+**0.020s** and the public workspace restart **0.382s**. These exclude manual boundary
+analysis. The real six-case comparison takes **7.347s**: four compiler invocations
+(**0.128s**), three reused objects, **0.064s** link, **1.021s** paired execution and
+**4.327s** concurrent Wine startup wall time. The existing reader identifies the
+changed interface, generated headers/runtime and plan; it does not reuse their
+old observations. The unaffected string-slice neighbor takes **1.007s**, with zero
+compiler/link/execution/model/solver work. Source export and host library compilation
+take **0.478s / 0.031s**. No pilot or cross-architecture program rebuild was needed;
+the native ABI and admitted behavior remain unchanged in this declaration trial.
+
+The adapter-authoring checkpoint at `build/component-lifecycle-authoring-2026-09-23/`
+uses public start/status on the existing jq string-length and string-slice inputs,
+then their editor compiler commands for a native adapter/bridge and a typo/repair.
+The sequence takes **1.849s**, without Wine, behavioral execution or a pilot build.
+The workspace now exposes operation resource roles and gives adapter C the same
+component-specific editor setup as authored C. This measures setup/diagnostic
+actions only; no new boundary analysis or reduced manual semantic effort is claimed.
+Semantic declarations and compiled program inputs are unchanged.
+
+A bounded Wine bootstrap comparison at `build/wine-bootstrap-2026-09-23/`
+checks whether replacing explicit `wineboot.exe --init` with automatic prefix
+initialization through `cmd.exe` would remove the remaining startup cost. Both
+variants pass the existing registry/file separation probe with fresh original
+and replacement prefixes. Startup wall time is **4.513s explicit / 4.044s
+automatic**, and complete probe time is **5.136s / 4.666s**, in one run each.
+This modest difference does not establish a repeatable speedup or eliminate the
+dominant cost. Production startup is unchanged. The investigation is closed;
+further runtime benchmarking is not a prerequisite for the usable component
+workflow. No pilot, model, solver or expanded runtime test matrix was run.
+
+The `--rerun` checkpoint at `build/component-replay-cache-2026-09-22/` separates
+fresh observations from compiler reuse in the public workflow. The printed replay
+of a real jq interpreter defect uses **zero compiler invocations**, one **0.064s**
+link and two fresh executions totaling **0.228s**. Its **6.284s** command time is
+dominated by **4.913s** Wine startup wall time. Rerunning the matching case takes
+**5.987s**, likewise with no compilation. The initial single-case check compiles
+seven files; the local defect edit compiles one. Model and solver work remain zero.
+The existing environment/tool/header checks still determine object eligibility;
+this does not claim reuse across different desktop sessions or eliminate runtime
+startup. Optional formal checks retain their own existing reuse rules.
+
+The installed-toolkit handoff at `build/installed-component-workflow-2026-09-22/`
+runs outside the checkout with prepared C/native inputs and shared declarations.
+Fresh automatic preparation takes **0.276s**; public start/status take **0.379s /
+0.372s**. The complete edit/defect/replay/repair/export/library-build sequence takes
+**35.049s**. A compatible edit takes **8.076s**: one compiler invocation (**0.032s**),
+link **0.064s**, execution **0.921s**, and concurrent Wine startup **5.394s wall**.
+Repair reuse takes **1.115s** with zero new compiler/link/execution work. Model and
+solver work are zero. The two packaged interception headers are byte-identical
+to their prior fixture versions; no runtime-fidelity campaign or pilot rebuild
+was introduced. These timings exclude initial boundary analysis and adapter work,
+and the source-library build is separate from whole-program integration.
+
+The service-declaration reuse checkpoint at
+`build/service-boundary-reuse-2026-09-22/` removes a recipe-import dependency from
+new-boundary setup. It reuses the existing jq trial; **0.265s** automatic preparation
+does not measure first-boundary analysis or adapter authoring. The public sequence
+takes **58.416s**, including deliberate defects and retained replays. A compatible
+C edit takes **7.242s**, compiling one file; unchanged-neighbor reuse takes
+**0.995s**, with zero compiler/link/execution/model/solver work. Existing comparison
+reports retain the separate phase costs. Source export takes **1.591s** and all
+129 inventoried files match the preceding export, so no standalone program rebuild
+or cross-architecture rerun was performed. These are workflow measurements, not
+claims of broader runtime coverage or reduced manual semantic effort.
+
+The subsequent source-handoff checkpoint at
+`build/source-binding-handoff-2026-09-22/` removes native comparison-package reads
+from portable assembly. Public export retains binding references; the source
+reader and batch bridge generator use only the exported library. The jq recipe
+prepares in **5.696s** with comparison readers and Wine execution disabled.
+All 316 compiled source/build inputs match the preceding project. This is an
+existing selection with reviewed bindings, not a new-boundary effort measurement.
+
+Public library updates take **1.655s host / 1.633s AArch64**, retaining all 27
+library build outputs on each architecture. Subsequent make runs take **0.164s /
+1.316s**, compile zero objects and perform three final links. The AArch64 tools
+themselves execute under QEMU; child link durations overlap. All three executables
+remain byte-identical on each architecture, so their prior program, live-value
+and failure observations are reused without another execution or pilot rebuild.
+No model or solver runs. The helper also reproduces existing Hello and DX-Ball
+bindings from their source exports; that is generation reuse, not target execution.
+Batch generation checks the library once, avoiding one full inventory scan per
+component. Backend binding semantics remain a manual integration responsibility.
+The current thirteen-bridge read/generate pass takes 0.110s. Twelve targeted tests
+and seven repository/SDK/build gates pass in 29.854s; the checkpoint audit checks
+the retained program evidence against the unchanged executables.
+
+The local workspace/new-boundary trial at
+`build/component-workspace-2026-09-22/public-workflow-v3/` separates authoring
+knowledge from proof/comparison authority. Generated workspace pages do not enter
+the comparison input inventory. Local status reads the existing boundary without
+a target-provider build. The fresh jq codepoint-length boundary reuses existing
+string service declarations and C adapters; source assembly adds a reviewed
+binding rather than a new checker rule.
+
+| Action | Measured time/work |
+|---|---|
+| Final automatic boundary preparation | 0.250s; excludes prior analysis/authoring |
+| Public start / local JSON inspection | 0.382s / 0.342s; no compilation or execution |
+| Initial local check | 8.830s; seven compiler invocations, six cases including 1,380 direct calls and an interpreter consumer |
+| Compatible C edit/check | 7.137s; one compiler (0.032s), link 0.064s, execution 1.071s, startup wall 4.293s |
+| Unchanged string-slice neighbor | 1.018s; zero compiler/link/execution/model/solver work |
+| Repaired local reuse | 1.159s; zero new work |
+| Complete public edit/negative/replay/reuse sequence | 54.147s |
+| Source-project preparation | 6.827s; reviewed thirteen-component selection |
+| Clean standalone host / emulated AArch64 builds | 19.946s / 240.148s; 106 objects each |
+| Normal program plus live-value comparisons | 6.400s host / 7.918s AArch64; 61 CLI cases and 32 live-value scenarios each |
+| Selected allocation-failure comparison | 4.292s host / 4.039s AArch64; seven cases each |
+| Targeted/repository validation | 34.310s; three test shards and seven repository/SDK/build gates |
+
+The initial host build's summed child times are configure 6.028s, backend compiler
+9.656s, component compiler 0.346s and final links 0.149s; ordinary bindings and
+diagnostics are recorded separately. Child durations can overlap. The AArch64
+compiler runs under QEMU; its build is not a host cross-compiler benchmark. The
+normal and failure comparisons retain their separate original-consumer compile
+records. No extraction/proof pilot, model or solver runs. First-boundary semantic
+analysis, native hooks/cases and reviewed source assembly remain manual costs.
+The 27-line algorithm reuses services, while the new driver is 79 lines and the
+preparation/walkthrough are 73/65 Python lines. These inventories exclude reused
+and generated code. The first public recipe's variable-shadowing failure and a
+nonexistent-input launch remain visible, followed by the passing v3 workflow.
+
+This demonstrates cheap local work once a boundary exists. Small algorithm bodies
+alone do not remove boundary analysis, runtime startup, backend integration or
+meaningful observation design. The measured runs overlap other work and are not
+isolated performance guarantees or human hands-on effort measurements.
+
+The subsequent source-backend allocation-failure trial under
+`build/jq-portable-failure-2026-09-22/` reuses that prepared jq project. Its optional
+consumer compiles two diagnostic objects and links three executables in **0.265s
+on x86-64 / 2.669s with the emulated AArch64 compiler**. All component and backend
+objects are reused. Compiler child time is 0.104s / 2.868s; link child time is
+0.139s / 1.825s. Child times overlap and are not additive wall times.
+
+Seven selected failure comparisons, including real interpreter/nonlocal-handler
+delivery, pass in **4.981s host / 4.194s AArch64**, with separate original-consumer
+compilation of 0.406s / 0.403s. Concurrent runs are not isolated architecture
+performance comparisons. The cold-context diagnosis, deliberate reference leak,
+retained replay and repair sequence takes **16.815s**. Each adapter edit rebuilds
+one binding in about **0.215s** including three final links; no component/backend
+recompilation, model, solver or pilot rebuild occurs. Original program/live-value
+binaries stay byte-identical to the prior handoff, so its execution evidence is
+reused explicitly. All failed setup attempts and the cold 36/72-byte thread-context
+difference remain retained. This is a prepared backend extension, not a new-boundary
+or independent human operator trial.
+
+Fresh recipe preparation takes 6.876s; 309 compiled source/build inputs match the
+retained repaired build. Seven repository/SDK/build gates pass in 26.760s. Recorded
+investigation-to-passing-receipt intervals are 1339.666s host / 1338.854s AArch64.
+They include agent analysis, C fixture/recipe work and failed setup attempts,
+exclude earlier repository inspection, and are not human hands-on measurements.
+
+The portable jq handoff at `build/jq-portable-subsystem-2026-09-22/` keeps the
+existing twelve-component scope and measures actual source assembly and program
+updates. The operator trial exposes two different costs: semantic backend work
+(preserving the original import-callback identity defect) and an avoidable shared
+exporter behavior (deleting every library object on each update). The latter now
+invalidates only changed components and the archive when the generated recipe and
+shared inputs remain unchanged. Ordinary make reuse is not assurance or a general
+compiler cache; changing tools/flags requires a clean build and program validation.
+
+| Action | Measured time/work |
+|---|---|
+| Final recipe preparation | 7.083s; pinned source/patch verification, export and one autotools generation |
+| Initial host build | 19.999s; 12 component, 20 binding/consumer and 70 backend compiler invocations |
+| Host configure / backend / component compilation / final links | 6.035s / 9.640s / 0.323s / 0.091s, summed child times |
+| Initial AArch64 build | 240.351s; compiler itself runs under QEMU, not a host cross compiler |
+| New-environment local / neighbor / network revalidation | 9.345s / 10.602s / 25.355s; 8 / 9 / 34 compiler invocations |
+| Warm local C edit/check | 7.754s; one compiler, 0.032s compile, 0.064s link, 1.027s execution, 5.180s startup wall time |
+| Unchanged getter reuse | 0.898s; zero compiler/link/execution/model/solver work |
+| Affected 44-case network edit/check | 19.398s; one compiler, 5.852s execution, 5.063s startup wall time, 3.796s evidence validation |
+| Public source updates | 1.497s host / 1.628s AArch64; preserved backend and binding files |
+| Portable rebuild after local edit | 0.164s host / 2.018s emulated AArch64; one component object, two links, zero backend/binding compiles |
+| Edited program and live-value execution | 5.794s host / 8.082s AArch64; 61 CLI cases plus 32 memory/reference scenarios each |
+| Complete edit/update/defect/replay/repair sequence | 108.353s, including the separate new-environment revalidation above |
+
+Compiler phase times can overlap and must not be added as wall time. These runs
+overlap other repository work and are not isolated performance guarantees.
+Measured agent intervals, from recorded investigation start to completed receipts,
+are 2340.029s for the first passing CLI-plus-memory host run, 2544.473s for both
+architectures, and 3240.167s for the full successful workflow. They include analysis,
+implementation, failed attempts and execution, exclude initial repository inspection,
+and are not human hands-on measurements. Prepared editing is much cheaper than
+establishing this backend/assembly boundary.
+
+The original executable had been GC'd. Its offline restoration fails; consulting
+the online cache reduces the recovery to two builds and three small downloads,
+taking 22.057s. No extraction or formal-proof pilot is rebuilt. Initial missing
+tools, static-libc and backend-make ordering failures are retained alongside the
+real callback discrepancy. Workflow v1 incorrectly assumes old-environment reuse;
+v2 discovers that all twelve library objects are discarded. Workflow v3 passes
+after the shared exporter fix. The local check still spends far more time in
+runtime startup than compiling C; the source-program edit no longer rebuilds the
+backend. The [recipe](../tests/fixtures/jq-portable/README.md) records exact inputs,
+commands, backend assumptions and the distinction from a full jq lift.
+
+The subsequent jq string-slice trial at `build/jq-string-slice-2026-09-22/` measures
+a new shared-value boundary rather than another edit to a prepared component.
+The agent interval from investigation start to first match is 563.422s, excluding
+initial repository inspection. Setup needed one shared validator repair: numeric
+indices previously had to be declared as owned resources. That is recorded as a
+tooling gap, despite the reuse of existing memory transport and nonlocal handlers.
+
+| Action | Measured time/work |
+|---|---|
+| Final-boundary preparation | 0.351s |
+| Prepared baseline local check | 8.746s; eight compiled units, eight cases containing 504 ordinary/generated calls and three failures |
+| Local decoder edit/check | 6.551s; one unit, 0.032s compiler, 0.064s link, 1.027s execution, 4.043s startup wall time |
+| Independent storage getter reuse | 0.864s; zero compiler/link/execution/model/solver work, 19 retained cases |
+| Affected 44-case network edit/check | 17.804s; one unit compiled, 3.615s evidence validation, 3.710s startup wall time, 5.899s execution |
+| Local repair reuse | 0.939s; zero new work |
+| Network repair reuse | 6.889s; zero new work, 3.726s evidence validation |
+| Full prepared edit/negative/replay/assembly workflow | 288.649s, 27 public commands |
+| Experimental assembly and execution | 12.209s build; 30.293s run, 44 cases with all twelve selected checks |
+| Repository validation | Seven shards/86 passing tests and six repository/SDK gates; final cached collection 27.735s |
+
+The initial network baseline is 29.123s, including a 15.518s startup wall-time
+outlier. Other validation/regression work overlapped this trial; these are observed
+costs, not isolated performance guarantees. Smaller authored bodies do not remove
+process startup, evidence validation or consumer execution costs. No model/solver
+work or extraction/proof pilot rebuild runs. The algorithm is 58 C lines; native
+scenarios/observations require 110 lines and the reusable native adapter 35, plus
+43 declaration and 58 preparation Python lines. Generated wrappers are excluded.
+The [recipe](../tests/fixtures/jq-string-slice/README.md) records replay, allocation
+failure, actual interpreter use, retained native dependencies and the setup gap.
+
+The previously unprepared `close_stream` trial at
+`build/hello-stream-boundary-2026-09-22/` separates first-boundary work from prepared
+editing. The recorded investigation-to-first-match interval is 578.834s, excluding
+initial repository inspection. It includes agent reasoning, authoring and execution;
+it is not a human effort measurement. A strict compiler warning and a missing
+adapter-only assembly header were caught; both initial attempts remain retained.
+
+| Action | Measured time/work |
+|---|---|
+| Automatic final-boundary preparation | 0.263s; existing interfaces and generated C service bridge |
+| Initial prepared local check | 6.427s; two compiled units, seven cases/14 processes |
+| Compatible local edit/check | 5.523s; one unit, 0.016s compiler, 0.064s link, 0.802s execution, 3.641s startup wall time |
+| Unchanged allocation neighbor | 2.107s; zero compiler/link/execution/model/solver work |
+| Repaired local check | 0.629s; zero new work |
+| Public source updates | 1.052s and 1.118s |
+| Prepared edit/defect/replay/reuse/program sequence | 72.035s |
+| Integrated validation | 34.135s; 48 tests and six repository/SDK gates |
+
+The native comparison covers 216 controlled sequences and five actual FILE
+scenarios. Normal execution passes 82 cases on x86-64 and AArch64 under QEMU,
+plus 17 allocation-failure cases on x86-64. Errno, post-close access and program
+outcome defects are detected; retained bad inputs/executables replay after repair.
+The shared backend supplies lower services; its former policy is now the edited
+component. No model/solver work or pilot rebuild runs.
+
+The algorithm is 15 C lines; native mapping/scenarios/observations require 141,
+program transport 33, declarations 27 and preparation 59 Python lines, excluding
+generated code. Most manual work remains semantic adapters, observations and
+assembly. No new checker, artifact format, compiler mechanism or proof rule was
+needed. These are an effort inventory, not comparable productivity scores.
+The shared live stream view works in both adapters; exporting algorithm dependencies
+does not automatically package adapter-only backend headers. Future ergonomic work
+should follow that distinction and another real consumer.
+
+The fresh-runtime checkpoint at `build/wine-startup-2026-09-22/` reduces a measured
+local-edit cost by initializing the private original/source Wine prefixes together.
+It retains fresh state for each comparison, ordered cases, per-command deadlines,
+joined cancellation and exact engine/input binding. No new artifact format, cached
+prefix or cross-run server reuse is introduced.
+
+| Measurement | Serial startup checkpoint | Concurrent startup checkpoint |
+|---|---:|---:|
+| Controlled probe startup, first pair | 10.297s | 6.076s |
+| Controlled probe startup, second pair | 8.193s | 6.076s |
+| Public compatible edit/check | 14.513s | 8.648s |
+| Startup within that edit/check | 9.495s | 3.660s |
+| Edited-unit compiler / link / execution | 0.033s / 0.064s / 1.742s | 0.032s / 0.064s / 1.740s |
+| Complete edit/update/defect/replay/repair workflow | 90.349s | 72.127s |
+| Unaffected neighbor reuse | 2.155s | 2.119s; zero new work |
+
+The controlled probe alternates two serial/concurrent pairs under one headless
+desktop and compares actual registry and relative-file state. The public-workflow
+columns are separate retained runs and show normal timing variation; they are not
+a general speedup guarantee. The new runtime context causes a fresh baseline
+check, including the host allocation neighbor. Subsequent local edits reuse that
+neighbor without compiler/link/execution/model/solver work. Connected Hello/jq/
+DX-Ball regressions pass on current engine bindings. No pilot is rebuilt.
+Standalone execution also passes the 82-case matrix on x86-64 and AArch64 under
+QEMU and the 17-case controlled allocation-failure regression on x86-64.
+
+`runtime-startup` remains a per-command duration; `runtime-startup-wall` is the
+elapsed interval that overlaps those rows. Do not sum both or report concurrent
+command durations as elapsed time. Six integrated shards pass 62 tests and six
+repository/SDK gates in 31.495s on the successful validation run. The first new
+sandboxed native test times out with inherited Wine settings; the accepted test
+uses the existing offline console profile, while production probes and the public
+workflow retain their normal settings. First-boundary adapter effort remains the
+next operator milestone; this improvement does not justify a broader runtime-cache
+project without another measured obstacle.
+
+The public component-to-program round trip at
+`build/hello-component-roundtrip-2026-09-22/workflow-v2/` changes a real Hello scan
+implementation and its executable, checks it locally, updates the assembled source
+library without losing operator work, and exercises the resulting program on
+x86-64 and AArch64. The whole operator sequence takes 90.349s, including a deliberate
+memory defect, rejected update, retained replay and repair. This measures editing
+an existing boundary, not first-time boundary analysis or human hands-on effort.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Compatible local C edit/check | 14.513s | One unit; 0.033s compiler, 0.064s link, 1.742s execution, 9.495s Wine startup |
+| Unchanged neighbor check | 2.155s | Zero new compiler/link/execution/model/solver work |
+| Public export update | 1.077s | Checked selection, conflict checks, preserved files and retained backup |
+| Standalone source compile/link | 0.415s | Clean x86-64 program build; no compiler-cache reuse claim |
+| 82 normal program workloads after edit | 9.565s | Original/observed original and observed/unobserved portable processes |
+| Repaired local check | 2.988s | Zero new work; retained evidence validation/reuse |
+| AArch64 compile/link and 82-case execution | 11.757s / 11.842s | Actual emulated execution through existing QEMU binfmt |
+| Relocated conventional build | 0.424s | Ordinary make/C tools; exact compared binary |
+| jq source export/update/build transfer | 3.149s | No new jq program execution |
+| Integrated repository validation | 33.948s | 50 tests and six repository/SDK gates |
+
+`candidate export --update` removes the manual library-replacement step while
+preserving application/backend edits and notes. Declared boundaries and shared
+headers must remain unchanged; this is not proof of compatibility. Named library
+build products are invalidated and affected program comparisons run again.
+Superseded library backups are retained separately from active build inputs.
+Model/solver work and pilot rebuilds are zero. Repeated runtime startup now clearly
+dominates this local edit cycle; reducing it must preserve original/source isolation
+and exact runtime evidence. The earlier adapter/discovery costs below remain open.
+
+The source handoff at `build/hello-source-2026-09-22/workflow-v2/` revalidates the
+existing nine-component Hello selection and exports it through V3 source packages.
+Export takes 1.187s; a conventional host compile/archive build outside the checkout
+takes 0.224s. The four-command walkthrough, including symbol/architecture and input
+hash checks, takes 1.422s; development-shell launch brings the observed invocation
+to 8.287s. Two integrated Nix shards pass 40 tests and six repository/SDK gates in
+33.003s. No comparison execution, model/solver work or pilot rebuild runs.
+
+This timing covers nineteen operations in a source library, with compiler/tools
+supplied by Nix. It does not measure a complete Hello link or application run;
+application entry and portable service/runtime bindings remain the practical work.
+An initial validation inherited the PE32 cross-compiler while linking a host
+consumer. The test now selects consistent CC/AR explicitly. The first real library
+build succeeded but its audit writer failed; both attempts remain recorded.
+The conventional exported Makefile requires `make clean` after toolchain/flag
+changes; it does not provide the workbench's evidence or compiler cache.
+
+The previously unprepared string boundary at `build/hello-new-boundary-2026-09-22/`
+separates first-time operator work from the much shorter automatic setup. The
+recorded agent interval through the first working boundary/C/adapters is 503s;
+through the accepted workflow it is 1,034.690s. These include overlapping automated
+runs and documentation, exclude initial inspection, and are not a measured human
+hands-on duration. The algorithm has 51 C lines; adapters/driver have 230 and
+declarations have 35, plus Python preparation/integration/walkthrough recipes.
+No tool internals, Nix expressions or new proof rules were needed.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Automatic new-boundary package preparation | 0.246s | Existing factory, pinned executable and shared layouts |
+| First twelve-case local comparison | 12.915s | Three units; 0.361s compiler, 0.064s link, 1.742s execution, 8.293s startup |
+| Compatible local C edit | 12.056s | One unit; 0.016s compiler, 0.064s link, 1.741s execution, 7.090s startup |
+| Same-session neighbor reuse | 4.272s | Zero new work; 2.107s evidence validation |
+| Program preparation after edit | 1.152s | Relink checked objects; preserve original startup/TLS |
+| Twelve normal program workloads after edit | 13.922s | Untouched original, instrumented original and selected C |
+| Repaired local comparison | 2.754s | Zero compiler/link/execution/model/solver work |
+| Full edit/replay/repair/program workflow | 159.405s | 17 commands, seven comparisons, local and program defect replay |
+| Integrated Nix validation | 27.197s | 14 tests and six repository/SDK gates |
+
+Model/solver work and pilot rebuilds are zero. A previous-desktop neighbor receipt
+correctly invalidated on the full process-environment hash, even though no source
+changed; it required compilation and execution. The accepted walkthrough establishes
+the neighbor once in the current desktop before measuring edit reuse. This is an
+explicit cross-session performance limitation, not an implementation dependency.
+The next practical bottlenecks are adapter/setup effort and runtime startup/evidence
+costs; more splitting or weaker proof would not remove these measured costs.
+
+The normal-entry Hello checkpoint at `build/hello-program-2026-09-22/` carries
+the selected C through original startup and TLS. Its full edit/diagnosis/repair
+walkthrough takes 182.802s for 20 commands and ten component comparisons. Program
+execution compares the untouched original, instrumented original and selected C
+for each workload; it is a separate integration check, not additional proof work.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Fresh setup with program observer | 12.204s | Existing input/authoring recipe; no historical comparison prerequisite |
+| Compatible local conversion edit | 15.755s | One unit; 0.032s compiler, 3.468s execution, 7.392s Wine startup |
+| Compatible 63-case native integration | 21.415s | One unit; 0.032s compiler, 8.017s execution, 10.697s startup |
+| Unchanged allocation neighbor | 2.099s | Zero compiler/link/execution/model/solver work |
+| Program DLL preparation after edit | 0.592s | Relink existing checked objects; retain source/object/runtime bindings |
+| Twelve-workload program comparison after edit | 14.471s | Three real processes per workload; original startup and TLS |
+| Faulty program / retained replay | 11.952s / 11.749s | One workload each; stdout discrepancy survives draft repair |
+| Repaired local / native comparisons | 4.285s / 1.956s | Zero compiler/link/execution/model/solver work |
+| Repaired program workloads | 16.129s | All twelve workloads rerun |
+| Integrated Nix validation | 36.701s | 14 tests and six repository/SDK gates |
+
+All formal checks are not requested; model/solver work is zero. The selected
+native routine case misses the deliberate decoded-character defect, while local
+conversion observations and actual program output detect it. This is a concrete
+reason to retain program workloads, not to discard local checks. Distinct launch
+paths initially changed startup allocation sizes; staging all sides at one path
+fixes the inputs rather than filtering their observed effects. The ordinary C
+program observer and shared import helper add integration infrastructure; these
+costs do not measure a previously unprepared component's boundary-design effort.
+
+The fresh-input handoff at `build/operator-handoff-2026-09-22/` now reproduces
+the existing Hello and DX-Ball workflows without developer comparison directories.
+Use `nix develop .#lifting`; its tool/runtime discovery and one-time input
+provisioning are documented in the [recipe](../tests/fixtures/hello-handoff/README.md).
+No pilot rebuild ran. Initial shell provisioning is separate from the following
+warm-tool measurements; it may fetch/build missing tools on another machine.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Hello preparation from pinned original and plan | 12.261s | Load the retained plan once, render three local slices, prepare the current connected packages |
+| Complete Hello handoff | 363.147s | 33 public commands, 30 comparisons, eight-unit / 63-case experimental assembly |
+| Local conversion baseline | 13.922s | Three units; 0.360s compiler, 3.455s execution, 7.138s Wine startup |
+| Compatible local conversion edit | 14.889s | One unit; 0.032s compiler, 3.456s execution, 6.889s startup |
+| Compatible engine / native integration | 43.985s / 15.931s | One compiled unit in each; actual consumers rerun |
+| Unchanged original-runtime engine | 4.304s | Zero compiler/link/execution/model/solver work; 1.956s evidence validation |
+| Repaired state-only defect | 3.995s | Zero compiler/link/execution/model/solver work |
+| DX-Ball preparation / complete walkthrough | 0.504s / 34.230s | Fresh initializer/helper recovery; 22 commands, 17 comparisons and 37-case experimental assembly |
+| Integrated validation | 27.910s | 13 tests and six repository/SDK gates |
+
+`costs.json` summarizes per-phase receipts without replacing their authority.
+Model/solver counts are zero. These setup timings measure executable recipe work,
+not first-time boundary analysis or adapter authoring. H1's previously unprepared
+component trial above measures those separately, including documentation gaps and
+tool-internal changes. A warm source edit is not a proxy for that effort.
+
+The larger default toolkit shell exposed original-side Wine/Linux-loader crashes
+for jq's `wide-128` and `depth-128` cases. A retained replay passed depth but still
+failed wide. Same-binary launch probes isolated the larger build environment as
+a trigger before target execution; the smaller lifting shell then passed all 42
+jq cases. The failed receipts, core investigation and environment probes remain
+retained. Runtime environments are not silently filtered by the checker. The
+smaller shell changes developer tool inputs, while the full shell remains available
+for proof/toolkit work. This is a measured setup issue, not evidence of a target
+semantic failure or justification for more component splitting.
+
+The stateful conversion checkpoint at `build/hello-multibyte-2026-09-22/` composes
+one ordinary C family beneath both the quoting engine and native callers. Its
+28-command, 25-comparison public workflow takes 378.236s, including an eight-unit
+63-case experimental build/run. Formal model/solver counts are zero throughout;
+no pilot or toolchain rebuild runs. The next work is the bounded
+[operator/program handoff](whole-target-independent-lifting.md#h1h3-operator-handoff-and-program-execution).
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Initial local conversion, 27 cases | 15.145s | Three compiled units; 0.360s compiler, 3.464s execution, 8.493s Wine startup |
+| Initial composed engine, 220 cases | 39.614s | Five units; 0.424s compiler, 28.201s execution, 7.141s startup |
+| Initial eight-unit native integration, 63 cases | 17.951s | Eighteen translation units; 0.726s compiler, 7.297s execution |
+| Compatible local conversion edit | 16.486s | One unit; 0.032s compiler, 3.462s execution, 8.243s startup |
+| Compatible engine / native integration | 42.263s / 17.178s | One unit compiled in each; affected comparisons execute again |
+| Unchanged original-runtime engine | 4.460s | Zero compiler/link/execution/model/solver work; 2.002s evidence validation |
+| Repaired state-only defect | 4.265s | Zero compiler/link/execution/model/solver work |
+| Experimental build / execution | 11.708s / 52.977s | Explicit experimental policy; all 63 native sequences pass |
+
+These are development measurements with some concurrent validation. Component
+compilation is already a small fraction of the edit loop; further splitting would
+not remove the measured startup, case execution and evidence costs. The retained
+`costs.json` records preparation, compiler, link, runtime and evidence phases.
+The walkthrough distinguishes independent evidence reuse from actual consumers
+that must be rerun. It detects and replays both wrong characters and a state-only
+reset defect. Integrated Nix validation passes 13 tests and six repository/SDK
+gates in 25.735s; the prior seven-unit and actual-terminal regressions also pass.
+
+The complete quoting-engine checkpoint at `build/hello-quote-engine-2026-09-22/`
+keeps the substantial loop in ordinary C and uses the existing experimental
+workflow. Retaining its 531-transfer ownership inventory costs 1.928s plan loading;
+package creation takes 0.326s and native setup 0.470s. The full connected recipe
+takes 344.145s for 59 public commands and 50 comparisons, including seven-component
+experimental build/test. No proof model, solver, decompilation or pilot rebuild runs.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Initial local engine, 165 cases / 18,480 transformations per side | 26.641s | Three units; 0.228s compiler, 0.032s link, 16.750s paired execution, 7.039s Wine startup |
+| Initial seven-unit native integration, 21 sequences | 10.423s | Sixteen translation units; 0.495s compiler, 0.032s link, 1.334s execution |
+| Compatible local engine edit | 33.801s | One unit; 0.032s compiler/link each, 21.140s execution, 7.540s startup, 2.034s evidence validation |
+| Compatible native integration | 11.704s | One unit compiled; 2.529s execution, 7.291s startup |
+| Unchanged controlled quoting caller | 2.052s | Zero compiler/link/execution/model/solver work; 0.918s evidence validation |
+| Wrong NUL elision, local / native | 12.701s / 9.332s | One case each; byte and allocation-request discrepancies |
+| Retained local / native failure replay | 8.832s / 10.698s | Original faulty inputs replay after draft repair |
+| Repaired local / native result | 4.742s / 1.403s | Zero compiler/link/execution/model/solver work |
+| Experimental build / execution | 7.846s / 20.471s | Explicit experimental policy; all 21 native sequences pass |
+
+These are development measurements with some concurrent validation. Native startup,
+case execution and evidence handling dominate; the changed 224-line component
+compiles in 0.032s. Dividing the loop further would not remove these measured
+costs. The public recipe preserves the distinction between an unaffected controlled
+caller and an affected actual-consumer integration. Both are finite comparisons.
+Manual setup adds 54 lines of C bridge, 61 of case driver, 19 of private headers
+and 108 of declaration/preparation Python, plus the existing native recipe changes.
+The exact spans, alias transport, ABI and locale-service choices remain operator
+work; no per-unit checker extension is needed. The connected jq regression passes
+42 cases and the actual-terminal Hello regression nine. Thirteen integrated Nix
+tests and six repository/SDK gates pass in 28.090s.
+
+The terminal-behavior checkpoint at `build/hello-native-terminal-2026-09-22/`
+uses the existing components and retained PE32 image. Preparing the accepted
+`packages-v4/` takes 0.461s and requires no decompilation, pilot rebuild or new model. Its focused
+public workflow takes 84.409s for 18 commands and 15 comparisons, including nine
+actual diagnostic/exit/abort cases and experimental execution.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Local allocation baseline, 630 cases | 3.472s | Six compiled units; 0.257s compiler, 0.032s link, 1.619s execution |
+| Initial terminal comparison, nine cases | 10.516s | Fourteen units; 0.432s compiler, 0.032s link, 1.150s execution, 7.289s Wine startup |
+| Compatible local edit | 4.753s | One unit compiled; 1.605s execution, 1.291s evidence validation |
+| Compatible terminal integration | 12.518s | One unit compiled; 1.148s execution, 9.993s Wine startup |
+| Unchanged realloc neighbor | 0.960s | Zero compiler/link/execution/model/solver work |
+| Missing failure call, local / native | 2.172s / 9.329s | One case each; native exit differs, 37 versus 0 |
+| Retained local / native discrepancy replay | 0.888s / 11.171s | Replays the faulty inputs after the draft is repaired |
+| Repaired local / native result | 2.844s / 0.866s | Zero compiler/link/execution/model/solver work |
+| Terminal experimental execution | 9.620s | Nine child cases; original diagnostics and exit/abort remain native |
+
+These timings include concurrent regression work. All model/solver counts are
+zero. Wine prefix initialization dominates a changed native comparison; making
+these components smaller would not remove that cost. Reusing a whole result does
+skip startup and execution. The observer is a reusable ordinary C header, while
+the target still needs explicit entry/state adapters and an observation policy.
+Its finite binary-output/timeout limits and reserved service-trace prefixes are
+documented in the [recipe](../tests/fixtures/hello-native-quoting/README.md#actual-fatal-diagnostics-and-process-termination).
+No comparison engine, proof rule or new format is required for this checkpoint.
+The full normal quoting regression passes 47 commands and 39 comparisons in
+207.937s. Integrated Nix validation passes 13 tests and six repository/SDK gates
+in 33.534s. The retained audit revalidates 54 comparison receipts and both native
+experimental assemblies against current fixture and engine code. Manual setup
+includes a 128-line reusable observer header, a 106-line Hello transport header
+and a 145-line public recipe, in addition to the existing native fixture. That
+adapter effort remains an ergonomic cost even without checker development.
+
+The shared-tail allocation family at `build/hello-checked-allocation-2026-09-22/`
+owns eight operations and two aliases in one component, using 27 original transfers
+without lower supplier bodies. Preparation costs 1.883s plan load, 0.066s rendering
+and 0.138s package creation. Its public native workflow takes 198.331s for 47 commands;
+model/solver work is zero and no pilot/toolchain rebuild runs.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Initial local family check, 630 cases | 3.448s | Six units; 0.257s compiler, 0.032s link, 1.614s paired execution |
+| Compatible local family edit | 4.766s | One unit compiled; 0.016s compiler, 0.032s link, 1.605s execution |
+| Native integration, 21 cases plus entry probes | 10.954s | One unit compiled, thirteen reused; 1.463s execution and 7.790s Wine startup |
+| Unchanged lower realloc neighbor | 0.972s | Zero compiler/link/execution/model/solver work |
+| Wrong resize request, local / native | 2.190s / 10.245s | One retained case each, with allocator argument differences |
+| Repaired local / native result | 2.828s / 1.095s | Zero compiler/link/execution/model/solver work |
+| Six-component experimental execution | 14.322s | 21 native consumer cases; declared nonlocal failure probes |
+
+These development measurements include some concurrent regression work. Reuse
+still incurs evidence validation even when compiler and execution counts are zero.
+The operator uses full interface declarations and a manual multi-operation entry
+adapter; the shared service renderer supplies call instrumentation. Fixing support
+for a zero-parameter void callback removes an artificial API requirement, but does
+not eliminate manual setup or establish general state transport.
+The current five-component Hello regression takes 154.611s, the connected DX-Ball
+recipe 27.348s, and jq's 42-case comparison matches. Integrated Nix validation
+passes 56 tests across four shards and six repository/SDK gates in 41.918s.
+The retained audit binds 86 comparisons and three assemblies to current producers.
+
+The complete reallocation follow-up at `build/hello-reallocation-2026-09-22/`
+retains nine original transfers in 1.898s plan loading and 0.006s rendering, then
+prepares its package in 0.056s. CRT supplier bodies are absent locally.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Local realloc, 216 cases | 1.408s | Five units; 0.159s compiler, 0.032s link, 0.553s execution |
+| Compatible local realloc edit | 1.593s | One unit compiled; 0.016s compiler, 0.032s link, 0.552s execution |
+| Integrate realloc edit, 21 native cases | 9.633s | One unit compiled, eleven reused; 0.016s compiler, 0.032s link, 1.398s paired execution |
+| Unchanged free neighbor | 0.452s | Zero compiler/link/execution/model/solver work |
+| Wrong zero normalization, local / native | 0.823s / 8.028s | One case each; allocator request differs through actual native `xrealloc` |
+| Repaired local / native result | 0.961s / 0.828s | Zero compiler/link/execution/model/solver work |
+| Five-unit experimental execution, 21 cases | 10.981s | Native growth, zero-size and declared controlled error probes |
+
+The complete 36-command walkthrough takes 141.578s; its four-unit regression takes
+107.786s. Model/solver work stays zero, and no pilot/toolchain rebuild runs. The
+changed native realloc comparison spends 6.838s in Wine startup. These are retained
+development measurements, not speed guarantees. Manual declaration and C adapter
+work remains necessary; the extension requires no new checker or proof rule.
+The new fixture contains 19 lines of authored component C, 63 lines of bridge/
+header, 118 lines of controlled driver and 115 lines of declaration/preparation
+Python, before native walkthrough extensions. This setup cost remains an ergonomic
+limit despite the short warm loop. Integrated Nix validation passes 30 tests and
+six repository/SDK gates in 25.592s; retained receipt/counter/replay auditing passes.
+
+The complete Hello cleanup extension at `build/hello-cleanup-2026-09-22/` uses the
+existing workflow for a real loop over shared mutable cache state. Retaining its
+thirteen transfers costs 1.883s plan load and 0.006s rendering; fresh package
+preparation takes 0.055s. Its release supplier body is absent from the local check.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Local cleanup, 224 cases / two invocations each | 1.529s | Five units; 0.158s compiler, 0.032s link, 0.575s execution |
+| Compatible local cleanup edit | 1.896s | One unit compiled; 0.016s compiler, 0.032s link, 0.574s execution |
+| Integrate cleanup edit into native callers, 21 cases | 10.874s | One unit compiled, nine reused; 0.016s compiler, 0.032s link, 1.399s paired execution |
+| Unchanged growth neighbor | 2.068s | Zero compiler/link/execution/model/solver work; 0.916s evidence validation |
+| Reset-capacity discrepancy, local / native | 0.994s / 8.148s | One case each; local call-time state and native reentry capacity differ |
+| Repaired local / native result | 1.276s / 0.827s | Zero compiler/link/execution/model/solver work |
+| Four-unit experimental execution, 21 cases | 17.356s | Actual native consumers around selected C; explicit routine initialization |
+
+The final 25-command recipe at `native-workflow-v3/` takes 115.518s. No proof model,
+solver, pilot or toolchain rebuild runs. Native startup still dominates several
+changed checks (8.090s of the compatible cleanup integration), so do not treat
+these development timings as a stable performance guarantee. The new component reuses existing object
+definitions and native transport. Its local driver and manual boundary remain
+explicit operator work; a successful example does not establish arbitrary target
+setup cost. A real adapter compilation failure also led to a shared CLI fix so
+the failing unit's diagnostic is visible after earlier successful verbose logs.
+The final 64-slot domain includes the actual 24-slot consumer state; the earlier
+16-slot declaration was insufficient for that integration. Existing representation
+groups now bind shared cache definitions too. Changed contracts and mixed layouts
+reject before compilation; those corrections required no new solver machinery.
+
+The fresh-package checkpoint at `build/first-time-components-2026-09-22/` creates
+the Hello network directly from three retained original slices and repository
+C/declarations in 0.053s. No earlier authored package or completed check is an
+input. Native setup then takes 0.455s, and its complete public edit/replay/reuse/
+experimental-assembly recipe takes 61.707s. The compatible native edit takes
+10.823s and compiles one translation unit; unchanged free reuse takes 0.446s and
+repaired-network reuse 0.730s, both with no new compiler/link/execution/model/solver
+work. The independently prepared controlled consumer passes all 144 cases.
+
+The same supplier-binding API prepares DX-Ball and jq without changing their
+declared graphs. DX-Ball's full recipe takes 27.275s; package preparation is
+0.478s and the 37-case initial comparison 2.340s. Fresh jq arrays prepare in
+0.729s, path consumers in 3.160s, and their 42-case comparison records 1.169s
+compiler, 0.032s link, 7.289s startup and 5.523s execution. These are development
+timings, not a claim of speedup from the helper. Its benefit is removing duplicate
+selection/requirement lists and an unreproducible source dependency. Target-specific
+ABI, state and service adapters still require manual work. No pilot or proof model
+was rebuilt; integrated validation passes 47 tests and six gates in 34.012s.
+Hello and DX-Ball timings above use the `-v2` runs, refreshed after the final helper
+edit so their recorded engine hashes match the implementation.
+
+The native Hello handoff at
+`build/hello-native-quoting-2026-09-22/workflow-v2/` completes 14 public recipe
+commands and nine comparisons in 64.397s, with no pilot rebuild, model or solver
+work. It reuses the three authored units inside actual PE32 callers and lower
+services. Its test-only loader boundary omits original process startup/TLS.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Native package preparation | 0.442s | Retained authored units, pinned PE and existing compiler/runtime; reviewed loader-header conversion |
+| Initial native consumer comparison, 21 cases | 12.203s | Eight translation units; 0.322s compiler, 0.032s link, 1.366s paired execution, 9.042s Wine startup |
+| Integrate compatible growth edit | 11.329s | One unit compiled, seven reused; 0.016s compiler, 0.032s link, 1.496s paired execution, 8.591s startup |
+| Unchanged free neighbor | 0.438s | Zero compiler/link/execution/model/solver work |
+| Embedded-NUL discrepancy / retained replay | 8.097s / 11.597s | First difference in native allocation size; 6.938s / 9.843s startup, 0.063s / 0.064s paired execution |
+| Repaired native network | 0.721s | Zero compiler/link/execution/model/solver work; 0.260s evidence validation |
+| Three-unit native experimental execution, 21 cases | 9.245s | 4.099s evidence validation, 4.120s startup, 0.721s candidate execution |
+
+These are development timings. The warm changed comparison is dominated by new
+Wine prefixes, not component logic or proof. Prefix reuse would require preserving
+the declared isolation/reset semantics; existing reuse already avoids startup
+when the exact checked inputs are unchanged. The native C adapter/driver is 297
+lines, preparation/walkthrough Python is 272 lines, and new authored component C
+is zero. Manual ABI/layout work remains necessary; repeated setup is the next
+operator-effort measurement, not an excuse to add a universal environment model.
+
+The first attempt crashed in Weston's kiosk-shell active-surface selection during
+Xwayland startup. Kernel/core evidence is retained; the desktop-shell runner passes
+the full workflow, process/cancellation tests and the existing jq experimental
+suite. An offline Nix dry run proposed 1,367 builds because ShellCheck was absent;
+online cache lookup reduced this to five small derivations and a 1.5 MiB download.
+That bootstrap rebuild was not started. Do not infer expensive necessary work
+from an offline dry run without checking available substitutes.
+
+The actual Hello allocation/quoting workflow follows the same practical path.
+`build/hello-allocation-2026-09-22/workflow-v2/` contains 17 public recipe commands
+and 12 comparisons, completed in 54.280s. Retaining just the 25-transfer original
+requires 1.907s to load the pinned transfer plan and 0.008s to render the slice;
+neither pilot nor toolchain is rebuilt. The new three-package preparation is 0.342s.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Local growth comparison, 522 cases | 2.800s | Six translation units; 0.257s compiler, 0.032s link, 1.329s execution |
+| Initial quoting/free/growth comparison, 144 sequences | 2.212s | Eleven translation units; 0.580s compiler, 0.032s link, 0.371s execution |
+| Integrate compatible growth edit | 2.472s | One translation unit compiled, ten reused; 0.836s evidence validation, 0.016s compiler, 0.032s link, 0.370s execution |
+| Unchanged free neighbor, 32 cases | 0.435s | Zero compiler/link/execution/model/solver work |
+| Retained bad-publication replay, local / consumer | 0.842s / 1.342s | One case each; equal consumer return/outcome, differing call-time count |
+| Repaired connected comparison | 1.915s | Zero compiler/link/execution/model/solver work; 0.881s evidence validation |
+| Three-unit experimental execution, 144 sequences | 26.678s | 25.197s evidence validation, 1.231s execution, 0.049s service validation |
+
+No formal model or solver runs in this recipe. The dominant experimental-run
+cost is still repeated exact-evidence validation, rather than C execution or
+component size. This is a measured optimization opportunity; the current binding
+checks remain enabled. The observations cover a bounded heap and controlled lower
+services, not native execution or arbitrary allocation contents.
+
+The connected DX-Ball walkthrough reuses the same facilities on another target.
+Evidence is retained at `build/dxball-lifecycle-2026-09-22/workflow-v1/`.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Prepare four fresh packages and recover three small original helpers | 0.346s | Retained pinned inputs and existing semantic/API facilities; no pilot rebuild |
+| Initial connected comparison, 37 cases | 2.299s | 15 units compiled; 0.678s compiler, 0.032s link, 0.446s paired execution |
+| Compatible local reset edit | 0.598s | One unit compiled; 0.016s compiler, 0.032s link, 0.037s paired execution |
+| Integrate that reset edit, 37 cases | 1.852s | One unit compiled, 14 objects reused; 0.528s evidence validation, 0.016s compiler, 0.032s link, 0.437s execution |
+| Unaffected bind / blit comparison | 0.481s / 0.524s | Zero compiler/link/execution/model/solver work |
+| Missed table slot, local / connected discrepancy | 0.592s / 1.848s | Same 255-slot boundary; incorrect source clears only 254 |
+| Stale-window discrepancy / retained replay | 1.174s / 1.654s | One case; observed service argument differs despite equal returns |
+| Repaired network | 1.178s | Zero compiler/link/execution/model/solver work; 0.543s evidence validation |
+| Experimental assembly execution, 37 cases | 2.678s | 2.456s evidence validation, 0.082s execution, 0.023s resource/service validation |
+
+The complete recipe takes 26.473s for 22 commands and 17 comparisons, including
+negative controls, replay after repair and experimental assembly. Model and solver
+work are zero throughout. These are development timings. Host retained-C execution
+and controlled platform services do not include native DirectDraw or Wine startup.
+The older exact-slice store output had been collected; a dry run of its current
+derivation proposed 998 builds including bootstrap toolchain work. That build was
+not started. Recovering the pinned original and rendering only the missing small
+helpers avoided coupling this edit loop to that preparation cost.
+
+The 2026-09-22 representation walkthrough prepares and checks a coherent private
+jq descriptor change through the existing public workflow. Retained evidence is
+at `build/jq-array-storage-2026-09-21/representation-workflow-v1/`.
+
+| Action | Wall time | Measured work |
+|---|---:|---|
+| Prepare the changed array/path packages | 4.089s | Existing authoring APIs, retained native inputs; no compiler, model, solver, link or pilot build |
+| Check changed representation, 42 cases | 21.540s | 20 units compiled, 11 objects reused; 0.735s compiler, 0.032s link, 5.520s execution, 3.119s evidence validation |
+| Reject a mixed revision / independently changed shared bytes | 0.428s / 0.429s | Rejected before compilation |
+| First wrong-conversion discrepancy / retained replay | 11.852s / 12.123s | One nested-slice case; 0.128s paired execution each, 7.339s / 7.589s Wine startup |
+| Repaired network / unchanged native-service check | 6.273s / 0.481s | Zero compiler/link/execution/model/solver work |
+| Compatible setter edit through the changed network | 19.882s | One unit compiled, 30 objects reused; 0.032s compiler, 0.032s link, 5.518s execution |
+| Unaffected getter after that edit | 0.785s | Zero compiler/link/execution/model/solver work |
+| New experimental assembly execution, 42 cases | 26.723s | 19.780s evidence validation, 2.404s execution, 0.651s resource/service validation, 3.420s Wine startup |
+
+The complete reproducible recipe takes 350.026s, including fresh component checks,
+negative controls and the existing edit/assembly walkthroughs. All formal checks
+are not requested. These are development timings; some repository validation ran
+concurrently. The unchanged service check is finite native-service conformance,
+not an authored-caller proof. The representation-dependent integration correctly
+reruns; it is not an expected neighbor-reuse case. The selected migration is now
+delivered; connected DX-Ball reuse is delivered above. Broader proof or heap-model
+work must still be justified by a concrete consumer or stronger selected claim.
+
+The 2026-09-22 shared-admission checkpoint addresses the repeated validation
+bottleneck. `shared-admission-run-v1/` executes the same retained eleven-unit
+experimental manifest and all 42 cases in **25.262s**, versus the earlier
+212.155s run. Evidence-validation time is **18.551s**, including 5.604s for full
+suite admission; candidate execution is 2.156s, resource/service validation 0.619s
+and Wine startup 3.469s. All 42 behavioral and resource/service results pass.
+These are development timings on the same retained executable and suite, not a
+controlled benchmark; process execution time also varied.
+
+The full admission reader now runs once for a supported suite. Before and after
+each case, content/lookup snapshots recheck the package, external compiler/tool
+inputs and runtime/suite bindings. The measured package contains 3,428 files and
+123,042,603 bytes; a standalone content sweep takes about 0.071s. Case and resource
+checks continue to run separately. The direct-case API always performs fresh full
+admission. Unsupported optional compiler inventory falls back to repeated full
+admission, with a visible reason, rather than becoming a new execution prerequisite.
+
+Twelve focused experimental tests pass, including edits made during admission,
+same-size/same-timestamp edits, policy/source/observation/binary mutations, added or
+removed files, symlinks, external header/include-lookup changes and final-case
+runtime/effective-suite edits. Integrated validation passes 86 tests and six
+repository/SDK gates (`shared-admission-validation-v2/`). No compiler, link, model,
+solver or pilot rebuild was needed for the real suite. Coherent representation
+change and connected DX-Ball reuse are the next practical milestones; the older
+repeated-validation priorities below record the measurements that motivated this
+completed optimization.
+
+Fresh manual authoring and controlled-dependency checkpoint (2026-09-22):
+`controlled-authoring-packages-v2/` prepares the reviewed jq caller interface,
+generated bridges and two comparison packages in 0.465s from retained inputs.
+No caller interface/source package, pilot rebuild or solver is required.
+`controlled-authoring-workflow-v1/` records these public command measurements:
+
+| Action | Wall time | Work performed |
+|---|---:|---|
+| Fresh controlled caller, six cases and seven real storage suppliers | 12.014s | 23 translation units, 0.866s compiler, 0.032s link, 0.766s paired execution, 7.840s Wine startup |
+| Compatible real supplier edit, 27 cases | 12.359s | One unit compiled, 24 objects reused; 0.032s compiler, 0.032s link, 3.448s execution, 0.607s evidence validation, 6.738s startup |
+| Unchanged controlled caller | 1.321s | Zero compiler/link/execution/model/solver work; 0.670s evidence validation |
+| Real integration after supplier edit, 27 cases | 13.550s | One unit compiled, 26 objects reused; 0.032s compiler, 0.032s link, 3.450s execution, 1.230s evidence validation, 6.788s startup |
+| Repaired supplier / real integration | 1.579s / 2.498s | Both reuse with zero compiler/link/execution/model/solver work |
+
+The controlled caller also reuses in 1.351s while a deliberately faulty supplier
+is present outside its inputs; the actual supplier/integration checks reject it.
+This demonstrates precise conditional reuse, not correct integration from a local
+result alone. Both native get bodies are trapped during caller execution; the
+original DLL remains an exact binding and its edits still invalidate the result.
+These are development measurements, not a controlled benchmark. Formal checking
+is not requested. The retained earlier 42-case experimental manifest was
+revalidated, but its suite was not reexecuted for this authoring checkpoint.
+The repeated-validation costs below remain the next measured performance task.
+
+The path/interpreter allocation-failure checkpoint (2026-09-22) extends the real
+consumer to 42 cases. Package preparation takes 2.758s from retained inputs.
+`path-failure-workflow-v1/` performs a compatible setter edit in 19.520s: one
+translation unit compiled and thirty reused, 0.016s compiler, 0.032s link, 5.464s
+paired execution, 3.164s evidence validation and 6.888s Wine startup. Unaffected
+getter reuse takes 0.711s, repaired release 0.580s and repaired network 6.098s,
+each with zero compiler/link/execution/model/solver work.
+
+`path-local-repair-v1/` detects the early-release setter in 13.314s across 31 cases
+and the omitted allocation in 13.110s across 27. Each compiles one changed unit.
+Their repaired checks take 1.737s and 2.435s with no compiler/link/execution/model/
+solver work. Retained replay takes 10.196s and 10.524s. The latter reports a runtime
+failure because the wrong implementation never delivers the original's callback;
+it is not an inconclusive proof timeout or a passing comparison.
+
+`path-failure-assembly-v1/` reuses the compared executable in 11.012s. Its 42-case
+suite takes 212.155s, with 188.378s evidence validation, 13.991s execution, 5.118s
+resource validation and 4.120s Wine startup. Roughly 89% is repeated admission and
+evidence validation. These measurements confirm the existing priority: share
+validation within an unchanged admitted run while preserving standalone case
+admission and stale-input rejection. No pilot rebuild or solver work was required.
+They are development measurements, not a controlled performance comparison.
+
+Priority update (2026-09-21): optimize the
+[practical stateful operator workflow](whole-target-independent-lifting.md#practical-subsystem-milestone-and-sequencing)
+before further universal proof closure. Measure cold preparation and warm
+author/edit/compare/replay/integrate/reuse separately, including operator-written
+setup and changes required in tool internals. Report comparison execution and
+evidence validation separately from compilation, linking and optional model/solver
+work. An unavailable formal rule or timeout must not force proof development
+before an otherwise eligible experimental run. Runtime memory transport and
+service behavior still have to exist.
+
+The nonlocal follow-up (`nonlocal-workflow-v1/`, 2026-09-22) exercises actual guarded
+allocation failure without model or solver work. Its connected 24-case setter edit
+takes 11.969s, compiling one translation unit and reusing fifteen: 0.016s compiler,
+0.032s link, 3.065s paired execution, 0.524s evidence validation and 7.039s Wine
+startup. Unchanged getter reuse takes 0.718s. A repaired creator reuses in 0.545s
+and its network in 1.208s, each with zero compiler/link/execution/model/solver work.
+The focused wrong-output case takes 7.982s, including 6.888s Wine startup and
+0.128s paired execution. These are developer-run measurements across different
+process environments, not a controlled speedup comparison.
+
+The current helpers request formal checks only with `--local-contracts`; ordinary
+comparison does not require checker tools to record an unavailable rule. The plain
+shell lacked the development environment's Python modules and cross-linker flags.
+The retained Nix Python environment and the compiler's target-specific
+`NIX_LDFLAGS_i686_w64_mingw32` resolved setup; the selected import library's DLL
+matches the retained runtime bytes. `LIBRARY_PATH` alone did not fix the cross-link.
+The unrelated interactive-shell build was explicitly stopped once the retained
+environment supplied the focused checks. Preserve these distinctions from proof
+or pilot costs; no pilot rebuild was used. The checkpoint audit records the exact
+retained tool paths, and ordinary operators should use the declared Nix environment.
+
+The expanded cleanup checkpoint (2026-09-22) measures the same public workflow
+after adding allocation observations, generated sequences, lifetime negatives
+and the original NaN-reference-loss contract. Evidence is under
+`build/jq-array-storage-2026-09-21/lifetime-path-workflow-v4/` and
+`lifetime-assembly-v2/`:
+
+| Action | Public command wall time | Work performed |
+|---|---:|---|
+| Compatible setter edit through 38 consumer cases | 20.976s | 1 C unit compiled, 29 reused; 0.032s compiler, 0.164s link, 5.072s paired execution, 3.192s evidence validation, 7.340s Wine startup |
+| Unaffected local getter reuse | 0.919s | Zero compiler/link/execution/model/solver work; 0.331s evidence validation |
+| Repaired network reuse | 7.020s | Zero compiler/link/execution/model/solver work; 3.275s evidence validation |
+| Repaired local release reuse | 0.762s | Zero compiler/link/execution/model/solver work; 0.241s evidence validation |
+| Experimental configuration build | 11.138s | Reuses the compared binary; no compiler/link/model/solver work |
+| Experimental suite, 38 cases | 200.244s | 179.550s evidence validation, 11.496s candidate execution, 4.768s resource validation, 3.770s Wine startup |
+
+These are development measurements, not controlled speedup claims. Repeated
+manifest/comparison validation still takes about 90% of the suite wall time.
+The next performance task is shared validation within an unchanged admitted run,
+preserving independent case admission and stale-input rejection. The walkthrough
+also detects 36 lifetime-only discrepancies: observer adequacy improved without
+any new solver work. Warm zero-work reuse is demonstrated within a controlled
+execution environment. Earlier results from another engine or environment
+correctly invalidate; the helper now prefers matching current-run evidence.
+
+Practical jq checkpoint (2026-09-21): authored array storage now runs beneath the
+existing path/value network. The first six-unit public storage workflow measures:
+
+| Action | Public command wall time | Compilation/reuse |
+|---|---:|---|
+| Fresh connected storage comparison | 14.075s | 14 translation units compiled; 0.365s compiler, 0.164s link, 1.279s execution, 9.894s Wine startup |
+| Compatible setter edit, integrated | 10.529s | 1 unit compiled, 13 reused; 0.032s compiler, 0.164s link, 1.279s execution, 7.140s startup |
+| Unaffected getter evidence reuse | 0.777s | Zero compiler/link/execution/model/solver work |
+| Repaired network evidence reuse | 1.168s | Zero compiler/link/execution/model/solver work |
+
+The subsequent eleven-unit path/value/storage check passes 37 comparisons,
+including ten interpreter programs. It spends 1.040s compiling 29 translation
+units, 3.651s indexing compiler inputs, 0.164s linking, 4.943s executing cases and
+7.089s starting Wine. Formal checking is unavailable and performs no proof work.
+These are development measurements; startup variability is not a measured speedup.
+Evidence is under `build/jq-array-storage-2026-09-21/`. The connected
+`path-workflow-v1` and experimental `assembly-v1` then measure:
+
+| Action | Public command wall time | Work performed |
+|---|---:|---|
+| Compatible setter edit through the real path network | 20.578s | 1 translation unit compiled, 28 reused; 0.032s compiler, 0.164s link, 4.891s paired execution, 3.101s evidence validation, 7.440s Wine startup |
+| Unaffected local getter reuse | 0.790s | Zero compiler/link/execution/model/solver work; 0.247s evidence validation |
+| Repaired connected network reuse | 6.794s | Zero compiler/link/execution/model/solver work; 3.116s evidence validation |
+| Experimental configuration build | 9.989s | Reuses the compared binary; 8.686s evidence validation, 1.175s evidence retention, 0.002s symbol inventory |
+| Experimental suite, 37 cases | 180.314s | 160.798s evidence validation, 10.861s candidate execution, 4.406s resource validation, 3.620s Wine startup; no compiler/link/model/solver work |
+
+The suite currently revalidates the complete experimental manifest and its bound
+component comparisons before every case. Evidence validation accounts for about
+89% of its wall time. The next performance improvement should reuse validation
+within a run over unchanged inputs, while preserving standalone per-case admission
+and rejecting changed executable, policy, suite, service and resource evidence.
+Use the existing artifact boundaries; a filename or process-global success cache
+is insufficient. This is a measured runtime-workflow issue, independent of proof
+rigor. Phase totals omit some command orchestration and must not be presented as
+complete wall time. Complete lifecycle observations, failure handling and
+representation changes also remain open.
+
+The quoting measurements below diagnose the deferred stronger-assurance work.
+Retain its exact inputs and terminal results; do not repeat unrestricted checks
+or rebuild pilots merely to improve those numbers. Resume an optimization when
+it unblocks the current executable workflow or a deliberately selected stronger
+acceptance gate. Passing more restricted cases does not close a universal theorem.
+
+Connected entry/growth/publication experiment (2026-09-21): the current retained
+model starts at actual Hello entry and checks the normal clearing return and
+count publication at `0x4f62`. This is a larger conditional region than the earlier
+growth-return experiment. Its complete attempts remain incomplete; historical
+local passes do not establish this connection.
+
+| Completed incomplete attempt | Preparation | Model | Compiler | Checker | Link | Total |
+|---|---:|---:|---:|---:|---:|---:|
+| Initial connected record model (`positive-v4`) | 2.264s | <0.001s | 4.833s | 731.500s | 0 | 738.610s |
+| Fixed event slots (`positive-v5`) | 2.284s | 0.001s | 4.981s | 1095.402s | 0 | 1102.682s |
+| Direct callbacks (`positive-v7`) | 2.329s | 0.001s | 5.181s | 883.532s | 0 | 891.056s |
+| Direct private words and checked index (`positive-v8`) | 2.402s | 0.001s | 4.792s | 1544.477s | 0 | 1551.686s |
+
+Checker costs include admission witnesses, property discovery, symbolic execution,
+encoding and solving. Each query retains its 60-second limit. The first unresolved
+property is an event-array bound; fixed event slots resolve it but expose the
+record callback's merged event pointer. Calling the callback directly on each
+constant slot makes the actual pointer property pass in 19.890s, while preserving
+the stored object and updated count. Capacity and snapshot-frame checks remain
+mandatory. The production change passes fifteen focused tests in 32.834s and all
+73 tests in ten affected Nix shards in 397.173s. These are concurrent development
+measurements, not controlled benchmarks.
+
+All eight native service-domain assertions remain required before their facts
+are used to guard later effects. A deliberately incorrect errno site still gives
+the expected assertion counterexample. The `positive-v6` run was explicitly
+interrupted after the measured callback correction superseded its model; its
+process group and reason are retained. `positive-v7` and both semantic negatives
+end incomplete at `native_read.array_bounds.1` and
+`quote_slots.pointer_dereference.47`. The v8 fixture preserves the private-word
+inventory with constant read/write slots and proves the exact valid-index guard
+from the existing nonwrapping slot-span premises. That lemma passes in 16.956s,
+and the formerly slow pointer query passes in 18.410s. There is no new input
+restriction. The v8 positive passes array and pointer safety but ends incomplete
+at `spx_record_read.undefined-shift.1`. Both negative runs end incomplete at
+`spx_record_snapshot.array_bounds.2`, taking 909.822s and 910.081s; neither is an
+intended semantic counterexample. Selecting the snapshot call within the fixed
+history slot resolves its focused bounds query in 19.531s. The v9 renderer also
+uses total record-byte extraction and retains the explicit offset assertion.
+Its 73 affected Nix tests pass in 273.553s, and six repository/SDK gates pass in
+60.701s. These are validation costs, not complete real-operation proof results.
+
+The fixture's `--prepare-only` mode produces the same exact slice, headers, record
+transport and compiled model without running any proof or admission queries.
+The current positive prepares in 7.639s (2.362s preparation, 0.001s model generation,
+5.248s compilation including nominal field checks). The complete shift diagnostic
+and incorrect-publication assertion each still exceed their 60-second query
+limit. A static-growth-only diagnostic also times out: symbolic execution takes
+11.591s and emits 316,785 steps before slicing. Case restriction alone is not a
+demonstrated solution and was not added to the admitted theorem. No connected
+positive/reuse result is claimed yet. Evidence is under
+`build/hello-quoting-growth-connection-2026-09-21/`. No pilot rebuild, native link or
+Wine invocation is involved. Earlier fixture/producer-bound receipts below are
+historical after this change and require current replay for renewed claims.
+
+Connected case diagnostics (v12, 2026-09-21) now use the same exact emitter and
+complete property checker on explicitly retained small inputs. They require an
+actual original/C continuation witness as well as input-domain satisfiability.
+The scoped mode fixes addresses, counts, scalar inputs and the observation byte;
+it leaves other input memory values and caller registers symbolic. Consequently
+none of these results is a universal region or whole-memory theorem.
+
+| Restricted case | Preparation | Model | Compiler | Checker | Link | Total |
+|---|---:|---:|---:|---:|---:|---:|
+| Static growth | 2.402s | 0.001s | 5.294s | 210.486s | 0 | 218.197s |
+| Moved growth | 2.418s | 0.001s | 5.547s | 198.092s | 0 | 206.072s |
+| In-place growth | 2.399s | 0.001s | 5.498s | 198.395s | 0 | 206.306s |
+| Incorrect publication, static case | 2.401s | 0.001s | 5.162s | 113.976s | 0 | 121.555s |
+| Incorrect saved errno, static case | 2.430s | 0.001s | 5.521s | 98.316s | 0 | 106.283s |
+
+The positives pass the complete restricted check; the negative fails the expected
+publication assertion after its safety checks. A focused static-case query finds
+that counterexample in 9.255s, including 0.0013s in the solver. It emits about
+30,000 symbolic steps, compared with about 317,000 in the unrestricted query.
+These measurements overlap other development checks and are not controlled
+benchmarks. The cases are available through `--concrete-case`; each receipt binds
+its restrictions and explicitly sets `universal_region_complete: false`.
+
+The unchanged static case takes 26.554s: 2.438s preparation, 0.001s model,
+5.474s compiler, 2.773s evidence import and 15.856s checker. It reuses 57 queries
+and executes two admission queries; this is query reuse, not zero-work neighboring
+proof reuse. The saved-errno negative rejects its continuation inputs, and an
+incorrect native errno-call site still produces the call-domain counterexample.
+`case-audit-final-v12.json` replays all six case results plus that domain negative
+without invoking proof tools. The final six repository/SDK gates take 57.814s;
+the unchanged engine's 73-test Nix validation remains the v9 run above.
+
+Further unrestricted probes retained under the same root test additional checked
+source-domain assumptions, count normalization, generated constant field
+writeback, direct non-copy effects, a scoped count frame and reordered private
+lookups. Every publication query still reaches its 60-second limit. The scoped
+frame reduces symbolic execution to 206,467 steps; it does not complete the
+query. The production record specializations were removed, and the remaining
+trial changes were not adopted. Checked state transport between real regions is
+the deferred formal follow-up; practical stateful lifting is now the immediate
+priority. These diagnostic variants do not close the symbolic theorem. All
+original G1–G7 acceptance requirements remain open where previously recorded.
+
+Checked record snapshots through actual slot growth (2026-09-21): the complete
+conditional regional check now passes, including safety/loop coverage, and the
+wrong-copy/wrong-clear cases produce their expected counterexamples. Factoring
+readonly field frames avoids reconstructing unchanged C fields. Reusing the
+checked preserved-byte spans then resolves the old-prefix/new-suffix assertion;
+current C fields and copy snapshots are still observed separately.
+
+| Phase | Fresh combined region | Exact-query reuse |
+|---|---:|---:|
+| Input preparation | 0.002s | 0.002s |
+| Model generation | <0.001s | <0.001s |
+| Compilation, including nominal C field checks | 4.931s | 4.922s |
+| Evidence import | <0.001s | 1.905s |
+| Admission witnesses and regional checking/replay | 355.468s | 15.722s |
+| Native link | 0 | 0 |
+| Total wall | 360.415s | 22.565s |
+
+The fresh regional property check takes 340.657s; its three domain witnesses
+take 14.810s together. Reuse imports 41 queries and executes the three witnesses;
+preparation, generation and compilation still run. It is not zero proof-tool
+work. Wrong-copy and wrong-clear experiments take 317.746s and 230.941s. All 71
+affected Nix tests pass in 376.251s, and six repository/SDK gates pass in 86.108s.
+These jobs overlap and do not form a controlled benchmark. The earlier 60-second
+timeouts remain retained; no bound or obligation was weakened. Exact inputs,
+negative results, reuse and read-only replay are bound by
+`build/hello-quoting-record-snapshots-2026-09-21/terminal-audit.json`.
+Allocation/lifetimes, general growing C arrays, complete quoting and native
+admission remain open; no pilot rebuild or Wine run was involved.
+
+Earlier record-snapshot attempt (2026-09-21): the internal bulk byte world
+now retains ordinary C fields at each copy. The actual static-slot/count
+integration compiles and has nonempty static/moved/in-place domains, but its
+complete property check remains incomplete.
+
+The completed combined-region checkpoint above supersedes this attempt; retain
+the following costs and failed models as the evidence that motivated its changes.
+
+| Combined growth experiment | Seconds |
+|---|---:|
+| Input preparation | 0.002 |
+| Model generation | <0.001 |
+| Compiler, including nominal field types | 4.845 |
+| Admission witnesses | 14.702 |
+| Complete regional property checking | 776.637 |
+| Total wall time | 796.200 |
+
+The last two unresolved safety properties are
+`spx_mutable_event.array_bounds.1` and `quote_slots.pointer_dereference.153`.
+Both individually reach 60 seconds after safety-group refinement. This timing
+includes CBMC preparation, symbolic execution, encoding and solving; it does not
+measure solver-only time. Three isolated generated-model probes (preserved
+global reads, a stable event index and direct non-copy writeback) each leave the
+bounds query incomplete at 60 seconds. Pinned Z3 with the existing SMT-array
+policy also times out on both properties. Those speculative source changes were
+not adopted. Further full-region repetitions need a change justified against
+these retained queries, rather than a longer timeout or a smaller admitted array.
+
+All 69 tests in ten affected Nix shards pass in 305.517s, and six repository/SDK
+gates pass in 61.661s. These overlap the experiment and are not controlled
+benchmarks. No new-mode real-region negative or reuse result is claimed. Exact
+inputs, incomplete queries, exploratory probes and the regression audit are under
+`build/hello-quoting-record-snapshots-2026-09-21/`. No pilot rebuild, native
+application link or Wine run occurred. Earlier producer-bound checkpoints below
+retain their historical scope.
+
+Returned identities through actual buffer replacement (2026-09-21): four original
+Hello transfers now connect the checked free supplier, a conditional allocator
+call and ordinary C pointer publication. Callee bodies are absent. The allocator
+may change arbitrary bytes outside the live slot and continuation frame; its
+normal-return applicability and native allocation/lifetime behavior remain unproved.
+
+| Actual replacement continuation | Preparation | Model | Compiler | Solver | Evidence import | Wall |
+|---|---:|---:|---:|---:|---:|---:|
+| Fresh conditional proof | 2.120s | 0.015s | 0.375s | 112.084s | 0 | 115.398s |
+| Unchanged proof reuse | 2.372s | 0 | 0 | 0 | 1.281s | 4.421s |
+
+Fresh checking executes 62 queries including admission and complete property
+inventories. Incorrect pointer publication rejects in 75.732s. The connected
+scalar-result regression also reuses an unchanged caller after a compatible
+supplier-body edit with zero model/compiler/solver work. Solver cost still
+dominates fresh checking of this small region; small control-flow size alone
+has not solved memory-composition cost. No timeout is treated as evidence.
+
+The current free-supplier SDK recheck takes 226.475s after producer invalidation.
+Eight affected Nix shards pass 58 tests in 277.889s; the six repository/SDK gates
+pass in 41.292s. These builds overlap and are not a controlled benchmark. There
+is no pilot rebuild, native application link or Wine execution. Retained inputs,
+costs, negative evidence and replay are under
+`build/hello-quoting-returned-identities-2026-09-21/terminal-audit.json`.
+Earlier checkpoints below remain historical after this producer change.
+
+Opaque reference to checked scalar supplier (2026-09-21): the actual Hello
+free-call region consumes the current `_rpl_free` facts without its body. The
+public identity relation grants no bytes or lifetime. Both the real call region
+and a connected supplier-edit regression reuse caller evidence without generating,
+compiling or solving a caller model; the edit case rechecks only its supplier.
+
+| Actual release-call region | Preparation | Model | Compiler | Solver | Evidence import | Wall |
+|---|---:|---:|---:|---:|---:|---:|
+| Fresh conditional proof | 2.090s | 0.009s | 0.260s | 3.807s | 0 | 6.943s |
+| Unchanged proof reuse | 2.398s | 0 | 0 | 0 | 1.016s | 4.168s |
+
+Preparation includes replaying the checked supplier. Fresh compilation counts
+seven compiler/dependency processes; the checker executes 51 queries, including
+admission and property inventories. Reuse still validates/imports exact evidence.
+No native link occurs. Wrong-buffer checking takes 6.437s, a missing interface
+transport rejects before compilation in 2.056s, and missing stack/import
+separation and errno-target premises reject in 5.455s and 5.900s. The complete
+retained experiment takes 33.284s. These jobs overlap targeted validation.
+
+The first real-call attempt exposed a caller stack overlapping the errno import
+slot; the next exposed a missing nonzero target premise. ABI argument-word
+transport was already implemented and needed no change. Both omissions remain
+explicit negative cases; concrete entry/runtime applicability is unverified.
+The current real supplier SDK recheck takes 223.107s. An earlier 205.976s recheck
+preceded the final identity-storage guards and is historical. Conservative
+producer invalidation still costs development time. Exact inputs, phase costs,
+negatives and terminal replay are under
+`build/hello-quoting-reference-transport-2026-09-21/terminal-audit.json`.
+
+Actual slot-growth memory region (2026-09-21): checked snapshot-copy/fill effects
+extend the existing sparse byte world without enumerating buffer lengths. The
+real quoting continuation passes the complete compiled-property checker for
+static, moved and in-place growth under explicit success/contents/lifetime
+premises. Counts remain symbolic within nonwrapping PE32 spans. This does not
+prove the allocator, general typed-array transport, the full caller or native
+admission.
+
+| Phase | Fresh region experiment | Exact-query reuse |
+|---|---:|---:|
+| Input preparation | 0.002s | 0.002s |
+| Model generation | <0.001s | <0.001s |
+| Compilation | 5.342s | 5.366s |
+| Evidence import | 0 | 1.438s |
+| Three admission witnesses | 16.521s | Rerun |
+| Complete regional check | 218.214s | 0.778s retained replay |
+| Total checker phase, including witnesses | 234.735s | 17.457s |
+| Total wall | 240.094s | 24.276s |
+| Native link | 0 | 0 |
+
+The final reuse run imports 29 exact queries and executes three witnesses whose
+output-directory binding differs. Compilation still runs. This is query reuse,
+not zero caller model/compiler/solver work. Wrong-copy and wrong-clear edits
+produce the intended counterexamples; fresh regional checks take 195.889s and
+196.583s. These jobs overlap validation and are not a controlled benchmark.
+
+Earlier combined queries timed out. Fixed reverse event indices and constant
+word-byte extraction with an explicit offset assertion remove expensive symbolic
+indexing/shifting without dropping safety obligations. The full property inventory
+then exposed an unmodeled import path; the corrected actual import handler passes.
+The audit retains failures and cancellations, including a negative-result reporting
+bug corrected before final replay. No timeout is counted as a pass.
+
+All 45 tests in six targeted Nix shards pass in 178.151s; six repository/SDK gates
+pass in 54.465s. The real free-wrapper SDK recheck takes 240.392s. Conservative
+producer binding requires that recheck even though its compiled model and all 15
+sampled default-runtime outputs are byte-identical to the previous checkpoint.
+Current unchanged supplier proof reuse/export takes 8.095s, with 1.293s evidence
+import and zero model/compiler/solver work. This conservative engine-edit
+invalidation remains a development cost. No pilot or native application rebuild
+occurs. Inputs, commands, failed attempts, exact phase records, negatives and
+read-only terminal replay are retained under
+`build/hello-quoting-growth-memory-2026-09-21/terminal-audit.json`.
+
+Borrowed errno in the real quoting consumer (2026-09-21): the complete C now uses
+the existing call-scoped byte-view rule for runtime-owned errno storage, retaining
+typed structs for slots and the local growth count. The entry-to-growth query
+executes the actual original entry/prologue/errno call and both growth branches.
+It checks saved errno, native input preservation, all growth arguments and local
+count transport. Its explicit growth-branch admission has no slot-array bound;
+allocation outcomes and the rest of the operation remain unproved.
+
+The final query takes 41.631s, its nonempty-admission witness 5.268s, compiler work
+5.291s, input preparation 0.003s and model generation 0.001s; total wall is 52.206s
+with no native link. Wrong errno, count contents and pointer offset reject in
+38.696s, 37.951s and 41.219s respectively. These runs overlap other validation
+work. The earlier 8.075s growth check started at an assumed internal register
+relation and covered less original execution; these timings are not a speed
+comparison of equal obligations.
+
+Host/PE32 preparation takes 0.065s. All 446 sanitized comparisons match. The
+public comparison baseline takes 2.632s; unchanged reuse takes 1.558s with all
+work counts zero. A supplier edit takes 2.187s, recompiles only that unit, reuses
+six objects and reruns the integrations. Delaying the slot-size store produces
+the expected service-state mismatch. These remain finite comparison results.
+
+The proof producer is unchanged, so the existing real free-wrapper SDK receipt
+does not require reproof. Current replay/reuse/summary export takes 8.095s with
+identical proof keys/files and zero model/compiler/solver work; import accounts
+for 1.299s. An initial probe requested unwind 90 against the retained 16 and
+correctly invalidated reuse; a tool-execution guard stopped it before compilation.
+The corrected run uses the retained proof options. All 20 tests in four targeted
+Nix shards pass in 61.867s; six repository/SDK gates pass in 41.550s. No pilot or
+native application rebuild occurs. Exact commands, source bindings, failures and
+terminal evidence are under
+`build/hello-quoting-borrowed-errno-2026-09-21/terminal-audit.json`.
+
+Ordinary local C records (2026-09-21): the complete small local-count caller
+checks actual struct fields and exact aliases through the existing paired-call
+object runtime. Fresh checking takes 4.828s: preparation 0.005s, model 0.004s,
+compiler/dependency work 0.254s, admission witness 0.123s and operation solving
+3.665s. Unchanged evidence import takes 1.050s with zero model/compiler/solver
+work; the full retained script, including baseline/result replay and checking
+summary-export refusal, takes 7.572s. This is not a 7.572s solver run or evidence
+of constant validation cost. No native link occurs.
+
+The actual quoting growth region, including both original `xpalloc` call sites
+and unchanged full authored C up to that call, passes in 8.075s. The admission
+witness takes 4.821s. Wrong count contents and a wrong count-pointer offset each
+reject, in 11.092s and 11.026s while other validation runs were active. The first
+byte-array model timed out after 60s (1.829s symbolic execution, 0.071s SSA
+conversion; solver reduction dominated). A six-word stack inventory replaces
+that model, with every original access checked for exact width/address and
+initialization. Source, admitted inputs and obligations are unchanged. This
+is a regional transport check, not proof of the allocation service or complete
+quoting operation.
+
+The engine change conservatively invalidates the retained free-wrapper receipt;
+its current SDK recheck takes 214.658s alongside the regression jobs. Current
+read-only replay and summary export take 4.029s. The broad 13-shard Nix regression
+run passes 79 tests in 595.303s. A final missing-reference-layout guard requires
+rechecking the two affected shards: all 14 tests pass in 119.134s. The six current
+repository/SDK gates pass in 44.851s. These are separate runs, not 93 distinct
+tests on one source snapshot. Retained
+inputs avoid a pilot rebuild. Commands, models, failed attempts, negative traces,
+phase costs and current replay evidence are under
+`build/hello-local-records-2026-09-21/terminal-audit.json`. The fixed-record checkpoint below is
+historical after this producer change; its capabilities remain regression-tested.
+
+Checked incoming C records (2026-09-21): the new fixed-object relation uses the
+existing byte world and public caller checker. The complete small caller uses
+the actual quoting header, arbitrary admitted input contents, mutable aliases
+and two service observations. All 74 affected Nix tests pass in 12 shards in
+949.322s, including unchanged reuse and the existing three-level supplier-edit
+regression. The six repository/SDK gates pass in 45.089s.
+
+| Record caller | Input preparation | Model | Compiler | Solver | Wall including replay |
+|---|---:|---:|---:|---:|---:|
+| Fresh conditional proof | 0.009s | 0.005s | 0.316s | 24.935s | 27.985s |
+| Unchanged evidence reuse | 0.003s | 0 | 0 | 0 | 3.852s |
+
+Fresh checking invokes seven compiler/dependency processes and 57 checker
+processes, including property discovery. Reuse spends 1.163s importing evidence;
+the remaining wall time includes receipt replay. No native link occurs. A separate
+proof of the actual quoting record relation takes 2.124s, plus 0.056s for its
+nonempty admission witness and 0.100s compilation. Its wrong-slot negative fails
+in 2.003s. That query checks field/byte transport and service writes, not the
+complete quoting algorithm or allocation/lifetime transitions.
+
+The conservative producer change also requires the unchanged real free-wrapper
+SDK recheck, which takes 213.406s. Current replay and summary export take 4.626s
+without proof tools. This remains a development cost: zero-work reuse applies to
+an unchanged proof producer and compatible contracts, not every checker edit.
+These measurements overlap regression work and do not establish general proof
+scalability. Exact commands, phase records, source bindings, negatives and terminal
+results are in `build/hello-record-transport-2026-09-21/terminal-audit.json`.
+
+Complete quoting authoring/comparison (2026-09-21): the real 40-transfer quoting
+operation and ten-transfer free child now have a public two-unit comparison
+workflow using retained machine bodies. The 128 sequences contain 446 complete
+invocations. Source/profile preparation on host and PE32 takes 0.064s, including
+0.059s compiler work. The fixture supports a typed host layout differing from
+the original PE32 layout; conversion and lifetime semantics remain unproved.
+
+| Public comparison | Wall | Compiler runs | Links | Executions | Models/solvers |
+|---|---:|---:|---:|---:|---:|
+| Baseline | 2.561s | 7 | 1 | 256 | 0 |
+| Unchanged | 1.549s | 0 | 0 | 0 | 0 |
+| Supplier edited | 2.140s | 1 | 1 | 256 | 0 |
+| Incorrect parent | 2.045s | 1 | 1 | 256 | 0 |
+| Repaired | 1.529s | 0 | 0 | 0 | 0 |
+
+One edited supplier recompiles its own translation unit and retains six other
+objects; its integration observations rerun. These are comparison-cache results,
+not neighbor proof reuse. Compiler cache validation requires removing external
+loader/executable-search overrides from fixture subprocesses; the original
+inherited environment conservatively disables object reuse. User environment
+settings are unchanged. Exact phase costs and commands are in
+`build/hello-quoting-state-2026-09-21/complete-quoting-network-v2/walkthrough/validation.json`.
+
+The opaque-header fix changes a conservatively bound proof producer even for
+interfaces whose rendered headers are unchanged. The current wrapper SDK recheck
+takes 207.343s: input preparation 0.009s, model generation 0.013s, compiler work
+0.983s and solver work 200.758s. Current read-only replay plus checked summary
+export takes 4.020s. These are distinct from the fast concrete comparisons and
+do not establish improved proof performance. No pilot rebuild, native application
+link or Wine run occurs. Older caller-engine receipts need current replay/reproof
+after this producer change; the current wrapper and three-level regression pass.
+
+Complete caller summaries (2026-09-21): a retained three-level network now
+checks complete original/C units using summaries with both supplier bodies
+absent. A leaf implementation change from a word store to a four-byte loop keeps
+both caller models, proof keys and proof files identical. Both callers reuse
+without compiler or solver work. Observed public-check wall times and phases:
+
+| Check | Input preparation | Model | Compiler | Solver | Wall |
+|---|---:|---:|---:|---:|---:|
+| Leaf | 0.004s | 0.004s | 0.224s | 6.673s | 7.764s |
+| Parent | 1.630s | 0.005s | 0.201s | 3.577s | 6.194s |
+| Outer caller | 3.306s | 0.005s | 0.219s | 3.603s | 7.943s |
+| Edited leaf | 0.002s | 0.003s | 0.213s | 34.303s | 35.352s |
+| Reused parent | 1.690s | 0 | 0 | 0 | 3.404s |
+| Reused outer caller | 3.363s | 0 | 0 | 0 | 4.959s |
+
+All link counts are zero. Source preparation separately compiles the ordinary C
+for the host and PE32 in 0.050–0.061s per package. Evidence import contributes
+another 0.876s/0.825s to the reused checks. The retained walkthrough, including
+final read-only receipt replays, takes 74.326s. Transitive evidence replay still
+grows with dependency depth; these figures do not claim constant validation
+cost or general solver scalability. The four-byte loop makes the leaf proof
+more expensive while leaving its neighbors unchanged.
+
+The real complete `_rpl_free` SDK check with a quantified protected frame takes
+216.219s: preparation 0.011s, model generation 0.013s, compiler work 0.947s,
+admission witness 0.833s and operation solver work 208.631s. Its ordinary C is
+unchanged. Current unchanged reuse and two read-only replays take 6.734s, with
+zero model/compiler/solver work; checked supplier derivation takes 2.182s without
+tools. The new rule retains all runtime/TLS/lifetime/frame premises. Complete
+quoting-parent consumption and native admission remain open. Runs overlap with
+regression jobs and are measurements, not controlled speed comparisons.
+Exact inputs, phase records, commands and validation are under
+`build/hello-quoting-state-2026-09-21/finite-supplier-composition/`.
+
+Operation-entry target capture (2026-09-21): the complete real `_rpl_free`
+SDK check now admits both errno-result overlap with the import slot and free
+effects on that slot. Its C is unchanged. The generated adapter snapshots once
+per invocation; original calls and source calls must retain that target. This
+removes the previous adapter-specific separation premise without weakening the
+paired target check. It does not establish CRT/TLS or allocation lifetime.
+
+The terminal SDK build takes **212.595s**, with caller preparation **0.008s**,
+model generation **0.012s**, compiler/dependency work **0.873s**, entry-domain
+witness **0.762s** and operation checking **205.160s**. It ran alongside two
+regression jobs. These timings do not establish a general speed improvement or
+close G5. Contract preparation from retained inputs takes **0.001s**; no pilot
+rebuild or link occurred. Current read-only receipt replay and unchanged reuse
+take **6.399s**, including two read-only replays, with identical proof keys/files
+and zero model/compiler/solver work. Evidence import is **1.360s** of that total.
+The small aliasing caller additionally rejects current-slot sampling and records
+contract invalidation; generated native tests check per-invocation captures and
+faults. Evidence and regression/gate results are under
+`build/hello-quoting-state-2026-09-21/entry-target-capture/`.
+
+The public-reader probe at this checkpoint rejected the caller evidence family.
+The complete-caller summary extension above now supplies that rule and a current
+wrapper theorem. Complete quoting-parent consumption and concrete runtime
+admission remain open; cached local correctness alone does not establish them.
+The caller-engine receipts in this and earlier checkpoints predate that extension.
+
+Call-scoped returned views (2026-09-21): the complete real ten-transfer `_rpl_free`
+consumer now passes the public SDK/Nix conditional check. It includes five actual
+errno results, a free call with broad public-memory effects, original stack and
+return observations, and ordinary void C. The 241.380s build contains 0.008s
+caller preparation, 0.013s model generation, 0.904s compiler work and 233.495s
+solver work. Solver time remains dominant even for this small component; these
+measurements do not establish G5 or general proof scalability. The SDK ran
+alongside regression shards. No proof obligation or input was dropped to obtain
+this result.
+
+Unchanged current-input reuse retains identical proof keys/files and performs
+zero model/compiler/solver work. It takes 6.688s including baseline and resulting
+receipt replay; the evidence-import phase alone takes 1.461s. Runtime separation
+or lifetime changes invalidate the contract. The initial unrestricted result
+premise fails at a concrete import-slot overlap after 82.902s; the first local
+explicit-separation proof takes 211.465s and is historical after the final
+producer guard change. The SDK receipt is the current result. Exact commands,
+queries, negative trace, phase records and regression/SDK audit are retained in
+`build/hello-quoting-state-2026-09-21/returned-view-composition/`. The affected Nix
+aggregate passes 138 tests in 21 shards without skips in 752.667s, with two shard
+jobs and the SDK initially running alongside. Six repository/SDK gates pass.
+Pilot rebuilds,
+native links and Wine runs remain zero. The older caller checkpoints below
+predate this engine extension.
+
+Captured indirect targets (2026-09-21): the public caller now checks entry-register
+or current-image-slot target transport and compares actual targets at each paired
+call position. Its register/slot fixtures pass with body absence, exact unchanged
+reuse, and wrong-target/missing-read rejection. The actual Hello first errno site
+passes with the real prologue and symbolic entry stack: 0.006s model, 0.084s
+compiler and 3.741s solver. The second site takes 0.002s model, 0.062s compiler
+and 0.130s solver under an explicit incoming target/stack invariant. Wrong target
+and stack variants fail at both sites. These regional checks do not establish
+transport through the intervening body, import authority, errno lifetime or
+whole-operation equivalence. Preparation and all exact queries are retained in
+`captured-indirect-targets/real-sites/`; no link or pilot rebuild was involved.
+
+The same complete seven-transfer quoting caller has been rechecked through the
+SDK with the current engine. Its phases are 2.848s preparation, 0.023s model,
+0.412s compiler and 85.896s solver, including the entry witness. The outer runner
+was lost across a continuation after its Nix child started; its total build wall
+time and process exit code were not retained. The completed Nix output, phase log
+and current read-only receipt replay establish the result. These phase times must
+not be presented as a recovered total build time. The compatible setter edit
+reuses identical caller proof keys/files with zero model/compiler/solver work in
+11.942s, including read-only replay. Wrong C and a valid weaker frame reject in
+3.409s and 4.230s without caller proof tools. The prior checkpoint below remains
+historical after the engine change.
+
+Nineteen affected Nix shards pass 127 tests without skips. The first aggregate
+completed eighteen shards but failed a jq test-helper argv-size limit; its outer
+wall time was not retained. The fixed final aggregate completes in 9.007s by
+reusing those eighteen products. This is not the cost of executing all 127 tests.
+Six repository/SDK gates pass. The next actual errno/free C draft passes public
+source-profile and host/PE32 compilation in 0.101s after 2.143s retained input
+preparation, with zero proof or link work; equivalence remains unchecked.
+
+Shared service sites (2026-09-21): the current caller engine allows one checked
+service to cover multiple exact native sites and accepts zero projected arguments.
+These engine edits invalidate the earlier caller receipt; the unchanged real
+Hello terminal caller has been rechecked through the SDK in 88.886s. Its constructor
+and setter receipts still replay and were reused. Measured caller phases are
+2.873s preparation, 0.023s model generation, 0.429s compiler work and 78.856s
+checking; wrapper/source preparation accounts for the remaining wall time.
+The compatible real setter edit reuses identical caller proof bytes and keys
+without model/compiler/solver execution in 11.219s, including a separate read-only
+replay. Wrong C and a valid weaker frame reject in 2.926s and 3.731s, respectively,
+before caller proof work. Current evidence is under
+`build/hello-quoting-state-2026-09-21/shared-service-sites/`.
+Seventeen affected Nix shards pass 111 tests without skips in 611.843s; all six
+repository/SDK gates pass. These measurements include concurrent validation.
+
+Preparing the next complete 40-transfer `_quotearg_n_options` operation from the
+retained plan costs 1.894s to load inputs and 0.026s to extract an exact slice with
+all four direct supplier bodies absent. `quoting-slots/inventory.json` retains ten
+call sites, five direct callers, three tail callers and a cold abort continuation.
+No compiler, model, solver, link or pilot rebuild was used for this preparation;
+the slice is not a proof. Its indirect target, realloc/contents, dynamic return
+view and lifetime obligations remain open.
+
+Real terminal caller composition (2026-09-21): the complete seven-transfer Hello
+`_quotearg_n_style_colon` now passes the public SDK/Nix caller checker in 87.244s.
+It consumes separately checked constructor and character-setter contracts, with
+both bodies absent. The model supports the constructor's normal initialization
+and terminal abort outcomes. The existing constructor receipt replays unchanged;
+only the setter's older local memory evidence needed refreshing (68.666s). No
+pilot rebuild was needed. The first manual caller query passed in 77.340s, before
+the final authored-guarantee guard changed the engine identity; that receipt is
+historical. This SDK checkpoint is superseded by the shared-service-sites recheck
+above; it remains evidence for the original terminal-composition milestone.
+
+SDK caller phase records separate 2.904s preparation, 0.023s model generation,
+0.427s compiler work and 76.625s complete checking. Remaining wall time includes
+Nix/source preparation and artifact finalization. A real setter rewrite grows
+the source from 1,601 to 1,699 bytes and passes locally in 69.000s. The public
+caller reuses identical proof keys and files with zero model/compiler/solver
+work; its 11.797s record includes a separate read-only receipt replay. The recorded
+reuse phases are 3.167s input preparation and 1.842s evidence import. Wrong C is
+disproved locally and refused by the caller in 2.994s. A valid weaker register
+frame is refused in 3.896s with the missing EBX guarantee identified. Neither
+negative starts caller model/compiler/solver work. Seventeen affected Nix shards
+pass 102 tests without skips in 574.447s, and all six repository/SDK gates pass.
+Measurements include concurrent validation load, and link cost is zero
+because no link was requested. All commands and phase records are retained under
+`initialization-composition/terminal-caller-network/`.
+
+Terminal paths retain call-time observations, original nonlocal control and
+source context/view frames. Normal initialization and register/stack facts are
+not applied to a terminal outcome. Small connected tests exercise both branches,
+compatible-edit reuse and weaker-initialization rejection. These checks close a
+real consumer boundary; the following quote service, CRT termination environment,
+lifetime applicability and native admission still have explicit unverified
+premises. Whole-Hello and different-target acceptance remain open.
+
+Complete real constructor (2026-09-21): the unchanged six-transfer Hello slice
+and ordinary C now pass public checking in 197.265s. Recorded costs are 1.097s
+preparation, 0.383s compiler work, 1.256s model/validation work, 191.754s checking,
+and 2.684s original-transition evidence replay; phase totals exclude wrapper
+overhead. Checking comprises 25.036s source frame, 84.326s complete source
+dependence partitions and 82.393s complete original/C partitions. These are
+concurrent-load measurements, not isolated benchmarks. No pilot rebuild or link
+was needed. Inputs, commands, raw outputs and phase records are retained in
+`initialization-composition/real-constructor/observed-partitions-v3-check.json` and
+`feedback-observed-partitions-v3/`.
+
+The improvement combines an incremental observation of an arbitrary physical
+byte with the existing complete-property partitioner. The same event fold
+defines both ordinary reads and the observer; a separate bit tracks actual
+non-service initialization writes. The input domain, full normal/terminal
+outcomes, sparse history, capacity and all language-safety/progress checks remain.
+A selected memory query passed with the first observer, but the combined query
+still timed out. Complete partitioning then exposed a separate initialization
+history query; its incremental witness closes that obligation too. Both complete
+source and original receipts now replay without tool execution. This closes a
+real proof blocker, not the broader predictable-performance or native-admission
+milestone. Terminal supplier composition was unfinished at that checkpoint; the
+newer real-caller result above extends it through conditional caller composition.
+
+The same constructor inputs pass the actual SDK/Nix source-check product in
+217.428s; the stored status is `complete`, and its source/original receipt replays
+against the current engine. The refreshed controlled `network-observed-v1/`
+workflow checks suppliers in 7.866s/8.051s and its caller in 9.876s. A real supplier
+edit takes 8.478s; caller reuse takes 2.064s with zero model/compiler/solver work
+and identical retained proof bytes. A weaker initialization guarantee rejects in
+5.939s. Fifteen affected Nix shards pass 69 tests with zero skips, and all six
+repository/SDK gates pass in 556.712s. Current evidence and documentation hashes
+are bound by `initialization-composition/observer-validation/validation.json`.
+These measurements supersede the following earlier network producer checkpoint.
+
+Multiple checked suppliers (2026-09-21): the public finite caller now consumes
+separate checked contracts for two canonical object suppliers. Both bodies are
+absent; the second call receives a value read from storage initialized by the
+first. The retained `initialization-composition/network-v1/` workflow uses actual
+host and PE32 compilation, preserves the full symbolic stack domain and replays
+both baseline and edited receipts against the current engine without tool runs.
+It does not establish the real Hello constructor or native admission.
+
+The first and second suppliers take 8.437s and 8.253s. The complete caller takes
+8.876s: 0.148s preparation, 0.008s model generation, 0.239s compiler work and
+7.598s checking. A compatible edit to the second supplier takes 7.984s locally;
+the caller then reuses in 2.081s, including 0.141s preparation and 1.128s evidence
+reuse, with zero model/compiler/solver work and all proof bytes unchanged. A
+checked weaker first-supplier initialization contract invalidates the caller and
+produces the subsequent uninitialized-read counterexample in 5.867s. No link was
+run. These wall times include concurrent validation load; nested solver subphase
+measurements are not additional costs. Inputs, commands and negatives are retained
+by `initialization-composition/network_workflow.py` and `network-v1/validation.json`.
+
+Before the complete-constructor checkpoint above, the real 48-byte Hello
+constructor was incomplete. Its frame check passed
+in 19.063s; the full dependence query exceeds 90s. Reducing the asserted event
+capacity from 48 to 16 also exceeds 90s. Subsequent array/solver encodings, an
+active-world diagnostic, an equal-history shortcut and a normal-outcome split
+remain unsuccessful non-authorizing experiments and are not production changes.
+Existing complete property partitioning isolates final-memory dependence; its
+selected SMT query times out at 60s after only 0.240s symbolic execution and
+0.203s conversion. Thus the earlier attribution to SSA conversion from the last
+low-verbosity message was wrong: the remaining measured cost is solver work.
+No timeout, outcome or unsupported service premise has been treated as success.
+
+Initialization continuation (2026-09-21): checked normal-return initialization,
+void services and entry-register arguments are exercised first with a small
+canonical initializer and its complete caller. The actual source edit changes a
+two-iteration write loop into two explicit writes; the caller consumes unchanged
+checked facts and reuses with model rendering and tool execution forbidden.
+This measures a controlled prerequisite, not Hello constructor performance.
+The new producer invalidates the earlier retained quoting receipt below; a fresh
+read-only replay rejected it as changed. Those earlier timings remain historical
+measurements, and a fresh current-engine check is still required.
+
+The retained controlled run takes 8.451s for the supplier and 4.944s for its
+complete caller. Supplier phases are 0.057s preparation, 0.376s compiler, 0.286s
+model, 7.593s checking and 0.057s evidence validation. Caller phases are 0.081s
+preparation, 0.005s model, 0.219s compiler and 3.744s checking; the remaining wall
+time includes validation outside these phase timers. The edited supplier has
+7.224s checking; caller reuse records 0.075s preparation and 0.981s evidence reuse
+with zero model/compiler/solver work. These are phase times, not total reuse wall
+time. The weaker initializer contract causes a fresh caller check and fails on
+an uninitialized read; the earlier proof is not reused. No link was run. Fixture
+source preparation uses host cc in both compiler slots. Timings were collected
+alongside Nix builds, not under isolated benchmark conditions. Inputs, negatives
+and raw proof products are retained in
+`build/hello-quoting-state-2026-09-21/initialization-composition/`.
+
+Public typed local-object caller (2026-09-21): the complete retained Hello
+`_quotearg_char_mem` now passes through the public checker with current checked
+setter evidence and typed local-storage declarations. Neither callee body is
+in the exact slice or caller model. Explicit summary entries also stop exact
+preparation from traversing callee bodies while preserving actual call edges
+and continuations. No pilot was rebuilt.
+
+The symbolic-stack check takes 232.096s: input preparation 0.224s, model rendering
+0.032s, compiler subprocesses 0.741s, nonempty-entry witness 0.678s and complete
+partitioned checking 229.589s. The reported 79 checker processes include property
+discovery; they are not all SAT queries. All 77 timed partition records pass with
+no timeouts. Read-only public receipt validation takes 5.375s with compiler,
+solver and model generation forbidden. These are operation-check measurements,
+separate from repository test costs and host/PE32 source preparation.
+
+Earlier attempts timed out at 60s on private-storage backing checks. The current
+model separates data and initialization arrays, and proves grant, start/end and
+capacity bounds as explicit assertions before using them. Every assertion stays
+in the compiled proof inventory; this does not fix the stack address or weaken
+the admitted domain. The fixed-stack unit fixture is a separate test scope.
+Evidence and prior failures are under
+`build/hello-quoting-state-2026-09-21/public-object-caller/`.
+
+An actual compatible supplier edit now changes the XOR expression into ordinary
+conditional C (1,601 to 1,699 source bytes). Its local source/original check takes
+59.063s: preparation 0.111s, compiler subprocesses 0.697s, model work 0.685s and
+checking 57.239s. Reported symbolic-execution/conversion/backend times are nested
+inside checking and must not be added to it. Actual host and PE32 compilers run.
+The caller consumes the new checked evidence under identical facts and reuses
+in 5.461s with caller rendering and subprocess execution forbidden. Its proof key,
+GOTO model and all retained proof bytes stay identical; model/compiler/solver
+counts are zero. The elapsed reuse time includes evidence validation and copying.
+
+Incorrect edited C fails original result equivalence after 59.444s; the caller
+rejects that supplier in 0.155s without proof work. A checked weaker frame contract
+takes 62.044s locally and is rejected by the caller in 0.941s, naming the missing
+EBX-preservation guarantee. These supplier checks ran concurrently; their costs
+are wall times under that contention. No caller query timeout is hidden by reuse.
+The sixteen targeted Nix shards pass 119 tests without skips and six repository/
+SDK gates pass in 433.533s. The earlier stale-registry gate failure is retained.
+
+The following quoting service's normal-return/no-escape contract remains
+unverified. Second-consumer and native-admission costs are still required.
+There was no native link or Wine run. The older adapter checkpoint below records
+the earlier model and public restriction. Current evidence includes real supplier
+edit/negative receipts under `public-object-caller/supplier-{compatible,wrong,weaker}/`.
+
+Public shared context views (2026-09-21): fixed readable/read-write state now
+uses the existing caller checker and sparse current-memory model. The real
+save-caller regression moves three fixed dependency views and the mutable length
+into context fields. Correct C passes; reading length before the mutating
+dependency and corrupting a state descriptor fail. Changing supplied dependency
+evidence under the same contract exercises reuse with model generation and
+compiler/solver calls forbidden. These test premises are not a freshly checked
+supplier implementation edit or activation evidence.
+
+The focused suite takes 361.192s for 28 tests, with seven additional definition
+tests taking 0.243s. Eight Nix shards pass 54 tests and six repository/SDK gates
+pass in 481.933s. These are validation-suite timings, not individual proof costs.
+The historical retained Metapad supplier rejects in 0.687s because its composition
+options/tools/producers are stale; no fallback acceptance or pilot rebuild is
+used. Fresh supplier-backed workflow phase costs remain required. Exact authored
+inputs, test products, source hashes and that rejection are retained under
+`build/hello-quoting-state-2026-09-21/public-state-views/validation.json`.
+
+Generated V5 local byte views (2026-09-21): the complete retained Hello quoting
+caller now passes its conditional proof using the generated interface and an
+ordinary 48-byte C array through both service calls. Neither setter body is
+compiled. Preparation takes 0.216s, model rendering 0.00069s and GOTO compilation
+0.497s. The complete proof takes 276.651s with 41 executed processes and no reused
+queries. Its 40 timed subprocesses sum to 326.492s; these overlap and are not
+solver CPU time. One grouped bounds query times out at 60s and is discharged by
+the existing narrower partitions. The complete required inventory passes; the
+39 retained successful query products and exact model/tool bindings replay.
+
+Wrong initial copying and corruption before the second call reject in 1.178s and
+1.283s; the full-call admission witness is reachable in 0.993s. The generated
+source compiles with host and PE32 compilers. Nine Nix shards pass 58 tests and
+six repository/SDK gates pass in 361.269s. Adding the generated helper header
+correctly makes the previous setter source-certificate inventory stale. Its fresh
+conditional check takes 53.352s and preserves the consumed contract identity;
+this refresh is not a demonstration of neighboring-proof reuse.
+
+Evidence: `build/hello-quoting-state-2026-09-21/local-view-adapter/validation.json`.
+The following service's normal-return/no-escape contract remains unverified and
+the public caller reader still needs typed state/local-object integration. No
+pilot rebuild, native link or runtime execution occurred. Compatible edit/reuse,
+second-consumer and native-admission costs remain unmeasured. The older experiment
+below records a different source surface/model and is superseded by this result.
+
+Earlier caller-local object transport (2026-09-21): the complete retained Hello
+`_quotearg_char_mem` experiment compares an ordinary C 48-byte array across two
+actual calls with both setter bodies absent. Preparation takes 0.150s, model
+rendering 0.00055s and GOTO compilation 0.514s. The source service facade and the
+following quoting service remain conditional; no public caller qualification,
+native link, pilot rebuild or runtime execution is claimed.
+
+An arbitrary view-relative observation removes symbolic stack-address subtraction
+from the byte comparison while retaining separate physical placement and alias
+checks. The focused initial-copy query passes with the existing SAT backend in
+9.606s; the same model's SMT query times out at 60s. This is a focused result,
+not a complete consumer proof. The complete SAT partition run remains incomplete
+after 358.202s and 31 process executions: an initial grouped bounds timeout is
+resolved by the engine's existing narrower partitions, but call-argument
+correspondence still times out at 60s after group subdivision. Later obligations
+remain unchecked. Timed proof subprocesses sum to 378.155s, including four timeout
+attempts; these overlap and are not solver CPU time or the command wall time.
+
+The previous physical-probe SMT run and its retry are retained. The retry reuses
+55 exact completed queries and runs two memory comparisons: post-setter local
+contents pass in 88.405s, while initial-copy correspondence times out at 180s.
+Those results bind the earlier model and cannot complete the current model's
+proof. No backend is uniformly faster on this consumer, and smaller C bodies
+alone have not removed the cost of input and memory correspondence.
+
+Concrete wrong-copy and wrong-current-byte witnesses reject in 0.935s and 0.931s;
+the admitted full-call path is reachable in 0.835s. Fixed witness inputs do not
+narrow universal positive queries. Current targeted Nix and repository/SDK gates
+pass in 388.027s. The terminal audit and exact commands are under
+`build/hello-quoting-state-2026-09-21/local-object-caller/validation.json`.
+Public local-view composition, compatible edit/neighbor reuse, second-consumer
+and native-admission costs remain unmeasured and required.
+
+Live-object original comparison (2026-09-20): the public Hello quoting check now
+includes the character setter's seven original transfers and completes in
+55.127s on retained inputs after the private-stack endpoint correction (59.104s
+before it). It checks all 1,690 properties of the conditional original/source
+model. The separately measured initial-domain original checker takes 0.108s
+preparation, 0.0008s model rendering, 0.284s compiler subprocesses and 26.698s
+solver subprocess wall time. The latter includes 1.161s symbolic execution,
+0.175s conversion and 25.108s reported solver time; those nested measurements
+must not be added again. The public wall time also includes source checking and
+ordinary host/PE32 compilation. No native link or pilot rebuild occurred.
+
+An initial SMT attempt reached its 90-second limit during encoding; the existing
+SAT backend passes the same semantic obligations. The uninstrumented retained
+experiment takes 38.145s. A public wrong-memory edit still satisfies local source
+contracts but violates original/source post-memory equality in 55.481s after the
+endpoint correction (55.431s before it). This is
+the conditional leaf domain, not caller-body omission, neighboring proof reuse
+or final admission. Evidence: `build/hello-quoting-state-2026-09-20/object-original/`.
+
+The actual `_quotearg_char_mem` prefix independently checks its argument placement
+and all 48 copied bytes at the setter call in 36.093s, with compiler time 0.514s.
+Concrete counterexamples witness reachable entry and reject wrong content/address
+relations in about 1.5s each. They do not narrow the universal positive proof.
+The earlier unpinned witness attempts timed out and are retained separately.
+This prefix ends at the real call frontier and grants no tail, lifetime or native
+authority: `build/hello-quoting-state-2026-09-20/caller-stack-boundary/`.
+
+Nullable/shared source contracts (2026-09-20): all three real Hello quoting
+operations pass the existing public `--source --local-contracts` command in
+25.158s. The separately measured local checker takes 23.329s: preparation 0.002s,
+compiler subprocesses 0.306s, model generation/inventory/instrumentation/evidence
+validation 0.688s and six solver subprocesses 22.189s. These are source-frame and
+input-dependence checks, not machine equivalence or native link costs. The sparse
+model size does not scale with origin extent; its eight-event resource bound is
+asserted. Unchanged local evidence reuse performs no compiler or solver work.
+Caller reuse and the remaining whole-workflow phase measurements remain open.
+Evidence: `build/hello-quoting-state-2026-09-20/object-contracts/`.
+
+Quoting-state entry checks (2026-09-20): the complete real get/set operations
+qualify through public checking in 179.152s using retained inputs. Their two GOTO
+compiles sum to 0.339s, six inventory processes to 1.625s, and 101 proof-query
+processes to 243.310s. Queries overlap; these sums include encoding and are not
+solver CPU or command wall time. Initial intent preparation takes 0.374s and the
+separate host/PE32 source check 1.846s. Model preparation and production compiler
+time remain unseparated. No pilot rebuild, native link or runtime execution was
+performed. Small operation bodies still carry substantial memory/admission
+checking cost; this is a baseline, not a performance milestone. Exact evidence:
+`build/hello-quoting-state-2026-09-20/validation.json`.
+
+Public contract and cut refinement (2026-09-20): full candidate checking now
+rejects the weaker scalar guarantee in 1461.718s and the corrected wrong C in
+1640.123s, with concrete counterexamples and incomplete selections. The subsequent
+native refusals take 14.001s and 13.901s; neither links an executable. Status exit
+0 means that a report was produced, so the audit checks its incomplete status
+and the native-build refusal. These are command wall costs on retained inputs.
+
+Restoring the checked guarantee under the current engine takes 31.984s for public
+candidate status and 53.664s for the strong native build. The older producer
+cannot read the authored scalar guarantee. Using the current reader correctly
+invalidates whole-proof reuse, regenerates and compiles five models, and reuses
+all 673 exact queries with zero solver queries executed. No generator identity
+or evidence check was weakened to obtain reuse.
+
+The real lowercase internal-region split and merge take 32.752s and 25.670s for
+public component checking. Their regional proof compilation sums to 0.346s and
+0.175s; query inventory processes sum to 1.410s and 0.658s; remaining solver/safety
+processes sum to 18.856s and 6.945s. These process sums include CBMC encoding and
+are not isolated solver CPU costs. Nix preparation, model generation, production
+compilation and auxiliary summary checks remain included in component-check wall
+time. The split creates more local obligations and costs more for this tiny
+operation; granularity alone is not a performance result. Incorrect and omitted
+flag transport reject in 27.721s and 28.687s.
+
+Both new supplier proofs preserve the caller's consumed contract. Against the
+current restored baseline, split and merge each reuse all five caller regions
+with zero model/compiler/solver work (0.386s and 0.391s reuse validation). Public
+candidate status takes 21.813s and 21.790s; native builds take 53.408s and 53.533s.
+All three supplier production object hashes and the combined executable bytes
+remain identical. These runs use real retained builders; the full SDK wrapper is
+tested separately. There was no pilot rebuild or runtime execution. Evidence:
+`build/hello-loop-header-2026-09-20/semantic-cut-refinement/` and
+`scalar-contract-refinement/restored-admission-validation.json` in the same root.
+
+Early compilation veto (2026-09-20): a deliberately incorrect comparison edit
+first spent 1608.873s proving before production compilation rejected an unused
+variable. The full provider now performs its existing host/PE32 compilation and
+manifest-existence check before bisimulation. Replaying the same failure rejects
+in 17.680s through public candidate status, before solver work. Focused and
+conditional paths remain free of production objects. This is a compilation-order
+improvement, not evidence of semantic mismatch detection. The corrected wrong-C
+fixture passes public source checking in 5.203s; its terminal semantic rejection
+and native refusal are recorded above.
+The reordered real scalar supplier qualifies in 22.962s; its false authored
+guarantee rejects in 19.471s. Current checks: 66 tests in seven Nix shards and six
+repository/SDK gates pass in 34.018s. Evidence:
+`build/hello-loop-header-2026-09-20/scalar-contract-refinement/compile-first-validation.json`.
+
+Authored scalar guarantees (2026-09-20): the unchanged real lowercase supplier
+qualifies with an explicitly weaker `true` export in 21.626s; a false requested
+export rejects in 29.010s. These are whole provider command wall costs, not
+isolated preparation/compiler/model/solver measurements. Small connected tests
+show the changed consumed contract invalidates a caller property without changing
+supplier C. The real caller's affected regional diagnostic fails with a concrete
+`left_folded` invariant counterexample in 237.987s: 47 queries executed, zero
+reused, four other regions deferred. Public supplier proposal/application take
+12.552s/0.774s and checking 19.922s; restoration proposal/application take
+0.691s/0.955s and checking 29.860s. Those command costs are wall measurements,
+not isolated solver costs. The first public-check attempt rejected a fixture's
+legacy provider ID (30.707s); the recorded retry uses the SDK portable-C ID.
+Full weaker-contract candidate rejection is now audited above. Seven Nix shards (65 tests, no skips)
+and six repository/SDK gates pass in 45.123s. Retained inputs, commands, exact
+source identities and audits: `build/hello-loop-header-2026-09-20/scalar-contract-refinement/`.
+
+Complete public regional-evidence reuse (2026-09-20): the edited Hello caller
+qualifies all five regions in 1277.017s at the ordinary 120-second query limit.
+`sync:left_folded` reuses all 138 retained query results and executes zero new
+queries. Entry, scan, decide and finish execute 143, 135, 155 and 102 queries
+respectively. All five models are generated and compiled (1.197s summed regional
+compilation); this is exact-query reuse, not zero-work whole-proof reuse.
+Preparation/model generation and solver-only wall time are not separately timed.
+The prepared public candidate selection takes 770.387s including its wait on
+that same proof derivation; it is not an independent selection cost. The subsequent
+native command takes 55.519s. Its executable and strong link receipt contain
+fourteen portable definitions and omit the two original routine objects. There
+was no pilot rebuild or runtime execution. Commands, per-region measurements and
+terminal audit: `build/hello-loop-header-2026-09-20/public-complete-check/validation.json`.
+
+Candidate evidence hints now pass through the existing SDK provider graph.
+An actual Hello graph evaluation changes only the comparison provider when its
+hint is added, and only that provider when its C is subsequently changed to an
+incorrect constant return. The source-package input changes despite the retained
+hint; the lowercase supplier and other selected providers remain identical.
+This is evidence of correct derivation invalidation, not a proof of the changed
+implementation. A subsequent retained-input public candidate-hint run now reuses
+all five caller regions with zero model generation/compiler/solver runs. The
+reuse step takes 0.389s, public status 26.684s and the native command 56.477s.
+The qualification, proof packet and resulting executable are byte-identical to
+the previous complete artifacts. These command wall costs include preparation
+and native work; individual preparation/object/linker costs were not isolated.
+The incorrect constant-return edit now rejects with the same retained hint, as
+recorded above. The retained runtime fixture uses real builders; full SDK graph/wrapper
+checks remain separately scoped. Evaluation, gates and runtime audit:
+`build/hello-loop-header-2026-09-20/candidate-proof-hints/`.
+
+Ordinary regional diagnostics (2026-09-20): public source checking of the applied
+Hello cut rename passes. `component check --region compare/sync:left_folded
+--query-timeout 120` takes 376.963s and satisfies that region, while four regions
+remain deferred and activation stays disabled. It generates all five region
+models but compiles only the selected model (0.295s). Ten safety batches sum to
+56.383 process-seconds, 123 assertion queries to 672.846, and nonvacuity to 9.264.
+Those concurrent process sums include CBMC encoding; they are not wall time or
+solver-only measurements. Provider preparation and model generation are not
+independently timed. No production compilation, native link or pilot rebuild runs.
+A cached public display takes 1.186s; it is a Nix result-cache hit. Exact-query
+reuse into a complete check is demonstrated separately in the small integrated
+test, and the real diagnostic exposes only its executed region to that reader.
+See `build/hello-loop-header-2026-09-20/ordinary-regional-check/validation.json`.
+
+Configured declaration application (2026-09-20): the public retained-Hello
+walkthrough in `build/hello-loop-header-2026-09-20/configured-application/` reads
+the actual SDK authoring paths in 0.801s. Inspect/propose take 0.318s/0.331s and
+`boundary adopt --apply` takes 0.414s. Reapplying the cached stale package rejects
+in 0.371s without writes. Hash comparisons confirm that only the reviewed
+cutpoint declaration changed; authored C and all neighboring inputs remain
+unchanged. No pilot, proof model, compiler, solver or native link is run. These
+measurements establish declaration editing costs, not edited-proof performance.
+
+Configured contract editing (2026-09-20): the existing V6 builder creates the
+real Hello comparison package from retained module, Behavioral-C, interface,
+binding, source and cutpoint inputs in 8.005s. The equivalent Nix builder produces
+the same work-package identity. Public inspect/propose/adopt commands against
+that retained package take 0.333s/0.405s/0.350s; an ownership-changing edit rejects
+in 0.356s. These are preparation/normalization measurements with no pilot rebuild,
+proof generation, solver work or native link. The renamed cut/source marker remains
+an unproved draft. Commands, source inputs and results are retained in
+`build/hello-loop-header-2026-09-20/configured-workflow/`; its operator flake
+exposes only package editing, not qualification products.
+
+Complete comparison and supplier-edit reuse (2026-09-20):
+`build/hello-loop-header-2026-09-20/single-call-regions/` now has complete local
+qualifications for the five-region comparison and its compatible lowercase edit.
+Both readers accept both packets. The caller consumes a scalar body-free summary;
+compiler inventories show neither the original nor a renamed supplier body in
+any of the five GOTO models. The canonical Hello source and intent now match
+the proved artifacts exactly.
+
+| Measurement | Initial caller | Compatible supplier edit, caller recheck |
+|---|---:|---:|
+| Retained-input preparation wall time | 7.408s | 7.771s |
+| Provider wall time | 1,606.962s | 14.034s |
+| Caller models generated | 5 | 0 |
+| Caller GOTO compiler invocations | 5 | 0 |
+| Caller compiler process time, summed | 1.116s | 0 |
+| Safety, assertion and nonvacuity process time, summed | 3,219.295s | 0 |
+| Proof-reuse step wall time | — | 0.396s |
+
+The initial check includes 49 safety batches, 599 assertion queries and five
+nonvacuity queries. Process sums include CBMC encoding and concurrent queries;
+they are not solver-only CPU time or provider wall time. Preparation, production
+compilation, artifact validation and copying still cost time on the edited run.
+Model-generation and production-link costs are not separately isolated by this
+measurement; do not report them as zero. Reused diagnostic directories retain
+baseline timing rows, not evidence of repeated execution. The exact audit is
+`pair-local-audit.json`; compiled inventories are in `compiled-body-absence.json`.
+
+Combined Nix admission now passes. Nix store paths differ from local caller inputs,
+so its baseline was rechecked; the subsequent compatible supplier edit reuses that
+Nix baseline with zero caller model/compiler/solver work (reuse step 0.390s).
+The combined selection and native receipt cover all fourteen pair definitions,
+omit both original routine objects and bind the strong dispatch receipt to the
+actual payload. See `single-call-regions/pair-native-audit.json`. This is a hybrid
+Hello link, without a runtime observation or complete-program portability result.
+
+The experiments below are historical prerequisites, superseded where indicated
+by the complete five-region result above.
+
+Checked completion integration (2026-09-20): the small completion, SMT/reuse and
+cutpoint Nix shards pass (12 tests, no skips), together with five repository gates.
+In `nul-decision-cut/checked-completion/`, the production scan completion lemma
+passes in 27.911s and the previously timed-out decision alignment passes in 7.978s.
+The decision invariant takes 104.355s. This does not complete the scan: its
+`spx_proof_connected_0000_begin.assertion.2` source-call-readiness check exceeds
+120 seconds. SAT on the unchanged retained query also exceeds 60 seconds and is
+not adopted. The terminal provider result is incomplete: entry, decide and
+finish pass, as do all four nonvacuity checks. Preparation takes 7.443s and provider
+execution 1,457.353s. Both packet readers accept the incomplete result; supplier
+edit/reuse and native admission correctly do not run.
+
+Changing the hint requires a new exact-slice intent binding. Although entry-region
+generated C and headers are byte-identical, the compiled GOTO changes from 749,582
+to 749,620 bytes, with a different digest, and exact-query reuse does not apply.
+Keep this measured invalidation cost visible; do not normalize compiled hashes or
+pretend those reruns are zero-work neighbor reuse. A compatible supplier edit must
+still demonstrate that separate requirement against a complete caller baseline.
+
+The subsequent manual proposal, `single-call-regions/`, cuts at `0x67e7`, after the first
+conversion, and carries its low-byte result from EAX. It moves the source right-byte
+read after the left conversion to follow the original machine read/call order.
+Each conversion region then has one supplier call; production ownership and API
+are unchanged. Intent/source packaging and exact-slice generation from retained
+inputs succeeded (exact preparation 2.025s). At preparation time, state transport,
+fault prefixes, coverage/progress, call readiness and equivalence remained unproved;
+the complete result above now discharges the local proof obligations.
+
+Focused follow-up on the generated five-region models passes both completion
+implications (scan 8.796s, `left_converted` 11.683s) and the formerly expensive
+source-readiness check (4.229s and 5.707s respectively). These are non-authorizing
+queries on exact retained GOTO files, with ordinary unwinding options retained.
+The full five-region provider subsequently passed at the normal 120-second limit.
+The explicit one-second preparation run is only model-retention evidence; its
+incomplete results are not accepted proofs. The split and read/call order change
+were tested together, so these timings cannot attribute the improvement to one
+change alone. Current reader hardening and regressions pass 24 tests across five
+Nix shards and five repository gates; exact records are in
+`single-call-regions/checkpoint.json`.
+
+Latest manual epilogue refinement (2026-09-20): the retained
+`build/hello-loop-header-2026-09-20/finish-cut-v2/run/provider/` result is
+`incomplete`. Entry and finish pass, and all three regional nonvacuity checks
+pass, but scan's `__CPROVER_spx_view_address.assertion.1` exceeds 60 seconds.
+Preparation takes 8.719s and provider execution 812.372s. The subsequent
+`finish-roundtrip-probe/result.json` uses outgoing roundtrip decoding's already
+checked current-cut address and passes an assertion in 36.456s, with 24.564s
+preparation and 0.348s compilation. **Correction:** that probe selected finish,
+not scan; it does not measure improvement of the original timed-out loop query.
+Receipt shard order differs from numeric model-directory order. Select probes
+through the recorded `obligation_id`. This diagnostic is non-authorizing.
+Integrated validation passes 49
+tests across seven Nix shards with no skips, plus five repository gates; exact
+outputs and source identities are in `roundtrip-address-checkpoint.json`. The
+complete provider recheck in `finish-cut-v2/roundtrip-run/` remains incomplete:
+entry origin recording exceeds 60 seconds (baseline 38.179s), and scan right
+context exceeds 60 seconds; finish and all three nonvacuity checks pass. Its
+preparation takes 14.320s and provider execution 687.473s. These incomplete runs
+stop at different assertions, so their totals do not establish an end-to-end
+speedup. Query time
+includes encoding and solver execution, and these are not controlled benchmark
+runs. Do not count unscheduled assertions or capacity obligations as passed.
+
+The corrected `scan-roundtrip-probe/result.json` names `sync:scan` explicitly
+and also times out at 60.026s (preparation 20.713s, compilation 0.317s).
+Consequently the decoding change has not established a loop-query improvement.
+`finish-cut-v2/roundtrip-retry120/` ran a complete retry with unchanged
+models and obligations, a 120-second query limit and successful exact-query
+reuse from `roundtrip-run/provider/`. Entry and finish pass; entry origin recording
+takes 72.847s and scan right context 39.371s. Scan reference-address validation
+still exceeds 120 seconds. All nonvacuity checks pass, but later scan assertions
+remain unestablished. Preparation takes 8.467s and provider execution 351.724s.
+The current-engine compatible lowercase edit also qualifies independently; this
+does not establish caller reuse. Both results and identities are retained in
+`roundtrip-address-checkpoint.json`.
+
+Call-specific address assertions (2026-09-20): removing only the two adjacent
+duplicate incoming realizations still times out at 60.025s and was not adopted.
+The retained `address-callsite-probe/` instead duplicates the assertion-bearing
+helper without changing its body or adding assumptions, giving each direct
+cut-macro call a separate CBMC property. All five scan properties pass in
+16.267s, 17.407s, 20.411s, 24.671s and 39.519s. Their combined predecessor query
+exceeded 120 seconds. This is property decomposition, not a new component or a
+weaker contract. The production renderer now emits these helpers; the native
+fixture reaches a resumed cut and rejects runtime failures at distinct sites.
+An unspecialized-renderer mutation is detected. Updated Nix validation passes 50
+tests across seven shards with no skips and five repository gates. Source and
+evidence identities are in `address-callsite-checkpoint.json`. The full
+`callsite-run/` provider check is terminal: entry and finish pass; the five scan
+address properties pass in 17.031s, 19.838s, 23.244s, 21.656s and 23.859s.
+The previously unreached scan invariant fails in 16.554s. Preparation takes
+13.710s and provider execution 453.752s. Its entry header and GOTO are
+byte-identical to the prior run and successful entry queries reuse normally.
+The counterexample has offset 67, readable extent 68 and checked NUL extent 13:
+the old invariant allowed a resumed state already past the terminator. The
+ordinary C algorithm is unchanged in `nul-progress-cut/`; its new invariant uses
+the checked NUL extent, not the origin remainder. Focused native tests and a
+capacity-substitution mutation exercise the distinction. Nix validation passes
+56 tests across eight shards and five repository gates with no skips; exact
+outputs are retained in `nul-progress-checkpoint.json`. The NUL-refined run passes
+the scan invariant in 61.424s but times out on scan alignment at 120 seconds.
+Its unchanged 300-second retry remains incomplete at that same property; entry,
+finish and all three nonvacuity checks pass. Retry preparation is 7.392s and
+provider execution 317.125s. The unchanged retained GOTO also times out with the
+SAT backend at 60.526s, with no model/compiler work. A non-authorizing diagnostic
+separates alignment's kind and target predicates; both time out at 60.030s
+(19.972s preparation, 0.246s compilation). Neither diagnostic is adopted.
+
+The next semantic refinement, `nul-decision-cut/`, adds a cut after both
+conversion calls and transports explicit terminator facts into the decision
+region. Source preparation and coverage planning accept four regions. Its terminal
+provider result passes entry, decide and finish, plus all four nonvacuity checks.
+Scan proves the decision invariant in 58.880s but times out on decision alignment
+at 120 seconds. Preparation takes 7.381s and provider execution 1,309.684s.
+Region compilation takes 0.207s/0.287s/0.210s/0.231s (entry/scan/decide/finish).
+This preserves the runtime algorithm and public API. `checkpoint.json` records
+exact inputs, compiled sizes and costs. Summed query times include parallel work
+and must not be reported as provider wall time. The compatible-edit check did not
+run because the baseline remained incomplete.
+
+Retained completion-lemma diagnostic: before source execution, check that two
+completed scalar calls imply the machine successor `0x67f4`. The implication
+times out with SMT at 60.017s and passes with SAT at 13.855s. With this checked
+implication also assumed, alignment passes at 7.986s; changing the claimed
+successor to `0x67f5` rejects at 9.941s. No production query or receipt consumes
+these diagnostic results. Integration must bind the lemma and its use through
+the existing assertion/model/query readers, and preserve every ordinary gate.
+Adding the implicit return-word cache candidate alone still times out at 60.026s;
+that alternative is not adopted.
+Separately, actual caller admission rejects both wrong-code and lost-guarantee
+suppliers in 18.080s and 18.030s respectively. Their checked source summaries
+distinguish unchanged guarantees from lost zero preservation, despite identical
+interfaces. These are rejection costs, not successful edit/reuse timings.
+
+Strong caller scheduling checkpoint (2026-09-20, G5): the complete Hello
+comparison/lowercase experiment now uses bounded safety groups with single
+authored assertions for SMT. The entry model's identical 7,470 pointer properties
+pass in eight groups instead of 80, reducing summed query time from 264.438s to
+about 49s. Model SHA-256 and exact property coverage match; semantic assertions,
+unwinding, nonvacuity and admission obligations remain. Both evidence readers and
+the targeted Nix checks pass. The caller is still pending, so this does not claim
+an end-to-end proof speedup. See
+`build/hello-loop-header-2026-09-20/packed-policy-checkpoint.json`.
+
+Retain exact package paths when measuring compiled-query reuse: identical header
+bytes copied to a different directory can change legitimate GOTO source metadata
+and invalidate the cache. Keeping the original include path reproduced identical
+model bytes; no byte or hash normalization is applied. A coverage-only incomplete
+receipt may leave unpublished property outputs on disk; those must rerun rather
+than entering the cache. Even successful exact-query reuse still generates and
+compiles models and therefore does not meet G2's zero-work caller-reuse exit.
+
+Local proof reuse now has a separate fast path within the same engine and
+`previous_query_evidence` input. Newly produced unconditional proofs with only
+scalar body-free suppliers record all caller inputs, source/header identities,
+path-sensitive inputs, tools, query policies and a conservative generator digest.
+The consumed supplier contract includes its original binding, adapters and checked
+source guarantees; implementation and qualification identities remain separate.
+An unchanged record can rebind current, already-validated suppliers while copying
+the original proof artifacts and retaining every model/query identity. Changed
+inputs take the existing checking path; altered retained artifacts reject. Old
+receipts without this input record still use exact-query reuse. Incomplete proofs
+cannot enter the whole-proof fast path.
+
+`proof-reuse.json` records zero paired-model generation, compiler and solver work
+on a hit. The copied query logs describe the original execution, not fresh work.
+Provider preparation, optional auxiliary source proofs, production compilation
+and linking are separate phases and are not eliminated by this engine change.
+Current tests exercise zero-work reuse of a complete local theorem and semantic
+scalar-contract compatibility. The unchanged full Hello lowercase leaf also
+requalifies with zero paired-model/compiler/solver work: reuse validation/copying
+takes 0.057s, while provider wall time changes from 19.359s to 12.834s and preparation
+takes 7.761s/8.148s. Auxiliary source checks and production compilation remain.
+Exact identities and measurements are retained in
+`build/hello-loop-header-2026-09-20/paired-proof-reuse-checkpoint.json`.
+The complete Hello caller's remaining timeout and
+the actual compatible supplier-edit/combined-admission demonstration remain open.
+No runtime contract was promoted from conditional to strong authority.
+
+Loop transport factorization checkpoint (2026-09-20): a separate exact-side
+experiment proves ESP/two-argument-slot preservation in 28.352s, reaches the
+claimed cut in 6.290s and rejects a false slot equality in 9.995s. A diagnostic
+projection substitution then checks left metadata/extent in 46.140s/18.041s
+(retained baseline 496.326s/277.1s). Address/runtime correspondence becomes a
+4.930s check, but reference realization still times out and the combined context
+check exceeds 180s. These individual results motivate separating checked frame
+facts from runtime transport; they do not establish a production optimization.
+The separate lemma's domain and evidence consumption still require integration.
+No experimental shortcut or changed input limit was adopted. Exact models,
+terminal results and timing limitations are recorded in
+`build/hello-loop-header-2026-09-20/loop-transport-factorization-checkpoint.json`.
+
+Follow-up retained probes (2026-09-20): `projection-write-frame-probe/result.json`
+under that build directory records an exact-only physical no-write check for both
+argument slots with arbitrary shared-stack exposure, plus ESP preservation at the
+scan cut. The selected three properties pass in 9.769s after 0.363s compilation.
+This is non-authorizing evidence, not a complete safety or composition proof.
+`projection-cache-probe/results.json` records adding offsets 32 and 36 to the
+existing exact stack cache: metadata, extent and context each remain incomplete
+at 60s. Model rendering takes 0.001s and compilation 0.256s; preparation was not
+separately measured and no link ran. Checker elapsed includes encoding and solver
+work, not solver-only time. Neither probe changes production authority or closes
+G2/G5; they are additional results beyond the factorization checkpoint above.
+
+The subsequent `shared-stack-cache-probe/results.json` extends cache eligibility
+to shared stack reads only before public writes, allocations or shadow bytes.
+All three selected checks still time out at 60s. Combining diagnostic projection
+substitution with capture assertion/assumption factoring also leaves right context
+incomplete at 60s (`substituted-capture-lemmas-probe/result.json`). These changes
+were not promoted. The production renderer now snapshots only the existing
+outgoing context validator's Boolean so its assumption does not invoke stateful
+realization a second time. Compiled positive/negative checks and four Nix shards
+pass, but no end-to-end speedup or complete caller proof is established. Evidence:
+`build/hello-loop-header-2026-09-20/context-snapshot-checkpoint.json`.
+
+Checked parameter-slot frame checkpoint (2026-09-20): the restricted sync
+annotation now enters the ordinary paired harness and both evidence readers.
+Seven focused Nix shards and five repository checks pass, including the seven
+new frame tests. Compiled negatives reject partial alias writes, same-value
+stores, changed stack anchors and source-side alias writes; unsupported effect
+paths reject explicitly. This establishes the rule within its supported profile,
+not a completed caller proof.
+
+The retained-input Hello run with `preserved_parameter_slots: ["left", "right"]`
+finishes **incomplete** at the unchanged 60-second query limit. Entry and both
+nonvacuity checks pass. Loop left extent passes in 26.202s; left metadata and
+right context time out at 60.064s and 60.066s. The checker stops the remaining
+property schedule after those timeouts, so the complete loop safety/frame proof
+is not established by this run. Preparation takes 7.663s, provider wall time
+414.684s, and entry/loop compilation 0.236s/0.261s. Checker times include encoding
+and solver work. Model rendering and solver-only costs were not separately
+measured; no native link ran. The provider overlapped the targeted Nix checks,
+so these are diagnostic phase measurements, not a controlled speedup comparison.
+Canonical target source and intent have not adopted the header-cut proposal.
+Inputs, model copies, terminal receipts, query timings and validation identities
+are retained in `build/hello-loop-header-2026-09-20/preserved-slots-provider/`;
+`checkpoint.json` indexes the evidence. G2/G5 and the connected supplier-edit,
+zero-work caller reuse and combined-link demonstration remain open.
+
+Follow-up frame/capacity checks (2026-09-20): the four-origin retry reuses checked
+queries, proves loop left metadata in 116.410s, and still times out on right
+context at 300s (9.901s preparation, 321.387s provider). The two-origin run proves
+metadata/extent/context in 18.136s/28.102s/41.492s, then times out on exit control
+at 120s. Its 300s retry also times out on exit control (7.638s preparation,
+315.305s provider). The remaining loop schedule, including the storage claim's
+overflow check, is not established. No input restriction or capacity assumption
+replaces that check. See `preserved-slots-provider/capacity-retry-checkpoint.json`
+under the same build directory.
+
+Backend and case diagnostics do not close this gap. SAT proves the unmodified
+four-origin metadata query in 112.083s but not context within 120s; the two-origin
+exit-control SAT probe also times out at 120s. Restricting both references to
+specific native objects makes metadata/context pass in 35.041s/47.931s. Fixing
+only the left object proves metadata in 22.824s, while fixing only the right
+object still leaves context incomplete at 60s. Same/different-object partitions
+also time out. These partial domains do not establish complete case coverage.
+Splitting native realization into checked stages proves namespace lookup in
+13.547s but leaves origin recording and the final context incomplete at 60s;
+that diagnostic was not adopted. `cross-cut-frame-checkpoint.json` indexes them.
+
+The production frame now transports preserved slots to distinct successors with
+the same explicit ESP-relative scope projection. Forty-eight tests across seven
+Nix shards and the five repository checks pass. A compiled changed-offset
+negative and a mutation test establish that preserving invocation scope alone
+cannot justify reusing an old stack slot after ESP moves. The existing intent,
+frame guard and scope checks remain the authority; no new receipt format was
+introduced. This supports the manual `finish` epilogue cut in `finish-cut-v2/`.
+Its provider result, coverage and progress remain required before adoption.
+
+Supplier-growth checkpoint (2026-09-20, G2/G5): replacing the 303-byte lowercase
+range-test source with 1,526 bytes containing 26 explicit character cases passes
+complete local qualification and the retained-input Nix qualification/selection/
+native-link gates. Both real caller models remain byte-identical: 788,066 bytes
+for entry and 961,953 for the loop. Neither compiler command includes the supplier
+body. Caller preparation/auxiliary checking takes 19.325s; the two diagnostic
+compilations take 0.256s/0.583s, with no paired solver calls. Local supplier
+preparation/provider time is 9.182s/16.920s. These measurements overlap other work;
+Nix compiler/link phases were not separately measured. This establishes body-growth
+independence, not zero-work reuse of a complete caller theorem. Native acceptance:
+`/nix/store/r1hl2sr49lh6jh4qp2pzyx99slzx0016-hello-grown-lowercase-native-acceptance`.
+Exact inputs, commands, model hashes and executable-bound receipts are indexed by
+`build/hello-loop-header-2026-09-20/supplier-growth/checkpoint.json`. The native
+selection still uses generated code for the rest of Hello; no Wine run or
+second-architecture execution is claimed here.
+
+Translation-unit reuse checkpoint (2026-09-16, F5): the actual jq get-body edit
+compiles one of 14 full-network units, relinks once and matches all 37 composed
+cases. Compiler time drops from 0.640 to 0.032 seconds; cache validation/retention
+take 0.111/0.004 seconds. Initial include indexing costs 2.037 seconds, versus
+0.055 seconds indexing the changed unit. However, the measured whole CLI takes
+18.43 seconds versus 17.64 for a fresh baseline: 2.421 seconds of prior-evidence
+validation and roughly 12 seconds of Wine startup/execution dominate this small
+network. Reduced compiler work is established; an end-to-end edit speedup is not.
+
+Unchanged isolated neighbors reuse with zero compiler/link/model/solver/execution
+calls in 0.88–1.39 seconds of measured CLI time. An unread full-network fixture
+header also reuses with zero such work. Editing the previously problematic
+`headers/interpreter.h` in isolated get reuses all 26 observations. Exact phase
+costs, retained input/build/observation byte counts and receipt identities are in
+`build/behavior-faithful-workflow-2026-09-16/f5-compile-measurements.json`; public
+commands are under `compile-workflow-v2/` and `unread-interpreter-v1/`. Cache metadata
+for the 14-unit network is 434,424 bytes after removing redundant immutable-store
+lookup probes (the initial conservative version was 9,233,805 bytes).
+
+Cache eligibility binds the provisioned immutable Nix toolchain, compiler
+environment, options, generated and compiler-read bytes, objects and literal
+include lookups. A newly shadowing header or changed optional-include availability
+invalidates its consumer. Unsupported computed includes and external compiler
+mechanisms recompile with a visible reason. Header bytes remain retained even when
+checked lookups establish their irrelevance. Observation admission remains separate:
+a changed checker can reuse objects but still relinks and executes. See the
+[component workflow](components.md) for scope and diagnostics.
+
+Service-bearing jq checkpoint (2026-09-16, F4/F5): the transitive four-operation
+network passes 106 isolated and 37 composed cases. Its public experimental runner
+spends 146.184 seconds validating evidence and 6.916 seconds executing the 37
+cases. Profiling attributes most retained-reader work to repeated catalog parsing.
+Reusing immutable parsed service facts by full payload reduces measured admission
+time to 93.211 seconds in a fresh run of the same manifest and binary. All 37 cases,
+38 suite/case admissions and resource/service checks remain. Changed catalog
+contents with stale claimed digests and changed trace contents still reject.
+See `build/behavior-faithful-workflow-2026-09-16/f5-catalog-audit.json` for exact
+bindings and single-run phase measurements. This is a bounded in-process parser
+cache, not cached admission or proof authority. The translation-unit checkpoint
+above subsequently implements compilation and include invalidation. The earlier F1 measurements
+below precede the additional resource/service instrumentation and are historical.
+
+Concrete jq runtime checkpoint (2026-09-16): the bounded-capture/shared-session
+runner passes the public 37-case suite in 16.383s of measured phases, compared
+with 174.67s in the earlier runner. Of the new total, 10.495s validates retained
+evidence, 3.567s initializes Wine, 2.032s executes the cases, and 0.279s stops
+the server and removes its prefix. Remaining time is preparation/reporting.
+The current bottleneck is repeated evidence validation, not case execution;
+optimizing it must preserve suite and per-case admission. The composed original/
+source comparison also matches all 37 cases: compilation 0.528s, link 0.164s,
+Wine startup 7.583s and execution 4.717s. These are runtime observations, not
+formal-proof results. Source hashes and reports are retained in
+`build/behavior-faithful-workflow-2026-09-16/f1-audit.json`. Original/replacement
+working files and prefixes are private; case state is suite-shared and external
+absolute paths/services are not isolated.
+
+Retained jq proof diagnosis (2026-09-16): the two-call output-value pipeline now
+passes semantic preparation in 1.872s without compiler/model/solver/link work.
+The retained Z3 proof experiment compiles its GOTO model in 0.308s and witnesses
+nonvacuity in 0.419s, but singleton language-safety queries exceed 30s. The model
+has 18 static writes, 14 cached stack accesses and a 255,957-byte main C file.
+Short verbose samples are still expanding symbolic sparse memory and allocation
+history operations before a solver decision. An exploratory empty-history fast
+path also times out and is not in the production engine. These samples do not
+establish a speedup, nor do they weaken qualification. See
+`build/practical-lifting-2026-09-15/validation-v2/jq-z3-investigation.json` and
+`jq-symex-profile.json`; retained compiler inputs support further diagnosis without
+another pilot rebuild. The original CaDiCaL provider recheck has now completed
+with incomplete qualification. Compilation takes 0.280s and nonvacuity 0.934s;
+recursive safety splitting performs 41 timed-out queries at 300 seconds each.
+The retained query timeline is 3,313s, while summed parallel safety work is
+12,322s (`jq-cadical-completed-costs.json`). Query elapsed time combines symbolic
+execution and solving; these measurements do not separate those phases. This
+run establishes a cost problem in repeated proof attempts, not pilot compilation.
+A diagnostic model with allocation lookup removed also times out during symbolic
+execution at 30s (`jq-query-empty-allocation-lookup/diagnostic.json`). Neither
+empty-history experiment justifies a production shortcut. Further performance
+work should use these retained models and account for the complete retry budget,
+without turning a timeout into a checked property or weakening activation gates.
+An unchanged retained CaDiCaL model was also queried with CBMC's experimental
+`--full-slice` option (`jq-query-full-slice/diagnostic.json`). It entered bounded
+model checking and exceeded 30s; compilation was 0.390s. This diagnostic does not
+establish a speedup or justify adding the option to authorizing commands.
+The pinned implementation also explicitly warns that this transform may be
+unsound. The jq strong reader now rejects it in every recorded query role;
+`strong-slicing-audit.json` demonstrates the rejection with an erased-guard
+control and continued acceptance of the unchanged qualified Hello proof. A
+separate byte-log guard-order experiment and its unchanged control both exceed
+30s; no production reordering is adopted.
+
+Headless Wayland checkpoint (2026-09-15): the installed public CLI checks the
+retained eight-case isolated jq consumer inside one shared desktop session in
+9.126s, then reuses it in 0.376s with zero compiler/link/execution/model/solver
+calls. Both receipts pass current-reader validation. The shared runner preserves
+stdin, stdout/stderr and exit status; keep the same desktop across comparisons
+intended to reuse evidence. A new compositor changes the exact process environment
+and therefore invalidates concrete reuse. These are observed command latencies,
+not formal-proof benchmarks. Evidence is under
+`build/practical-lifting-2026-09-15/headless-wayland-reuse-v1/`.
+
+Practical jq comparison checkpoint (2026-09-15): the public fourteen-case
+array-concat fixture records 0.1792s compilation, 0.1636s linking and 8.9855s for
+28 original/source process executions. `--reuse-comparison` revalidates retained
+observations and consumed inputs; the corresponding reuse records 0.0113s
+preparation, 0.0139s evidence validation and 0.0060s retention, with zero compiler,
+link, execution, model and solver calls. These are phase measurements, not total
+CLI latency. Source, fixture, contract text, case selection, environment or
+compiler-read dependency changes invalidate reuse. An unconsumed neighboring
+file does not enter the key. See the [public fixture walkthrough](../tests/fixtures/jq-array-concat/README.md)
+and `build/practical-lifting-2026-09-15/controlled-workflow-audit-v1.json`.
+
+This concrete reuse is distinct from the conditional proof reuse below. Append
+interception bypasses its implementation during controlled calls, but the whole
+original DLL remains a package dependency. Demonstrating an actual supplier
+implementation edit with separate consumer reuse and real-integration invalidation
+was the next step; the following checkpoint now demonstrates it.
+
+Real supplier edit (2026-09-15): the append source changes independently under the
+same interface/assumptions. The isolated concat consumer excludes that source and
+reuses eight cases with zero compiler/link/execution/model/solver calls. Its
+recorded preparation, validation and retention phases take 0.0062/0.0114/0.0044s.
+The supplier reruns five cases (0.0784s compiler, 0.1636s link, 8.8918s execution);
+the integration reruns six (0.2258s compiler, 0.1636s link, 8.0183s execution).
+Only the edited source path changes in each affected package's input inventory.
+An incorrect supplier remains rejected by supplier/integration checks even while
+isolated conditional evidence is reused. Actual binary-symbol and source inventories
+establish that the authored supplier body is absent from the isolated consumer.
+See the [supplier walkthrough](../tests/fixtures/jq-array-append/README.md) and
+`build/practical-lifting-2026-09-15/supplier-network-audit-v3.json`.
+
 The [Metapad milestone audit](baselines/2026-09-14-independent-component-milestone.md)
 records the completed small-network conditional proof/edit/refine/reuse demonstration.
 It separates trusted runtime contracts and finite validation from strong authority,
 and records current model dependencies, costs and remaining generalization work.
+
+The [reusable caller audit](baselines/2026-09-15-reusable-caller-composition.md)
+records the subsequent definition-driven migration. Its reserved ID-97 case uses
+a 773,907-byte model with 63 bodies and no resource-helper implementation. The
+refined caption contract takes 0.141s for input validation, 0.010s rendering,
+0.112s dependency inventory, 0.151s compilation, 0.225s entry-witness checking and
+3.297s correctness checking. Public baseline/wrong-edit/repair/neighbor latencies
+are 15.03/14.59/6.78/7.00s. Repair, work-package boundary repair and compatible
+supplier growth reuse exact consumer keys and files with zero proof work.
+Widening the caption view from 1 to 500 bytes instead invalidates contract,
+interface, native-call and boundary bindings, even with unchanged C source and
+signature types. The model grows by four bytes; source preparation is measured
+separately in the retained source-package logs.
+
+The final current-producer save/UI refresh uses 500,222/961,484-byte models.
+Their source, generated C, GOTO bytes, query options and semantic bindings match
+the preceding generic-rule baselines. Correctness takes 16.95/7.70s in the observed
+refresh, higher than the earlier runs despite identical models. This excludes
+model growth as the cause; no controlled timing diagnosis is claimed. Evidence
+validation remains about 6.1s per caller. Neither this variability nor conservative
+engine invalidation is eliminated merely by making application components small.
+Compatible application edits still incur zero neighboring proof work.
+
+Finite caller/work-package workflow (2026-09-15): the ID-31 resource consumer now
+continues through its real MessageBox call. The 773,845-byte model has 63 bodies
+and excludes the resource helper. Input validation takes 0.136s, rendering 0.011s,
+compilation 0.210s, the entry witness 0.392s and correctness 4.374s. Public baseline
+and wrong-ID checks take 17.21s and 17.58s; repair and compatible supplier change
+take 7.17s each with zero consumer model/compiler/solver work. Adding public work
+package inspection, preparation and boundary adoption preserves those proof keys.
+Removing a required native stack slot fails; repairing it reuses the proof.
+These are observed concurrent-run latencies, not controlled throughput results.
+
+Canonical plan rebinding rechecks the two resource original comparisons in
+5.87s and 4.44s while retaining their validated portable objects and all original
+C bytes. No supplier source preparation or pilot rebuild is needed. Evidence is
+under `boundary-rule-investigation-2026-09-14/canonical-resource-v1` and
+`following-public-*`/`following-work-package-*`.
+
+Engine changes have a separate invalidation cost. The borrowed-domain extraction
+changed `bisimulation_call_domain.py`, which enters cleanup's transitive producer
+graph through the existing shared evidence utilities. Current readers reject its
+old region/composition receipts despite unchanged application inputs. A retained
+refresh confirms byte-identical entry, loop and tail models, taking 52s, 21s and 175s.
+The tail's 60-second attempt times out; its previous successful solver took 162s,
+so the successful retained retry uses a 240-second wall limit. The baseline
+composition refresh takes 23s. The compatible neighbor then reuses the refreshed
+tail in 5s and composition in 14.5s, both with zero model/compiler/solver work;
+the EDI-withdrawal export also reuses composition. This is conservative engine
+invalidation, distinct from compatible application edits that reuse neighbors.
+The current work preserves the producer checks and records this utility-import
+coupling for subsequent cache-boundary work; it does not reseal old receipts.
 
 Resource/notice runtime extension (2026-09-14, v120): the existing fixture now
 adds the exact public resource supplier and its generated adapter as two translation
@@ -7717,3 +11272,54 @@ selected copy block: 0x55fa -> 0x5601. Shared entry composition or a separately
 checked copy cut must account for it. This experiment cannot be treated as an
 exclusive complete component or a transitive caller summary. The next work is
 that actual state transport/composition, not further partitioning this query.
+
+## Service authoring measurement — 2026-09-16
+
+The F3 checkpoint in [the current goal](current-goal.md) migrates all four jq
+operations to shared service definitions and generated bridges. The final retained
+37-case composition needs 0.640s compiler work, 0.164s linking and 5.076s comparison
+execution, with no model/solver work. Its controlled caller reuses after a compatible
+supplier edit with zero compiler/link/model/solver/execution work. These retained
+inputs do not require a target rebuild.
+
+The fresh experimental suite exposes a different bottleneck: 135.385s evidence
+validation, 6.619s execution and 3.236s resource/service validation. Repeated
+per-case admission traverses and decodes the bound comparisons and service catalogs.
+F5 should reuse pure decoding/checking under exact byte bindings while retaining
+per-case admission and environment checks; do not suppress those checks or turn
+concrete observations into proofs. This is additional measured work alongside
+per-translation-unit compilation and include-shadowing invalidation. Evidence is
+`build/behavior-faithful-workflow-2026-09-16/f3-audit.json`.
+
+
+## Behavior-faithful workflow acceptance (2026-09-16)
+
+The fresh jq path/value acceptance rerun preserves 106 isolated cases, 26 composed
+getpath cases and 37 full-network cases after moving numeric normalization into
+C. Editing get recompiles one of fourteen network translation units and reuses
+thirteen objects; the integration still relinks and executes. Unchanged neighbors,
+matching repaired evidence and an established unread header do zero compiler,
+link, model, solver and execution work. See the F7 checkpoint in
+[current-goal.md](current-goal.md) for exact retained paths and terminal Nix results.
+
+The independent resource-text optional theorem also reuses unchanged source and
+premises with zero compiler/model/solver work. A changed model premise reruns it;
+a false returned-alias property fails despite matching finite samples. These are
+conditional auxiliary properties, not reusable original-equivalence certificates.
+
+The selected 37-case runtime retained all 38 admissions: evidence validation took
+115.472 seconds, candidate execution 8.128, runtime startup 3.917 and resource
+validation 3.442. Repository checks ran concurrently, so this is a phase-cost
+record, not a controlled speed comparison. The broad Nix run encountered a
+40-second allocation-cut solver timeout; the same shard passed in isolation.
+The two-job affected run completed with 249 passing derivations and one stale
+target-transport assertion, corrected and verified separately. The corrected
+250-derivation aggregate passes offline in 0.464 seconds with no rebuilds;
+an earlier redundant online cached-resolution confirmation was interrupted.
+The proof obligation and timeout remain unchanged.
+
+Shared scalar/interface implementation changes selected 250 repository
+derivations in the broad validation command. The service-result-view shard alone
+passed 17 tests in 807.019 seconds (`f7-service-result-views.log` under the same
+evidence root). This is repository infrastructure validation cost, separate from
+the measured one-unit jq implementation edit and its unchanged-neighbor reuse.

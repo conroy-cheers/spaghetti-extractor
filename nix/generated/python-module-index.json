@@ -823,7 +823,7 @@
       ],
       "path": "src/spaghetti_extractor/candidate/build_workflow.py",
       "resources": [],
-      "source_sha256": "1d20a79ed9dbe225f09132df9d3e303daab759317454f280109925a7758b4ef7"
+      "source_sha256": "89af522cd6a8a31c628161f8f553eefed7bcd554b2bb39ec1e26288100aecef4"
     },
     "spaghetti_extractor.candidate.callbacks": {
       "dependencies": [
@@ -836,6 +836,106 @@
       "resources": [],
       "source_sha256": "ac756027b657eef70ef97911fdf72464247b530132e50122ef9a41c0944d499f"
     },
+    "spaghetti_extractor.candidate.experimental_admission": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.experimental_manifest",
+        "spaghetti_extractor.components.comparison_compile_cache",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_admission.py",
+      "resources": [],
+      "source_sha256": "943177692eeb6aad542cebe7faed2776e8d60c89f1538e5ffd721a5dc031c11d"
+    },
+    "spaghetti_extractor.candidate.experimental_build": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.experimental_manifest",
+        "spaghetti_extractor.candidate.experimental_program",
+        "spaghetti_extractor.candidate.formats",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_build.py",
+      "resources": [],
+      "source_sha256": "f04d9d0d1398007436037d0e2c9a2c388a9f56fa4bf8a336c717b4599d8ec0dd"
+    },
+    "spaghetti_extractor.candidate.experimental_manifest": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.experimental_build",
+        "spaghetti_extractor.candidate.experimental_program",
+        "spaghetti_extractor.candidate.formats",
+        "spaghetti_extractor.components.comparison_domain",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.lifting_intent",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_manifest.py",
+      "resources": [],
+      "source_sha256": "c7514965ed5440a19616c86ee1c6ca676e3260906adcaebea10c7e46e6b2439c"
+    },
+    "spaghetti_extractor.candidate.experimental_policy": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.experimental_manifest",
+        "spaghetti_extractor.candidate.formats",
+        "spaghetti_extractor.components.comparison_representation"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_policy.py",
+      "resources": [],
+      "source_sha256": "9debafa5041b8b25b291b3660e9f0af570b9b3822cfbaebd92eb2dc6570a9afc"
+    },
+    "spaghetti_extractor.candidate.experimental_program": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.functional",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_files",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_program",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_program.py",
+      "resources": [],
+      "source_sha256": "460952adba4bc631cd6fcf34a5f22d4507281a2a949aacb0131df037db015a1c"
+    },
+    "spaghetti_extractor.candidate.experimental_run": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.experimental_admission",
+        "spaghetti_extractor.candidate.experimental_program",
+        "spaghetti_extractor.candidate.formats",
+        "spaghetti_extractor.candidate.functional",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_files",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_program",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_runtime",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/experimental_run.py",
+      "resources": [],
+      "source_sha256": "e6743ec777384639827e0ef75ac6a82145851e77027607d07ee2109db9cb8932"
+    },
     "spaghetti_extractor.candidate.formats": {
       "dependencies": [
         "spaghetti_extractor",
@@ -845,18 +945,19 @@
       ],
       "path": "src/spaghetti_extractor/candidate/formats.py",
       "resources": [],
-      "source_sha256": "0cb9c21dd1a756f10ad2cbcf5215c6091bba0476863c9a6513c9e1fe4180278a"
+      "source_sha256": "8bc573ff7bf6ba91211d1d8f20e3d03347f86052abf18dc47451e6e6d5a7d03f"
     },
     "spaghetti_extractor.candidate.functional": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.candidate",
+        "spaghetti_extractor.execution",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/candidate/functional.py",
       "resources": [],
-      "source_sha256": "34c49125253f9f4ffd5f0ff58f7c26ef164036a216eb5f80f96ea7ea0f24e86c"
+      "source_sha256": "489601ed93d40d6c4ad0b10800978042ea4943adf54c59016cc50db774597e7e"
     },
     "spaghetti_extractor.candidate.imports": {
       "dependencies": [
@@ -1551,7 +1652,7 @@
       ],
       "path": "src/spaghetti_extractor/candidate/runtime_render_core.py",
       "resources": [],
-      "source_sha256": "de9ae1533d627c04a17be475e8fa243d3178eb25e057db4c7f234b80332989d7"
+      "source_sha256": "4c780d66bae5631c6bf47fadffb913360d27d5aa35ba9c5449c651fca0a28114"
     },
     "spaghetti_extractor.candidate.runtime_render_entry": {
       "dependencies": [
@@ -1603,6 +1704,87 @@
       "path": "src/spaghetti_extractor/candidate/runtime_x87_render.py",
       "resources": [],
       "source_sha256": "1f04c3c3a66e6ed46a73bc74aaf6f1c27bccb4a36163edf9ae777d6fe96cf88b"
+    },
+    "spaghetti_extractor.candidate.source_assembly": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.components.source"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_assembly.py",
+      "resources": [],
+      "source_sha256": "96e9e3601dcdbd65b3cb892a118ca4186fc54785eec8d3e5d5cc41ec966cf33a"
+    },
+    "spaghetti_extractor.candidate.source_export": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.source_export_update",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.operator.source_export_guidance",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_export.py",
+      "resources": [],
+      "source_sha256": "890b1c5bc2365745b16e5a22dfea9a8f3aa40b58f3596b65f078712c49a266c5"
+    },
+    "spaghetti_extractor.candidate.source_export_bindings": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.service_c",
+        "spaghetti_extractor.components.source_handoff"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_export_bindings.py",
+      "resources": [],
+      "source_sha256": "c78605146a83159eaa3aa35b1b9234d27af7eb36fd2e4f220d46cf7d0a33d282"
+    },
+    "spaghetti_extractor.candidate.source_export_update": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.source_export",
+        "spaghetti_extractor.candidate.source_export_bindings",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.operator.source_export_guidance",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_export_update.py",
+      "resources": [],
+      "source_sha256": "8f77d29e569f87e86d79a2da3bf30648a183bc797b5facffe54912e410d2b1ca"
+    },
+    "spaghetti_extractor.candidate.source_project_apply": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.source_export",
+        "spaghetti_extractor.candidate.source_export_bindings",
+        "spaghetti_extractor.candidate.source_export_update",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_project_apply.py",
+      "resources": [],
+      "source_sha256": "bf8ba95e8029b722e3fd0fb0364253ad3415821f58f14943dcec0b092a48ccfc"
+    },
+    "spaghetti_extractor.candidate.source_replacements": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.source_assembly",
+        "spaghetti_extractor.components.source"
+      ],
+      "path": "src/spaghetti_extractor/candidate/source_replacements.py",
+      "resources": [],
+      "source_sha256": "a7cd9e84065bebe1b335ad6f8677adb098b8e96db3bbf20778ab60dc9a7224aa"
     },
     "spaghetti_extractor.cli": {
       "dependencies": [
@@ -1669,6 +1851,22 @@
       "resources": [],
       "source_sha256": "8b224fb5f9dac2fad044253a43f82e6bf20b6a512723049237024c7958576da1"
     },
+    "spaghetti_extractor.commands.component_apply": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.commands",
+        "spaghetti_extractor.commands.component_review",
+        "spaghetti_extractor.commands.component_start",
+        "spaghetti_extractor.components.bisimulation",
+        "spaghetti_extractor.components.indexes_v5",
+        "spaghetti_extractor.components.lifting_intent",
+        "spaghetti_extractor.components.relation_v5",
+        "spaghetti_extractor.target_bundles.metadata"
+      ],
+      "path": "src/spaghetti_extractor/commands/component_apply.py",
+      "resources": [],
+      "source_sha256": "e1cfc97539af9ff642ac475c83a620325406d714bf00627c0f7f046be29139f9"
+    },
     "spaghetti_extractor.commands.component_review": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1681,23 +1879,28 @@
         "spaghetti_extractor.components.indexes_v5",
         "spaghetti_extractor.components.interface_package_v5",
         "spaghetti_extractor.components.lifting_intent",
-        "spaghetti_extractor.components.machine_binding"
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.relation_v5",
+        "spaghetti_extractor.components.work_package_editing",
+        "spaghetti_extractor.components.work_package_v6"
       ],
       "path": "src/spaghetti_extractor/commands/component_review.py",
       "resources": [],
-      "source_sha256": "93209354091f7c48abe58ab7d23625a0b88f98615849b332470e02253b7ff0dc"
+      "source_sha256": "4cf832f2d4f0880114618db1156afa8abfaf4772551ae299531dab106fc03762"
     },
     "spaghetti_extractor.commands.component_start": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.commands",
         "spaghetti_extractor.components.lifting_intent",
+        "spaghetti_extractor.components.work_package_v6",
+        "spaghetti_extractor.operator.source_guidance",
         "spaghetti_extractor.target_bundles.metadata",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/commands/component_start.py",
       "resources": [],
-      "source_sha256": "88501820d1dba1bb416756d51290c87e606305e2406fc2d00e121ec1d1fbd0b9"
+      "source_sha256": "6fe85e0b95d93512f7a51a1b3b6281b90e86ec065d074a6abc8f95c8cb4b2097"
     },
     "spaghetti_extractor.commands.expert_isa": {
       "dependencies": [
@@ -1717,7 +1920,7 @@
       ],
       "path": "src/spaghetti_extractor/commands/manifest.py",
       "resources": [],
-      "source_sha256": "d3a8fb96cbee419c194fff7f20091ab1fb3f2baae19487bdac25d46a2eb209fe"
+      "source_sha256": "56e5bcec3c2d0d567e5cb1587a39ff58910273b456a518163d03e0e42166b54b"
     },
     "spaghetti_extractor.commands.proposal_components": {
       "dependencies": [
@@ -1843,27 +2046,62 @@
       "resources": [],
       "source_sha256": "915eeff2029feffea7d40fc2d98087dcdc8c15cfdd5986f1b2f40b42ad55e101"
     },
+    "spaghetti_extractor.commands.workflow_options": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.commands",
+        "spaghetti_extractor.commands.common",
+        "spaghetti_extractor.commands.workflows"
+      ],
+      "path": "src/spaghetti_extractor/commands/workflow_options.py",
+      "resources": [],
+      "source_sha256": "ca6aafb324f13150ad49d1301b5fe13156bb0ccfbbecf2279b0458ed28211102"
+    },
+    "spaghetti_extractor.commands.workflow_status": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.commands",
+        "spaghetti_extractor.operator.formats",
+        "spaghetti_extractor.operator.projections",
+        "spaghetti_extractor.operator.work_status"
+      ],
+      "path": "src/spaghetti_extractor/commands/workflow_status.py",
+      "resources": [],
+      "source_sha256": "4aebdb000d51e4d9020ca851d2bbc4128ec13cc4e476c9167c7368ab02629486"
+    },
     "spaghetti_extractor.commands.workflows": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.build_support.nix_invocation",
+        "spaghetti_extractor.candidate.source_export",
+        "spaghetti_extractor.candidate.source_project_apply",
         "spaghetti_extractor.commands",
         "spaghetti_extractor.commands.common",
+        "spaghetti_extractor.commands.component_apply",
         "spaghetti_extractor.commands.component_review",
         "spaghetti_extractor.commands.component_start",
+        "spaghetti_extractor.commands.workflow_options",
+        "spaghetti_extractor.commands.workflow_status",
         "spaghetti_extractor.components.conditional_check_result",
         "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.partition_inventory",
         "spaghetti_extractor.components.proposal_package",
+        "spaghetti_extractor.components.work_package_editing",
         "spaghetti_extractor.components.work_package_v6",
         "spaghetti_extractor.libraries.v4_adoption_records",
+        "spaghetti_extractor.operator.comparison",
+        "spaghetti_extractor.operator.comparison_guidance",
         "spaghetti_extractor.operator.conditional_check",
+        "spaghetti_extractor.operator.experimental",
         "spaghetti_extractor.operator.formats",
         "spaghetti_extractor.operator.index_v1",
+        "spaghetti_extractor.operator.interface_authoring",
         "spaghetti_extractor.operator.projections",
+        "spaghetti_extractor.operator.proof_check",
         "spaghetti_extractor.operator.proof_diagnostics",
         "spaghetti_extractor.operator.source_check",
         "spaghetti_extractor.operator.source_edit",
-        "spaghetti_extractor.operator.work_status",
+        "spaghetti_extractor.operator.source_export_guidance",
         "spaghetti_extractor.semantic_link.module_v2",
         "spaghetti_extractor.semantic_providers.qualification_v2",
         "spaghetti_extractor.target_bundles.metadata",
@@ -1871,7 +2109,7 @@
       ],
       "path": "src/spaghetti_extractor/commands/workflows.py",
       "resources": [],
-      "source_sha256": "627698341a3d409f0655bdd954f4afd9db01f3d406bad1415578965a19d65e18"
+      "source_sha256": "b152cfeaa8afd94cf236472e8bf2f6580535264c1c99652fe1b4e0838ec75f27"
     },
     "spaghetti_extractor.components": {
       "dependencies": [
@@ -1880,6 +2118,17 @@
       "path": "src/spaghetti_extractor/components/__init__.py",
       "resources": [],
       "source_sha256": "17b3588e33b55280433a691862e379f2f4500ea46f8a35fb5b76220cee064765"
+    },
+    "spaghetti_extractor.components.aggregate_result_binding": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/aggregate_result_binding.py",
+      "resources": [],
+      "source_sha256": "c250585810d853d80162cfd66a9b1facdc4dcea775758efd5f8e13031617e391"
     },
     "spaghetti_extractor.components.atomics": {
       "dependencies": [
@@ -1900,7 +2149,7 @@
       ],
       "path": "src/spaghetti_extractor/components/binding_intent.py",
       "resources": [],
-      "source_sha256": "2e5de4ee9e482a0eaef8d366baa9db3f4660de653cb08d816e2e7be8052a4ed8"
+      "source_sha256": "732f76bf71823e32f37e2abfb80822e2a6f6ca3e69aae5d07903b7c982441558"
     },
     "spaghetti_extractor.components.bisimulation": {
       "dependencies": [
@@ -1909,10 +2158,12 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.bisimulation_allocation_cuts",
         "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_completion",
         "spaghetti_extractor.components.bisimulation_continuation",
         "spaghetti_extractor.components.bisimulation_image_frame",
         "spaghetti_extractor.components.bisimulation_memory_facts",
         "spaghetti_extractor.components.bisimulation_private_frame",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
         "spaghetti_extractor.components.bisimulation_reference_origins",
         "spaghetti_extractor.components.bisimulation_stack_scope",
         "spaghetti_extractor.components.inductive_relation",
@@ -1922,7 +2173,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation.py",
       "resources": [],
-      "source_sha256": "3deb06e4104901b424aefc2f5267cf627382a07ed7b9f7e4515cbc3521817958"
+      "source_sha256": "996276377519976e358055b37ff0b97d85bbaa0faf96a9a75c6b10b1ec48db7c"
     },
     "spaghetti_extractor.components.bisimulation_allocation_authority": {
       "dependencies": [
@@ -2010,6 +2261,30 @@
       "resources": [],
       "source_sha256": "ed4a7923c6db07de752ed8ebe82ff7dcd2a8e4c0b4e987ea84db8e634785d12e"
     },
+    "spaghetti_extractor.components.bisimulation_assertions": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation",
+        "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_continuation",
+        "spaghetti_extractor.components.bisimulation_exact",
+        "spaghetti_extractor.components.bisimulation_exact_frame",
+        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_local_views",
+        "spaghetti_extractor.components.bisimulation_memory_facts",
+        "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
+        "spaghetti_extractor.components.bisimulation_private_frame",
+        "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
+        "spaghetti_extractor.components.bisimulation_support",
+        "spaghetti_extractor.components.bisimulation_typed_services",
+        "spaghetti_extractor.components.bisimulation_world"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_assertions.py",
+      "resources": [],
+      "source_sha256": "8eedbd9ae73e78097135327fc79752fe7b3ba204ea9b651f8798231690239f63"
+    },
     "spaghetti_extractor.components.bisimulation_assurance": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2070,7 +2345,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_call_domain.py",
       "resources": [],
-      "source_sha256": "aac8125307257a684f156706aed5696a837602eff4f2b4548febf4654e5034d2"
+      "source_sha256": "67a5632001c23f53ed9231b5df782367b6d93c356e46043d81dd35038793f3f0"
     },
     "spaghetti_extractor.components.bisimulation_call_entry": {
       "dependencies": [
@@ -2148,6 +2423,216 @@
       "resources": [],
       "source_sha256": "09b388c5c04caf18ec057cd0413c57f9a92c4b1d7b71ef6c8fae6f93361ef43b"
     },
+    "spaghetti_extractor.components.bisimulation_call_relations": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_call_relations.py",
+      "resources": [],
+      "source_sha256": "2fc93c24968ac44283a225202836a53d39e252629224202cb7b783792fec2d3d"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_boundary": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_interface",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_caller_object_runtime",
+        "spaghetti_extractor.components.bisimulation_caller_records",
+        "spaghetti_extractor.components.bisimulation_caller_returned_views",
+        "spaghetti_extractor.components.bisimulation_caller_targets",
+        "spaghetti_extractor.components.bisimulation_mutable_memory",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.bisimulation_paired_calls",
+        "spaghetti_extractor.components.capabilities",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.machine_overlay_runtime_helpers",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_boundary.py",
+      "resources": [],
+      "source_sha256": "a8a40723c463c99bc9f612c252fa672f5537a6e3c8532f97de55d181818e684b"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_definition": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_caller_interface",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_caller_objects",
+        "spaghetti_extractor.components.bisimulation_caller_summary",
+        "spaghetti_extractor.components.bisimulation_caller_targets",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.bisimulation_object_call",
+        "spaghetti_extractor.components.bisimulation_supplier_call",
+        "spaghetti_extractor.components.bisimulation_supplier_facts",
+        "spaghetti_extractor.components.caller_definition_document",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_definition.py",
+      "resources": [],
+      "source_sha256": "ecad0a84e3b928d03ff186236ca7eec6a8fe6760b5dd1007f73bc8823a48bccf"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_interface": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_local_records",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_local_bytes",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_interface.py",
+      "resources": [],
+      "source_sha256": "8984db8650c0abf0b45bf320c4d1f1ba30614bbd5f752091a9a2fcb06327a33b"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_local_records": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_records",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_local_records.py",
+      "resources": [],
+      "source_sha256": "60f1c4e94b6a51156fcfe409491dd3b9690d0394ec10af5e9e0f348f1d5517c7"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_memory": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_private_bytes",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_memory.py",
+      "resources": [],
+      "source_sha256": "13f2eb8f8e22fd311d042c9cd3fd1a3f086363ff75b414299fbc613750a0bc9e"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_object_runtime": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_caller_local_records",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_caller_objects",
+        "spaghetti_extractor.components.bisimulation_local_bytes",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_object_runtime.py",
+      "resources": [],
+      "source_sha256": "e7f4a0106de2f1583606d61173f3ae78bc08f23e5d3d7701df509bfd9f0bf2db"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_objects": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_caller_definition",
+        "spaghetti_extractor.components.bisimulation_caller_interface",
+        "spaghetti_extractor.components.bisimulation_caller_local_records",
+        "spaghetti_extractor.components.bisimulation_caller_records",
+        "spaghetti_extractor.components.bisimulation_caller_returned_views",
+        "spaghetti_extractor.components.bisimulation_caller_summary",
+        "spaghetti_extractor.components.bisimulation_caller_summary_call",
+        "spaghetti_extractor.components.bisimulation_caller_targets",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.bisimulation_supplier_facts",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_objects.py",
+      "resources": [],
+      "source_sha256": "b9557262f2ab21a907c2e4c4f9900b082728a006cb48678fae77c33fddf9e620"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_private_bytes": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_private_bytes.py",
+      "resources": [],
+      "source_sha256": "5de254a56f724bb9a0f64c8535f47440102f21ca3c286fcefac9f64107f421f6"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_records": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_records.py",
+      "resources": [],
+      "source_sha256": "7be4a4ba55dcf00e142375c915ff8797c9aaba93e5ae109903217b2881ecd294"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_returned_views": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_caller_interface",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_returned_views.py",
+      "resources": [],
+      "source_sha256": "88977073c95480960445cb29f8f336f4c604f1b331a9b22d57047e09999883f8"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_summary": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_evidence",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.operator.source_operation_call_check"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_summary.py",
+      "resources": [],
+      "source_sha256": "d63375d6adf2fab66de2c4c37e43a3b8fedd51bb0e3df8a90f5c45c3c89a78e3"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_summary_call": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_caller_records",
+        "spaghetti_extractor.components.bisimulation_caller_summary",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_summary_call.py",
+      "resources": [],
+      "source_sha256": "0a367566d434ca29a6521ab4a4c4e55495e29f33c72b810f8873a6f329cb4636"
+    },
+    "spaghetti_extractor.components.bisimulation_caller_targets": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_service_targets",
+        "spaghetti_extractor.components.machine_binding"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_caller_targets.py",
+      "resources": [],
+      "source_sha256": "f5e0626e54f169f1ac07721a32ee6a88e17d93f73be6b5d9c576f620a13c5cf7"
+    },
     "spaghetti_extractor.components.bisimulation_cleanup_admission": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2176,6 +2661,17 @@
       "path": "src/spaghetti_extractor/components/bisimulation_cleanup_contract.py",
       "resources": [],
       "source_sha256": "d2a46e7d9b1f8c0b7abe7331ed3e75c45421b76982a7b1c055a82b98aec9b81f"
+    },
+    "spaghetti_extractor.components.bisimulation_cleanup_entry_relations": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_cleanup_entry_relations.py",
+      "resources": [],
+      "source_sha256": "262a58f211a17624001a481595ccb468a44faf3f2811c72ab2aac5032676088a"
     },
     "spaghetti_extractor.components.bisimulation_cleanup_frame": {
       "dependencies": [
@@ -2238,30 +2734,6 @@
       "path": "src/spaghetti_extractor/components/bisimulation_cleanup_observations.py",
       "resources": [],
       "source_sha256": "4a6ac22d3647557843b0612475dee9db9945d9a90b2ce9c875f00c7091f43d58"
-    },
-    "spaghetti_extractor.components.bisimulation_cleanup_replace": {
-      "dependencies": [
-        "spaghetti_extractor",
-        "spaghetti_extractor.components",
-        "spaghetti_extractor.components.bisimulation_mutable_memory",
-        "spaghetti_extractor.components.capabilities",
-        "spaghetti_extractor.components.machine_overlay_v5"
-      ],
-      "path": "src/spaghetti_extractor/components/bisimulation_cleanup_replace.py",
-      "resources": [],
-      "source_sha256": "c2bc99ebf08cc0f14f8f212f47b8bec7dc93cb97e562e3de9d0e78bd9c4a42f3"
-    },
-    "spaghetti_extractor.components.bisimulation_cleanup_save": {
-      "dependencies": [
-        "spaghetti_extractor",
-        "spaghetti_extractor.components",
-        "spaghetti_extractor.components.bisimulation_mutable_memory",
-        "spaghetti_extractor.components.capabilities",
-        "spaghetti_extractor.components.machine_overlay_v5"
-      ],
-      "path": "src/spaghetti_extractor/components/bisimulation_cleanup_save.py",
-      "resources": [],
-      "source_sha256": "ae0f61baf909196adfa6ec4d2bb1e645b7311dab9ec2267b722f395100badd17"
     },
     "spaghetti_extractor.components.bisimulation_cleanup_source_use": {
       "dependencies": [
@@ -2405,11 +2877,11 @@
         "spaghetti_extractor.components.bisimulation_harness",
         "spaghetti_extractor.components.bisimulation_mutable_memory",
         "spaghetti_extractor.components.capabilities",
-        "spaghetti_extractor.components.machine_overlay_v5"
+        "spaghetti_extractor.components.machine_overlay_runtime_helpers"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_compaction_model.py",
       "resources": [],
-      "source_sha256": "5a7fda3ec40114a06ddfa14788df5554604f7a143427160a2a0ab469d146e013"
+      "source_sha256": "98ab708de4a2a63289a37282e13c74fb5b0a0bafdf8e748069bbebed4130b456"
     },
     "spaghetti_extractor.components.bisimulation_compaction_template": {
       "dependencies": [
@@ -2429,6 +2901,16 @@
       "path": "src/spaghetti_extractor/components/bisimulation_compilation.py",
       "resources": [],
       "source_sha256": "ada6f6a7b410f9ce32dd71424358dc156b00ea03f0a91c7725753edd2ba3616c"
+    },
+    "spaghetti_extractor.components.bisimulation_completion": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_support"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_completion.py",
+      "resources": [],
+      "source_sha256": "bce759a2e007cd31accfd5347013b2af7c7b104bd68ba8749870d3bcd61e2cc5"
     },
     "spaghetti_extractor.components.bisimulation_connected": {
       "dependencies": [
@@ -2561,6 +3043,7 @@
         "spaghetti_extractor.components.bisimulation_assurance",
         "spaghetti_extractor.components.bisimulation_call_entry",
         "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_completion",
         "spaghetti_extractor.components.bisimulation_continuation",
         "spaghetti_extractor.components.bisimulation_exact_frame",
         "spaghetti_extractor.components.bisimulation_image_frame",
@@ -2570,6 +3053,8 @@
         "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
         "spaghetti_extractor.components.bisimulation_private_frame",
         "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
+        "spaghetti_extractor.components.bisimulation_property_evidence",
         "spaghetti_extractor.components.bisimulation_readable_composition",
         "spaghetti_extractor.components.bisimulation_readable_entry",
         "spaghetti_extractor.components.bisimulation_readonly_evidence",
@@ -2577,6 +3062,7 @@
         "spaghetti_extractor.components.bisimulation_reference_origins",
         "spaghetti_extractor.components.bisimulation_reference_transport",
         "spaghetti_extractor.components.bisimulation_runtime_dispatch",
+        "spaghetti_extractor.components.bisimulation_selection",
         "spaghetti_extractor.components.bisimulation_shared_composition",
         "spaghetti_extractor.components.bisimulation_shared_model",
         "spaghetti_extractor.components.bisimulation_source_dependencies",
@@ -2588,7 +3074,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_evidence.py",
       "resources": [],
-      "source_sha256": "3839f399e3bb682038abed115172b5bcabd356a7925b4b695786395975622856"
+      "source_sha256": "b73af6670f865356c78220adcd6a2d9a07ba3cac5df3cec366f84fd2a39fee26"
     },
     "spaghetti_extractor.components.bisimulation_exact": {
       "dependencies": [
@@ -2597,26 +3083,15 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.bisimulation",
         "spaghetti_extractor.components.bisimulation_continuation",
-        "spaghetti_extractor.components.bisimulation_exact_frame",
-        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_exact_header",
         "spaghetti_extractor.components.bisimulation_lifetime_admission",
-        "spaghetti_extractor.components.bisimulation_local_views",
-        "spaghetti_extractor.components.bisimulation_memory_facts",
-        "spaghetti_extractor.components.bisimulation_mutable_frame",
-        "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
-        "spaghetti_extractor.components.bisimulation_native_views",
-        "spaghetti_extractor.components.bisimulation_projection",
-        "spaghetti_extractor.components.bisimulation_reference_transport",
-        "spaghetti_extractor.components.bisimulation_stack_scope",
         "spaghetti_extractor.components.bisimulation_support",
-        "spaghetti_extractor.components.bisimulation_view_context",
-        "spaghetti_extractor.components.bisimulation_view_extent",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.semantic_induction"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_exact.py",
       "resources": [],
-      "source_sha256": "d6d667b0489eb114ec74e6dc0d6a34b0d383f7aa61e5ed570b7cf43c2566e3e7"
+      "source_sha256": "dbb56c09b2dffb9529553f80afbdaca6b46f1adfa29700c44662310f299a2013"
     },
     "spaghetti_extractor.components.bisimulation_exact_frame": {
       "dependencies": [
@@ -2632,6 +3107,30 @@
       "resources": [],
       "source_sha256": "70304dad4ba3060c4542e37529e4b155cb65d78116251f696bbf3d7f65a9d01f"
     },
+    "spaghetti_extractor.components.bisimulation_exact_header": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation",
+        "spaghetti_extractor.components.bisimulation_exact_frame",
+        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_local_views",
+        "spaghetti_extractor.components.bisimulation_memory_facts",
+        "spaghetti_extractor.components.bisimulation_mutable_frame",
+        "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
+        "spaghetti_extractor.components.bisimulation_native_views",
+        "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
+        "spaghetti_extractor.components.bisimulation_reference_transport",
+        "spaghetti_extractor.components.bisimulation_stack_scope",
+        "spaghetti_extractor.components.bisimulation_support",
+        "spaghetti_extractor.components.bisimulation_view_context",
+        "spaghetti_extractor.components.bisimulation_view_extent"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_exact_header.py",
+      "resources": [],
+      "source_sha256": "66f3ef3ea02d506339f89b5d46b8ce009d154e7d757c374052dfa1a037ccade5"
+    },
     "spaghetti_extractor.components.bisimulation_execution": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2641,6 +3140,7 @@
         "spaghetti_extractor.components.bisimulation_assurance",
         "spaghetti_extractor.components.bisimulation_clobber_frame",
         "spaghetti_extractor.components.bisimulation_compilation",
+        "spaghetti_extractor.components.bisimulation_completion",
         "spaghetti_extractor.components.bisimulation_diagnostics",
         "spaghetti_extractor.components.bisimulation_entry_queries",
         "spaghetti_extractor.components.bisimulation_exact_frame",
@@ -2657,7 +3157,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_execution.py",
       "resources": [],
-      "source_sha256": "b39d1d30642d2879e29345fb1b80a5d3490bb7f0e02503022a5aec4042503483"
+      "source_sha256": "e7aed9d7cae8603f75c44e546992a4da28175b2e163a6e268034fd5a491ce939"
     },
     "spaghetti_extractor.components.bisimulation_fresh_buffer_contract": {
       "dependencies": [
@@ -2737,6 +3237,7 @@
         "spaghetti_extractor.components.bisimulation_allocation_cuts",
         "spaghetti_extractor.components.bisimulation_call_ranges",
         "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_completion",
         "spaghetti_extractor.components.bisimulation_connected",
         "spaghetti_extractor.components.bisimulation_continuation",
         "spaghetti_extractor.components.bisimulation_exact_frame",
@@ -2748,10 +3249,12 @@
         "spaghetti_extractor.components.bisimulation_native_views",
         "spaghetti_extractor.components.bisimulation_private_frame",
         "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
         "spaghetti_extractor.components.bisimulation_reference_authority",
         "spaghetti_extractor.components.bisimulation_reference_transport",
         "spaghetti_extractor.components.bisimulation_runtime_dispatch",
         "spaghetti_extractor.components.bisimulation_shared_composition",
+        "spaghetti_extractor.components.bisimulation_source_expressions",
         "spaghetti_extractor.components.bisimulation_stack_scope",
         "spaghetti_extractor.components.bisimulation_support",
         "spaghetti_extractor.components.bisimulation_typed_services",
@@ -2765,7 +3268,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_harness.py",
       "resources": [],
-      "source_sha256": "0fc019984278406bc252cdb1145422e96f4bcb4dc8165148e459249bc42d24a1"
+      "source_sha256": "e83c8b90dad9c5d69091f6e0c1e29ac130cfcf4419443b8a90eaae0c58756179"
     },
     "spaghetti_extractor.components.bisimulation_image_frame": {
       "dependencies": [
@@ -2821,6 +3324,15 @@
       "resources": [],
       "source_sha256": "b0b72ad006a1865b04829a82a016084dfc2e4b7c7695bfd0940df2f58c3480b5"
     },
+    "spaghetti_extractor.components.bisimulation_local_bytes": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_local_bytes.py",
+      "resources": [],
+      "source_sha256": "5238acf86295675c080e46cf49cd53ff483e7b620daefeecea545cf074c225e3"
+    },
     "spaghetti_extractor.components.bisimulation_local_views": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2835,7 +3347,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_local_views.py",
       "resources": [],
-      "source_sha256": "f2589e8546ae21097aa584f4c6b30da8b6bd6986a93b57d81419bd79454ec0c7"
+      "source_sha256": "c5807ae26b014bcbf91aaf8e440a9e3cc81655f31489b4f29245ad96ae1505ff"
     },
     "spaghetti_extractor.components.bisimulation_memory_facts": {
       "dependencies": [
@@ -2887,7 +3399,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_mutable_memory.py",
       "resources": [],
-      "source_sha256": "ce534d1f8b8fa8a8facf0615afa6a0334b28a59a8c8ba97c4cb6cf7e1b23844c"
+      "source_sha256": "ca12cde6632c2e20cfac79f44345381fda95c8a61c5035440e953ad7bb36011c"
     },
     "spaghetti_extractor.components.bisimulation_native_admission": {
       "dependencies": [
@@ -2898,6 +3410,19 @@
       "path": "src/spaghetti_extractor/components/bisimulation_native_admission.py",
       "resources": [],
       "source_sha256": "b21c3abe93becff0e47230f9181d9113b5853f95236b83a8a7e9b917fa48381f"
+    },
+    "spaghetti_extractor.components.bisimulation_native_calls": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_caller_targets",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_native_calls.py",
+      "resources": [],
+      "source_sha256": "f41fce2429939b1f14b1f3bd2af841398be767f6ba944364bb5a83bbe41ff3c0"
     },
     "spaghetti_extractor.components.bisimulation_native_views": {
       "dependencies": [
@@ -2911,6 +3436,103 @@
       "path": "src/spaghetti_extractor/components/bisimulation_native_views.py",
       "resources": [],
       "source_sha256": "9b65bb678555f00e157aea38ea044a67e5eb143d04cf87e146dcb53edadf9022"
+    },
+    "spaghetti_extractor.components.bisimulation_object_call": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.bisimulation_call_evidence",
+        "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.bisimulation_object_initialization",
+        "spaghetti_extractor.components.bisimulation_private_frame",
+        "spaghetti_extractor.components.bisimulation_shared_original_check",
+        "spaghetti_extractor.components.bisimulation_supplier_facts",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.machine_overlay_state_views"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_object_call.py",
+      "resources": [],
+      "source_sha256": "48f9c812d13d8f54bad0f0d9eaff8e95290e994c2fa7d9e988443c4428246d32"
+    },
+    "spaghetti_extractor.components.bisimulation_object_initialization": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.machine_overlay_result_views"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_object_initialization.py",
+      "resources": [],
+      "source_sha256": "9ee65f32242950c57dea56c5d9ac5c5aa532a397fe094716a86d0b069df029b6"
+    },
+    "spaghetti_extractor.components.bisimulation_object_machine_model": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_object_initialization",
+        "spaghetti_extractor.components.bisimulation_object_model",
+        "spaghetti_extractor.components.bisimulation_object_terminal",
+        "spaghetti_extractor.components.bisimulation_private_frame",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.machine_overlay_services_v5",
+        "spaghetti_extractor.components.machine_overlay_state_views"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_object_machine_model.py",
+      "resources": [],
+      "source_sha256": "ec55684b0f093d095dc37acdd5846d78f6d617d448e67f08f2b37b5131658efc"
+    },
+    "spaghetti_extractor.components.bisimulation_object_model": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_mutable_memory",
+        "spaghetti_extractor.components.bisimulation_object_initialization",
+        "spaghetti_extractor.components.bisimulation_object_terminal",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.machine_overlay_result_views",
+        "spaghetti_extractor.components.machine_overlay_services_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_object_model.py",
+      "resources": [],
+      "source_sha256": "7b0490233ba30a5d299715a1f05f8607f4be94a1cc071163004f1267b5697a47"
+    },
+    "spaghetti_extractor.components.bisimulation_object_terminal": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.machine_overlay_services_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_object_terminal.py",
+      "resources": [],
+      "source_sha256": "cb5f3db76cad1237afe768820d896ca74ad3f7b29ef8597a427b66f00dd72fba"
+    },
+    "spaghetti_extractor.components.bisimulation_paired_calls": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_paired_objects"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_paired_calls.py",
+      "resources": [],
+      "source_sha256": "5c251563979ea1841b2816160492a0dcccef65fd9d07acb48e6f7b72e1147f0e"
+    },
+    "spaghetti_extractor.components.bisimulation_paired_objects": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_paired_objects.py",
+      "resources": [],
+      "source_sha256": "6ee189ce22abb116d6568f93585e6e7844facda1cc40108e3461189592febc40"
     },
     "spaghetti_extractor.components.bisimulation_parameter_bindings": {
       "dependencies": [
@@ -2931,11 +3553,12 @@
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.interface_package_v5",
         "spaghetti_extractor.components.machine_overlay_services_v5",
-        "spaghetti_extractor.components.relation_ir"
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_v5"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_postconditions.py",
       "resources": [],
-      "source_sha256": "31f790f8ab488d971929bec1edb7684a0dce11633d64d640c95e0cf7b11a1090"
+      "source_sha256": "5c2e75caf9491a61648e74bdcdf82aea448070968a6a44a49d7a001fbdbe52bd"
     },
     "spaghetti_extractor.components.bisimulation_private_frame": {
       "dependencies": [
@@ -2975,11 +3598,65 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.bisimulation_support",
         "spaghetti_extractor.components.inductive_relation",
+        "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.machine_storage"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_projection.py",
       "resources": [],
-      "source_sha256": "9a210e29f1ef9648db7acc567bdbc04e31808fc65d78de590c267ff70712c2ac"
+      "source_sha256": "a36b1100149580c38e56c61b45d3139dd757df95e7720526b66e53953a843620"
+    },
+    "spaghetti_extractor.components.bisimulation_projection_frames": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_projection_frames.py",
+      "resources": [],
+      "source_sha256": "a4a762c02fc1543bf372fca818d642e53c7afea9b71409a6b68d1b227d865090"
+    },
+    "spaghetti_extractor.components.bisimulation_proof_reuse": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_summary_contracts",
+        "spaghetti_extractor.components.contextual_bisimulation",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_proof_reuse.py",
+      "resources": [],
+      "source_sha256": "51dddb88d11e3274fbdd43d2fe7248fd6c19043777ecb2905ace1a81f144175c"
+    },
+    "spaghetti_extractor.components.bisimulation_property_evidence": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation",
+        "spaghetti_extractor.components.bisimulation_completion",
+        "spaghetti_extractor.components.bisimulation_support"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_property_evidence.py",
+      "resources": [],
+      "source_sha256": "f9575ae3fa5b4d6c32f95ec9bed4563cf2db5ad60a1a59ee305f8ea8937702a3"
+    },
+    "spaghetti_extractor.components.bisimulation_property_replay": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_evidence",
+        "spaghetti_extractor.components.bisimulation_diagnostics",
+        "spaghetti_extractor.components.bisimulation_execution",
+        "spaghetti_extractor.components.bisimulation_property_evidence",
+        "spaghetti_extractor.components.bisimulation_query_evidence",
+        "spaghetti_extractor.components.cbmc_backend",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_property_replay.py",
+      "resources": [],
+      "source_sha256": "338164338d8ce2e6ea4878307d7d91f9629e8d75d02458ad244b12c9cf7aefac"
     },
     "spaghetti_extractor.components.bisimulation_public_transport": {
       "dependencies": [
@@ -3005,7 +3682,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_query_evidence.py",
       "resources": [],
-      "source_sha256": "4ffe412e56c34cde7ff510b07a628f977c80c74a84557e6fe693de4ac7e14b0b"
+      "source_sha256": "8ba679ff43fde1609ed283a3594cbf09c4dcdd11d5e34d543abd7466714773f0"
     },
     "spaghetti_extractor.components.bisimulation_readable_composition": {
       "dependencies": [
@@ -3058,6 +3735,9 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_execution",
+        "spaghetti_extractor.components.bisimulation_object_model",
+        "spaghetti_extractor.components.bisimulation_property_replay",
         "spaghetti_extractor.components.bisimulation_query_evidence",
         "spaghetti_extractor.components.bisimulation_readonly_access",
         "spaghetti_extractor.components.bisimulation_readonly_evidence",
@@ -3077,13 +3757,17 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_readonly_contracts.py",
       "resources": [],
-      "source_sha256": "3f0e30ff8424c825433a7ed9ffc44f7c32abf14bcaec0d2f8d1478158d8c81b8"
+      "source_sha256": "b1b94a77e6ebd801b79494b9797e7943627b64f03f3e9cdfbf82ebfb6c88b0f6"
     },
     "spaghetti_extractor.components.bisimulation_readonly_evidence": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_execution",
+        "spaghetti_extractor.components.bisimulation_object_model",
+        "spaghetti_extractor.components.bisimulation_property_evidence",
+        "spaghetti_extractor.components.bisimulation_property_replay",
         "spaghetti_extractor.components.bisimulation_readonly_access",
         "spaghetti_extractor.components.bisimulation_readonly_model",
         "spaghetti_extractor.components.bisimulation_shared_model",
@@ -3102,7 +3786,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_readonly_evidence.py",
       "resources": [],
-      "source_sha256": "7cb916eea3145f482a5868fbe64e546140c3e53df95d7533ed0fd4a37e682b70"
+      "source_sha256": "b58e337f3a3c0525966451cb5459dacdd7df131e9e3281d399b79b4fcf5767d9"
     },
     "spaghetti_extractor.components.bisimulation_readonly_model": {
       "dependencies": [
@@ -3114,12 +3798,12 @@
         "spaghetti_extractor.components.capabilities",
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.interface_package_v5",
-        "spaghetti_extractor.components.machine_overlay_services_v5",
-        "spaghetti_extractor.components.machine_overlay_v5"
+        "spaghetti_extractor.components.machine_overlay_runtime_helpers",
+        "spaghetti_extractor.components.machine_overlay_services_v5"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_readonly_model.py",
       "resources": [],
-      "source_sha256": "ff93f93b74a25d2d3bd08e9ebbdccf7cddf64c515a1bad11eb1d0da1e84920de"
+      "source_sha256": "1044a78303bc27ccc483e16611da811b7ca8c52552053a006161b5ebbed3424d"
     },
     "spaghetti_extractor.components.bisimulation_reference_authority": {
       "dependencies": [
@@ -3148,7 +3832,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_reference_origins.py",
       "resources": [],
-      "source_sha256": "ae9d29050ed4eff4993404114110a8fab822b6bcb4778c8779b807793cac2e9f"
+      "source_sha256": "fec189b45efa76c2e5e8260a2d6b37977087b9d063c29466547f1a6c722e8124"
     },
     "spaghetti_extractor.components.bisimulation_reference_transport": {
       "dependencies": [
@@ -3157,7 +3841,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_reference_transport.py",
       "resources": [],
-      "source_sha256": "0aadc92b66fd399669789d1aec6b78f80957424eed8260423eb272bb9903f540"
+      "source_sha256": "3c20070fd17b5ab7c1bc0ca40807ac34291df2621a1cc6c64fcada5e0eab0f98"
     },
     "spaghetti_extractor.components.bisimulation_refinement": {
       "dependencies": [
@@ -3167,10 +3851,12 @@
         "spaghetti_extractor.components.bisimulation",
         "spaghetti_extractor.components.bisimulation_allocation_classes",
         "spaghetti_extractor.components.bisimulation_allocation_cuts",
+        "spaghetti_extractor.components.bisimulation_assertions",
         "spaghetti_extractor.components.bisimulation_assurance",
         "spaghetti_extractor.components.bisimulation_call_entry",
         "spaghetti_extractor.components.bisimulation_call_ranges",
         "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_completion",
         "spaghetti_extractor.components.bisimulation_connected",
         "spaghetti_extractor.components.bisimulation_continuation",
         "spaghetti_extractor.components.bisimulation_cut_state",
@@ -3187,16 +3873,20 @@
         "spaghetti_extractor.components.bisimulation_native_views",
         "spaghetti_extractor.components.bisimulation_private_frame",
         "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
+        "spaghetti_extractor.components.bisimulation_proof_reuse",
         "spaghetti_extractor.components.bisimulation_query_evidence",
         "spaghetti_extractor.components.bisimulation_readable_composition",
         "spaghetti_extractor.components.bisimulation_reference_authority",
         "spaghetti_extractor.components.bisimulation_reference_origins",
         "spaghetti_extractor.components.bisimulation_reference_transport",
         "spaghetti_extractor.components.bisimulation_runtime_dispatch",
+        "spaghetti_extractor.components.bisimulation_selection",
         "spaghetti_extractor.components.bisimulation_shared_composition",
         "spaghetti_extractor.components.bisimulation_shared_model",
         "spaghetti_extractor.components.bisimulation_source_entry",
         "spaghetti_extractor.components.bisimulation_stack_scope",
+        "spaghetti_extractor.components.bisimulation_summary_contracts",
         "spaghetti_extractor.components.bisimulation_support",
         "spaghetti_extractor.components.bisimulation_typed_services",
         "spaghetti_extractor.components.bisimulation_view_extent",
@@ -3204,6 +3894,7 @@
         "spaghetti_extractor.components.capabilities",
         "spaghetti_extractor.components.cbmc_backend",
         "spaghetti_extractor.components.conditional_check_result",
+        "spaghetti_extractor.components.contextual_bisimulation",
         "spaghetti_extractor.components.inductive_refinement",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.machine_overlay_services_v5",
@@ -3212,7 +3903,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_refinement.py",
       "resources": [],
-      "source_sha256": "34c5c5c3339dd3e5ce48561cc569bb356be3ad8be1cdfbe7e2ebcfd607466e7f"
+      "source_sha256": "1b185fccf65a077f4d9f04caaf5dd4508f075b4c60626a425a078051d2e8ae1f"
     },
     "spaghetti_extractor.components.bisimulation_region_context": {
       "dependencies": [
@@ -3262,6 +3953,16 @@
       "resources": [],
       "source_sha256": "4accdd73ca8244545a2d946d4702474bc9311c255297547f48594acbbffb8712"
     },
+    "spaghetti_extractor.components.bisimulation_selection": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.conditional_check_result"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_selection.py",
+      "resources": [],
+      "source_sha256": "2133a02406d76b5e7e456d1dfee5fc37a12b0623cee6349c2e29487b14e19d17"
+    },
     "spaghetti_extractor.components.bisimulation_service_effects": {
       "dependencies": [
         "spaghetti_extractor",
@@ -3296,7 +3997,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_service_targets.py",
       "resources": [],
-      "source_sha256": "dc8e277dd3b4afa418824094f8cd3078433c5088bddfab8a4d5aa316ec5154c2"
+      "source_sha256": "08d4e51d8f40f4d2e2ac8af5f1de846efb536f36fd1393c56534c12c31897a62"
     },
     "spaghetti_extractor.components.bisimulation_shared_composition": {
       "dependencies": [
@@ -3344,14 +4045,14 @@
         "spaghetti_extractor.components.bisimulation_source_dependencies",
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.machine_overlay_runtime_helpers",
         "spaghetti_extractor.components.machine_overlay_services_v5",
-        "spaghetti_extractor.components.machine_overlay_v5",
         "spaghetti_extractor.components.normal_exit_postconditions",
         "spaghetti_extractor.components.relation_v5"
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_shared_model.py",
       "resources": [],
-      "source_sha256": "1bbd2c3f92bfd61f18aada8801628535d16912278d57c060bde740f3670c64ab"
+      "source_sha256": "deb1e23646510f51f21650b89f5089cdf5b0155122979aa94737ce8e6471641a"
     },
     "spaghetti_extractor.components.bisimulation_shared_original_check": {
       "dependencies": [
@@ -3359,6 +4060,9 @@
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.bisimulation_object_machine_model",
+        "spaghetti_extractor.components.bisimulation_object_model",
+        "spaghetti_extractor.components.bisimulation_property_replay",
         "spaghetti_extractor.components.bisimulation_query_evidence",
         "spaghetti_extractor.components.bisimulation_readonly_evidence",
         "spaghetti_extractor.components.bisimulation_readonly_model",
@@ -3371,7 +4075,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_shared_original_check.py",
       "resources": [],
-      "source_sha256": "e08adaf1081b533c1c8c6b76d5e8ee8a08d4a813066ec086d6e46d2e5abb2960"
+      "source_sha256": "37851c9ea0a28b0c71f69d1b56c778175cbfd0304695dd3a373821616b551087"
     },
     "spaghetti_extractor.components.bisimulation_shared_services": {
       "dependencies": [
@@ -3454,7 +4158,9 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_object_model",
         "spaghetti_extractor.components.bisimulation_readonly_evidence",
+        "spaghetti_extractor.components.bisimulation_readonly_model",
         "spaghetti_extractor.components.bisimulation_shared_model",
         "spaghetti_extractor.components.bisimulation_source_dependencies",
         "spaghetti_extractor.components.machine_overlay_services_v5",
@@ -3462,7 +4168,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_source_contract_reuse.py",
       "resources": [],
-      "source_sha256": "9a13f9b8113e40c7aad2808f5bd0611d3421d2180c13580d5c3db79d8a97e5ba"
+      "source_sha256": "9682ee87cacc6286ac67895bec2769dde6d83bd4ea2e10084d2a390c96aee8ad"
     },
     "spaghetti_extractor.components.bisimulation_source_dependencies": {
       "dependencies": [
@@ -3576,6 +4282,18 @@
       "resources": [],
       "source_sha256": "24c7f4676ed30f7c08603e140ed0ebe7e164a7890472b5077a1832bb00785c77"
     },
+    "spaghetti_extractor.components.bisimulation_source_expressions": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_projection",
+        "spaghetti_extractor.components.bisimulation_reference_transport",
+        "spaghetti_extractor.components.bisimulation_support"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_source_expressions.py",
+      "resources": [],
+      "source_sha256": "2be56b2c4336e2f7f018be06a2f2654c134b18568b3689464e446459eba83882"
+    },
     "spaghetti_extractor.components.bisimulation_source_inventory": {
       "dependencies": [
         "spaghetti_extractor",
@@ -3652,7 +4370,37 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_summary_contracts.py",
       "resources": [],
-      "source_sha256": "465f37760480e96d5857bc98284fc6736fbb804e73d69c55e96ed52e19e9103c"
+      "source_sha256": "60d4b076caa8430f5c62f05c44c94f9e019fca92c9146526c1a0593a49c5e232"
+    },
+    "spaghetti_extractor.components.bisimulation_supplier_call": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_relations",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_supplier_call.py",
+      "resources": [],
+      "source_sha256": "c7322c9e1c7af8201d8f7e1f8f327c383026158c08d1c4f516a2ae0ab5e14908"
+    },
+    "spaghetti_extractor.components.bisimulation_supplier_facts": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_call_domain",
+        "spaghetti_extractor.components.bisimulation_caller_memory",
+        "spaghetti_extractor.components.bisimulation_cleanup_entry_relations",
+        "spaghetti_extractor.components.bisimulation_clobber_frame",
+        "spaghetti_extractor.components.bisimulation_harness",
+        "spaghetti_extractor.components.bisimulation_native_calls",
+        "spaghetti_extractor.components.interface_package_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/bisimulation_supplier_facts.py",
+      "resources": [],
+      "source_sha256": "619a50bc514d9c5deb578e4d600e878dc8b78ee67dc60ceaed11c28df08a0b28"
     },
     "spaghetti_extractor.components.bisimulation_support": {
       "dependencies": [
@@ -3661,7 +4409,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_support.py",
       "resources": [],
-      "source_sha256": "582abfa7cdd37b731428f3b8766f896abe9d258ac210515fc8a2a65495a02fe6"
+      "source_sha256": "019f44acbc32335fa90b0a8436b0f8021d82e3da9ab1421e973913b14ef1dce0"
     },
     "spaghetti_extractor.components.bisimulation_terminated_reads": {
       "dependencies": [
@@ -3700,7 +4448,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_typed_services.py",
       "resources": [],
-      "source_sha256": "22febaf26b3a151de95afd76656184dc422a884ad15f194241e45254f4f54335"
+      "source_sha256": "d065f77582bd5bd344e2afd12c6e0abfb6070552fda3eef6a555d5bc6212864e"
     },
     "spaghetti_extractor.components.bisimulation_view_context": {
       "dependencies": [
@@ -3726,7 +4474,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_view_extent.py",
       "resources": [],
-      "source_sha256": "d8989966ced2bfab397772c6dcd9edb1622873cb20a8fdda9396ddb3e9ee0507"
+      "source_sha256": "0254f4986fac59e982c704384f0c0d6a299dcd48f01e3e0cc77722b1cc1868d7"
     },
     "spaghetti_extractor.components.bisimulation_world": {
       "dependencies": [
@@ -3742,6 +4490,7 @@
         "spaghetti_extractor.components.bisimulation_mutable_frame",
         "spaghetti_extractor.components.bisimulation_native_admission",
         "spaghetti_extractor.components.bisimulation_private_frame",
+        "spaghetti_extractor.components.bisimulation_projection_frames",
         "spaghetti_extractor.components.bisimulation_reference_authority",
         "spaghetti_extractor.components.bisimulation_reference_origins",
         "spaghetti_extractor.components.bisimulation_support",
@@ -3751,7 +4500,7 @@
       ],
       "path": "src/spaghetti_extractor/components/bisimulation_world.py",
       "resources": [],
-      "source_sha256": "364735690db8242973118bdb66e6b514d239830be68f7c39c3015779217743ae"
+      "source_sha256": "aff7a9ae881846df8cd37d39fcc3049e123aa05b153dc4f9c261632d497ffd55"
     },
     "spaghetti_extractor.components.bisimulation_world_memory": {
       "dependencies": [
@@ -3776,15 +4525,25 @@
       "resources": [],
       "source_sha256": "4a58571fea117d28367603638b8fe494940eb2fb4f90ef2d3273a091b6d39b5d"
     },
+    "spaghetti_extractor.components.caller_definition_document": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/caller_definition_document.py",
+      "resources": [],
+      "source_sha256": "3cfc51d8604cbcec57e9aa0cf2ff4d55788eb2b5205fe320dfce7f1f9713afe4"
+    },
     "spaghetti_extractor.components.capabilities": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.component_local_bytes",
         "spaghetti_extractor.semantic_objects.references"
       ],
       "path": "src/spaghetti_extractor/components/capabilities.py",
       "resources": [],
-      "source_sha256": "4d741094bec735065776b0cf67cace157995d24257c691261a69f1dc2c60ac6d"
+      "source_sha256": "a2a4a031b2feb3e8e72a4874e15528011d883d1a1bfd6b44b62731d56e1e528e"
     },
     "spaghetti_extractor.components.cbmc_backend": {
       "dependencies": [
@@ -3793,7 +4552,377 @@
       ],
       "path": "src/spaghetti_extractor/components/cbmc_backend.py",
       "resources": [],
-      "source_sha256": "5d444f9b342e028d5a6a940601de6d767550a1467e4911732ecf4cf5453af77f"
+      "source_sha256": "9ec01566cf7e9b085a5e6ccecbd377bb1aafc8f09b6ab559e523a2b08b212fd4"
+    },
+    "spaghetti_extractor.components.comparison_build": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_compile_cache",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_pe32_program",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_service_runtime",
+        "spaghetti_extractor.components.source_compiler_view",
+        "spaghetti_extractor.execution",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_build.py",
+      "resources": [],
+      "source_sha256": "b88c851d202066d97401ed409f62f1fce5920a94e846762bd9168e0d187d0cec"
+    },
+    "spaghetti_extractor.components.comparison_capture": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.components.comparison_services"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_capture.py",
+      "resources": [
+        "src/spaghetti_extractor/resources/native/pe32-output-capture.c",
+        "src/spaghetti_extractor/resources/native/pe32-process-observer.h"
+      ],
+      "source_sha256": "1a27474a8c86995cc973f6508079050b404642b9beec5611bbb824c7391de993"
+    },
+    "spaghetti_extractor.components.comparison_compile_cache": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_compile_cache.py",
+      "resources": [],
+      "source_sha256": "3fbdb5e76a8d7578b7f7e32b75221be7e59bccd532c78b7b85f42a6a89b681d7"
+    },
+    "spaghetti_extractor.components.comparison_composition": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_contract_diagnostics",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_composition.py",
+      "resources": [],
+      "source_sha256": "5ee5d6b7183b7bdf37cf04f152451113843313c94040ec216490136c4c99b66c"
+    },
+    "spaghetti_extractor.components.comparison_contract_diagnostics": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_source_draft"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_contract_diagnostics.py",
+      "resources": [],
+      "source_sha256": "92b6a1443c363ff3604821a9a4ef5e8771e99574577aea3bd17fd3e022ef2958"
+    },
+    "spaghetti_extractor.components.comparison_dependencies": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_contract_diagnostics",
+        "spaghetti_extractor.components.comparison_domain",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.service_authoring",
+        "spaghetti_extractor.components.service_c",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.source_dialect",
+        "spaghetti_extractor.components.source_profile",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_dependencies.py",
+      "resources": [],
+      "source_sha256": "77feb8c2ecb8f7e6775f1d4c42d10842dd1b5d7b5e6f9ec3635fc9261916b669"
+    },
+    "spaghetti_extractor.components.comparison_domain": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.external.argument_domains"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_domain.py",
+      "resources": [],
+      "source_sha256": "99b3c6eab73fb78ee08a87d34c0b8cc8f24d50eefac4ead28440ed3b77fc8915"
+    },
+    "spaghetti_extractor.components.comparison_environment": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.service_authoring",
+        "spaghetti_extractor.components.source"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_environment.py",
+      "resources": [
+        "src/spaghetti_extractor/resources/comparison/spx-observation.h",
+        "src/spaghetti_extractor/resources/native/pe32-entry-hook.h",
+        "src/spaghetti_extractor/resources/native/pe32-import-hook.h",
+        "src/spaghetti_extractor/resources/native/pe32-process-observer.h"
+      ],
+      "source_sha256": "1e7ca44cd5dd7c06bfd4d95c99e13efebb703e9a20957c620c76b6412640c738"
+    },
+    "spaghetti_extractor.components.comparison_files": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_runtime",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_files.py",
+      "resources": [],
+      "source_sha256": "8ab7e48a038510a266742dcbf488624b47d917aa2b36973d3a2e702eb11eb8ca"
+    },
+    "spaghetti_extractor.components.comparison_original": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.pe32.image",
+        "spaghetti_extractor.pe32.model",
+        "spaghetti_extractor.pe32.queries",
+        "spaghetti_extractor.reconstruction.state_machine",
+        "spaghetti_extractor.static_program.model",
+        "spaghetti_extractor.static_program.semantics.transfer",
+        "spaghetti_extractor.transfer.behavioral_c_layout",
+        "spaghetti_extractor.transfer.behavioral_c_render",
+        "spaghetti_extractor.transfer.plan",
+        "spaghetti_extractor.transfer.runtime_abi",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_original.py",
+      "resources": [],
+      "source_sha256": "461cf5bbc3be32c3e5b7b9c148107e4440a97401c5aeec7456500af80fc7601b"
+    },
+    "spaghetti_extractor.components.comparison_package": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_domain",
+        "spaghetti_extractor.components.comparison_pe32_program",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_service_runtime",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.practical_contracts",
+        "spaghetti_extractor.components.resource_authoring",
+        "spaghetti_extractor.components.service_authoring",
+        "spaghetti_extractor.components.service_c",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.source_handoff",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_package.py",
+      "resources": [],
+      "source_sha256": "157a3e188653196a027d3e99d73925cffcf06ea6fc1a61367f8031084b9ed7d9"
+    },
+    "spaghetti_extractor.components.comparison_pe32_program": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_files",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_pe32_program.py",
+      "resources": [],
+      "source_sha256": "02ad77a6ad982041a4ffc1fc502c1f554838570b9c32eea1f0d659eae2c1f4e5"
+    },
+    "spaghetti_extractor.components.comparison_program": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_files",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.comparison_runtime",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_program.py",
+      "resources": [],
+      "source_sha256": "4df8db6d9d2074f8fabaac6d7fffb95a089375946f981e00f4c6bb004228a983"
+    },
+    "spaghetti_extractor.components.comparison_refinement": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_domain",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_refinement.py",
+      "resources": [],
+      "source_sha256": "391dbe8b5ae4984c2bfd9570dc483cdccc1dce692d205dd5308cb843db95678e"
+    },
+    "spaghetti_extractor.components.comparison_representation": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.lifting_intent",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_representation.py",
+      "resources": [],
+      "source_sha256": "ce24fe823f60ed7fe6cd6c532014870a5516b816efc84e86791fa359e2d584ec"
+    },
+    "spaghetti_extractor.components.comparison_resource_runtime": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_resource_runtime.py",
+      "resources": [],
+      "source_sha256": "0cbc21cf695802886779afa009851c11ad69d4a879f5587fe7d53a6e713e4981"
+    },
+    "spaghetti_extractor.components.comparison_resources": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_resource_runtime",
+        "spaghetti_extractor.components.comparison_services",
+        "spaghetti_extractor.components.service_authoring"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_resources.py",
+      "resources": [],
+      "source_sha256": "6fa122bce6f4233f80717b68244d8341a658ee7eb6021b78cb1e124da1ef90e2"
+    },
+    "spaghetti_extractor.components.comparison_reuse": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_capture",
+        "spaghetti_extractor.components.comparison_compile_cache",
+        "spaghetti_extractor.components.comparison_files",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_reuse.py",
+      "resources": [],
+      "source_sha256": "38fbc86da214c8c468087b387526f130133339353ed60e49ca08d5c8705caef0"
+    },
+    "spaghetti_extractor.components.comparison_run": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_domain",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_program",
+        "spaghetti_extractor.components.comparison_refinement",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_reuse",
+        "spaghetti_extractor.components.comparison_runtime",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.practical_contracts",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_run.py",
+      "resources": [],
+      "source_sha256": "a800a3f4a99357c73a66773fc6e5f5aa7f4a5afd323459d329644a939c708233"
+    },
+    "spaghetti_extractor.components.comparison_runtime": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_runtime.py",
+      "resources": [],
+      "source_sha256": "6605494362338ab9f9006e4a9599e459db87774f7b24e330051031cdd4aea3bd"
+    },
+    "spaghetti_extractor.components.comparison_service_runtime": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_resources"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_service_runtime.py",
+      "resources": [],
+      "source_sha256": "f6d64b6e0c8938dd0e329354c616906e120e58539726c4f6080a7cbca2d766e8"
+    },
+    "spaghetti_extractor.components.comparison_services": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.interaction_contract"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_services.py",
+      "resources": [],
+      "source_sha256": "5ade9e84a8191ff92bc32ebcc5005285dfc4cde245be21dd530fc03c5d16ea55"
+    },
+    "spaghetti_extractor.components.comparison_source_draft": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_contract_diagnostics",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.service_authoring",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.source_handoff",
+        "spaghetti_extractor.components.state_ownership"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_source_draft.py",
+      "resources": [],
+      "source_sha256": "ed919bf926c6d51c55d676018d0ce568bb7376b7598d46f6c4f27dab4e0f10c4"
+    },
+    "spaghetti_extractor.components.comparison_wine_environment": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_environment"
+      ],
+      "path": "src/spaghetti_extractor/components/comparison_wine_environment.py",
+      "resources": [
+        "src/spaghetti_extractor/resources/native/spx-wine-draw-sdk.h",
+        "src/spaghetti_extractor/resources/native/spx-wine-draw.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-files.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-memory.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-midi.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-sound.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-test-internal.h",
+        "src/spaghetti_extractor/resources/native/spx-wine-test.c",
+        "src/spaghetti_extractor/resources/native/spx-wine-test.h"
+      ],
+      "source_sha256": "ce12da94ff3d047805ce073e327824df736f802bf361d8d12eb6abcb6118c959"
     },
     "spaghetti_extractor.components.component_c_v5": {
       "dependencies": [
@@ -3801,11 +4930,12 @@
         "spaghetti_extractor.boundary",
         "spaghetti_extractor.boundary._canonical",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.component_local_bytes",
         "spaghetti_extractor.components.interface_package_v5"
       ],
       "path": "src/spaghetti_extractor/components/component_c_v5.py",
       "resources": [],
-      "source_sha256": "22e0f157d13bb2e6ec24e1d8c173a9d1796c57680455e30747de7d05733f4d6c"
+      "source_sha256": "223d195e230d387c68103b2a9c031f393b92f5c33b710e4c84a53361e28059cd"
     },
     "spaghetti_extractor.components.component_exact_c_slice": {
       "dependencies": [
@@ -3825,7 +4955,16 @@
       ],
       "path": "src/spaghetti_extractor/components/component_exact_c_slice.py",
       "resources": [],
-      "source_sha256": "0a76857f2893f01ba8fc5b9f39131a46dddb11fcb3459db793d8b71fc382c117"
+      "source_sha256": "159d09c02e25bd36124d0e67e2755081770a1f37d7b3ba00ce7f43a06b30e1bc"
+    },
+    "spaghetti_extractor.components.component_local_bytes": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/component_local_bytes.py",
+      "resources": [],
+      "source_sha256": "40126908b7d4ab831372c7f3b61d5273b49a601f6ab39c7484c94b0198f2f41c"
     },
     "spaghetti_extractor.components.conditional_check_result": {
       "dependencies": [
@@ -3852,6 +4991,7 @@
         "spaghetti_extractor.components.bisimulation_evidence",
         "spaghetti_extractor.components.bisimulation_lifetime_admission",
         "spaghetti_extractor.components.bisimulation_native_admission",
+        "spaghetti_extractor.components.bisimulation_proof_reuse",
         "spaghetti_extractor.components.bisimulation_reference_authority",
         "spaghetti_extractor.components.bisimulation_service_effects",
         "spaghetti_extractor.components.bisimulation_service_targets",
@@ -3863,7 +5003,7 @@
       ],
       "path": "src/spaghetti_extractor/components/contextual_bisimulation.py",
       "resources": [],
-      "source_sha256": "38aab3a8309df8c56ab109d4d373580feafd39ecc9ddff3955338188cfe29079"
+      "source_sha256": "68ea25b01956930e73c854148c32aea18c1b3c3b528c91c2f798bf4d2a37a1e2"
     },
     "spaghetti_extractor.components.discovery": {
       "dependencies": [
@@ -3947,7 +5087,7 @@
       ],
       "path": "src/spaghetti_extractor/components/formats.py",
       "resources": [],
-      "source_sha256": "dc6fb8a1575bbc52dc7023f13fc83bece861c68854400316d5ba9de24a35818b"
+      "source_sha256": "7336b23b95b68da3c233bfa3445353b9f5e2424c5b0b26adbe68b9a78f9b4299"
     },
     "spaghetti_extractor.components.indexes_v5": {
       "dependencies": [
@@ -4043,7 +5183,7 @@
       ],
       "path": "src/spaghetti_extractor/components/inductive_refinement.py",
       "resources": [],
-      "source_sha256": "d993dd1d5e204d9cd600052ff0be514a06159be7c9ccaf9f0f5efbd616faddc8"
+      "source_sha256": "cff3f2e81c91043199dbad788ef57c589a0e959ac799126953f6598ca25d164f"
     },
     "spaghetti_extractor.components.inductive_relation": {
       "dependencies": [
@@ -4092,7 +5232,7 @@
       ],
       "path": "src/spaghetti_extractor/components/interaction_contract.py",
       "resources": [],
-      "source_sha256": "57f0c1d6626c0f3ac4d340a1e4887b2bae8c3c0910300c3cadb4aff6e51f6327"
+      "source_sha256": "d2a0c5b7a96f067529efc9fdc5e8128dcedc02fdf56f4eabe6abeb39a279418e"
     },
     "spaghetti_extractor.components.interface_ir": {
       "dependencies": [
@@ -4143,7 +5283,7 @@
       ],
       "path": "src/spaghetti_extractor/components/lifting_intent.py",
       "resources": [],
-      "source_sha256": "90de0aaf48194f135a92fd89499473e9c5686129e791cafc29461b94e81d4d9e"
+      "source_sha256": "701525d1553ccf73ce3b6da36d2287c7641e2b060678d10c0bd2a7bae91d103f"
     },
     "spaghetti_extractor.components.local_cell_transducers": {
       "dependencies": [
@@ -4181,7 +5321,7 @@
       ],
       "path": "src/spaghetti_extractor/components/machine_binding.py",
       "resources": [],
-      "source_sha256": "8756a2c1d436cd8d45f4d0a5c613ac4aa5a419991efca9b634b0854d99680430"
+      "source_sha256": "f4143af15b311b74c8417a222a2a78b8dd83df290b245c46f04cd560db9fa8fd"
     },
     "spaghetti_extractor.components.machine_binding_checks": {
       "dependencies": [
@@ -4231,13 +5371,14 @@
         "spaghetti_extractor.components.finite_word_transducers",
         "spaghetti_extractor.components.interface_package_v5",
         "spaghetti_extractor.components.local_cell_transducers",
+        "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.machine_overlay_boundaries_v5",
         "spaghetti_extractor.components.machine_overlay_result_views",
         "spaghetti_extractor.transfer.values"
       ],
       "path": "src/spaghetti_extractor/components/machine_overlay_external_v5.py",
       "resources": [],
-      "source_sha256": "752b28ba112ea7be26bc7d95d4792a28caf3284196e203cf6ae8579c0ab4dabf"
+      "source_sha256": "741b35dcac81f69de7d66662b336f6445cd69c92bc04a0f07b11c9dc19f595e9"
     },
     "spaghetti_extractor.components.machine_overlay_logical_views_v5": {
       "dependencies": [
@@ -4263,14 +5404,26 @@
       "resources": [],
       "source_sha256": "79c7d9b835ce9c6b6c598baf7b9011a08f8edc8d5b7a682d3cf31ba112100bc9"
     },
+    "spaghetti_extractor.components.machine_overlay_runtime_helpers": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.machine_overlay_logical_views_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/machine_overlay_runtime_helpers.py",
+      "resources": [],
+      "source_sha256": "3ba586d48fac8e8d58345e6cf4149d8f2546a5902ffbee86738beaa4a80e4136"
+    },
     "spaghetti_extractor.components.machine_overlay_services_v5": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.boundary._canonical",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.aggregate_result_binding",
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.machine_overlay_external_v5",
         "spaghetti_extractor.external.contracts",
         "spaghetti_extractor.external.import_sites",
@@ -4281,7 +5434,7 @@
       ],
       "path": "src/spaghetti_extractor/components/machine_overlay_services_v5.py",
       "resources": [],
-      "source_sha256": "88d0968aca4d03348b9941c47f51c0945fdc501fa4fc8aceb4d96dd8f2064710"
+      "source_sha256": "fefa834d3bfdd1338760af102f203ee5becb99fd0231ba6f663061b7796103c0"
     },
     "spaghetti_extractor.components.machine_overlay_state_views": {
       "dependencies": [
@@ -4298,7 +5451,6 @@
     "spaghetti_extractor.components.machine_overlay_v5": {
       "dependencies": [
         "spaghetti_extractor",
-        "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.boundary._canonical",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.component_c_v5",
@@ -4307,18 +5459,18 @@
         "spaghetti_extractor.components.machine_overlay_external_v5",
         "spaghetti_extractor.components.machine_overlay_logical_views_v5",
         "spaghetti_extractor.components.machine_overlay_result_views",
+        "spaghetti_extractor.components.machine_overlay_runtime_helpers",
         "spaghetti_extractor.components.machine_overlay_services_v5",
         "spaghetti_extractor.components.machine_overlay_state_views",
         "spaghetti_extractor.components.machine_storage",
         "spaghetti_extractor.components.normalized_component",
-        "spaghetti_extractor.external.resolved",
         "spaghetti_extractor.transfer.behavioral_c_render",
         "spaghetti_extractor.transfer.model",
         "spaghetti_extractor.transfer.values"
       ],
       "path": "src/spaghetti_extractor/components/machine_overlay_v5.py",
       "resources": [],
-      "source_sha256": "15701dc83b68af667175acbb7a47f920e98e93a9f5e82b8d45c0c8c5c5897411"
+      "source_sha256": "d6541039b8705611e0f9187b93975550a4a40b2b81f7cff4e7b7eca8006b898e"
     },
     "spaghetti_extractor.components.machine_storage": {
       "dependencies": [
@@ -4368,6 +5520,24 @@
       "resources": [],
       "source_sha256": "408dcde0430a4e4da9dc3a1fe915f805a76640fc30f3998377f027828c16cf6a"
     },
+    "spaghetti_extractor.components.partition_inventory": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.indexes_v5",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.semantic_link.module_v2",
+        "spaghetti_extractor.semantic_providers.qualification_v2",
+        "spaghetti_extractor.semantic_providers.slices_v2"
+      ],
+      "path": "src/spaghetti_extractor/components/partition_inventory.py",
+      "resources": [],
+      "source_sha256": "0379144a0078369b02b5155ec33788ffa5bb6f2e65069e156f1c0cdff5ea2a31"
+    },
     "spaghetti_extractor.components.portable_object": {
       "dependencies": [
         "spaghetti_extractor",
@@ -4379,11 +5549,38 @@
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.interface_package_v5",
         "spaghetti_extractor.components.machine_overlay_v5",
+        "spaghetti_extractor.components.source_compiler_view",
+        "spaghetti_extractor.components.source_dialect",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/components/portable_object.py",
       "resources": [],
-      "source_sha256": "2dafa4cd94a432a64b93ee9925b71f699ed95c3c95a70f0814d29bc71522789f"
+      "source_sha256": "dd9960787afee04701f5949c1257590d736592eb6f6c88705a5dd3ef08b6fe21"
+    },
+    "spaghetti_extractor.components.practical_contracts": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.bisimulation_mutable_memory",
+        "spaghetti_extractor.components.bisimulation_object_model",
+        "spaghetti_extractor.components.bisimulation_readonly_contracts",
+        "spaghetti_extractor.components.bisimulation_readonly_evidence",
+        "spaghetti_extractor.components.bisimulation_readonly_model",
+        "spaghetti_extractor.components.bisimulation_shared_model",
+        "spaghetti_extractor.components.bisimulation_shared_services",
+        "spaghetti_extractor.components.cbmc_backend",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.machine_overlay_services_v5",
+        "spaghetti_extractor.components.relation_v5",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/practical_contracts.py",
+      "resources": [],
+      "source_sha256": "2f987bb1a5508606fc9a20831463ede57dbe1c72ec5f0b80689d98a922aee04c"
     },
     "spaghetti_extractor.components.proof_facet": {
       "dependencies": [
@@ -4468,7 +5665,7 @@
       ],
       "path": "src/spaghetti_extractor/components/refinement_v5.py",
       "resources": [],
-      "source_sha256": "302a732ee693eccd6684a8c09b4bdbb704b421d5f982ebea2d55f9dcae469385"
+      "source_sha256": "d28dfaabc27e7553619d1b3204337abef4d4608b17f6caf6fa9a5baae793b43a"
     },
     "spaghetti_extractor.components.relation_ir": {
       "dependencies": [
@@ -4505,6 +5702,18 @@
       "resources": [],
       "source_sha256": "29367000978dfb4604ece04d835515a97e27e6825c31636d9912954e72becba5"
     },
+    "spaghetti_extractor.components.resource_authoring": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.interface_package_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/resource_authoring.py",
+      "resources": [],
+      "source_sha256": "e058d01533805ce3d67fbf2dee771e57ef8c9b09155eaf7234c9a2129d29de4f"
+    },
     "spaghetti_extractor.components.semantic_arithmetic": {
       "dependencies": [
         "spaghetti_extractor",
@@ -4526,6 +5735,7 @@
         "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.semantic_contract_transfer",
         "spaghetti_extractor.components.semantic_external_transducers",
+        "spaghetti_extractor.components.semantic_record_transducers",
         "spaghetti_extractor.external.contracts",
         "spaghetti_extractor.external.lifetime_effects",
         "spaghetti_extractor.external.machine_abi",
@@ -4536,7 +5746,7 @@
       ],
       "path": "src/spaghetti_extractor/components/semantic_contract.py",
       "resources": [],
-      "source_sha256": "c09ff760256c03d69ef8472d6cc35f72565e39f6ec1070915bf3a6c0712ca85f"
+      "source_sha256": "9e86d3d3ac7492b18af7c7a043d29fd5816234296e8bdfc1d3cb0ef982307a5b"
     },
     "spaghetti_extractor.components.semantic_contract_transfer": {
       "dependencies": [
@@ -4558,11 +5768,12 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.finite_word_transducers",
         "spaghetti_extractor.components.local_cell_transducers",
-        "spaghetti_extractor.components.machine_binding"
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.semantic_record_transducers"
       ],
       "path": "src/spaghetti_extractor/components/semantic_external_transducers.py",
       "resources": [],
-      "source_sha256": "49cdce73ee2f68c1fc3cd430bceb22a2046307891c0362a96229113136d44659"
+      "source_sha256": "237dd913fb979fbb7afecba2315cb0df290f15f14a30b77c2c86a9a05bd4bcda"
     },
     "spaghetti_extractor.components.semantic_induction": {
       "dependencies": [
@@ -4748,6 +5959,18 @@
       "resources": [],
       "source_sha256": "a518054dccb188d94459db3e997f470fa76338c60a63375f6bcf8cae2d075a14"
     },
+    "spaghetti_extractor.components.semantic_record_transducers": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.aggregate_result_binding",
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.semantic_external_transducers"
+      ],
+      "path": "src/spaghetti_extractor/components/semantic_record_transducers.py",
+      "resources": [],
+      "source_sha256": "5a206da2219235688803585068798c41938204e4be168564ab9555aae1ae6ded"
+    },
     "spaghetti_extractor.components.semantic_services": {
       "dependencies": [
         "spaghetti_extractor",
@@ -4759,6 +5982,33 @@
       "resources": [],
       "source_sha256": "3bc760c1c89d46421adfd00c692f13fe161f98b2676d285768f3084b55e0dfe5"
     },
+    "spaghetti_extractor.components.service_authoring": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.interaction_contract",
+        "spaghetti_extractor.components.interface_package_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/service_authoring.py",
+      "resources": [],
+      "source_sha256": "0845b8b3848d3fd9808dc62f230ba5323f2a181caedc046aa1d86af85cbe88e3"
+    },
+    "spaghetti_extractor.components.service_c": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.service_authoring"
+      ],
+      "path": "src/spaghetti_extractor/components/service_c.py",
+      "resources": [],
+      "source_sha256": "a10d6422d0560eb3536f49aee9276bd0c8d3596912ee3dbb9ab8e4a95a4befbd"
+    },
     "spaghetti_extractor.components.source": {
       "dependencies": [
         "spaghetti_extractor",
@@ -4769,7 +6019,49 @@
       ],
       "path": "src/spaghetti_extractor/components/source.py",
       "resources": [],
-      "source_sha256": "47bf15c47e1eda040b19c4e4b312731129cef8bc43da86ba48839573ad15b846"
+      "source_sha256": "0d8b1570444b6f9ba70fdd7dd17502ae98edc5019903374f0bfe5e68cf42c33f"
+    },
+    "spaghetti_extractor.components.source_compiler_view": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/source_compiler_view.py",
+      "resources": [],
+      "source_sha256": "ed6e5b5540a7f0acf09df68d12c39b78f0f48e59a2d3224637f3f5be6d1caaf7"
+    },
+    "spaghetti_extractor.components.source_dialect": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/source_dialect.py",
+      "resources": [],
+      "source_sha256": "83d0e7124a02915c79a075fbadf571b81e9bdfba985e32e8b3ce1b59262ab498"
+    },
+    "spaghetti_extractor.components.source_handoff": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.comparison_composition",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.service_authoring",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/source_handoff.py",
+      "resources": [],
+      "source_sha256": "afc1bcd0c024eaf90de8c04a3c36cc0f3f2b5ad70c36c6075b8b3a5900a2f7ff"
     },
     "spaghetti_extractor.components.source_profile": {
       "dependencies": [
@@ -4780,7 +6072,16 @@
       ],
       "path": "src/spaghetti_extractor/components/source_profile.py",
       "resources": [],
-      "source_sha256": "67a67a165f97e19a117a75865b7355af88d715a41184175ac468936bace9c06e"
+      "source_sha256": "3bc2ac2183c480a96c74e02a94dc308c37e89aa46b20fbda44de7f1a1e0fcf06"
+    },
+    "spaghetti_extractor.components.state_ownership": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/state_ownership.py",
+      "resources": [],
+      "source_sha256": "f16b6f0628f678ab395da5b3e20614315574d519dd2e75f18f62508d8ec5bb9d"
     },
     "spaghetti_extractor.components.value_codec": {
       "dependencies": [
@@ -4791,6 +6092,19 @@
       "resources": [],
       "source_sha256": "05903a126e9a3e3e5c256a5f50d7eab82fef570904eca21a4ca842de667155b4"
     },
+    "spaghetti_extractor.components.work_package_editing": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.bisimulation",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.relation_v5"
+      ],
+      "path": "src/spaghetti_extractor/components/work_package_editing.py",
+      "resources": [],
+      "source_sha256": "068c3a640d911c61dadf08c9e12283a5bc284d54bc68cc48250baa506c3257b2"
+    },
     "spaghetti_extractor.components.work_package_v6": {
       "dependencies": [
         "spaghetti_extractor",
@@ -4799,10 +6113,12 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.atomics",
         "spaghetti_extractor.components.binding_intent",
+        "spaghetti_extractor.components.caller_definition_document",
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.interface_package_v5",
         "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.work_package_editing",
         "spaghetti_extractor.semantic_link.module_v2",
         "spaghetti_extractor.semantic_providers.slices_v2",
         "spaghetti_extractor.transfer.formats",
@@ -4811,7 +6127,7 @@
       ],
       "path": "src/spaghetti_extractor/components/work_package_v6.py",
       "resources": [],
-      "source_sha256": "937a106994092e26009e40acf550d5b7bd9fe54193384fe20aa27b5e46b23c68"
+      "source_sha256": "d956e65cbbe7796a4ac1716a10d6a46bdbe59f9e10c61255645f8edcfff82464"
     },
     "spaghetti_extractor.errors": {
       "dependencies": [
@@ -4820,6 +6136,14 @@
       "path": "src/spaghetti_extractor/errors.py",
       "resources": [],
       "source_sha256": "5d06504fc33a1a4b40283163444a350fa2a419acb6569f2027561f13af184f52"
+    },
+    "spaghetti_extractor.execution": {
+      "dependencies": [
+        "spaghetti_extractor"
+      ],
+      "path": "src/spaghetti_extractor/execution.py",
+      "resources": [],
+      "source_sha256": "091740ed395151c74989edaed810389afc98bbba2de47310604d25ce11f9f7a0"
     },
     "spaghetti_extractor.external": {
       "dependencies": [
@@ -5070,6 +6394,18 @@
       "path": "src/spaghetti_extractor/external/machine_callback_boundary.py",
       "resources": [],
       "source_sha256": "f08737fdb3020c3d66de96d5209b33eca1a0891df2712e492b1c5415b8aad71e"
+    },
+    "spaghetti_extractor.external.machine_import_effect_profile": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.external",
+        "spaghetti_extractor.external.environment_boundaries",
+        "spaghetti_extractor.external.machine_import_profiles",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/external/machine_import_effect_profile.py",
+      "resources": [],
+      "source_sha256": "a810e6f5ec0d6bb034006e293c1533a399861c33eb867052d4b667d722c4d688"
     },
     "spaghetti_extractor.external.machine_import_profiles": {
       "dependencies": [
@@ -6265,6 +7601,82 @@
       "resources": [],
       "source_sha256": "082d9423d22bd285071e4b328ffb7fd47f1490a6eca170c880ea8bfa55f1b490"
     },
+    "spaghetti_extractor.operator.comparison": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.comparison_dependencies",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison_guidance",
+        "spaghetti_extractor.operator.comparison_history",
+        "spaghetti_extractor.operator.comparison_participation",
+        "spaghetti_extractor.operator.local_comparison_recipe",
+        "spaghetti_extractor.operator.source_guidance"
+      ],
+      "path": "src/spaghetti_extractor/operator/comparison.py",
+      "resources": [],
+      "source_sha256": "3ece53215b6c53ed6a76c7887318edd1033063303bc6de8bead8bec6120b8421"
+    },
+    "spaghetti_extractor.operator.comparison_changes": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.comparison_build",
+        "spaghetti_extractor.components.comparison_compile_cache",
+        "spaghetti_extractor.components.comparison_contract_diagnostics",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_reuse",
+        "spaghetti_extractor.components.comparison_run",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison_guidance",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/comparison_changes.py",
+      "resources": [],
+      "source_sha256": "3203a3f4f71021f2c95e8c746ca45956545a5448202f17b14baab1d56af00a69"
+    },
+    "spaghetti_extractor.operator.comparison_guidance": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.comparison_contract_diagnostics",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_representation",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison",
+        "spaghetti_extractor.operator.comparison_changes",
+        "spaghetti_extractor.operator.service_inventory",
+        "spaghetti_extractor.operator.source_navigation",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/comparison_guidance.py",
+      "resources": [],
+      "source_sha256": "66ae5f084dcdc620ea738d77b75c9672a611fd6f3891b83d0b3fa5c58be5bfda"
+    },
+    "spaghetti_extractor.operator.comparison_history": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.operator"
+      ],
+      "path": "src/spaghetti_extractor/operator/comparison_history.py",
+      "resources": [],
+      "source_sha256": "aa68c220b55e85efee9cd298b6c75b00aa194e0742724e09e13b5011e6dd8242"
+    },
+    "spaghetti_extractor.operator.comparison_participation": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.operator"
+      ],
+      "path": "src/spaghetti_extractor/operator/comparison_participation.py",
+      "resources": [],
+      "source_sha256": "475cb31cbd79fdd754557cab5fea58242010a58ab000d6e5528f52b67f44c351"
+    },
     "spaghetti_extractor.operator.conditional_check": {
       "dependencies": [
         "spaghetti_extractor",
@@ -6278,6 +7690,20 @@
       "path": "src/spaghetti_extractor/operator/conditional_check.py",
       "resources": [],
       "source_sha256": "05f981628b330998c136db5e486181bdc08e877addc1a33dd65750e3a4d695bb"
+    },
+    "spaghetti_extractor.operator.experimental": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate.experimental_build",
+        "spaghetti_extractor.candidate.experimental_manifest",
+        "spaghetti_extractor.candidate.experimental_policy",
+        "spaghetti_extractor.candidate.experimental_run",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison"
+      ],
+      "path": "src/spaghetti_extractor/operator/experimental.py",
+      "resources": [],
+      "source_sha256": "9fb8aeb5b8b89b19b802278ea6bf16e4e219e41f2b4d0651145210479a5fb2e8"
     },
     "spaghetti_extractor.operator.formats": {
       "dependencies": [
@@ -6298,7 +7724,42 @@
       ],
       "path": "src/spaghetti_extractor/operator/index_v1.py",
       "resources": [],
-      "source_sha256": "fef3cab8964977d0904a240772eacb7f2638c1cc3c81806c4b5b8504a88580c2"
+      "source_sha256": "7179432c8df37cb6a664192d9d850a0f6e4e5b181517f0d183ef72ef6d160a60"
+    },
+    "spaghetti_extractor.operator.interface_authoring": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.atomics",
+        "spaghetti_extractor.components.comparison_environment",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.components.comparison_resources",
+        "spaghetti_extractor.components.comparison_service_runtime",
+        "spaghetti_extractor.components.comparison_source_draft",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.interface_package_v5",
+        "spaghetti_extractor.components.resource_authoring",
+        "spaghetti_extractor.components.service_c",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.state_ownership",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison",
+        "spaghetti_extractor.operator.comparison_guidance",
+        "spaghetti_extractor.operator.source_check",
+        "spaghetti_extractor.operator.source_guidance",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/interface_authoring.py",
+      "resources": [],
+      "source_sha256": "340044f3664c0512df2850c0cfff4c34248dc397b11fe7ef46f0636b7e47da8d"
+    },
+    "spaghetti_extractor.operator.local_comparison_recipe": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.operator"
+      ],
+      "path": "src/spaghetti_extractor/operator/local_comparison_recipe.py",
+      "resources": [],
+      "source_sha256": "9a429f1da3fd430f8f6efe679853ec7a6d5a0100d987c885086d50bcbb95b070"
     },
     "spaghetti_extractor.operator.projections": {
       "dependencies": [
@@ -6314,6 +7775,18 @@
       "resources": [],
       "source_sha256": "d3666afffeb836b0ed60be5159337bada79d62572b81795fbe355bdb6b2608e1"
     },
+    "spaghetti_extractor.operator.proof_check": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.build_support.nix_invocation",
+        "spaghetti_extractor.components.bisimulation_query_evidence",
+        "spaghetti_extractor.components.contextual_bisimulation",
+        "spaghetti_extractor.operator"
+      ],
+      "path": "src/spaghetti_extractor/operator/proof_check.py",
+      "resources": [],
+      "source_sha256": "ffc15acee6fc7889cc03f9525ef81223a1bb54162f5fd9aebabc37bde2cb36c5"
+    },
     "spaghetti_extractor.operator.proof_diagnostics": {
       "dependencies": [
         "spaghetti_extractor",
@@ -6324,6 +7797,18 @@
       "path": "src/spaghetti_extractor/operator/proof_diagnostics.py",
       "resources": [],
       "source_sha256": "5ca578df716866706a3a5faff944c9f9fa02c7e247d069bf92cfff5b00be44e3"
+    },
+    "spaghetti_extractor.operator.service_inventory": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison_guidance",
+        "spaghetti_extractor.operator.source_export_guidance"
+      ],
+      "path": "src/spaghetti_extractor/operator/service_inventory.py",
+      "resources": [],
+      "source_sha256": "b2edb3a9c40d9849f47f6946134ec64af5cf47b522a19e32e006a1ed9b7f56e8"
     },
     "spaghetti_extractor.operator.source_call_check": {
       "dependencies": [
@@ -6338,12 +7823,25 @@
       ],
       "path": "src/spaghetti_extractor/operator/source_call_check.py",
       "resources": [],
-      "source_sha256": "3b0009c79115ea8a51d7786d805d7c30acb7d8d5ab06f2bf08e4f2b5cee8d784"
+      "source_sha256": "0c04e24ddcc4fca9a5501d48f4fc662243651eadcf828b78341e3fa785778e4e"
+    },
+    "spaghetti_extractor.operator.source_caller_partition": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.bisimulation_execution",
+        "spaghetti_extractor.components.bisimulation_property_replay",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/source_caller_partition.py",
+      "resources": [],
+      "source_sha256": "215d461ca45a5b37e4fceae63876111e8335dc5fbe4cac65ec91891669c61196"
     },
     "spaghetti_extractor.operator.source_check": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components.bisimulation_object_model",
         "spaghetti_extractor.components.bisimulation_readonly_contracts",
         "spaghetti_extractor.components.bisimulation_readonly_model",
         "spaghetti_extractor.components.bisimulation_shared_original_check",
@@ -6354,18 +7852,21 @@
         "spaghetti_extractor.components.machine_overlay_services_v5",
         "spaghetti_extractor.components.portable_object",
         "spaghetti_extractor.components.source",
+        "spaghetti_extractor.components.source_dialect",
         "spaghetti_extractor.components.source_profile",
+        "spaghetti_extractor.components.state_ownership",
         "spaghetti_extractor.operator",
         "spaghetti_extractor.operator.formats",
         "spaghetti_extractor.operator.source_call_check",
         "spaghetti_extractor.operator.source_composition_check",
+        "spaghetti_extractor.operator.source_guidance",
         "spaghetti_extractor.operator.source_region_check",
         "spaghetti_extractor.operator.work_status",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/operator/source_check.py",
       "resources": [],
-      "source_sha256": "a52f65721cea88eaee5ff7e46773998b5d9f275f7bd4a3c87910fb3efbc40552"
+      "source_sha256": "74b7039ae1b9b50a96d429246f4ebf3c0376f7ba6d250c542a944d697dfb914c"
     },
     "spaghetti_extractor.operator.source_composition_check": {
       "dependencies": [
@@ -6414,16 +7915,59 @@
       "resources": [],
       "source_sha256": "1c1a987dd8a157af42ecbb7df952bd446cb09e65e35300294f8d66fe8a339209"
     },
+    "spaghetti_extractor.operator.source_export_guidance": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate.source_export_bindings",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.comparison_guidance",
+        "spaghetti_extractor.operator.service_inventory",
+        "spaghetti_extractor.operator.source_navigation",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/source_export_guidance.py",
+      "resources": [],
+      "source_sha256": "b85f72803300a7d8b4290379a95576cfae46ae309f208bf8a463a635ebf0069f"
+    },
+    "spaghetti_extractor.operator.source_guidance": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.source_dialect",
+        "spaghetti_extractor.components.source_profile",
+        "spaghetti_extractor.operator"
+      ],
+      "path": "src/spaghetti_extractor/operator/source_guidance.py",
+      "resources": [],
+      "source_sha256": "389d096dfc6399e453e001285af0d8895c5731a7618dad561500e8567512c2d1"
+    },
+    "spaghetti_extractor.operator.source_navigation": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.comparison_package",
+        "spaghetti_extractor.operator",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/operator/source_navigation.py",
+      "resources": [],
+      "source_sha256": "70b4c5d914b7359094a50ad1499648233aafa237cc4f333ce9b6b1bd482d6cf5"
+    },
     "spaghetti_extractor.operator.source_operation_call_check": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components.bisimulation_call_evidence",
-        "spaghetti_extractor.components.bisimulation_cleanup_replace",
-        "spaghetti_extractor.components.bisimulation_cleanup_save",
+        "spaghetti_extractor.components.bisimulation_caller_boundary",
+        "spaghetti_extractor.components.bisimulation_caller_definition",
+        "spaghetti_extractor.components.bisimulation_caller_records",
+        "spaghetti_extractor.components.bisimulation_caller_summary",
         "spaghetti_extractor.components.bisimulation_cleanup_summary",
         "spaghetti_extractor.components.bisimulation_compilation",
+        "spaghetti_extractor.components.bisimulation_execution",
+        "spaghetti_extractor.components.bisimulation_object_call",
         "spaghetti_extractor.components.bisimulation_query_evidence",
+        "spaghetti_extractor.components.bisimulation_shared_original_check",
+        "spaghetti_extractor.components.bisimulation_supplier_facts",
         "spaghetti_extractor.components.cbmc_backend",
         "spaghetti_extractor.components.component_c_v5",
         "spaghetti_extractor.components.inductive_refinement",
@@ -6431,12 +7975,13 @@
         "spaghetti_extractor.components.source",
         "spaghetti_extractor.components.source_profile",
         "spaghetti_extractor.operator",
+        "spaghetti_extractor.operator.source_caller_partition",
         "spaghetti_extractor.operator.source_composition_check",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/operator/source_operation_call_check.py",
       "resources": [],
-      "source_sha256": "f7622da84e5ae53f16bbcbba1441e016a3643808305ada665506d800c8f902ca"
+      "source_sha256": "bca746c32db0ad9789acd657554a196d7fc1cce0c6d276343c4a14b700c419a7"
     },
     "spaghetti_extractor.operator.source_region_check": {
       "dependencies": [
@@ -7863,18 +9408,23 @@
       ],
       "path": "src/spaghetti_extractor/semantic_providers/portable_c_inputs.py",
       "resources": [],
-      "source_sha256": "5daf60fcbd9aed7447107206317004dd4bc4767d8f086625ee8a538c6756b264"
+      "source_sha256": "6c714dd42646b9737803275a5e0f2048d4b2f237251f9bc0f8bf7cdb623ef50c"
     },
     "spaghetti_extractor.semantic_providers.portable_c_postconditions": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components.bisimulation_postconditions",
+        "spaghetti_extractor.components.bisimulation_summary_contracts",
+        "spaghetti_extractor.components.component_c_v5",
+        "spaghetti_extractor.components.contextual_bisimulation",
         "spaghetti_extractor.components.normal_exit_postconditions",
         "spaghetti_extractor.components.relation_v5",
         "spaghetti_extractor.semantic_providers"
       ],
       "path": "src/spaghetti_extractor/semantic_providers/portable_c_postconditions.py",
       "resources": [],
-      "source_sha256": "a5a294e5e5b73886ca3a93806b2f053086f38506702c8ae9ea2f934763f4d145"
+      "source_sha256": "80d5d40bd17670717e4235ee00637b5499895856a59f7a4e47dd74cdfa29f7bb"
     },
     "spaghetti_extractor.semantic_providers.portable_c_relations": {
       "dependencies": [
@@ -7916,7 +9466,7 @@
       ],
       "path": "src/spaghetti_extractor/semantic_providers/portable_c_source_contracts.py",
       "resources": [],
-      "source_sha256": "77d40938d148c0c6e8a9e150d1662793da15bfed3b0c0033da807f19375a2666"
+      "source_sha256": "859faafff0b1f855c4e144d98e38e59bce116102f85af076dba77ffc45fc6b02"
     },
     "spaghetti_extractor.semantic_providers.portable_c_work_package": {
       "dependencies": [
@@ -7961,7 +9511,7 @@
       ],
       "path": "src/spaghetti_extractor/semantic_providers/portable_c_work_package.py",
       "resources": [],
-      "source_sha256": "f36d2c348aa200fde3f9093f691a84165eed6fa4bc2e0c052bb4854050910e69"
+      "source_sha256": "6b43149d9ca3160f65c9a6c287458a60b59b315d5aac414aa7cac2e8370afddf"
     },
     "spaghetti_extractor.semantic_providers.qualification_v2": {
       "dependencies": [
@@ -8223,7 +9773,7 @@
       ],
       "path": "src/spaghetti_extractor/target_bundles/lint.py",
       "resources": [],
-      "source_sha256": "5022a19aee9e26f23f47e402f08f5828cd2fbc36859e891f45745177adcc9101"
+      "source_sha256": "5b7ba063453c0ac58361eab41de0601549f9843928a9f74dccef0aa1df37a536"
     },
     "spaghetti_extractor.target_bundles.metadata": {
       "dependencies": [
@@ -8311,6 +9861,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.build_support.python_module_index",
+        "spaghetti_extractor.components.caller_definition_document",
         "spaghetti_extractor.testkit",
         "spaghetti_extractor.testkit.diagnostics",
         "spaghetti_extractor.testkit.fixtures",
@@ -8318,7 +9869,7 @@
       ],
       "path": "src/spaghetti_extractor/testkit/discovery.py",
       "resources": [],
-      "source_sha256": "2fbcf9680be2576c050f43b09c3b7a692eb2837201c22c2b344981f6493fb0f9"
+      "source_sha256": "fefee97ab814a8323d4dd07390a1bb3a16ede41ea97cae70b538ef32d5267ccd"
     },
     "spaghetti_extractor.testkit.doctor": {
       "dependencies": [
@@ -8556,7 +10107,7 @@
       ],
       "path": "src/spaghetti_extractor/transfer/behavioral_c_render.py",
       "resources": [],
-      "source_sha256": "f3df086cdba2178a09d1300ef31d9658d02cadab9005cd29f890b70d1a67ae97"
+      "source_sha256": "37b87fd4a0a5d6bdfddd01408089fae26f7ff43730c2d96140bc7584288d9081"
     },
     "spaghetti_extractor.transfer.call_boundaries": {
       "dependencies": [
@@ -9274,6 +10825,16 @@
       "role": "developer"
     },
     {
+      "module": "spaghetti_extractor.candidate.source_assembly",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.source_replacements",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
       "module": "spaghetti_extractor.cli",
       "owner": "nix/toolkit-context.nix",
       "role": "developer"
@@ -9420,6 +10981,11 @@
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:boundary inventory",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:boundary propose",
       "role": "operator"
     },
@@ -9430,12 +10996,27 @@
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:candidate apply",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:candidate build",
       "role": "operator"
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:candidate export",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:candidate list",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:candidate policy",
       "role": "operator"
     },
     {
@@ -9506,6 +11087,21 @@
     {
       "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:project status",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.components.comparison_environment",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.components.comparison_original",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.components.comparison_package",
+      "owner": "nix/component-comparison-package.nix",
       "role": "operator"
     },
     {
@@ -9586,6 +11182,11 @@
     {
       "module": "spaghetti_extractor.external.interface_ast",
       "owner": "nix/external-interface-profile.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.external.machine_import_effect_profile",
+      "owner": "nix/machine-import-effect-profile.nix",
       "role": "authority"
     },
     {
@@ -10216,7 +11817,9 @@
       "spaghetti_extractor.boundary.projection",
       "spaghetti_extractor.boundary.source",
       "spaghetti_extractor.build_support",
+      "spaghetti_extractor.build_support.architecture_manifest",
       "spaghetti_extractor.build_support.lean_runner",
+      "spaghetti_extractor.build_support.python_module_index",
       "spaghetti_extractor.calls",
       "spaghetti_extractor.calls._canonical",
       "spaghetti_extractor.calls.boundary_adapter",
@@ -10236,6 +11839,7 @@
       "spaghetti_extractor.calls.source",
       "spaghetti_extractor.calls.types",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.aggregate_result_binding",
       "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.binding_intent",
       "spaghetti_extractor.components.bisimulation",
@@ -10245,22 +11849,33 @@
       "spaghetti_extractor.components.bisimulation_allocation_lifetime",
       "spaghetti_extractor.components.bisimulation_allocation_namespace",
       "spaghetti_extractor.components.bisimulation_allocation_producers",
+      "spaghetti_extractor.components.bisimulation_assertions",
       "spaghetti_extractor.components.bisimulation_assurance",
       "spaghetti_extractor.components.bisimulation_call_allocation",
+      "spaghetti_extractor.components.bisimulation_call_domain",
       "spaghetti_extractor.components.bisimulation_call_entry",
+      "spaghetti_extractor.components.bisimulation_call_evidence",
       "spaghetti_extractor.components.bisimulation_call_memory",
+      "spaghetti_extractor.components.bisimulation_call_model",
       "spaghetti_extractor.components.bisimulation_call_ranges",
+      "spaghetti_extractor.components.bisimulation_call_relations",
+      "spaghetti_extractor.components.bisimulation_caller_memory",
+      "spaghetti_extractor.components.bisimulation_caller_private_bytes",
+      "spaghetti_extractor.components.bisimulation_caller_targets",
       "spaghetti_extractor.components.bisimulation_clobber_frame",
       "spaghetti_extractor.components.bisimulation_compilation",
+      "spaghetti_extractor.components.bisimulation_completion",
       "spaghetti_extractor.components.bisimulation_connected",
       "spaghetti_extractor.components.bisimulation_continuation",
       "spaghetti_extractor.components.bisimulation_cut_state",
       "spaghetti_extractor.components.bisimulation_diagnostics",
+      "spaghetti_extractor.components.bisimulation_edit_prefix",
       "spaghetti_extractor.components.bisimulation_entry_conformance",
       "spaghetti_extractor.components.bisimulation_entry_queries",
       "spaghetti_extractor.components.bisimulation_evidence",
       "spaghetti_extractor.components.bisimulation_exact",
       "spaghetti_extractor.components.bisimulation_exact_frame",
+      "spaghetti_extractor.components.bisimulation_exact_header",
       "spaghetti_extractor.components.bisimulation_execution",
       "spaghetti_extractor.components.bisimulation_harness",
       "spaghetti_extractor.components.bisimulation_image_frame",
@@ -10273,11 +11888,20 @@
       "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
       "spaghetti_extractor.components.bisimulation_mutable_memory",
       "spaghetti_extractor.components.bisimulation_native_admission",
+      "spaghetti_extractor.components.bisimulation_native_calls",
       "spaghetti_extractor.components.bisimulation_native_views",
+      "spaghetti_extractor.components.bisimulation_object_initialization",
+      "spaghetti_extractor.components.bisimulation_object_machine_model",
+      "spaghetti_extractor.components.bisimulation_object_model",
+      "spaghetti_extractor.components.bisimulation_object_terminal",
       "spaghetti_extractor.components.bisimulation_parameter_bindings",
       "spaghetti_extractor.components.bisimulation_postconditions",
       "spaghetti_extractor.components.bisimulation_private_frame",
       "spaghetti_extractor.components.bisimulation_projection",
+      "spaghetti_extractor.components.bisimulation_projection_frames",
+      "spaghetti_extractor.components.bisimulation_proof_reuse",
+      "spaghetti_extractor.components.bisimulation_property_evidence",
+      "spaghetti_extractor.components.bisimulation_property_replay",
       "spaghetti_extractor.components.bisimulation_query_evidence",
       "spaghetti_extractor.components.bisimulation_readable_composition",
       "spaghetti_extractor.components.bisimulation_readable_entry",
@@ -10289,17 +11913,31 @@
       "spaghetti_extractor.components.bisimulation_reference_origins",
       "spaghetti_extractor.components.bisimulation_reference_transport",
       "spaghetti_extractor.components.bisimulation_refinement",
+      "spaghetti_extractor.components.bisimulation_region_context",
       "spaghetti_extractor.components.bisimulation_runtime_dispatch",
+      "spaghetti_extractor.components.bisimulation_selection",
       "spaghetti_extractor.components.bisimulation_service_effects",
       "spaghetti_extractor.components.bisimulation_service_preconditions",
       "spaghetti_extractor.components.bisimulation_service_targets",
       "spaghetti_extractor.components.bisimulation_shared_composition",
+      "spaghetti_extractor.components.bisimulation_shared_machine_model",
       "spaghetti_extractor.components.bisimulation_shared_model",
+      "spaghetti_extractor.components.bisimulation_shared_original_check",
       "spaghetti_extractor.components.bisimulation_shared_services",
       "spaghetti_extractor.components.bisimulation_shared_summary",
+      "spaghetti_extractor.components.bisimulation_source_call_check",
+      "spaghetti_extractor.components.bisimulation_source_call_region",
       "spaghetti_extractor.components.bisimulation_source_contract_reuse",
       "spaghetti_extractor.components.bisimulation_source_dependencies",
+      "spaghetti_extractor.components.bisimulation_source_edit",
+      "spaghetti_extractor.components.bisimulation_source_edit_check",
+      "spaghetti_extractor.components.bisimulation_source_edit_context",
+      "spaghetti_extractor.components.bisimulation_source_edit_queries",
+      "spaghetti_extractor.components.bisimulation_source_edit_query_context",
       "spaghetti_extractor.components.bisimulation_source_entry",
+      "spaghetti_extractor.components.bisimulation_source_expressions",
+      "spaghetti_extractor.components.bisimulation_source_inventory",
+      "spaghetti_extractor.components.bisimulation_source_region_graph",
       "spaghetti_extractor.components.bisimulation_stack_scope",
       "spaghetti_extractor.components.bisimulation_summary_contracts",
       "spaghetti_extractor.components.bisimulation_support",
@@ -10314,6 +11952,7 @@
       "spaghetti_extractor.components.cbmc_backend",
       "spaghetti_extractor.components.component_c_v5",
       "spaghetti_extractor.components.component_exact_c_slice",
+      "spaghetti_extractor.components.component_local_bytes",
       "spaghetti_extractor.components.conditional_check_result",
       "spaghetti_extractor.components.contextual_bisimulation",
       "spaghetti_extractor.components.errors",
@@ -10342,6 +11981,7 @@
       "spaghetti_extractor.components.machine_overlay_external_v5",
       "spaghetti_extractor.components.machine_overlay_logical_views_v5",
       "spaghetti_extractor.components.machine_overlay_result_views",
+      "spaghetti_extractor.components.machine_overlay_runtime_helpers",
       "spaghetti_extractor.components.machine_overlay_services_v5",
       "spaghetti_extractor.components.machine_overlay_state_views",
       "spaghetti_extractor.components.machine_overlay_v5",
@@ -10370,9 +12010,13 @@
       "spaghetti_extractor.components.semantic_path_projection",
       "spaghetti_extractor.components.semantic_path_values",
       "spaghetti_extractor.components.semantic_paths",
+      "spaghetti_extractor.components.semantic_record_transducers",
       "spaghetti_extractor.components.semantic_services",
       "spaghetti_extractor.components.source",
+      "spaghetti_extractor.components.source_compiler_view",
+      "spaghetti_extractor.components.source_dialect",
       "spaghetti_extractor.components.source_profile",
+      "spaghetti_extractor.components.state_ownership",
       "spaghetti_extractor.components.value_codec",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
@@ -10393,6 +12037,7 @@
       "spaghetti_extractor.external.lifetime_effects",
       "spaghetti_extractor.external.machine_abi",
       "spaghetti_extractor.external.machine_callback_boundary",
+      "spaghetti_extractor.external.machine_import_effect_profile",
       "spaghetti_extractor.external.machine_import_profiles",
       "spaghetti_extractor.external.range_allocation",
       "spaghetti_extractor.external.range_bindings",
@@ -10567,6 +12212,9 @@
       "spaghetti_extractor.boundary.model",
       "spaghetti_extractor.boundary.projection",
       "spaghetti_extractor.boundary.source",
+      "spaghetti_extractor.build_support",
+      "spaghetti_extractor.build_support.architecture_manifest",
+      "spaghetti_extractor.build_support.python_module_index",
       "spaghetti_extractor.calls",
       "spaghetti_extractor.calls._canonical",
       "spaghetti_extractor.calls.boundary_adapter",
@@ -10651,6 +12299,7 @@
       "spaghetti_extractor.candidate.runtime_values",
       "spaghetti_extractor.candidate.runtime_x87_render",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.aggregate_result_binding",
       "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.binding_intent",
       "spaghetti_extractor.components.bisimulation",
@@ -10661,22 +12310,33 @@
       "spaghetti_extractor.components.bisimulation_allocation_lifetime",
       "spaghetti_extractor.components.bisimulation_allocation_namespace",
       "spaghetti_extractor.components.bisimulation_allocation_producers",
+      "spaghetti_extractor.components.bisimulation_assertions",
       "spaghetti_extractor.components.bisimulation_assurance",
       "spaghetti_extractor.components.bisimulation_call_allocation",
+      "spaghetti_extractor.components.bisimulation_call_domain",
       "spaghetti_extractor.components.bisimulation_call_entry",
+      "spaghetti_extractor.components.bisimulation_call_evidence",
       "spaghetti_extractor.components.bisimulation_call_memory",
+      "spaghetti_extractor.components.bisimulation_call_model",
       "spaghetti_extractor.components.bisimulation_call_ranges",
+      "spaghetti_extractor.components.bisimulation_call_relations",
+      "spaghetti_extractor.components.bisimulation_caller_memory",
+      "spaghetti_extractor.components.bisimulation_caller_private_bytes",
+      "spaghetti_extractor.components.bisimulation_caller_targets",
       "spaghetti_extractor.components.bisimulation_clobber_frame",
       "spaghetti_extractor.components.bisimulation_compilation",
+      "spaghetti_extractor.components.bisimulation_completion",
       "spaghetti_extractor.components.bisimulation_connected",
       "spaghetti_extractor.components.bisimulation_continuation",
       "spaghetti_extractor.components.bisimulation_cut_state",
       "spaghetti_extractor.components.bisimulation_diagnostics",
+      "spaghetti_extractor.components.bisimulation_edit_prefix",
       "spaghetti_extractor.components.bisimulation_entry_conformance",
       "spaghetti_extractor.components.bisimulation_entry_queries",
       "spaghetti_extractor.components.bisimulation_evidence",
       "spaghetti_extractor.components.bisimulation_exact",
       "spaghetti_extractor.components.bisimulation_exact_frame",
+      "spaghetti_extractor.components.bisimulation_exact_header",
       "spaghetti_extractor.components.bisimulation_execution",
       "spaghetti_extractor.components.bisimulation_harness",
       "spaghetti_extractor.components.bisimulation_image_frame",
@@ -10689,11 +12349,20 @@
       "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
       "spaghetti_extractor.components.bisimulation_mutable_memory",
       "spaghetti_extractor.components.bisimulation_native_admission",
+      "spaghetti_extractor.components.bisimulation_native_calls",
       "spaghetti_extractor.components.bisimulation_native_views",
+      "spaghetti_extractor.components.bisimulation_object_initialization",
+      "spaghetti_extractor.components.bisimulation_object_machine_model",
+      "spaghetti_extractor.components.bisimulation_object_model",
+      "spaghetti_extractor.components.bisimulation_object_terminal",
       "spaghetti_extractor.components.bisimulation_parameter_bindings",
       "spaghetti_extractor.components.bisimulation_postconditions",
       "spaghetti_extractor.components.bisimulation_private_frame",
       "spaghetti_extractor.components.bisimulation_projection",
+      "spaghetti_extractor.components.bisimulation_projection_frames",
+      "spaghetti_extractor.components.bisimulation_proof_reuse",
+      "spaghetti_extractor.components.bisimulation_property_evidence",
+      "spaghetti_extractor.components.bisimulation_property_replay",
       "spaghetti_extractor.components.bisimulation_query_evidence",
       "spaghetti_extractor.components.bisimulation_readable_composition",
       "spaghetti_extractor.components.bisimulation_readable_entry",
@@ -10704,16 +12373,30 @@
       "spaghetti_extractor.components.bisimulation_reference_origins",
       "spaghetti_extractor.components.bisimulation_reference_transport",
       "spaghetti_extractor.components.bisimulation_refinement",
+      "spaghetti_extractor.components.bisimulation_region_context",
       "spaghetti_extractor.components.bisimulation_runtime_dispatch",
+      "spaghetti_extractor.components.bisimulation_selection",
       "spaghetti_extractor.components.bisimulation_service_effects",
       "spaghetti_extractor.components.bisimulation_service_preconditions",
       "spaghetti_extractor.components.bisimulation_service_targets",
       "spaghetti_extractor.components.bisimulation_shared_composition",
+      "spaghetti_extractor.components.bisimulation_shared_machine_model",
       "spaghetti_extractor.components.bisimulation_shared_model",
+      "spaghetti_extractor.components.bisimulation_shared_original_check",
       "spaghetti_extractor.components.bisimulation_shared_services",
       "spaghetti_extractor.components.bisimulation_shared_summary",
+      "spaghetti_extractor.components.bisimulation_source_call_check",
+      "spaghetti_extractor.components.bisimulation_source_call_region",
       "spaghetti_extractor.components.bisimulation_source_dependencies",
+      "spaghetti_extractor.components.bisimulation_source_edit",
+      "spaghetti_extractor.components.bisimulation_source_edit_check",
+      "spaghetti_extractor.components.bisimulation_source_edit_context",
+      "spaghetti_extractor.components.bisimulation_source_edit_queries",
+      "spaghetti_extractor.components.bisimulation_source_edit_query_context",
       "spaghetti_extractor.components.bisimulation_source_entry",
+      "spaghetti_extractor.components.bisimulation_source_expressions",
+      "spaghetti_extractor.components.bisimulation_source_inventory",
+      "spaghetti_extractor.components.bisimulation_source_region_graph",
       "spaghetti_extractor.components.bisimulation_stack_scope",
       "spaghetti_extractor.components.bisimulation_summary_contracts",
       "spaghetti_extractor.components.bisimulation_support",
@@ -10728,6 +12411,7 @@
       "spaghetti_extractor.components.cbmc_backend",
       "spaghetti_extractor.components.component_c_v5",
       "spaghetti_extractor.components.component_exact_c_slice",
+      "spaghetti_extractor.components.component_local_bytes",
       "spaghetti_extractor.components.conditional_check_result",
       "spaghetti_extractor.components.contextual_bisimulation",
       "spaghetti_extractor.components.errors",
@@ -10753,6 +12437,7 @@
       "spaghetti_extractor.components.machine_overlay_external_v5",
       "spaghetti_extractor.components.machine_overlay_logical_views_v5",
       "spaghetti_extractor.components.machine_overlay_result_views",
+      "spaghetti_extractor.components.machine_overlay_runtime_helpers",
       "spaghetti_extractor.components.machine_overlay_services_v5",
       "spaghetti_extractor.components.machine_overlay_state_views",
       "spaghetti_extractor.components.machine_overlay_v5",
@@ -10780,11 +12465,13 @@
       "spaghetti_extractor.components.semantic_path_projection",
       "spaghetti_extractor.components.semantic_path_values",
       "spaghetti_extractor.components.semantic_paths",
+      "spaghetti_extractor.components.semantic_record_transducers",
       "spaghetti_extractor.components.semantic_services",
       "spaghetti_extractor.components.source",
       "spaghetti_extractor.components.source_profile",
       "spaghetti_extractor.components.value_codec",
       "spaghetti_extractor.errors",
+      "spaghetti_extractor.execution",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.argument_domains",
       "spaghetti_extractor.external.boundary_bindings",
@@ -11040,7 +12727,9 @@
       "spaghetti_extractor.commands.manifest",
       "spaghetti_extractor.components",
       "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.caller_definition_document",
       "spaghetti_extractor.components.capabilities",
+      "spaghetti_extractor.components.component_local_bytes",
       "spaghetti_extractor.components.relation_ir",
       "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.errors",
@@ -11292,6 +12981,7 @@
       "spaghetti_extractor.components.relation_ir",
       "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.errors",
+      "spaghetti_extractor.execution",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.argument_domains",
       "spaghetti_extractor.external.boundary_bindings",
@@ -11463,6 +13153,7 @@
       "spaghetti_extractor.components",
       "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.capabilities",
+      "spaghetti_extractor.components.component_local_bytes",
       "spaghetti_extractor.components.relation_ir",
       "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.errors",
@@ -11641,14 +13332,32 @@
       "spaghetti_extractor.calls.types",
       "spaghetti_extractor.candidate",
       "spaghetti_extractor.candidate.callbacks",
+      "spaghetti_extractor.candidate.experimental_admission",
+      "spaghetti_extractor.candidate.experimental_build",
+      "spaghetti_extractor.candidate.experimental_manifest",
+      "spaghetti_extractor.candidate.experimental_policy",
+      "spaghetti_extractor.candidate.experimental_program",
+      "spaghetti_extractor.candidate.experimental_run",
+      "spaghetti_extractor.candidate.formats",
+      "spaghetti_extractor.candidate.functional",
+      "spaghetti_extractor.candidate.source_assembly",
+      "spaghetti_extractor.candidate.source_export",
+      "spaghetti_extractor.candidate.source_export_bindings",
+      "spaghetti_extractor.candidate.source_export_update",
+      "spaghetti_extractor.candidate.source_project_apply",
+      "spaghetti_extractor.candidate.source_replacements",
       "spaghetti_extractor.cli",
       "spaghetti_extractor.commands",
       "spaghetti_extractor.commands.common",
+      "spaghetti_extractor.commands.component_apply",
       "spaghetti_extractor.commands.component_review",
       "spaghetti_extractor.commands.component_start",
       "spaghetti_extractor.commands.manifest",
+      "spaghetti_extractor.commands.workflow_options",
+      "spaghetti_extractor.commands.workflow_status",
       "spaghetti_extractor.commands.workflows",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.aggregate_result_binding",
       "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.binding_intent",
       "spaghetti_extractor.components.bisimulation",
@@ -11658,6 +13367,7 @@
       "spaghetti_extractor.components.bisimulation_allocation_lifetime",
       "spaghetti_extractor.components.bisimulation_allocation_namespace",
       "spaghetti_extractor.components.bisimulation_allocation_producers",
+      "spaghetti_extractor.components.bisimulation_assertions",
       "spaghetti_extractor.components.bisimulation_assurance",
       "spaghetti_extractor.components.bisimulation_call_allocation",
       "spaghetti_extractor.components.bisimulation_call_check",
@@ -11667,15 +13377,28 @@
       "spaghetti_extractor.components.bisimulation_call_memory",
       "spaghetti_extractor.components.bisimulation_call_model",
       "spaghetti_extractor.components.bisimulation_call_ranges",
+      "spaghetti_extractor.components.bisimulation_call_relations",
+      "spaghetti_extractor.components.bisimulation_caller_boundary",
+      "spaghetti_extractor.components.bisimulation_caller_definition",
+      "spaghetti_extractor.components.bisimulation_caller_interface",
+      "spaghetti_extractor.components.bisimulation_caller_local_records",
+      "spaghetti_extractor.components.bisimulation_caller_memory",
+      "spaghetti_extractor.components.bisimulation_caller_object_runtime",
+      "spaghetti_extractor.components.bisimulation_caller_objects",
+      "spaghetti_extractor.components.bisimulation_caller_private_bytes",
+      "spaghetti_extractor.components.bisimulation_caller_records",
+      "spaghetti_extractor.components.bisimulation_caller_returned_views",
+      "spaghetti_extractor.components.bisimulation_caller_summary",
+      "spaghetti_extractor.components.bisimulation_caller_summary_call",
+      "spaghetti_extractor.components.bisimulation_caller_targets",
       "spaghetti_extractor.components.bisimulation_cleanup_admission",
       "spaghetti_extractor.components.bisimulation_cleanup_composition",
       "spaghetti_extractor.components.bisimulation_cleanup_contract",
+      "spaghetti_extractor.components.bisimulation_cleanup_entry_relations",
       "spaghetti_extractor.components.bisimulation_cleanup_frame",
       "spaghetti_extractor.components.bisimulation_cleanup_inputs",
       "spaghetti_extractor.components.bisimulation_cleanup_model",
       "spaghetti_extractor.components.bisimulation_cleanup_observations",
-      "spaghetti_extractor.components.bisimulation_cleanup_replace",
-      "spaghetti_extractor.components.bisimulation_cleanup_save",
       "spaghetti_extractor.components.bisimulation_cleanup_source_use",
       "spaghetti_extractor.components.bisimulation_cleanup_summary",
       "spaghetti_extractor.components.bisimulation_cleanup_template",
@@ -11688,6 +13411,7 @@
       "spaghetti_extractor.components.bisimulation_compaction_model",
       "spaghetti_extractor.components.bisimulation_compaction_template",
       "spaghetti_extractor.components.bisimulation_compilation",
+      "spaghetti_extractor.components.bisimulation_completion",
       "spaghetti_extractor.components.bisimulation_connected",
       "spaghetti_extractor.components.bisimulation_continuation",
       "spaghetti_extractor.components.bisimulation_cut_state",
@@ -11699,6 +13423,7 @@
       "spaghetti_extractor.components.bisimulation_evidence",
       "spaghetti_extractor.components.bisimulation_exact",
       "spaghetti_extractor.components.bisimulation_exact_frame",
+      "spaghetti_extractor.components.bisimulation_exact_header",
       "spaghetti_extractor.components.bisimulation_execution",
       "spaghetti_extractor.components.bisimulation_fresh_buffer_contract",
       "spaghetti_extractor.components.bisimulation_fresh_buffer_frame",
@@ -11710,19 +13435,32 @@
       "spaghetti_extractor.components.bisimulation_issued_access",
       "spaghetti_extractor.components.bisimulation_lifetime_admission",
       "spaghetti_extractor.components.bisimulation_lifetime_namespace",
+      "spaghetti_extractor.components.bisimulation_local_bytes",
       "spaghetti_extractor.components.bisimulation_local_views",
       "spaghetti_extractor.components.bisimulation_memory_facts",
       "spaghetti_extractor.components.bisimulation_mutable_frame",
       "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
       "spaghetti_extractor.components.bisimulation_mutable_memory",
       "spaghetti_extractor.components.bisimulation_native_admission",
+      "spaghetti_extractor.components.bisimulation_native_calls",
       "spaghetti_extractor.components.bisimulation_native_views",
+      "spaghetti_extractor.components.bisimulation_object_call",
+      "spaghetti_extractor.components.bisimulation_object_initialization",
+      "spaghetti_extractor.components.bisimulation_object_machine_model",
+      "spaghetti_extractor.components.bisimulation_object_model",
+      "spaghetti_extractor.components.bisimulation_object_terminal",
+      "spaghetti_extractor.components.bisimulation_paired_calls",
+      "spaghetti_extractor.components.bisimulation_paired_objects",
       "spaghetti_extractor.components.bisimulation_parameter_bindings",
       "spaghetti_extractor.components.bisimulation_postconditions",
       "spaghetti_extractor.components.bisimulation_private_frame",
       "spaghetti_extractor.components.bisimulation_private_transport",
       "spaghetti_extractor.components.bisimulation_private_transport_template",
       "spaghetti_extractor.components.bisimulation_projection",
+      "spaghetti_extractor.components.bisimulation_projection_frames",
+      "spaghetti_extractor.components.bisimulation_proof_reuse",
+      "spaghetti_extractor.components.bisimulation_property_evidence",
+      "spaghetti_extractor.components.bisimulation_property_replay",
       "spaghetti_extractor.components.bisimulation_public_transport",
       "spaghetti_extractor.components.bisimulation_query_evidence",
       "spaghetti_extractor.components.bisimulation_readable_composition",
@@ -11739,6 +13477,7 @@
       "spaghetti_extractor.components.bisimulation_region_observer",
       "spaghetti_extractor.components.bisimulation_runtime_dispatch",
       "spaghetti_extractor.components.bisimulation_runtime_view_transport",
+      "spaghetti_extractor.components.bisimulation_selection",
       "spaghetti_extractor.components.bisimulation_service_effects",
       "spaghetti_extractor.components.bisimulation_service_preconditions",
       "spaghetti_extractor.components.bisimulation_service_targets",
@@ -11758,12 +13497,15 @@
       "spaghetti_extractor.components.bisimulation_source_edit_queries",
       "spaghetti_extractor.components.bisimulation_source_edit_query_context",
       "spaghetti_extractor.components.bisimulation_source_entry",
+      "spaghetti_extractor.components.bisimulation_source_expressions",
       "spaghetti_extractor.components.bisimulation_source_inventory",
       "spaghetti_extractor.components.bisimulation_source_region_calls",
       "spaghetti_extractor.components.bisimulation_source_region_graph",
       "spaghetti_extractor.components.bisimulation_source_region_transport",
       "spaghetti_extractor.components.bisimulation_stack_scope",
       "spaghetti_extractor.components.bisimulation_summary_contracts",
+      "spaghetti_extractor.components.bisimulation_supplier_call",
+      "spaghetti_extractor.components.bisimulation_supplier_facts",
       "spaghetti_extractor.components.bisimulation_support",
       "spaghetti_extractor.components.bisimulation_terminated_reads",
       "spaghetti_extractor.components.bisimulation_typed_services",
@@ -11772,9 +13514,34 @@
       "spaghetti_extractor.components.bisimulation_world",
       "spaghetti_extractor.components.bisimulation_world_memory",
       "spaghetti_extractor.components.bisimulation_world_namespace",
+      "spaghetti_extractor.components.caller_definition_document",
       "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.components.cbmc_backend",
+      "spaghetti_extractor.components.comparison_build",
+      "spaghetti_extractor.components.comparison_capture",
+      "spaghetti_extractor.components.comparison_compile_cache",
+      "spaghetti_extractor.components.comparison_composition",
+      "spaghetti_extractor.components.comparison_contract_diagnostics",
+      "spaghetti_extractor.components.comparison_dependencies",
+      "spaghetti_extractor.components.comparison_domain",
+      "spaghetti_extractor.components.comparison_environment",
+      "spaghetti_extractor.components.comparison_files",
+      "spaghetti_extractor.components.comparison_original",
+      "spaghetti_extractor.components.comparison_package",
+      "spaghetti_extractor.components.comparison_pe32_program",
+      "spaghetti_extractor.components.comparison_program",
+      "spaghetti_extractor.components.comparison_refinement",
+      "spaghetti_extractor.components.comparison_representation",
+      "spaghetti_extractor.components.comparison_resource_runtime",
+      "spaghetti_extractor.components.comparison_resources",
+      "spaghetti_extractor.components.comparison_reuse",
+      "spaghetti_extractor.components.comparison_run",
+      "spaghetti_extractor.components.comparison_runtime",
+      "spaghetti_extractor.components.comparison_service_runtime",
+      "spaghetti_extractor.components.comparison_services",
+      "spaghetti_extractor.components.comparison_source_draft",
       "spaghetti_extractor.components.component_c_v5",
+      "spaghetti_extractor.components.component_local_bytes",
       "spaghetti_extractor.components.conditional_check_result",
       "spaghetti_extractor.components.contextual_bisimulation",
       "spaghetti_extractor.components.errors",
@@ -11789,6 +13556,7 @@
       "spaghetti_extractor.components.inductive_relation",
       "spaghetti_extractor.components.inductive_source",
       "spaghetti_extractor.components.inductive_world",
+      "spaghetti_extractor.components.interaction_contract",
       "spaghetti_extractor.components.interface_ir",
       "spaghetti_extractor.components.interface_package_v5",
       "spaghetti_extractor.components.interface_v5",
@@ -11802,13 +13570,16 @@
       "spaghetti_extractor.components.machine_overlay_external_v5",
       "spaghetti_extractor.components.machine_overlay_logical_views_v5",
       "spaghetti_extractor.components.machine_overlay_result_views",
+      "spaghetti_extractor.components.machine_overlay_runtime_helpers",
       "spaghetti_extractor.components.machine_overlay_services_v5",
       "spaghetti_extractor.components.machine_overlay_state_views",
       "spaghetti_extractor.components.machine_overlay_v5",
       "spaghetti_extractor.components.machine_storage",
       "spaghetti_extractor.components.normal_exit_postconditions",
       "spaghetti_extractor.components.normalized_component",
+      "spaghetti_extractor.components.partition_inventory",
       "spaghetti_extractor.components.portable_object",
+      "spaghetti_extractor.components.practical_contracts",
       "spaghetti_extractor.components.proof_facet",
       "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.components.refinement",
@@ -11817,6 +13588,7 @@
       "spaghetti_extractor.components.relation_ir",
       "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.components.relation_v5",
+      "spaghetti_extractor.components.resource_authoring",
       "spaghetti_extractor.components.semantic_arithmetic",
       "spaghetti_extractor.components.semantic_contract",
       "spaghetti_extractor.components.semantic_contract_transfer",
@@ -11831,12 +13603,21 @@
       "spaghetti_extractor.components.semantic_path_projection",
       "spaghetti_extractor.components.semantic_path_values",
       "spaghetti_extractor.components.semantic_paths",
+      "spaghetti_extractor.components.semantic_record_transducers",
       "spaghetti_extractor.components.semantic_services",
+      "spaghetti_extractor.components.service_authoring",
+      "spaghetti_extractor.components.service_c",
       "spaghetti_extractor.components.source",
+      "spaghetti_extractor.components.source_compiler_view",
+      "spaghetti_extractor.components.source_dialect",
+      "spaghetti_extractor.components.source_handoff",
       "spaghetti_extractor.components.source_profile",
+      "spaghetti_extractor.components.state_ownership",
       "spaghetti_extractor.components.value_codec",
+      "spaghetti_extractor.components.work_package_editing",
       "spaghetti_extractor.components.work_package_v6",
       "spaghetti_extractor.errors",
+      "spaghetti_extractor.execution",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.argument_domains",
       "spaghetti_extractor.external.boundary_bindings",
@@ -11859,7 +13640,10 @@
       "spaghetti_extractor.external.service_protocols",
       "spaghetti_extractor.external.terminated_reads",
       "spaghetti_extractor.extraction",
+      "spaghetti_extractor.extraction.cutpoints",
+      "spaghetti_extractor.extraction.executable_classification",
       "spaghetti_extractor.extraction.schema",
+      "spaghetti_extractor.extraction.x87_profile",
       "spaghetti_extractor.isa",
       "spaghetti_extractor.isa.conformance",
       "spaghetti_extractor.isa.formats",
@@ -11890,21 +13674,40 @@
       "spaghetti_extractor.native_realization.formats",
       "spaghetti_extractor.native_realization.receipt_v2",
       "spaghetti_extractor.operator",
+      "spaghetti_extractor.operator.comparison",
+      "spaghetti_extractor.operator.comparison_changes",
+      "spaghetti_extractor.operator.comparison_guidance",
+      "spaghetti_extractor.operator.comparison_history",
+      "spaghetti_extractor.operator.comparison_participation",
       "spaghetti_extractor.operator.conditional_check",
+      "spaghetti_extractor.operator.experimental",
       "spaghetti_extractor.operator.formats",
       "spaghetti_extractor.operator.index_v1",
+      "spaghetti_extractor.operator.interface_authoring",
+      "spaghetti_extractor.operator.local_comparison_recipe",
       "spaghetti_extractor.operator.projections",
+      "spaghetti_extractor.operator.proof_check",
       "spaghetti_extractor.operator.proof_diagnostics",
+      "spaghetti_extractor.operator.service_inventory",
       "spaghetti_extractor.operator.source_call_check",
+      "spaghetti_extractor.operator.source_caller_partition",
       "spaghetti_extractor.operator.source_check",
       "spaghetti_extractor.operator.source_composition_check",
       "spaghetti_extractor.operator.source_edit",
+      "spaghetti_extractor.operator.source_export_guidance",
+      "spaghetti_extractor.operator.source_guidance",
+      "spaghetti_extractor.operator.source_navigation",
       "spaghetti_extractor.operator.source_operation_call_check",
       "spaghetti_extractor.operator.source_region_check",
       "spaghetti_extractor.operator.work_status",
       "spaghetti_extractor.pe32",
       "spaghetti_extractor.pe32.formats",
+      "spaghetti_extractor.pe32.image",
+      "spaghetti_extractor.pe32.loader",
+      "spaghetti_extractor.pe32.model",
       "spaghetti_extractor.pe32.module_interface",
+      "spaghetti_extractor.pe32.pe",
+      "spaghetti_extractor.pe32.queries",
       "spaghetti_extractor.pe32.resources",
       "spaghetti_extractor.qualified_platform",
       "spaghetti_extractor.qualified_platform.formats",
@@ -11914,6 +13717,7 @@
       "spaghetti_extractor.reconstruction",
       "spaghetti_extractor.reconstruction.control_common",
       "spaghetti_extractor.reconstruction.control_jump_tables",
+      "spaghetti_extractor.reconstruction.state_machine",
       "spaghetti_extractor.roundtrip_fuzz",
       "spaghetti_extractor.roundtrip_fuzz.image_io",
       "spaghetti_extractor.roundtrip_fuzz.image_model",
@@ -11945,6 +13749,18 @@
       "spaghetti_extractor.semantic_providers.qualification_v2",
       "spaghetti_extractor.semantic_providers.selection_v2",
       "spaghetti_extractor.semantic_providers.slices_v2",
+      "spaghetti_extractor.static_program",
+      "spaghetti_extractor.static_program.codec",
+      "spaghetti_extractor.static_program.model",
+      "spaghetti_extractor.static_program.semantics",
+      "spaghetti_extractor.static_program.semantics.control",
+      "spaghetti_extractor.static_program.semantics.expressions",
+      "spaghetti_extractor.static_program.semantics.flags",
+      "spaghetti_extractor.static_program.semantics.instruction",
+      "spaghetti_extractor.static_program.semantics.operands",
+      "spaghetti_extractor.static_program.semantics.support",
+      "spaghetti_extractor.static_program.semantics.symbolic_execution",
+      "spaghetti_extractor.static_program.semantics.transfer",
       "spaghetti_extractor.target_bundles",
       "spaghetti_extractor.target_bundles.library_status_v4",
       "spaghetti_extractor.target_bundles.lint",
@@ -11953,6 +13769,7 @@
       "spaghetti_extractor.target_bundles.status_common",
       "spaghetti_extractor.transfer",
       "spaghetti_extractor.transfer.atomics",
+      "spaghetti_extractor.transfer.behavioral_c_layout",
       "spaghetti_extractor.transfer.behavioral_c_model",
       "spaghetti_extractor.transfer.behavioral_c_render",
       "spaghetti_extractor.transfer.call_boundaries",
@@ -11998,7 +13815,9 @@
       "spaghetti_extractor.boundary.projection",
       "spaghetti_extractor.boundary.source",
       "spaghetti_extractor.build_support",
+      "spaghetti_extractor.build_support.architecture_manifest",
       "spaghetti_extractor.build_support.lean_runner",
+      "spaghetti_extractor.build_support.python_module_index",
       "spaghetti_extractor.calls",
       "spaghetti_extractor.calls._canonical",
       "spaghetti_extractor.calls.boundary_adapter",
@@ -12027,22 +13846,183 @@
       "spaghetti_extractor.commands.reconstruction",
       "spaghetti_extractor.commands.roundtrip",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.aggregate_result_binding",
       "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.binding_intent",
+      "spaghetti_extractor.components.bisimulation",
+      "spaghetti_extractor.components.bisimulation_allocation_authority",
+      "spaghetti_extractor.components.bisimulation_allocation_classes",
+      "spaghetti_extractor.components.bisimulation_allocation_cuts",
+      "spaghetti_extractor.components.bisimulation_allocation_lifetime",
+      "spaghetti_extractor.components.bisimulation_allocation_namespace",
+      "spaghetti_extractor.components.bisimulation_allocation_producers",
+      "spaghetti_extractor.components.bisimulation_assertions",
+      "spaghetti_extractor.components.bisimulation_assurance",
+      "spaghetti_extractor.components.bisimulation_call_allocation",
+      "spaghetti_extractor.components.bisimulation_call_domain",
+      "spaghetti_extractor.components.bisimulation_call_entry",
+      "spaghetti_extractor.components.bisimulation_call_evidence",
+      "spaghetti_extractor.components.bisimulation_call_memory",
+      "spaghetti_extractor.components.bisimulation_call_model",
+      "spaghetti_extractor.components.bisimulation_call_ranges",
+      "spaghetti_extractor.components.bisimulation_call_relations",
+      "spaghetti_extractor.components.bisimulation_caller_memory",
+      "spaghetti_extractor.components.bisimulation_caller_private_bytes",
+      "spaghetti_extractor.components.bisimulation_caller_targets",
+      "spaghetti_extractor.components.bisimulation_clobber_frame",
+      "spaghetti_extractor.components.bisimulation_compilation",
+      "spaghetti_extractor.components.bisimulation_completion",
+      "spaghetti_extractor.components.bisimulation_connected",
+      "spaghetti_extractor.components.bisimulation_continuation",
+      "spaghetti_extractor.components.bisimulation_cut_state",
+      "spaghetti_extractor.components.bisimulation_diagnostics",
+      "spaghetti_extractor.components.bisimulation_edit_prefix",
+      "spaghetti_extractor.components.bisimulation_entry_conformance",
+      "spaghetti_extractor.components.bisimulation_entry_queries",
+      "spaghetti_extractor.components.bisimulation_evidence",
+      "spaghetti_extractor.components.bisimulation_exact",
+      "spaghetti_extractor.components.bisimulation_exact_frame",
+      "spaghetti_extractor.components.bisimulation_exact_header",
+      "spaghetti_extractor.components.bisimulation_execution",
+      "spaghetti_extractor.components.bisimulation_harness",
+      "spaghetti_extractor.components.bisimulation_image_frame",
+      "spaghetti_extractor.components.bisimulation_issued_access",
+      "spaghetti_extractor.components.bisimulation_lifetime_admission",
+      "spaghetti_extractor.components.bisimulation_lifetime_namespace",
+      "spaghetti_extractor.components.bisimulation_local_views",
+      "spaghetti_extractor.components.bisimulation_memory_facts",
+      "spaghetti_extractor.components.bisimulation_mutable_frame",
+      "spaghetti_extractor.components.bisimulation_mutable_machine_frame",
+      "spaghetti_extractor.components.bisimulation_mutable_memory",
+      "spaghetti_extractor.components.bisimulation_native_admission",
+      "spaghetti_extractor.components.bisimulation_native_calls",
+      "spaghetti_extractor.components.bisimulation_native_views",
+      "spaghetti_extractor.components.bisimulation_object_initialization",
+      "spaghetti_extractor.components.bisimulation_object_machine_model",
+      "spaghetti_extractor.components.bisimulation_object_model",
+      "spaghetti_extractor.components.bisimulation_object_terminal",
+      "spaghetti_extractor.components.bisimulation_parameter_bindings",
+      "spaghetti_extractor.components.bisimulation_postconditions",
+      "spaghetti_extractor.components.bisimulation_private_frame",
+      "spaghetti_extractor.components.bisimulation_projection",
+      "spaghetti_extractor.components.bisimulation_projection_frames",
+      "spaghetti_extractor.components.bisimulation_proof_reuse",
+      "spaghetti_extractor.components.bisimulation_property_evidence",
+      "spaghetti_extractor.components.bisimulation_property_replay",
+      "spaghetti_extractor.components.bisimulation_query_evidence",
+      "spaghetti_extractor.components.bisimulation_readable_composition",
+      "spaghetti_extractor.components.bisimulation_readable_entry",
+      "spaghetti_extractor.components.bisimulation_readonly_access",
+      "spaghetti_extractor.components.bisimulation_readonly_evidence",
+      "spaghetti_extractor.components.bisimulation_readonly_model",
+      "spaghetti_extractor.components.bisimulation_reference_authority",
+      "spaghetti_extractor.components.bisimulation_reference_origins",
+      "spaghetti_extractor.components.bisimulation_reference_transport",
+      "spaghetti_extractor.components.bisimulation_refinement",
+      "spaghetti_extractor.components.bisimulation_region_context",
+      "spaghetti_extractor.components.bisimulation_runtime_dispatch",
+      "spaghetti_extractor.components.bisimulation_selection",
+      "spaghetti_extractor.components.bisimulation_service_effects",
+      "spaghetti_extractor.components.bisimulation_service_preconditions",
+      "spaghetti_extractor.components.bisimulation_service_targets",
+      "spaghetti_extractor.components.bisimulation_shared_composition",
+      "spaghetti_extractor.components.bisimulation_shared_machine_model",
+      "spaghetti_extractor.components.bisimulation_shared_model",
+      "spaghetti_extractor.components.bisimulation_shared_original_check",
+      "spaghetti_extractor.components.bisimulation_shared_services",
+      "spaghetti_extractor.components.bisimulation_shared_summary",
+      "spaghetti_extractor.components.bisimulation_source_call_check",
+      "spaghetti_extractor.components.bisimulation_source_call_region",
+      "spaghetti_extractor.components.bisimulation_source_dependencies",
+      "spaghetti_extractor.components.bisimulation_source_edit",
+      "spaghetti_extractor.components.bisimulation_source_edit_check",
+      "spaghetti_extractor.components.bisimulation_source_edit_context",
+      "spaghetti_extractor.components.bisimulation_source_edit_queries",
+      "spaghetti_extractor.components.bisimulation_source_edit_query_context",
+      "spaghetti_extractor.components.bisimulation_source_entry",
+      "spaghetti_extractor.components.bisimulation_source_expressions",
+      "spaghetti_extractor.components.bisimulation_source_inventory",
+      "spaghetti_extractor.components.bisimulation_source_region_graph",
+      "spaghetti_extractor.components.bisimulation_stack_scope",
+      "spaghetti_extractor.components.bisimulation_summary_contracts",
+      "spaghetti_extractor.components.bisimulation_support",
+      "spaghetti_extractor.components.bisimulation_terminated_reads",
+      "spaghetti_extractor.components.bisimulation_typed_services",
+      "spaghetti_extractor.components.bisimulation_view_context",
+      "spaghetti_extractor.components.bisimulation_view_extent",
+      "spaghetti_extractor.components.bisimulation_world",
+      "spaghetti_extractor.components.bisimulation_world_memory",
+      "spaghetti_extractor.components.bisimulation_world_namespace",
+      "spaghetti_extractor.components.caller_definition_document",
+      "spaghetti_extractor.components.capabilities",
+      "spaghetti_extractor.components.cbmc_backend",
       "spaghetti_extractor.components.component_c_v5",
+      "spaghetti_extractor.components.component_local_bytes",
+      "spaghetti_extractor.components.conditional_check_result",
+      "spaghetti_extractor.components.contextual_bisimulation",
       "spaghetti_extractor.components.discovery",
       "spaghetti_extractor.components.discovery_checker",
       "spaghetti_extractor.components.discovery_model",
       "spaghetti_extractor.components.discovery_render",
       "spaghetti_extractor.components.discovery_schema",
       "spaghetti_extractor.components.errors",
+      "spaghetti_extractor.components.finite_word_transducers",
       "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.inductive_certificate",
+      "spaghetti_extractor.components.inductive_contract",
+      "spaghetti_extractor.components.inductive_package",
+      "spaghetti_extractor.components.inductive_receipts",
+      "spaghetti_extractor.components.inductive_refinement",
+      "spaghetti_extractor.components.inductive_relation",
+      "spaghetti_extractor.components.inductive_source",
+      "spaghetti_extractor.components.inductive_world",
+      "spaghetti_extractor.components.interface_ir",
       "spaghetti_extractor.components.interface_package_v5",
       "spaghetti_extractor.components.interface_v5",
+      "spaghetti_extractor.components.local_cell_transducers",
+      "spaghetti_extractor.components.logical_value_types",
+      "spaghetti_extractor.components.machine_binding",
+      "spaghetti_extractor.components.machine_binding_checks",
+      "spaghetti_extractor.components.machine_binding_schema",
+      "spaghetti_extractor.components.machine_overlay_boundaries_v5",
+      "spaghetti_extractor.components.machine_overlay_external_v5",
+      "spaghetti_extractor.components.machine_overlay_logical_views_v5",
+      "spaghetti_extractor.components.machine_overlay_result_views",
+      "spaghetti_extractor.components.machine_overlay_runtime_helpers",
+      "spaghetti_extractor.components.machine_overlay_services_v5",
+      "spaghetti_extractor.components.machine_overlay_state_views",
+      "spaghetti_extractor.components.machine_overlay_v5",
+      "spaghetti_extractor.components.machine_storage",
+      "spaghetti_extractor.components.normal_exit_postconditions",
+      "spaghetti_extractor.components.normalized_component",
+      "spaghetti_extractor.components.proof_facet",
       "spaghetti_extractor.components.proposal_package",
+      "spaghetti_extractor.components.refinement",
+      "spaghetti_extractor.components.refinement_harness",
+      "spaghetti_extractor.components.refinement_v5",
       "spaghetti_extractor.components.relation_ir",
       "spaghetti_extractor.components.relation_solver",
+      "spaghetti_extractor.components.relation_v5",
+      "spaghetti_extractor.components.semantic_arithmetic",
+      "spaghetti_extractor.components.semantic_contract",
+      "spaghetti_extractor.components.semantic_contract_transfer",
+      "spaghetti_extractor.components.semantic_external_transducers",
+      "spaghetti_extractor.components.semantic_induction",
+      "spaghetti_extractor.components.semantic_path_atomics",
+      "spaghetti_extractor.components.semantic_path_errors",
+      "spaghetti_extractor.components.semantic_path_execution",
+      "spaghetti_extractor.components.semantic_path_induction",
+      "spaghetti_extractor.components.semantic_path_model",
+      "spaghetti_extractor.components.semantic_path_operations",
+      "spaghetti_extractor.components.semantic_path_projection",
+      "spaghetti_extractor.components.semantic_path_values",
+      "spaghetti_extractor.components.semantic_paths",
+      "spaghetti_extractor.components.semantic_record_transducers",
+      "spaghetti_extractor.components.semantic_services",
       "spaghetti_extractor.components.source",
+      "spaghetti_extractor.components.source_profile",
+      "spaghetti_extractor.components.value_codec",
+      "spaghetti_extractor.components.work_package_editing",
       "spaghetti_extractor.components.work_package_v6",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
@@ -12053,16 +14033,20 @@
       "spaghetti_extractor.external.contracts",
       "spaghetti_extractor.external.formats",
       "spaghetti_extractor.external.import_abi",
+      "spaghetti_extractor.external.import_sites",
       "spaghetti_extractor.external.interface_profiles",
+      "spaghetti_extractor.external.lifetime_effects",
       "spaghetti_extractor.external.machine_abi",
       "spaghetti_extractor.external.machine_callback_boundary",
       "spaghetti_extractor.external.machine_import_profiles",
       "spaghetti_extractor.external.operation_model",
       "spaghetti_extractor.external.operation_profiles",
       "spaghetti_extractor.external.range_allocation",
+      "spaghetti_extractor.external.range_bindings",
       "spaghetti_extractor.external.range_ownership",
       "spaghetti_extractor.external.range_release",
       "spaghetti_extractor.external.resolved",
+      "spaghetti_extractor.external.resolved_contract",
       "spaghetti_extractor.external.service_protocols",
       "spaghetti_extractor.external.terminated_reads",
       "spaghetti_extractor.extraction",
@@ -12215,7 +14199,10 @@
       "spaghetti_extractor.static_program.semantics.transfer",
       "spaghetti_extractor.transfer",
       "spaghetti_extractor.transfer.atomics",
+      "spaghetti_extractor.transfer.behavioral_c_model",
+      "spaghetti_extractor.transfer.behavioral_c_render",
       "spaghetti_extractor.transfer.call_boundaries",
+      "spaghetti_extractor.transfer.call_sites",
       "spaghetti_extractor.transfer.compiler",
       "spaghetti_extractor.transfer.definedness",
       "spaghetti_extractor.transfer.exception_semantics",
@@ -12225,6 +14212,9 @@
       "spaghetti_extractor.transfer.model",
       "spaghetti_extractor.transfer.operations",
       "spaghetti_extractor.transfer.plan",
+      "spaghetti_extractor.transfer.reference_namespace",
+      "spaghetti_extractor.transfer.runtime_abi",
+      "spaghetti_extractor.transfer.runtime_helpers",
       "spaghetti_extractor.transfer.values",
       "spaghetti_extractor.transfer.x87",
       "spaghetti_extractor.util"

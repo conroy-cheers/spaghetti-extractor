@@ -1,4 +1,10868 @@
-# Completed Milestone: Independent Component Lifting Through Contracts
+# Current Goal: Practical Independent Lifting and Windows Program Delivery
+
+The practical DX-Ball Windows lifting goal is complete within the documented
+comparison and runtime scope. The [delivery review](dxball-windows-lift-delivery.md)
+records the source archive, application inventory, normal-program evidence and
+explicit fidelity limits. The final inventory accounts for the 190 selected
+operations, private helpers, startup zeroing and switch data; it found no missing
+application subsystem in the reviewed span. Five one-byte boundary endpoint
+corrections pass all 41 affected local cases. Application C and the delivered
+source archive are unchanged. Historical scratch values on failed API calls or
+malformed assets, unsupported unsafe addresses and arbitrary concurrency remain
+limitations; reproducing every such history is not a prerequisite for this
+practical delivery. This completion does not grant strong qualification or claim
+readiness for every Win32 target.
+
+The current DX-Ball delivery target remains a **Windows executable built from
+the lifted C**, using Win32, DirectDraw, DirectSound and WinMM through explicit
+adapters. Readable application C does not require replacing those operating-system
+services. Prioritize the Windows assembly's behavior, adapter/state correspondence,
+normal execution and usable source-project handoff. The operator clarified on
+2026-09-29 that porting the lifted C away from Windows runtimes is **outside this
+project's scope**. Windows execution through Wine is the preferred test path.
+Earlier other-platform delivery requirements below are historical and do not
+control current completion. Existing cross-architecture consumer results remain
+useful evidence, not a required porting campaign. The initial SDL graphics
+prototype was deferred on 2026-09-29 and the
+Windows assembly recipe restored exactly; it is retained only under
+`build/dxball-portable-desktop-2026-09-29/deferred-prototype/`, with no delivery claim.
+
+The Windows continuation now exercises all five scenes through normal program
+entry. The same external workload drives original and C candidates into the
+editor, clears/saves boards and navigates between them. Their complete 20,000-byte
+board files and three visible editor images match. Clearing two boards through
+the editor then exercises gameplay, end-of-board cleanup, score display, score
+table and return to menu. The score images and saved board/score files match;
+the returned animated menus differ in their moving dots and ball. These are
+wall-clock observations, not a deterministic rendering claim. No component or
+state-binding correction was needed for these paths.
+
+A clean source handoff now builds outside the repository using only Make,
+MinGW-w64 and its resource compiler. The public apply builds it in 2.54 seconds
+and runs the score workload. The missing embedded icon is now retained as two
+ordinary Windows resource payloads; all payload bytes, IDs and languages match
+the pinned image. Adding those resources leaves every preceding executable
+section unchanged. The source archive contains 1,107 files, including 46 assets,
+with no executable, compiled object or original image. Extracting it and building
+again produces identical section bytes. `WINDOWS.md` gives build/run and local
+edit instructions. All 49 component sources and evidence are unchanged.
+Evidence and the source archive are under
+`build/dxball-program-scenes-windows-2026-09-29/` (`validation.json`,
+`dxball-windows-source.tar.gz`). Repository metadata, Python lint and format
+registry checks pass. The later delivery review above accounts for the remaining
+application inventory and records the unsupported status/scratch-history paths
+as explicit limits on the practical translation.
+
+The standalone Windows MIDI adapter now preserves provider updates between C
+calls. A local check reproduced two losses in the preceding adapter: overwriting
+a queue link and overwriting updated flags while the C view remained unchanged.
+The adapter now publishes only C changes, deriving its write baseline from the
+same captured header as the view. Initial private header bytes come from the
+owned parser allocation. The stream component C is unchanged.
+
+Seven SDK-adapter checks pass through the existing shared Wine environment,
+including actual native completion, reset and callback requeue, plus controlled
+provider updates and open failure. All callbacks finish and pending counts reach
+zero before release in these cases. Native reset/requeue checks retain the original
+ignored `STILLPLAYING` unprepare results; close subsequently returns the buffers.
+The backend sees candidate calls and object identities only. These are finite
+adapter/lifecycle checks, not an exhaustive concurrency or device-failure claim.
+The public apply also passes normal game execution (gameplay, brick removal,
+10 points and clean exit). All 647 exported component files, 50 component objects
+and the 49-component selection remain unchanged; among 120 preceding assembly/
+bridge/backend objects only `program-win32-midi.o` changes. No pilot or solver
+work is needed. Evidence: `build/dxball-program-midi-2026-09-29/validation.json`.
+
+The [source-program integration audit](dxball-standalone-integration.md) now
+separates remaining native application bodies, program-owned state and service
+bindings, CRT adapters and platform backends. The 49-component selection now
+links into a normal-entry PE32 `dxball.exe` using the Win32 SDK, owned C state and
+packaged assets. It executes title, menu and gameplay and exits normally without
+loading the original executable. The public `candidate apply` path builds and
+runs that source program. This is a first executable integration milestone, not
+whole-game equivalence or completion on another platform. The
+[worklist](../tests/fixtures/dxball-standalone/README.md) records reproduction and
+the remaining platform, observation and historical-memory obligations.
+
+The first assembly layer now constructs program-owned objects using the existing
+component types, named initial data extracted from the pinned image, and direct
+C startup connections. Its startup check matches retained native scores, boards
+and all initialized numeric samples on x86-64 and emulated AArch64. Shared board,
+score and table views refer to the same owners; a second program instance remains
+independent. The executable loads neither the original image nor the workbench.
+All 49 preceding component implementations, records and compiled objects are
+retained. The public apply workflow adds the assembly without another pilot build.
+
+Scene assembly connects the five-scene dispatch table, title animation, text,
+palette, damage, board storage, editor regions and rendering. Gameplay and audio
+assembly now add 194 further service connections through the existing motion,
+brick, pickup, particle, explosion, powerup, progression, cleanup and audio units.
+Typed allocations use ordinary malloc/free without zeroing payloads. Including MDS
+resources, the preceding assembly resolved 377 declared bindings. The remaining
+143 are now connected through resource/byte adapters and actual Win32 services;
+the full PE32 link succeeds. All component implementations and records remain unchanged.
+
+MDS resource assembly now connects music records, the existing loader/parser/event
+chain, owned C storage and immutable file input. All six bundled music files
+match retained native metadata and used event bytes in both file and memory
+modes on x86-64 and emulated AArch64. The 12 cases exercise 376 buffers and
+1,513,032 event bytes, including owner links and input released before output
+observation. Host ASan/UBSan/leak checks also pass. This adds 26 service bindings
+without component changes or new workbench mechanisms. The stdio adapter covers
+packaged immutable assets, not general Win32 file semantics; malformed inputs,
+allocation failure histories and MIDI playback remain outside this assembly check.
+
+The ownership check runs progression -> round cleanup -> real frees across two
+independent program owners: 36 nodes in nine list families, preserved retained
+words and synchronized brick/frame roots. It passes on x86-64 and emulated
+AArch64, plus host ASan/UBSan/leak detection. A call-target review found the new
+menu binding mistakenly used single-page damage. It now uses the original
+mirrored-page operation; score-screen damage remains single-page. Fourteen
+routing checks exercise that distinction, and reintroducing the old menu error
+fails locally. No component algorithm correction or new workbench mechanism was
+needed. Original source was not consulted.
+
+Shell owns control/shift; menu and score-screen views refresh at scene dispatch
+and through the new window-event entry, including callback returns. Title owns
+the primary/back surface roots shared with flow. Twenty-four retained native
+menu/title key outcomes match through the new input adapters on x86-64 and
+emulated AArch64, starting with deliberately stale reader views. Startup storage
+comparisons still pass and another program owner's state remains untouched.
+All 49 components, 161 preceding component/consumer objects and 56 subsystem
+binaries are retained on each architecture. The public apply checks reuse the
+retained inputs, without rebuilding or rerunning the Wine pilot.
+
+The source program now executes its real dispatch/window-event path, CRT resource
+input, DirectDraw and DirectSound connections. The same external desktop driver
+treats original and source executables as candidate binaries. Holding a button
+across a frame enters gameplay; the retained source run executes 71 gameplay
+frames. A longer run launches the ball, removes a brick and records 10 points.
+Timing-dependent counts are diagnostics, not equality assertions.
+GDI screenshots remain black, but the shared desktop runner now offers opt-in
+compositor snapshots through a candidate-neutral driver action. Both executables
+produce actual title/game images. The final paused pair matches across the visible
+640x480 game image; an earlier pair differs only in the eight colours cycled during
+pause. Full images and differences are retained, with an explicit operator-selected
+comparison region; Wine's virtual client coordinates are not compositor coordinates.
+These wall-clock observations do not establish deterministic rendering equivalence.
+Evidence: `build/dxball-program-observation-2026-09-29/validation.json`.
+Native MIDI opening, header preparation/queueing and cleanup run; the later MIDI
+checkpoint above adds callback, reset and requeue coverage. Broader Windows scene
+execution and the standalone source handoff remain; another platform is outside
+the delivery scope.
+
+Normal program assemblies can now omit service protocol logging through the
+shared source-binding generator. DX-Ball's same 14-second workload drops from
+45,807,480 trace bytes to zero and still launches the ball, removes a brick and
+scores 10 points. Separate program bridge objects retain the traced component
+consumers; all 49 component records and implementations remain unchanged.
+Adapter calls, transport and outcome diagnostics remain enabled. Comparison
+preparation stays traced, and untraced output does not satisfy required service
+observations. The public adapter-only apply path demonstrates this without a
+pilot rebuild. Evidence: `build/dxball-program-tracing-2026-09-29/validation.json`.
+
+Cursor movement exposed a shared environment fault: Xwayland crashed in
+`xwl_cursor_warped_to` without a pointer seat. Weston now starts with `--fake-seat`.
+The unchanged cursor workload passes for both candidates, and a small X11 cursor
+regression runs without a game or Wine prefix. Headless Wayland remains mandatory.
+Application streams, instrumentation and Wine/compositor diagnostics stay distinct.
+
+Frame-history bindings preserve the reviewed predecessor/descriptor words and
+live board/pending/saved-board aliases. Unknown historical addresses stop with a
+capability diagnostic; failed status and malformed-file scratch histories still
+need explicit transport. Defaults do not prove native-history correspondence.
+Evidence: `build/dxball-program-platform-2026-09-29/validation.json`; preceding
+resource evidence: `build/dxball-program-resources-2026-09-29/validation.json`.
+
+Line drawing and region fill now use ordinary C through the shared DirectDraw
+test backend. All 18 local cases match the first C unchanged, including wrapped
+arithmetic, negative pitch, padding, retries and shared-surface callbacks. A
+deliberate threshold defect is diagnosed locally. The backend sees candidate
+calls and explicit object identities; no original/replacement role reaches it.
+Independent SDK and portable-C consumers exercise the same surface services.
+
+Normal execution selects 242 line calls and one fill and matches all 64 frames,
+1,493 platform interactions and all 46 preceding non-platform observation fields.
+Named surface roots supply stable input correspondence. Lossless snapshot
+references, byte-range references and patches retain every observed byte while
+keeping the report below its existing 8 MiB limit. The final normal check
+compiles two translation units and reuses 105 objects. No raster C correction
+was needed after local or normal execution.
+
+The selection has 49 components, 190 entries and 1,180 retained cases. Both
+x86-64 and emulated AArch64 exports execute the 18 new and 279 affected existing
+consumer cases, retaining all 48 preceding component implementations. Evidence:
+`build/shared-wine-draw-2026-09-29/validation.json` and the
+[raster workflow](../tests/fixtures/dxball-raster/README.md).
+
+The reviewed application-body worklist is now selected as C and the Windows
+normal-entry assembly executes. Continue exercising the remaining scene paths
+and preparing the standalone source handoff, auditing actual reachability during
+assembly. Windows SDK adapters provide production services; the shared Wine
+backend provides test observations. More variants of completed examples do not
+close these integration obligations.
+
+Eight numeric bodies now use ordinary C and libm: table initialization,
+integer/floating readers, coordinate projections and pan. All nine local cases
+match the first C unchanged, including every initialized sample, extreme angles,
+wrapping projections and generated pan inputs. A seemingly more accurate radians
+constant is diagnosed locally. Both x86-64 and emulated AArch64 source consumers
+pass. Normal execution selects initialization once and pan twice and preserves
+all 46 preceding observation fields, 64 frames and 766 platform interactions.
+Existing callers inline the six reader/projection helpers; their separate bodies
+are covered locally. The normal check compiles three units and reuses 101 objects.
+
+The preceding numeric selection has 48 components, 188 entries and 1,162 retained cases. All 47
+preceding component implementations and records remain unchanged. Evidence:
+`build/dxball-math-raster-2026-09-29/validation.json` and the
+[numeric workflow](../tests/fixtures/dxball-math/README.md).
+
+Eight clock, refresh-wait and random-state bodies now use ordinary C over the
+existing shared objects and explicit platform services. All 46 local cases match
+the first C unchanged, including scratch history, callback changes, wrapping
+comparisons, signed limits and arithmetic faults. A deliberately wrong elapsed
+comparison is diagnosed locally. Both x86-64 and emulated AArch64 source consumers
+pass. Normal execution records 334 outer runtime operations and preserves all
+45 preceding observation fields, 64 frames and 766 platform interactions.
+
+Integration exposed two issues. Shared capture now retains generated traces in
+their own bounded channel, keeping application output and Wine diagnostics
+separate. A MIDI adapter read its view and write baseline separately, allowing a
+provider update to be overwritten. A local interleaving case reproduced it; using
+the same captured words for both fixes it. All 50 MDS cases and 133 affected
+source-consumer cases pass on both architectures, with no authored-C correction.
+The final normal check compiles one adapter and reuses 101 objects.
+
+The preceding runtime selection has 47 components, 180 entries and 1,153 retained cases. All 46
+preceding component implementations remain unchanged; four MDS evidence records
+are refreshed, and the other 42 records are identical. Only three preceding
+consumer objects change for the transport correction. Evidence:
+`build/dxball-runtime-2026-09-29/validation.json` and the
+[reproducible workflow](../tests/fixtures/dxball-runtime/README.md).
+
+The [MDS stream lifecycle](dxball-mds-stream-continuation.md) now lifts start,
+pause, stop, completion and release into 75 lines of C. All 49 local cases match
+the first C unchanged. Together with the existing loader/parser/expander, this
+replaces the MDS implementation used by the music controller. Both source
+architectures pass 278 affected consumer cases; the selection has 44 components,
+164 entries and 1,046 retained cases. All 43 preceding implementations are reused.
+
+Shared backend additions support translated header storage and explicit controlled
+observation of invalid disposal. A normal-run failure was reduced to a local
+provider-link update: transport was overwriting fields the C had not changed.
+Publishing only changed fields fixes it without changing authored C. Normal
+execution now matches all 64 frames, 766 interactions and 42 preceding observation
+fields, including all 25 returned music buffers. The last check reuses 94 objects.
+
+Next, inventory remaining native runtime/platform calls and move the connected
+source selection toward a standalone normal-entry program. Production portable
+backends and the full game remain unfinished; do not substitute more component
+fixtures for that integration work. Evidence:
+`build/dxball-mds-stream-2026-09-29/validation.json`.
+
+The [MDS file/memory loader](dxball-mds-loader-continuation.md) now lifts its complete
+body into 34 lines of C, composing loader → parser → event expander through
+declared dependencies. All 41 local cases match the first C unchanged, including
+all six music files through both input modes, preserved output slots and cleanup
+failures. A deliberate publication defect is diagnosed locally. Both x86-64 and
+emulated AArch64 source consumers pass; the selection has 43 components, 159
+entries and 997 retained cases. All 42 neighboring implementations remain unchanged.
+
+Normal execution matches all 64 frames and 766 platform interactions and preserves
+all 41 preceding observation fields. It compiles three affected translation units
+and reuses 90 objects. No workbench or shared-backend extension was needed. Continue
+with info release, stream start/pause/stop and completion callbacks. The full game
+and production portable backends remain unfinished. Evidence:
+`build/dxball-mds-loader-2026-09-29/validation.json`.
+
+The [MDS container parser](dxball-mds-parser-continuation.md) now lifts its complete
+body into 57 lines of C, composing the existing event expander with shared storage
+services. All 42 local cases match the first C unchanged, including all six music
+files, partial writes, allocation/lock failures, leaks and dangling references.
+A deliberate cleanup defect is diagnosed locally. Both x86-64 and emulated
+AArch64 source consumers pass; the selection has 42 components, 158 entries and
+956 retained cases, with all 41 preceding implementations unchanged. The event
+expander's evidence reference binds its new parser consumer; the other 40
+component records remain identical.
+
+Normal execution reaches the parser through the actual loader and MIDI consumers,
+matches all 64 frames and 766 platform interactions, and preserves all 40 prior
+observation fields. It compiles three affected translation units and reuses 88
+objects. No workbench internals or shared backend extension was needed. Continue
+with the MDS file/memory loader, release and stream lifecycle. The full game and
+production portable backends remain unfinished. Evidence:
+`build/dxball-mds-parser-2026-09-29/validation.json`.
+
+The [MDS event expander](dxball-mds-events-continuation.md) now lifts the complete
+compact-event conversion loop into 39 lines of ordinary C. All 34 local cases
+match the first implementation unchanged, including 188 blocks from all six
+bundled music files, generated inputs and failure-side partial writes. A wrong
+inserted stream field is caught by a local replay. Both x86-64 and emulated
+AArch64 source consumers pass; the selection now has 41 components, 157 entries
+and 914 retained cases.
+
+Normal execution selects the new C 25 times through the actual MDS parser and
+matches all 64 frames, all 39 preceding observation fields and all 766 shared
+platform interactions. Adding an independent program entry retains the enclosing
+comparison identity and reuses 84 compiled objects. No workbench internals or
+platform extensions were needed. Continue with the MDS container parser and its
+allocation/header boundary, followed by loader and stream lifecycle code. The
+full game and production portable backends remain unfinished. Evidence:
+`build/dxball-mds-events-2026-09-29/`.
+
+The active goal now authorizes fixing significant tooling limitations generically
+and continuing the DX-Ball lift. The former stop-at-a-tooling-gap instruction is
+superseded. The [shared Wine environment](shared-wine-test-environment.md) now
+implements mapped storage, local/global allocation lifetimes and queued MIDI
+services. Independent SDK and portable-C consumers exercise them, including real
+Wine, x86-64 and emulated AArch64 execution. Target adapters supply application
+boundaries and identities; the backend has no original/replacement role flag.
+
+Normal DX-Ball execution matches 64 frames and 766 platform interactions, including
+25 queued/returned MIDI headers. All 38 preceding non-platform observation fields
+remain identical; the platform field expands with the new API/lifetime records.
+The lifted application C is unchanged. Two integration discoveries now have small
+local consumers: deferred reset completion with failed unprepares, and a failed
+native stream-open that still publishes a non-null output. Both preserve the
+original behavior. Repeated MIDI payload snapshots use exact backward references
+to stay within the existing report limit, without dropping observations.
+
+The 40-component source selection remains at 156 public entries and 880 retained
+cases. Refreshing the shared backend reruns the 176 connected reader/audio/WAV/music
+cases on each architecture and preserves all 40 component implementations. The
+remaining MDS library bodies still need translation into C; these test services do not supply
+a production portable music backend or complete game. Continue with independent
+MDS boundaries using the new shared facilities. Nine retained SDK/host/AArch64
+scenarios and all seven focused Nix backend/repository checks pass. The final
+normal comparison refresh compiles one changed backend source and reuses 86
+objects. Evidence and exact input bindings:
+`build/shared-wine-streaming-2026-09-29/validation.json`.
+
+The [DX-Ball music controller](dxball-music-continuation.md) now lifts play,
+resume, pause and stop into 44 lines of C. All 30 local comparisons pass the
+first implementation, including callback root redirection and failure cleanup.
+A stale-record defect is caught locally. Both source architectures pass; all
+39 neighboring records, 127 objects and 46 consumer binaries remain unchanged.
+The selection has 40 components, 156 public entries and 880 retained cases.
+Normal execution also matches 64 frames and preserves all 38 preceding
+observation fields. Shared allocator observation needed an adapter composition
+correction; the first controller C remains unchanged.
+
+The preceding significant limitation was the lower MDS library's shared platform
+backend: mapped-file and locked-storage lifetimes, plus prepared/queued MIDI
+buffers and completion callbacks. The extension above addresses that surface.
+The controller uses an application service boundary; it does not supply
+target-specific WinMM emulation. Full music and portable-game delivery remain
+unfinished.
+Evidence and concrete lower-library call sites: `build/dxball-music-2026-09-29/`
+and the music continuation above.
+
+The [DX-Ball file reader](dxball-file-reader-continuation.md) now lifts through
+shared Win32 file services into 28 lines of ordinary C. All 22 local comparisons
+pass, preserving short reads, fallback paths, freeing supplied buffers on failure
+and the original handle leaks. The first C needed no behavioral correction.
+The shared backend treats SDK callers and portable bindings as candidate binaries,
+with controlled failures, output preservation and handle histories implemented
+once for every target. Its independent consumer also exercises real Wine.
+
+Both x86-64 and emulated AArch64 source projects pass the 146 affected reader,
+bank, setup and WAV cases. The selection now contains 39 components, 152 public
+entries and 850 covered consumer cases. Normal execution matches 64 frames and
+26 reader calls, preserving all preceding observations and adding file traces.
+Two native closes with unobserved acquisitions are explicitly marked untracked;
+controlled component cases remain strict. This is practical experimental evidence,
+not universal platform or lifetime qualification.
+
+The preceding [WAV parser and loader](dxball-wave-continuation.md) supplies the
+connected consumer, including allocation, dangling-slot and partial-output cases.
+Its recorded shared file-service stopping point is now resolved. Integration
+extended reusable security/handle handling and compacted redundant masks losslessly;
+it did not change the lifted reader's behavior, discard observations, increase the
+report cap or require new checker/solver rules. Evidence and operator recipes:
+`build/shared-wine-files-2026-09-28/` and the file-reader continuation above.
+
+Music, remaining runtime functions and portable platform backends remain open.
+The exported component consumers and mixed normal run do not constitute a complete
+portable game. The full DX-Ball lifting objective is therefore still unfinished.
+
+The [shared Wine/DirectSound environment](shared-wine-test-environment.md) now
+serves candidate binaries without an original/replacement distinction. The runner
+owns those labels; target adapters retain application boundaries and state maps.
+Bank/setup fixtures use common SDK-typed COM bindings, controlled outcome/output
+schedules, callback dispatch and platform observations. Native mode calls Wine.
+Named and ordinal PE32 imports use the same generic interception mechanism.
+
+All 36 bank and 36 setup cases match without changing either lifted C body. The
+64-frame normal run preserves all 35 prior state observations and adds 354
+matching platform interactions, including unlocked sample bytes. Both standalone
+consumers pass on x86-64 and emulated AArch64. A structurally different secondary-
+buffer caller uses the same backend with SDK and portable-binding candidate
+binaries, including partial output, alias/lifetime and reentrant callback cases.
+Evidence and phase timings: `build/shared-wine-backend-2026-09-28/`.
+
+The isolated Nix DirectSound check now passes as well. Cache substitution avoids
+the previously attempted offline bootstrap rebuild, and the headless desktop now
+supplies a private software audio device for real Wine calls without host sound
+hardware. The shared environment owns this setup and cleanup for every candidate;
+the lifted C and target adapters are unchanged. Follow-up evidence:
+`build/shared-wine-nix-fix-2026-09-28/`.
+
+This closes the missing shared DirectSound backend milestone for its documented
+surface. It does not complete the DX-Ball lift or create a portable game runtime.
+Unsupported APIs, interface projections and concurrency remain explicit capability
+limits. The subsequent WAV continuation above supplies the application boundary
+for dangling slots, allocation and partially published parser outputs. Continue
+through documented interfaces and shared facilities; ordinary new components
+should not need their own platform implementation.
+
+The [DX-Ball sound device setup](dxball-audio-setup-continuation.md) lifts
+initialization and focus/reload in 76 lines of C over the existing bank and
+application owner. All 36 independent comparisons match the first C unchanged,
+including retries, positive failure statuses, nonlocal termination, callback
+redirection and a suspend/refocus sequence. A deliberately wrong success test
+is diagnosed locally without starting the game.
+
+Both standalone architectures pass the new cases while retaining all 36 prior
+implementations and contracts, 115 compiled objects and 43 consumer binaries.
+The source project has 37 components, 149 public entries and 776 covered cases.
+Normal execution matches 64 frames and all 34 preceding observations on its first
+run; no behavioral C correction was required. One conflicting adapter selection
+was corrected during preparation through the existing composition API. Native
+WAV loading, music, failed-query history and portable platform backends remain
+open. Loader investigation found dangling slots and an unwritten format pointer
+which require explicit boundary handling. Semantic end-to-end findings must be
+locally reproducible; a passing normal rerun cannot close a tooling gap. No new
+tool internals were needed, and the full goal remains active.
+
+The [DX-Ball sound bank](dxball-audio-continuation.md) lifts nine playback,
+recovery and lifetime entries in 95 lines of C. All 36 independent comparisons
+match the first C unchanged, including historical status, callback redirection
+and a sequence through the shared bank. A deliberately cached record pointer is
+diagnosed locally. Both x86-64 and emulated AArch64 consumers pass; all 35
+neighboring records, 112 prior objects and 42 consumer binaries are reused. The
+source project now has 36 components, 147 public entries and 740 covered cases.
+
+Normal execution matches 64 frames and all preceding observations on its first
+run, with no behavioral C correction. Sample/device creation, music and remaining
+runtime/platform services stay open. The mixed backend requires live incoming
+records and complete successful status outputs; failed-query recovery history
+and sample-loader failure/lifetime behavior still need transport and lifting.
+Local cases cover those status distinctions independently. No tool internals
+changed; every semantic integration finding must remain locally reproducible.
+The full goal remains active.
+
+The [complete DX-Ball display initializers](dxball-display-continuation.md) lift
+windowed/fullscreen setup, failure paths and their private reset/bind helpers in
+114 lines of C. Forty-six local comparisons match the first C unchanged, and a
+deliberate wrong destination binding is diagnosed without running the game.
+Explicit historical capability inputs cover failed and partial provider writes.
+All cases pass on x86-64 and emulated AArch64; all 34 neighboring records,
+109 prior objects and 41 consumer binaries are reused. The project now contains
+35 components, 138 public entries and 704 covered consumer cases.
+
+Normal execution matches 64 frames and all preceding observations. Its observer
+now records the actual destination at component completion instead of requiring
+a private helper call that the C inlines; no behavioral C change was needed.
+Every semantic integration finding must remain reproducible locally. Missing
+cases are coverage gaps; missing representation, execution or observation is a
+boundary/tooling gap. The normal display backend currently requires complete
+successful GetCaps outputs; failed-query caller history remains explicit backend
+work. Remaining native runtime helpers and portable platform/address backends
+also stay open. No new tool internals were needed. The full goal remains active.
+
+The [DX-Ball application shell](dxball-application-continuation.md) lifts WinMain,
+window dispatch and instance acquisition/release through existing shared objects
+and explicit services. All 28 local cases match the original without opening the
+game, including setup failure, nonlocal termination, message errors and
+callback-sensitive cleanup. A deliberate wrong GetMessage condition is diagnosed
+locally. The exported cases pass on x86-64 and emulated AArch64; all 33 neighboring
+records, 106 prior objects and 40 consumer binaries are unchanged. The source
+project has 34 components, 136 public entries and 658 covered consumer cases.
+
+Normal execution matches 64 frames and every preceding observation, reaching one
+lifted WinMain invocation and 98 window events. It exposed a harness dependency
+on an instruction inside the replaced WinMain. Counting outer frame entry/return
+instead restores the same input schedule without behavioral C changes, discarded
+observations or raised output limits; all 70 objects are reused on the recheck.
+No tool internals changed. Semantic integration discrepancies must remain locally
+reproducible; observers and input drivers must also survive replacement of their
+callers. Remaining native runtime helpers, display setup and portable platform
+and address-space backends remain open. The full goal is active.
+
+The [DX-Ball queued-event memory refinement](dxball-event-memory-continuation.md)
+extends the frame/blast lifecycle through explicit live-byte services. It
+preserves out-of-grid saved-board aliases, signed neighbor propagation, wrapped
+drawing-coordinate reconstruction and callback-sensitive reloads. Six new cases
+run through queue, actual frame, blast and expiry without game startup. All 16
+frame, 29 brick and 10 connected comparisons match the revised C unchanged.
+A deliberate wrong pending write is diagnosed at the exact local memory
+observation, with retained original/source output and a replay command.
+
+Twelve affected source consumers pass on x86-64 and emulated AArch64. Both retain
+31 neighboring component records, 90 prior objects and 28 consumer binaries;
+the project remains 33 components and 132 public entries, with 630 covered cases.
+Normal execution matches 64 frames and preserves all preceding observations,
+recompiling five units and reusing 63. The new state/interaction coverage comes
+from the independent consumers, not the normal workload. No tool internals or
+behavioral feedback fixes were needed. Every semantic integration discrepancy
+must remain locally reproducible; inability to represent, drive or observe it is
+a tooling gap. Native runtime helpers, startup and general portable platform and
+address-space backends remain open. The full goal is active.
+
+The [DX-Ball warning continuation](dxball-warning-continuation.md) lifts preparation
+and drawing in 71 lines of C. Twenty-six local comparisons match the first C
+unchanged. The actual lifted frame, paddle, pickup, particle and warning bodies
+also reproduce all eight retained native history traces on x86-64 and AArch64.
+The missing y/row/column input is now transported through explicit compatibility
+adapters, including partial descriptor writes and original-environment register
+values. No checker/compiler internals changed. All 32 neighboring component
+records, 102 prior objects and 38 consumer binaries are reused. The source project
+has 33 components, 132 public native entries and 624 covered consumer cases.
+
+Normal execution matches 64 frames and preserves all preceding observations;
+it reaches 64 inactive warning draws and no preparation. Expired/empty-board
+coverage comes from the independent consumers. Original warning entry history
+is captured before its new wrapper; canonical producer evidence remains the
+separate unwrapped native frame experiment. Two adapter setup/compiler fixes
+needed no behavioral C correction. The subsequent event-memory refinement above
+addresses downstream pending reads and blast effects for demonstrated raw
+coordinates; the collision hit operation retains its own domain. Remaining runtime helpers,
+startup and portable platform/address backends stay open. The full goal is active.
+
+The queue's original-address read is now an explicit service, with live portable
+aliases and a demonstrated nonlocal fault outcome. Twenty-nine local cases and
+four connected cases match the native original and pass on x86-64 and AArch64.
+All thirty-one neighboring component records and 98 unaffected objects are
+reused; the source project remains thirty-two components and 130 public entries,
+with 590 covered consumer cases. The 64-frame normal run also matches with every
+prior observation intact, but does not call queue: its expanded behavior is
+covered independently. No checker/compiler internals changed. The normal adapter
+still uses native address space, and out-of-grid event consumption remains
+outside the frame/hit/blast boundaries. The full goal stays active.
+
+The [DX-Ball gameplay scene](dxball-game-scene-continuation.md) lifts entry,
+redraw and keyboard handling in 80 lines of C. Twenty-four local and three
+connected cases match the first C unchanged and pass on x86-64 and emulated
+AArch64. Entry calls actual progression restart, which returns through scene
+redraw and score drawing over shared objects. All thirty-one neighboring
+component records, 98 prior objects and 36 previous consumer binaries are reused
+unchanged. The source project has thirty-two components, 130 public native entries
+and 582 covered consumer cases. Normal execution matches 64 frames, reaches entry
+and redraw once each and preserves every preceding observation; key handling is
+covered independently. Two setup/compiler errors needed no behavioral C correction
+or new tool internals. The practical compiler profile accepts the C; optional
+formal eligibility remains incomplete for static tables/text. Semantic integration
+findings must remain locally reproducible. Warning display, remaining runtime
+helpers, startup and portable platform backends remain open. The full goal stays active.
+
+The [DX-Ball round cleanup and departure](dxball-round-cleanup-continuation.md)
+lifts two public entries and five private native helpers in 65 lines of C.
+Twenty-eight local and four connected transition cases match the first C unchanged
+and pass on x86-64 and emulated AArch64. Nine lists share existing object types;
+callbacks can redirect disposal and change the caller's game-over decision.
+All thirty neighboring component records, 94 prior objects and 34 previous
+consumer binaries are reused unchanged. The source project has thirty-one
+components, 127 public native entries and 555 covered consumer cases. Normal
+execution matches 64 frames with prior observations intact, but reaches neither
+new entry: cleanup coverage comes from the independent consumers. The practical
+compiler profile accepts the C; the optional restricted proof frontend flags
+its typed-helper macro and free-service syntax. No behavioral C correction or
+new tool internals were needed. Semantic integration discrepancies must remain
+locally reproducible; inability to express, drive or observe them without the
+full application is a tooling gap. Warning operations, remaining scene lifecycle,
+startup and portable backends remain open. The full goal stays active.
+
+The [DX-Ball gameplay progression](dxball-progression-continuation.md) lifts eight
+entries in 109 lines of C. Thirty-three local and five connected frame/transition
+cases match the first C unchanged and pass on x86-64 and emulated AArch64. All
+twenty-nine neighboring component records, 90 prior objects and 32 previous consumer
+binaries are reused unchanged; the source project has thirty components, 125 native
+entries and 523 covered consumer cases. Normal execution also matches 64 frames,
+including restart and score refresh, with every preceding observation unchanged.
+Life loss and level completion are independently covered without game startup.
+A deliberate wrong-current-ball mutation is diagnosed locally at the exact
+changed field; the normal workload does not exercise that distinction.
+Preparation/compiler fixes needed no behavioral C correction or new tool internals.
+Every semantic integration discrepancy must remain locally reproducible; full-game
+execution cannot be its only diagnostic path. Warning display, scene lifecycle,
+cleanup, startup and platform backends remain open. The full goal stays active.
+
+The [DX-Ball powerup actions](dxball-powerups-continuation.md) lift seven entries
+in 145 lines of C, reusing existing ball/event records and exposing the native
+temporary lists. Thirty direct and seven connected four-frame pickup consumers
+match the first C unchanged and pass on x86-64 and emulated AArch64. All twenty-eight
+neighboring component records and 86 prior objects are reused; the source project
+has twenty-nine components, 117 native entries and 485 covered source-consumer
+cases. Normal execution still matches 64 frames with the selection installed,
+but reaches none of the new powerup entries. Their behavioral coverage comes from
+the independent consumers. Two setup errors were caught before execution; no
+C behavioral correction or new tool internals were needed. Scene lifecycle,
+startup and portable platform backends remain open. The full goal stays active.
+
+The [DX-Ball explosion lifecycle](dxball-explosions-continuation.md) lifts reset,
+creation and drawing/expiry in 48 lines of C. Twenty-one direct and four connected
+26-frame cases match the first C unchanged and pass on x86-64 and emulated AArch64.
+Shared gameplay roots are reused without neighboring interface changes; the
+connected consumer checks ball contact, complete animation/disposal and the frame's
+level-advance decision without game startup. All twenty-seven neighboring component
+records and 82 prior objects are reused. The source project has twenty-eight
+components, 110 native entries and 448 covered source-consumer cases. Normal
+execution matches one reset and 64 empty-list draws; creation/expiry coverage comes
+from the independent consumers. Every semantic integration finding must remain
+locally reproducible; no C behavioral correction or new tool internals were needed.
+Powerup and scene lifecycle services, startup and portable platform backends remain
+open. The full goal stays active.
+
+The [DX-Ball shot lifecycle](dxball-shots-continuation.md) lifts movement, pair
+firing and removal in 65 lines of C. Thirty direct and four connected eight-frame
+cases match the first C unchanged and pass on x86-64 and emulated AArch64.
+Existing shot records and motion state are reused through opaque allocation
+storage, without neighboring interface changes. All twenty-six neighboring
+component records and 78 prior objects are reused; the source project has
+twenty-seven components, 107 native entries and 423 covered source-consumer cases.
+Normal execution matches 64 empty-list movement calls; firing/removal coverage
+comes from the independent consumers, not this normal workload. Prior state,
+pixel, palette and input schedules remain intact. No new tool internals or
+behavioral corrections were needed. Explosion, powerup and scene lifecycle
+operations, startup and portable platform backends remain open; the full goal
+stays active.
+
+The [DX-Ball paddle component](dxball-paddle-continuation.md) lifts movement and
+drawing in 57 lines of C. The first draft matches 21 direct and four connected
+eight-frame cases unchanged, including pickup-driven resizing over shared objects.
+Both consumers pass on x86-64 and emulated AArch64. All twenty-five neighboring
+component records and 74 prior compiled objects are reused; the source project
+has twenty-six components, 104 native entries and 389 covered source-consumer
+cases. Normal execution also matches 64 movement/drawing calls each and 128 full
+paddle observations, with prior state/pixel/palette checks retained. No behavioral
+correction or new tool internals were needed. Semantic integration findings must
+remain reproducible through local or small connected consumers; a passing full
+game rerun alone does not close a gap. Shot, powerup and scene lifecycle operations,
+startup and portable platform backends remain open. The full goal stays active.
+
+The [DX-Ball particle lifecycle](dxball-particles-continuation.md) lifts creation,
+movement/expiry and pixel drawing in 88 lines of C. Twenty direct and four
+connected eight-frame cases match and pass on x86-64 and emulated AArch64.
+The boundary borrows the existing software-surface slot independently of font
+destination; no neighboring C or interface changed. All twenty-four neighboring
+component records and 70 prior objects remain unchanged. The source project has
+twenty-five components, 102 native entries and 364 covered source-consumer cases.
+Normal execution matches eight creations and 64 updates/draws, with 136 full
+particle observations and unchanged preceding pixel/palette/state observations.
+Intermittent Wine startup and controller deadlines are retained separately from
+the passing untraced run; no game-feedback correction to the C was needed.
+Remaining paddle, shot, powerup and scene lifecycle operations, startup and
+portable platform backends stay open. The full goal remains active.
+
+The [DX-Ball pickup lifecycle](dxball-pickups-continuation.md) now lifts creation,
+movement/collection, drawing and removal in 148 lines of C. The first draft
+matches 22 direct and five connected four-frame cases unchanged; both source
+consumers pass on x86-64 and emulated AArch64. All twenty-three neighboring
+component records and 66 prior compiled objects are reused. The source project
+has twenty-four components, 99 native entries and 340 covered source-consumer
+cases. Normal execution also matches, creating a pickup through the brick caller
+and moving/drawing it through the frame, with 129 full pickup observations.
+Collection and disposal remain independently covered by local consumers. No new
+tool internals or C behavioral corrections were needed. Remaining gameplay and
+powerup helpers, scene lifecycle, startup and platform backends remain open; the
+full goal stays active.
+
+The [DX-Ball brick/effect component](dxball-brick-actions-continuation.md) now
+lifts eight entries through existing shared-state and service boundaries.
+Twenty-one direct and four connected twelve-frame cases match and pass on
+x86-64 and emulated AArch64. All twenty-two neighboring component records and
+62 prior compiled objects are reused; the source project has twenty-three
+components, 95 native entries and 313 covered source-consumer cases. Normal
+execution matches 64 gameplay frames, including a brick hit. Its random-pickup
+and palette-deadline discrepancies are independently reproduced by small native
+helper consumers; equal inputs match and deliberately unequal inputs are
+diagnosed without game startup. No C behavioral correction or tool-internal
+change was needed; a portable compiler warning required equivalent bounds
+checks within the documented grid domain. Remaining gameplay helpers, scene
+lifecycle, startup and platform backends stay open; the full goal remains active.
+
+The [DX-Ball ball-motion component](dxball-ball-motion-continuation.md) now lifts
+creation, movement, rebound, brick contact and removal. The first authored C
+matches 29 local native cases and six connected two-frame cases without game
+startup. These and the sixteen affected frame cases pass on x86-64 and AArch64.
+Twenty neighboring component records and 55 of 58 prior compiled objects are
+reused; the frame's shared type tag refinement recompiles three byte-identical
+objects. The source project has twenty-two components, 87 native entries and
+288 covered source-consumer cases. Normal execution also matches creation,
+launch and sixteen gameplay frames without a C behavioral correction. Every
+integration finding must remain reproducible locally or in a small connected
+consumer; inability to express it is a tooling gap. Remaining physics/effect
+helpers, scene lifecycle, startup and portable platform backends remain open.
+No new tool internals were needed; the full goal stays active.
+
+The [DX-Ball gameplay frame](dxball-gameplay-continuation.md) now lifts shared
+list iteration, event disposal, powerups and frame sequencing. Sixteen local
+native cases match and pass on x86-64 and AArch64; all twenty neighboring
+component identities and 55 preceding objects are reused. The source project has
+twenty-one components, 82 native entries and 253 covered source-consumer cases.
+A live drawing discrepancy was reduced to a small frame/native-helper consumer:
+unequal random inputs reproduce it, while all four corresponding choices match.
+Normal execution now matches six gameplay frames with the paddle clock/random
+inputs explicit and observed; pixel and shared-state comparisons remain intact.
+No authored-C behavioral correction or new tool internals were needed. Local
+event-iteration defect detection also passes. Full gameplay helpers, startup and
+portable platform backends remain open; the full goal stays active.
+
+The [DX-Ball region-table continuation](dxball-regions-continuation.md) lifts
+reset, definition and hit testing through a borrowed view of the editor's
+existing storage. Nine local native scenarios match without neighboring bodies
+or game UI; those cases and the sixteen existing editor cases pass on x86-64
+and AArch64. The editor now calls the checked component. All nineteen neighboring
+component identities and 51 of 52 prior objects remain unchanged; other consumer
+binaries and their evidence are reused. The twenty-component source project
+implements 81 native entries with 237 covered cases. Real editor clear/save/close
+also matches, with 49 full region observations and unchanged saved-file bytes.
+A deliberate first-match defect is diagnosed locally. No authored-C behavioral
+correction or new tool internals were needed. Gameplay, startup and portable
+platform backends remain open; the full goal stays active.
+
+The [DX-Ball damage continuation](dxball-damage-continuation.md) lifts thirteen
+queue/cursor/presentation entries through existing shared-state interfaces.
+Nineteen local native scenarios match without the game UI. The nineteen-component
+source project implements 78 native entries; 228 cases are covered on x86-64
+and AArch64, with affected-consumer rechecks after the final observation change.
+All eighteen neighboring component identities remain unchanged, and 48 of 49
+prior objects remain byte-identical. Real editor clear/save/close execution matches
+with 839 damage observations. Its unbound-surface observer failure was reduced
+to a local startup regression using the same observation helper; removing the
+guard reproduces it without Wine or the game UI. The lifted C needed no behavioral
+correction. Region hit testing, remaining gameplay, startup and portable platform
+backends remain open; the full goal stays active.
+
+The [DX-Ball board-rendering continuation](dxball-board-rendering-continuation.md)
+lifts full-grid and cell drawing through existing shared board/scene/font and
+graphics interfaces. Eight local native scenarios match, including every tile
+byte, gameplay/editor differences, aliases and callback changes. The eighteen-
+component source project implements 65 native entries and passes all 209 cases
+on x86-64 and AArch64. All seventeen neighboring component identities remain
+unchanged; 41 of 46 previous compiled objects are byte-identical. The real editor
+clear/save/close workload matches with the C renderer selected. A fixture alias
+initialization error was caught and corrected by the local portable-source check;
+the renderer C needed no behavioral correction. No new tool internals were needed.
+Region/cursor/damage helpers, remaining gameplay, startup and portable backends
+remain open, and the full goal stays active.
+
+The [DX-Ball board-editor continuation](dxball-board-editor-continuation.md) now
+integrates its seven authored entries into the portable source project and the
+real clear/save/close workload. Seventeen components implement 63 native entries;
+all 201 retained source-consumer cases match on x86-64 and AArch64. All sixteen
+neighboring implementation/interface/contract identities and all 43 prior compiled
+objects remain unchanged. Normal execution matches across untouched original,
+instrumented original and the C replacement, including seven outer editor state,
+board, region and pixel/palette records and identical saved `Default.bds` bytes.
+No behavioral change to the authored editor C or new tool internals was needed.
+The sixteen local native cases independently cover all seven editor entries;
+the live workload does not exercise leave or every interaction. Native region,
+cursor helpers, remaining gameplay, startup and portable
+platform backends remain open. The full DX-Ball lifting goal stays active.
+
+End-to-end tests must not be the sole way to expose a supported class of semantic
+errors. Reduce each discovered discrepancy to a retained component, boundary or
+runtime-service regression, using a small connected consumer when state or
+lifecycle spans operations. Inability to express or execute that regression
+without the full application is a tooling gap. Missing test inputs remain a
+coverage gap; finite tests do not establish a universal guarantee. This requirement
+keeps the workflow useful for targets whose complete execution cannot be automated.
+
+The [DX-Ball board-data continuation](dxball-board-data-continuation.md) lifts
+five actual board collection/copy/mapping entries through a shared byte-backed
+state and file boundary. Fourteen native cases match; the sixteen-component
+source project passes 185 cases on x86-64 and AArch64 while preserving all fifteen
+neighboring implementations and all 40 prior compiled objects. Normal title/menu/gameplay/
+close execution matches, selecting the C loader and selector once each with full
+board snapshots. The previously named options scene is the built-in board editor;
+its interaction code remains the next consumer to lift. The full goal stays active.
+
+The [DX-Ball score-screen continuation](dxball-score-scene-continuation.md) lifts
+six actual display/input/transition entries through existing scene, font and score
+table contracts. Twenty native cases match; the fifteen-component source project
+passes 171 cases on x86-64 and AArch64. All fourteen neighboring implementation,
+interface and contract identities remain unchanged, with 35 of 37 old objects
+reused. The normal fifteen-component network matches through title/menu/gameplay/
+close; that workload does not reach game over, so live score-screen/name entry
+coverage remains explicit work alongside options, gameplay and platform
+backends. The full goal stays active; no new tool internals were required.
+
+The [DX-Ball score-table continuation](dxball-scores-continuation.md) lifts
+initialization, loading and ordered insertion through an independent record/file
+boundary. Twenty native cases match, including padding preservation, partial I/O
+and unsigned ordering. The fourteen-component source project passes 151 cases on
+x86-64 and AArch64 while reusing all 34 prior objects and preserving all thirteen
+neighboring implementations. Normal title/menu/gameplay/close execution also
+matches, selecting the C initializer and loader at startup and retaining two
+complete score-table records. Score-screen integration, remaining scenes/gameplay,
+startup and portable platform backends remain; the full goal stays active.
+
+The [DX-Ball main-menu continuation](dxball-menu-continuation.md) lifts seven
+actual menu and dot-animation entries through existing shared state and services.
+All twelve native cases match, and the thirteen-component source project passes
+131 cases on x86-64 and AArch64 while retaining 29 of 31 prior compiled objects. Normal
+title/menu/gameplay/close execution also matches with four menu state/pixel/
+palette records. Two controlled-adapter assumptions were corrected through
+ordinary C; no new tool internals were needed. Remaining scenes, gameplay,
+startup and portable platform backends still require lifting; the full goal
+remains active.
+
+The [DX-Ball title-scene continuation](dxball-title-scene-continuation.md) lifts
+the five actual scene lifecycle operations through existing shared objects and
+services. All twelve native cases match; the twelve-component source project
+passes 119 cases on x86-64 and AArch64 while retaining 27 of 28 prior objects.
+Normal execution also matches with all five scene operations selected and eight
+state/pixel/palette records. Existing public contract refinement handles the
+controlled-to-live consumer handoff without tool changes. Remaining scenes,
+gameplay and portable platform backends still need lifting; the full goal remains
+active and no significant tooling blocker was found.
+
+The [DX-Ball title-animation continuation](dxball-title-animation-continuation.md)
+lifts scrolling text, wave blits, wobble and palette cycling through the existing
+font/drawing and shared-state interfaces. All eighteen native cases pass, and the
+eleven-component source project passes 107 cases on x86-64 and AArch64 while
+reusing all 25 previous objects. Live title/menu/gameplay execution also matches
+with thirteen C animation calls and pixel/palette observations. No new tool
+internals were needed. Scene orchestration, remaining gameplay and portable
+platform backends remain open; the full DX-Ball goal stays active.
+
+The [DX-Ball PCX continuation](dxball-pcx-continuation.md) lifts image and palette
+loading through buffered file services and live pixel views. All twenty native
+cases match; the ten-component source project passes 89 cases on x86-64 and
+AArch64, reusing all 22 prior objects. Normal splash/menu/gameplay/close execution
+also matches with four image loads and a staged-palette entry selected in C.
+A decoder edit is diagnosed by recompiling one unit and reusing two. No tool
+internals were changed. Scene/gameplay bodies and portable platform backends
+remain; the full DX-Ball translation goal stays active.
+
+The [DX-Ball game-flow continuation](dxball-game-flow-continuation.md) lifts frame,
+scene, key and recovery control using existing sprite services. All 32 native
+cases match, and the nine-component portable source project passes 69 cases on
+x86-64 and AArch64 while reusing eighteen prior objects. A local callback-ordering
+defect is diagnosed by rebuilding only one unit. Normal execution now matches
+through a twelve-frame splash/menu/gameplay/close sequence using counted input at
+the main-loop call site. This resolves the preceding timing mismatch without
+filtering graphics observations. Scene bodies and platform backends still need
+lifting; the full DX-Ball goal remains active. No new tool internals were needed.
+
+The [DX-Ball capture/restoration continuation](dxball-capture-continuation.md)
+adds two native entries through the existing loader/font/cleanup interfaces.
+Sixteen connected native cases pass; the eight-component source project passes
+all 37 retained cases on x86-64 and AArch64, reusing fifteen prior objects.
+Normal execution reaches gameplay with the C loader and capture selected. Seven
+bank loads, one capture and 32 metric observations match, with all processes
+exiting zero. The full live receipt remains a mismatch because external input
+arrives at different splash-update points, adding a scrolling glyph on the source
+side. That trace is retained; integration needs an explicit frame/input boundary.
+No new tool internals were needed. Full DX-Ball translation and portable game
+backends remain open.
+
+The [DX-Ball drawing continuation](dxball-drawing-continuation.md) adds destination
+selection and transparent/opaque sprite drawing using the public workflow.
+All fifteen native cases pass; the updated seven-component source project passes
+21 connected cases on x86-64 and AArch64. Its six prior implementations remain
+unchanged and thirteen compiled objects are reused. Live execution also selects
+the existing font renderer: all three game runs exit zero, with 128 outer graphics
+calls and 32 metric calls matching. This is bounded call evidence, not complete
+frame/audio or playthrough coverage. No new significant tooling blocker was found;
+the DX-Ball translation goal remains active.
+
+The [DX-Ball sprite continuation](dxball-sprite-continuation.md) adds binary-derived
+font metrics, rendering and asset loading to the existing cleanup network: six
+components implementing ten native entries. All 40 font and six real-asset native
+comparisons match; the standalone source consumers also match 20 font and six
+asset cases on x86-64 and AArch64. A real count-field translation error was caught
+and corrected by editing one C file while reusing twelve compiled units.
+No checker/compiler/proof-engine change or pilot rebuild was needed.
+
+The normal-program observation blocker is now resolved by capturing Windows
+application handles separately from Wine/host diagnostics. The live DX-Ball
+metrics/cleanup comparison passes: plain/original/source exit zero and all 32
+retained metric-call observations agree. Different RADV warning counts remain in
+host logs and no longer affect application comparison. The shared capture also
+serves experimental candidate runs; genuine application stderr differences still
+fail. Evidence is retained in `build/wine-output-separation-2026-09-27/`.
+This bounded startup/input/close probe uses actual heap objects and native
+services; full frame/audio coverage and a complete portable DX-Ball remain open.
+
+The [path/source-delivery continuation](jq-path-services-continuation.md)
+completes the bounded practical jq attempt. Shared Windows path contracts now
+cover canonicalization, file lookup and module search; native comparisons match
+104 support, 25 file and 25 loader cases. Both incrementally assembled programs
+and clean builds from source-only archives match 324 CLI and 32 live-value cases
+on x86-64 and AArch64. Every selected component is exercised. The clean builds
+require no lifting tools, original binaries or cached objects. Actual link maps
+identify the remaining generated syntax machinery, C libraries and three thin
+accessors; source and license inventories make that reuse explicit.
+
+The jq delivery is **source-assisted and practically tested**, within its stated
+Windows-compatible runtime profile. It is not an entirely handwritten parser,
+automatic binary recovery, unrestricted Win32 portability or strong formal
+qualification. No significant tooling blocker remains for this bounded attempt.
+The broader general-purpose product and strong-assurance objectives retain their
+own completion criteria. Earlier entries below describe historical checkpoints
+and the work remaining at those times.
+
+The [slice/test-runner continuation](jq-final-support-continuation.md) replaces
+the retained range helper and complete `--run-tests` implementation through the
+existing public workflow. Native comparisons match 63 value-runtime and 18 real
+test-runner scenarios; both architectures match 308 CLI and 32 live-value cases.
+All 40/41 neighboring component records remain unchanged, with 187/188 objects
+reused and twelve changed or added. A conditional pthread spelling is resolved
+in the ordinary C assembly recipe. Path canonicalization and the library/final
+delivery audit remain; a native path probe confirms the Windows/POSIX semantic
+difference. No significant tooling blocker was found, and the goal remains active.
+
+The [runtime-context continuation](jq-runtime-contexts-continuation.md) lifts
+decimal/dtoa thread state, cleanup and hash-seed initialization through the
+existing stateful workflow. All twelve native lifecycle cases match, including
+complete process teardown. Both architectures match 288 CLI and 32 live-value
+cases, including jq's threaded internal tests. The 40/41 prior component records
+remain unchanged; 186/187 objects are reused and seven change. A callback-registry
+ordering mismatch was resolved in an ordinary C runtime adapter. Path services,
+retained helper/test-runner review and explicit library/final delivery remain.
+No significant tooling blocker was found, and the goal remains active.
+
+The [runtime-boundary continuation](jq-runtime-boundary-continuation.md) refines
+two existing components through the unified `candidate apply` action. Value
+release joins the value runtime; home expansion and byte search join program
+support. All 48/62 native scenarios pass, and both standalone architectures match
+287 CLI and 32 live-value cases. The 38/39 neighboring component records remain
+unchanged; 178/179 objects are reused and eleven rebuild. Remaining work is
+lifecycle/seed/path services, the internal test runner and slice helper, plus
+explicit library reuse and final delivery. No significant tooling blocker was
+found, and the goal remains active.
+
+The [program-support continuation](jq-program-support-continuation.md) lifts 17
+UTF-8, source-location and bytecode support entries. All 44 native scenarios and
+all 17 direct entry adapters pass; both standalone architectures match 285 CLI
+and 32 live-value cases. The old three backend objects contain no functions.
+All 39/40 previous component records remain unchanged, with nine objects rebuilt.
+Shared value-release, lifecycle/path services and final library/delivery review
+remain. No significant tooling blocker was found; the goal remains active.
+
+The [CLI/output continuation](jq-cli-continuation.md) lifts the command-line body
+through real process execution. All 48 native scenarios match; both standalone
+architectures match 277 CLI and 32 live-value cases, including default text output.
+A shared output provider resolves CRLF and the observed text/binary assertion
+difference. All 38/39 previous component records and source files remain unchanged.
+Only ordinary C adapters and jq fixture recipes changed; no tool internals did.
+Support/runtime dependencies and final delivery audit remain, so full jq is still
+incomplete. No significant tooling blocker was found; the goal remains active.
+
+The [shared value-runtime continuation](jq-value-runtime-continuation.md) lifts
+39 production entries covering strings, invalid values, object mutation/iteration
+and related helpers. All 47 native scenarios match; both standalone architectures
+match 227 CLI and 32 live-value cases. The existing ARM hash provider is retained,
+and its missing string-indexes selection is filled from existing checked work.
+All 37 previous component records remain unchanged. Remaining work has shifted
+to CLI/runtime delivery and support libraries; full jq is still incomplete.
+No significant tooling blocker was found, and the goal remains active.
+
+The [numeric value continuation](jq-number-continuation.md) lifts decimal/binary
+number storage, conversion, comparison and release through eleven entries.
+53 native scenarios match; both standalone architectures match 215 CLI and 32
+live-value cases. All 36 neighboring components remain unchanged; only five objects
+rebuild. Decimal context/lifetime and arithmetic/conversion libraries remain
+explicit shared runtime dependencies. Native adapter issues were resolved without
+changing tool internals. Full jq remains incomplete and the goal stays active.
+
+The [builtin continuation](jq-builtin-continuation.md) adds jq's builtin library
+through the existing public workflow. Its persistent callback table and twelve
+production entries match 94 native scenarios. Both standalone architectures match
+204 CLI and 32 live-value cases, preserving all 35 prior components. The new
+`candidate apply` path handles integration and retains failed calendar-profile
+proposals without changing the working project. Native ABI, allocation-observation
+and 32-bit calendar differences were resolved in ordinary C; no tool internals
+changed. No significant tooling blocker was found, and the goal remains active.
+
+The [component assembly update](component-assembly-updates.md) resolves the latest
+jq stopping point. `candidate apply` stages source export, desired bindings and
+optional integration checks together. The actual lifecycle 27-to-28-entry change
+now applies through the installed workflow, preserving 34 neighboring components
+and local edits. A deliberate link failure leaves the working project unchanged;
+the corrected x86-64 and AArch64 projects match 148 CLI and 32 live-value cases.
+Reversible backend retirement and entry-provider reconciliation are shared
+facilities; stronger qualification remains separate from practical validation.
+
+The [compiler IR/lifecycle continuation](jq-ir-continuation.md) lifts instruction
+graph construction/binding and execution lifecycle through existing facilities.
+Native comparisons match 38 IR and 39 lifecycle scenarios; the combined programs
+match 148 CLI and 32 live-value cases on x86-64 and AArch64, preserving all 33
+previous component records/files. That attempt stopped at
+a concrete assembly-refinement gap: source export accepts a reviewed boundary
+change, but incremental jq assembly could not accept the changed native entry set.
+The new module can be recovered from the preceding validated checkpoint; that
+manual recovery is not a general boundary-refinement workflow. The report records
+the retained evidence; the assembly update above supplies the bounded fix using
+existing proposal/backup machinery.
+Full jq remains incomplete, and no proof/compiler machinery was changed.
+
+The [value continuation](jq-value-continuation.md) adds ordering/deletion and
+recursive equality/containment/object merging through the existing workflow.
+Native comparisons match 85 and 59 scenarios; the combined standalone projects
+match 140 CLI and 32 live-value cases on x86-64 and AArch64, retaining all 31
+previous component packages. Normal consumers exposed observable CRT sorting
+behavior for NaNs, resolved with a reusable C library. Direct C API comparison
+also checks the exact integer result instead of merely its sign. A small jq
+assembly-recipe correction distinguishes removed helpers from public entries.
+No new semantic/compiler/proof machinery is needed; full jq remains incomplete.
+
+The [file-runtime continuation](jq-file-runtime-continuation.md) resolves the
+module-loader attempt's filesystem/text-input gap through an ordinary shared C
+library and the existing tooling. It also lifts file loading and multi-file input
+state: 19, 25 and 11 native scenarios match for the file reader, module loader
+and input-state consumer. Both standalone architectures match 120 CLI plus 32
+live-value cases, preserving 28 unrelated component records/files. Fresh recipes
+reproduce the authored C; the input-state handoff reuses all compiler objects.
+Runtime scope is explicit, including a separately retained default-output CRLF
+difference. Missing runtime implementations should be supplied through the
+workflow; they are not automatically tooling blockers. Full jq recovery remains
+incomplete, and no checker/compiler/proof machinery changed in this continuation.
+
+The [module-loader continuation](jq-module-loader-continuation.md) adds a refactored
+loader through the existing workflow: 25 native cases match, and both standalone
+projects match 103 CLI plus 32 live-value scenarios. All 28 neighboring component
+records/files are preserved; each build changes six objects. That attempt stopped
+at a shared runtime portability gap confirmed through normal entry: Windows CRLF
+and Ctrl-Z file-input behavior and case-insensitive module lookup differ from the
+host filesystem/CRT backend. The mismatch also exists in the previous portable
+build and on AArch64. The current interfaces can carry ordinary C backends, but
+the reusable compatible file/path provider was missing, and is now supplied for
+the scoped profile described above. No tool internals changed;
+full jq recovery and unrestricted portability remain incomplete.
+
+The [stateful component workflow](stateful-component-workflow.md) resolves the
+allocator admission blocker from the [jq continuation](jq-compiler-lifting-continuation.md).
+Practical components declare shared module/thread state in the existing boundary;
+ordinary C retains initialization and destruction. Declarations follow dependency
+selection, local editing and source export, bind contract identity and reject
+duplicate provider claims. Formal qualification stays separate. jq's nine-entry
+allocator matches native lifecycle scenarios covering two contexts, thread-local
+handlers, nonlocal failure returns and thread/process cleanup. A missing worker
+destructor is detected; its repair recompiles one file and reuses four objects.
+The provider is exported into the existing source projects with all 27 neighbors
+retained. Both x86-64 and AArch64 projects match 86 CLI and 32 live-value scenarios;
+each build changes six objects. Fifty focused tests and eight repository gates
+pass. Full jq recovery remains incomplete.
+
+The [compiler-backed practical C milestone](compiler-backed-practical-c.md) removes
+the generated frontend's raw-syntax gate while retaining separate formal
+eligibility. The jq language parser now passes 29 native consumer comparisons,
+including a helper refactor, deliberate defect, replay and repair; local edits
+reuse five neighboring objects. The installed workflow also transfers to the
+37-case DX-Ball consumer. Both standalone jq source projects match 81 CLI and 32
+live-value cases on x86-64/AArch64, preserve all 25 neighboring components and
+rebuild six objects. Focused tests and eight repository gates pass. Full jq
+recovery remains separate; exact evidence and remaining limits are in the report.
+
+The subsequent [component-module workflow milestone](component-module-workflow.md)
+addresses the two blockers found by the jq translation attempt: practical checks
+admit compiler-observed immutable storage independently of formal eligibility,
+and source assembly retains operator-written grouped entry adapters. The parser
+now runs through normal jq entry on x86-64 and AArch64, with local source updates
+reusing neighboring objects; the shared assembly facility also transfers to Hello.
+This is additional partial-jq workflow delivery, not full jq recovery.
+
+The [subsequent jq lifting attempt](jq-lifting-continuation.md) adds the JSON
+serializer and interpreter next-result core without tool changes. Their combined
+source program passes 78 CLI cases and 32 live-value scenarios on x86-64 and
+AArch64. That 2026-09-25 attempt stopped at the generated language-parser boundary: host/PE32
+compilation succeeds, but mandatory macro/conditional source-profile restrictions
+prevent practical comparison before substantial normalization. Full jq remains
+incomplete; the working replacements and exact stopping evidence are retained.
+
+The [2026-09-25 completion audit](practical-product-audit.md) records delivery of
+the **scoped practical operator-workflow and standalone-program milestone**.
+Hello and partial-jq program comparisons pass on both architectures, and the
+rebuilt installed workflow transfers to DX-Ball. The dependency-layer, public-API
+inventory, documentation and module-size failures are resolved. Thirteen Nix
+gates pass; the PE32 realization conflict was traced to pathname-dependent DLL
+linking and fixed with deterministic staging. Full jq/DX-Ball recovery, broader
+runtime coverage and G1–G7 strong qualification remain separate future work.
+The chronological entries below retain their original progress and limitations;
+their then-active queues do not override this scoped completion status.
+
+Operator priority reaffirmed 2026-09-24: keep development centered on a usable
+component workflow. Stop expanding console edge-case coverage or similar runtime
+fidelity investigations unless a concrete component handoff is blocked by them.
+Record bounded runtime results and their limitations, then return to boundary
+preparation, local C editing, discrepancy diagnosis, reuse and program integration.
+The interface-first jq string-split handoff below now exercises those public
+commands on a previously unprepared operation. Continue from its preparation
+findings; further locale/terminal qualification is not its completion criterion.
+Match validation to the change: use focused regressions and an actual operator
+handoff, then move on when they pass. Additional fixture coverage or pilot rebuilds
+need a concrete workflow reason.
+The operator's subsequent review explicitly rejects polishing individual examples
+as the work queue. Use existing examples to expose and verify shared workflow gaps.
+Next work should reduce what an operator must reconstruct to establish an unfamiliar
+boundary: reusable state/service definitions, C adapters, observations and program
+bindings. Measure first preparation separately from an already-prepared edit loop.
+The subsequent object-lookup trial now exercises a live shared table through the
+same facilities, including local C editing and integration under the existing path
+operations. Its measured finding was avoidable rebuilding of source-program
+bindings; stable diagnostic counter names now remove that coupling.
+The lookup can now also be selected directly inside the retained native network
+through the focused boundary recipe. This removes the intervening standalone
+getter-fixture reconstruction from the handoff.
+The consuming string-hash dependency now extends that same network through a
+shared mutable cache and process-seed service. Its source handoff also separates
+the component's fixed-width entry from a platform-width public C wrapper.
+The reviewed backend seed accessor now travels with those binding inputs, so
+preparation and refresh no longer require a manual C append in each project.
+Generated portable binding guides now expose these actual choices beside each
+component, with links to its services, declared suppliers and shared C support.
+`component start --comparison-result` now resumes a retained local or consumer
+result directly, carrying its reuse baseline and selected case into the next
+check command. Source-project C can return through the same focused operation.
+Reopened workspaces now print a repeatable history command: the retained result
+seeds its first check, then later edits reuse the history's latest completed check.
+Profiling that loop now removes repeated include-path probing within each cache
+validation pass; measured whole-consumer improvement is modest and recorded below.
+Sharing validated receipts and contracts during preparation now reduces the same
+consumer's repeated check from 3.00s to 2.06s without changing evidence rules.
+The cold-context C observation now also works through ordinary public component
+checks and source export, with a local edit/defect/replay/repair loop and reuse of
+the existing neighboring contracts. No target-specific comparator is required.
+
+Status: scoped practical delivery complete 2026-09-25; practical P1–P4 walkthroughs delivered 2026-09-22.
+H1–H3 operator/program handoff is delivered within its recorded experimental scopes.
+Fresh-input Hello/DX-Ball recipes, normal-entry Hello execution and the previously
+unprepared string-conversion boundary trial pass. Standalone Hello source and
+runtime bindings now also pass 82 program cases with a portable UTF-8 entry on
+x86-64 and AArch64 under QEMU, plus the raw-byte entry regression, within the
+explicit Windows-1252/redirected-stream scope described below.
+Controlled application-allocation failure now also passes 17 normal-entry cases
+on both architectures, including actual diagnostics/termination and a retained
+wrong-exit replay/repair workflow. Physical memory exhaustion remains unobserved.
+The public component-to-program round trip now supports `candidate export --update`:
+a checked C edit can refresh the assembled library while preserving application
+work, reusing unaffected local checks and retaining the previous library.
+The subsequent previously unprepared stream-close boundary passes local native
+comparisons, error/lifetime defect checks, zero-work neighbor reuse and normal
+standalone shutdown on both architectures, using the existing authoring facilities.
+The next jq string-slice trial now supplies the path network's retained string
+operation in ordinary C, including actual interpreter allocation failure. It
+exposed a mixed scalar/resource instrumentation gap, repaired in shared validation;
+that initial setup remains a tooling-gap finding, not a toolkit-free operator trial.
+The selected twelve-unit jq network now also assembles into a conventional source
+project with an explicit unlifted jq backend. Normal CLI execution passes 61 cases
+and 32 live-value scenarios on x86-64 and AArch64 under QEMU. Public local editing,
+neighbor reuse, source updates and backend-defect replay/repair pass. This is a
+portable source-assisted partial jq lift, not complete jq recovery.
+Its optional source-backend failure consumer now also passes seven selected
+allocation/handler/lifetime comparisons on each architecture, with a retained
+reference-defect replay/repair. The cold thread-context case now also compares
+through an explicit live-object observation, retaining its physical layout difference
+without requiring numeric-context initialization before the checked operation.
+The component workspace now gathers boundary/dependency knowledge from existing
+declarations and offers local inspection without a provider build. A previously
+unprepared jq string-length operation reuses existing string services/adapters,
+passes public edit/replay/neighbor reuse, and joins the source project on both
+architectures. This is an operator-workflow checkpoint, not a component-count goal.
+Portable source assembly now also consumes the exported library directly, including
+its retained service-contract/binding references, without reopening native
+comparison packages. The jq handoff preserves the same compiled inputs and
+executables; shared bridge generation also transfers to Hello and DX-Ball.
+Exported libraries now keep a generated boundary guide beside each component's C.
+Partial updates refresh those guides for the combined selection, including retained
+neighbors, without rebuilding unchanged code or reopening their comparison folders.
+Their dependency sections now link direct suppliers/consumers and shared or recursive
+group members; the library index replaces the list of every unrelated component.
+Connecting a separately defined service supplier can now request its C declaration
+through the existing binding specification, preserving the caller's adapter C.
+`component start --case-file FILE` now imports hand-written or generated argument
+lists into the existing driver, preserving C and printing an expanded-suite check.
+Object deletion now reuses the live-table boundary for mutation after copy-on-write;
+its local edit, alias-defect replay and normal source-program integration pass.
+Backend refresh also preserves unrelated C edits when adding the reviewed binding.
+Interface-first authoring now carries existing C and nested helper headers into
+a revised declaration workspace, regenerating editor commands and preparation
+source lists. This removes manual C transplantation during boundary design;
+adapting the C and reviewing executable transport remain explicit operator work.
+Matching PE program comparisons now package directly as runnable experiments,
+retaining the compiled executable/DLL and checking state as well as output. The
+installed Hello/DX-Ball handoff runs after supplied comparison folders are removed;
+explicit experimental policy can distinguish separate local checks from selected
+network evidence. Normal-entry comparisons can declare a stable Windows pathname
+so moving the experiment does not silently change a program input.
+`candidate policy` now prepares the existing experimental policy and a readable
+assumption/contract review from retained comparisons, naming missing local checks
+and printing the corresponding build command. The operator no longer needs a
+custom script or manual digest calculations for this handoff.
+After a compatible local edit, `candidate build --reuse-experimental` retains the
+previous policy and unchanged component receipts while taking the new program
+comparison and fresh edited-unit check. The operator need not enumerate or rerun
+every neighbor's check to assemble the next experiment.
+`component start --experimental-package` now reopens a checked unit by name,
+restoring its local setup and guides and printing the check/integration commands.
+This removes numbered receipt-directory lookup from the handoff. Units without
+local setups are identified explicitly and can still be edited through the main
+program workspace while an independent comparison is prepared.
+The network-to-local handoff now also passes using existing commands: prepare the
+reviewed DX-Ball bind fixture, check it, attach that result with
+`candidate build --reuse-experimental`, then reopen bind by name. The selected C,
+boundaries and native program binary remain unchanged, so neither a new program
+run nor new toolkit machinery is needed merely to retain the local setup.
+The subsequent previously unprepared jq string-index boundary reuses those
+authoring facilities for two possibly aliased owned strings and a growing array
+result. Its local edit, lifetime-defect replay and real interpreter consumer pass
+without checker or transport changes. The same checked C now runs through normal
+source-program entry on x86-64 and AArch64 for the selected search workload.
+Standalone assembly needed an explicit lower-service header; that recipe omission
+was corrected without changing the exporter or adding a new artifact family.
+The jq source recipe now groups each additional entry with its required adapter
+headers, deriving copying and includes together and reporting missing files early.
+An exported supplier's C can also return directly to its existing consumer through
+`--dependency-package COMPONENT=SOURCE_PROJECT`, with no separate local fixture.
+The consumer retains its adapters, boundaries and other selected implementations.
+`candidate export --update-components --component COMPONENT` completes that loop:
+publish just the checked supplier while preserving unfinished neighboring C and
+its previous comparison records. The command and guides identify those drafts.
+The same partial update can add a compared component after explicit boundary
+review, preserving the existing project and compiled neighbors. The jq handoff
+adds string-indexes with reviewed C/backend wiring and exercises normal entry;
+platform integration remains an operator task rather than a fresh-export requirement.
+The jq source recipe can now refresh its already reviewed entry/backend choices
+in place, including proposed files and explicit preservation of manual build
+merges. This removes the subsequent file-copying and metadata-editing handoff.
+First-boundary preparation now stages a complete package before publishing it;
+operators can correct rejected inputs and retry without removing a partial workspace.
+Native entry setup now also derives its hook/storage/trap-check C from the pinned
+image and operator-selected ranges. Three jq recipes use this installed helper;
+Hello string conversion also uses it for a relocated entry and separate cold
+fragment, in both local and normal-program comparisons. Signatures, shared state
+and observations remain explicit C work.
+`component status --comparison-package WORK --reuse-comparison RESULT` now previews
+local edits, contract changes, affected selected consumers and compiled-file reuse
+without execution, using the checker's existing input and invalidation rules.
+Fresh headless desktop connections no longer invalidate unchanged compiled C:
+the actual compiler environment excludes desktop connection variables, while
+runtime comparisons continue to track their full execution environment.
+Fresh interactive Nix shells also retain eligible objects: their disposable
+temporary-directory variables are withheld from the actual compiler. Pure builds
+retain those variables for Nix's path filtering.
+The authoring helper now also accepts named operation groups and explicit shared
+context state, avoiding handwritten signatures/projections for related entries.
+Hello's eight-entry allocation family uses it with exactly the same interface
+and generated C; its focused public edit/check/export handoff passes.
+Grouped/stateful components can also use generated service-table and scope helpers
+with explicit manual C entries. Hello's allocation adapter now uses this mode,
+and the source export regenerates those bindings without its comparison workspace.
+The grouped allocation package now also passes public replacement in its existing
+native quoting consumer, with unchanged caller/neighbor inputs and boundary
+contracts. Real entry/alias probes exercise every selected operation.
+Driver changes now use the same package revision API as boundary changes. The
+DX-Ball native recipe retains selected C and neighbors while replacing reviewed
+execution inputs, without manually rewriting hashes, composition or headers.
+Hello's normal-entry recipe now uses the same path, including explicit independent
+program-entry packages. The composition resolver retains shared suppliers and
+rejects conflicting selections without inventing caller edges.
+Runtime-failure feedback now shows per-side exit/timeout status, the last parsed
+service event and a short stderr excerpt, with the complete retained log linked.
+Operation reference-accounting setup now also has a small authoring helper:
+operators name consumed inputs, produced results and the resource classification,
+then the existing lifecycle builder/validator supplies the payload. Four jq recipes
+use it with their old binding IDs. No runtime rule or evidence format changes.
+Operators can now define, lift, compare, diagnose and integrate the bounded jq
+storage/path subsystem and repeat that workflow on a connected DX-Ball graphics
+scope. These are experimental checkpoints with explicit environment assumptions,
+not broad Win32 readiness. Wider runtime/locale coverage, operator handoff and the
+[practical product exits](whole-target-independent-lifting.md#practical-product-completion)
+remain the delivery goal. Full G1–G7 qualification is a separate strong-assurance
+objective, with unchanged proof standards. Full lifts of jq and DX-Ball are later work;
+their affected regression and pilot obligations remain required.
+
+The operator's later 2026-09-22 review changes completion criteria, not only
+sequencing. It supersedes the earlier saved goal text requiring every G1–G7 exit
+for general usefulness. On resuming 2026-09-25 the goal service returned no active
+goal. The previously requested implementation goal has been reinstated against
+the practical product exits, carrying the operator-workflow priorities below;
+no earlier strong-assurance objective was marked complete. This ledger and the
+revised mandatory plan record the controlling user direction. Historical
+checkpoint entries below retain their original G1–G7
+references; they do not reinstate a compulsory formal-verification campaign.
+
+## Default workflow: practical stateful lifting
+
+The operator's 2026-09-21 review changed the implementation order. The delivered
+[P1–P4 in the mandatory plan](whole-target-independent-lifting.md#practical-subsystem-milestone-and-sequencing)
+milestone covers a substantial connected subsystem that operators can define,
+author, compare, debug and integrate, followed by reuse on a structurally different
+target. Its completion does not depend on formal closure of G1–G7; those remain
+the separate stronger qualification exits. Publish usable experimental
+checkpoints as they become executable, with their tested scope and assumptions.
+The earlier goal's comparison/lowercase pair is an achieved intermediate
+gate; the mandatory plan's practical sequencing determines the next work.
+
+The selected scope starts with **jq array storage and lifetime beneath the
+value/path network**, followed by DX-Ball's connected resource lifecycle. Creation,
+retain/release, shared reads, copy-on-write mutation, growth and destruction are
+implemented by authored C in the bounded jq scope. The native-`jv` transport and
+leak observer alone would not supply that implementation. Retained outside-scope
+services and representation readers remain explicit. DX-Ball now extends beyond
+the early-failure experiment into normal continuation and a resource consumer.
+
+The normal workflow is boundary definition -> ordinary C -> retained/generated
+comparison -> discrepancy replay and repair -> real-consumer integration -> reuse.
+Use existing interfaces, service catalogs, generated bridges, C adapters, comparison
+packages, SDK and experimental build/test commands. Formal checks are optional
+additional evidence. Current experimental policy already supports unavailable or
+timed-out proofs; missing executable transport or known behavioral discrepancies
+remain separate problems. Keep tested, assumed and proved findings distinct.
+
+Acceptance requires shared-alias/lifetime/allocation-failure negatives, accurate
+local versus integration invalidation, a compatible representation change, and
+both public target walkthroughs without new proof machinery for each unit.
+Measure operator effort and warm edit/diagnosis time alongside separate phase
+costs. Retained cases and small fixtures precede pilot rebuilds. No new unrestricted
+quoting proof attempt is the immediate next action; the results below are retained
+strong-assurance work and diagnostics, not practical-milestone prerequisites.
+
+The selected P1–P4 implementation and execution exits are delivered below.
+The practical delivery goal is complete in the audited scopes; full qualification is tracked separately.
+Repository validation for the newest checkpoint is recorded with its evidence.
+
+### Operator/program handoff
+
+The 2026-09-22 priority review replaces the open-ended queue of additional native
+dependencies with a bounded **operator handoff and program execution** milestone.
+The [H1–H3 acceptance criteria](whole-target-independent-lifting.md#h1h3-operator-handoff-and-program-execution)
+control this delivered milestone. P1–P4 are delivered within their stated scopes; neither more
+component counts nor completion of broader formal proofs is the next exit.
+
+1. **H1: reproduce and establish a new boundary.** Make the existing connected Hello setup
+   reproducible from pinned original/runtime inputs and supported authoring APIs,
+   without a previous developer's completed comparison directory. Demonstrate
+   boundary definition, ordinary C editing, memory/service discrepancy replay,
+   repair, unaffected-neighbor reuse and experimental build/run. Record manual
+   adapter work and any tool-internal changes; package editing alone is insufficient.
+   Fresh reproduction and the [previously unprepared string-conversion trial](../tests/fixtures/hello-string-conversion/README.md)
+   now pass using documented facilities; analysis/adapter/setup effort is measured
+   separately from warm edits. Requiring checker, artifact or compiler internals changes
+   is a tooling gap. An agent-run trial is not an independent human usability study.
+   Its workspace must expose inputs, shared objects, services, outcomes, examples
+   and assumptions through reusable shared layouts/lifecycle conventions.
+2. **H2: run through the program.** Carry that selected subsystem through Hello's
+   normal program entry and representative command-line workloads, observing which
+   selected allocation/conversion operations run and including error paths. Original
+   startup/TLS and retained services need explicit executable treatment. The
+   [normal-entry recipe](../tests/fixtures/hello-program/README.md) now delivers
+   the selected twelve-workload handoff, including actual TLS execution, output
+   defects, retained replay and repair. The routine-image suite remains separate.
+   Keep this an experimental mixed implementation. The practical path continues
+   to standalone source, reusable platform backends and another architecture;
+   strong admission remains a separate claim.
+3. **H3: check that the facilities transfer.** Reproduce the connected DX-Ball
+   workflow from fresh inputs with the same authoring/runtime facilities, and use
+   the jq network for affected shared-state regressions. Document target-specific
+   adapters and unsupported interactions. Fresh DX-Ball reproduction and the jq
+   regression now pass. The controlled graphics oracle remains
+   explicitly distinct from native DirectDraw execution.
+
+The handoff is complete within these scopes. Freeze further component expansion
+while closing concrete standalone/runtime usability gaps. Further
+operations must close a concrete standalone-source dependency, selected workload,
+missing executable interaction or demonstrated discrepancy. Optimize a measured setup/edit/replay
+cost when it impedes that sequence. Finish the operator sequence after each shared
+fix; do not turn the fix into a universal heap, callback or proof-model project.
+
+H1–H3 complete when their recorded workflows and integration runs pass, even if
+formal rules are unavailable or time out under the existing experimental policy.
+Known discrepancies, unsupported execution and stale inputs still prevent a pass.
+The practical whole-program goal remains open until its standalone-source,
+reusable-backend, cross-architecture and validation exits are satisfied. Strong
+qualification does not control practical completion; it keeps its own G1–G7 exits.
+Tested, assumed, unobserved and proved findings remain separate throughout.
+
+### Delivery priorities and subsequent work
+
+The bounded milestone below is delivered; its [completion audit](practical-product-audit.md)
+binds the final repository and installed-workflow evidence. The following priorities
+remain guidance for subsequent target work. They do not require continuing to polish
+these examples or keeping the completed scoped goal open until full jq recovery.
+
+The console experiment below is now bounded and parked. Prioritize reducing the
+steps an operator must reconstruct to use a component workspace and establish a
+new boundary. Measure manual adapter/preparation work separately from repeated
+execution; add infrastructure only for a demonstrated workflow obstacle. Run
+focused checks for changed behavior and required repository gates, then move on.
+The prepared-Wine-prefix experiment below is also closed without a production
+feature: its storage and repeated-read costs outweigh the modest edit-time saving.
+Do not extend either experiment merely to improve its individual result. The next
+handoff should identify a repeated preparation or assembly step, remove it using
+the existing interfaces/C facilities, and demonstrate that improvement on a
+structurally different existing consumer. Completion means less operator work;
+additional component counts or a broader example test matrix are not substitutes.
+
+The [standalone recipe](../tests/fixtures/hello-standalone/README.md) now supplies
+application control/options, the existing lifted allocation/conversion bodies and
+portable runtime bindings. It compiles and executes without original application
+bodies or Behavioral-C fallback on two architectures. The practical whole-program
+path is demonstrated for one explicit environment; it is no longer merely a
+component library or mixed original/lifted program.
+
+The portable UTF-8 argument entry now removes the need for operators or test
+launchers to preconvert source-program arguments through Windows. Controlled
+allocation-service failure now exercises the standalone program's fatal path.
+The subsequent source handoff exposed and closed the missing public library-update
+step, as recorded below. Concurrent fresh Wine startup now reduces the measured
+local edit/check from 14.513s to 8.648s while preserving separate runtime state,
+ordered cases and exact evidence binding. The subsequent stream-close trial below
+records first-boundary effort and reuses a shared live-object view in native and
+standalone adapters. Its declaration, transport and assembly need no per-unit tool
+internals; semantic adapter work remains substantial. The subsequent jq string-slice
+trial below transfers that process to a retained non-Hello dependency, including
+shared contents, aliases, allocation failure and an actual interpreter consumer.
+Its first setup exposed a shared instrumentation limitation even though the
+executable memory/handler machinery was already sufficient. Preserve that finding.
+The selected non-Hello source/runtime handoff now passes below. It exposed a real
+callback-identity dependency and unnecessary library-wide recompilation, both
+closed through C bindings and one shared exporter improvement. Keep component
+counts fixed while following concrete operator/backend gaps. First-boundary
+preparation, cross-session revalidation and warm edits remain different costs;
+the prepared assembly is not an independent human usability trial. Broader backend
+coverage and operator handoff remain open, rather than a compulsory proof campaign.
+Other locale/code-page profiles
+and native terminal output remain unsupported; additional prepared cases alone
+do not establish operator usefulness. Reuse shared C
+backends and existing interfaces. Keep setup effort separate from warm edits, and
+carry affected cases through the standalone executable and another architecture.
+Do not present the source-assisted Hello frontend, prepared recipes or one locale
+as general automatic application recovery. A new operator trial should expose
+repeated adapter/assembly work before adding toolkit abstractions for it.
+
+Preserve the applicable integration/export/pilot/repository checks and finite
+evidence boundaries. Missing executable behavior keeps its scope open. Strong
+qualification retains its separate G1–G7 objective; it does not control practical
+delivery or become the compulsory next campaign after this checkpoint.
+
+### Close repository validation and the practical milestone — 2026-09-25
+
+The source-handoff validation shared by local comparison and candidate export now
+lives below both consumers, preserving public imports and artifact semantics.
+Oversized command/proof/test modules are split by responsibility. The saved
+pre-refactor AST comparison preserves 98 function bodies and 114 test bodies;
+unrelated dirty work remains intact. The affected 248-test suite passes after its
+sole new repository-map omission is fixed and rechecked. Metadata and format-reader
+registries are refreshed, and all thirteen required Nix gates pass.
+
+The retained PE32 conflict is resolved at its cause: the linker derives a DLL's
+default image base from its output pathname. Stable relative link outputs followed
+by installation into the Nix output produce identical bytes across directories,
+and the corrected fixture passes the Nix rebuild check. No global store records
+were edited and no proof standards changed.
+
+The current installed CLI passes Hello/DX-Ball open/check/reuse/export and jq's
+multi-file exported-source return to local and native-consumer checks. Seventeen
+public commands pass; all four unchanged repeats do zero compiler/link/execution/
+model/solver work. Retained comparisons, source builds and standalone program
+matrices are rebound to their exact files rather than rebuilt. The practical
+requirement-by-requirement audit closes within the documented standalone Hello,
+partial source-assisted jq and controlled DX-Ball scopes. It does not establish
+full jq, native DirectDraw or arbitrary Win32 recovery.
+
+Evidence: `build/practical-repository-closure-2026-09-25/` and the linked
+[practical product audit](practical-product-audit.md). The preceding repository
+refactor was implementation progress; the intervening jq readiness answer was a
+status assessment. This continuation resolves its named remaining validation work.
+
+### Audit practical delivery and extend program workloads as data — 2026-09-25
+
+The [completion audit](practical-product-audit.md) revalidates 44 retained
+comparisons and three standalone source handoffs. The current installed CLI
+opens, checks, reuses and exports Hello and DX-Ball; unchanged repeats do no
+compiler/link/execution/model/solver work. Fresh normal-entry Hello comparisons
+pass all 82 cases on x86-64 and AArch64 in the explicit runtime environment
+recorded by the audit. A development-environment startup failure remains retained.
+
+The latest jq source selection exposed a real integration-handoff gap: the old
+61-case matrix does not execute three additional selected entries. The program
+recipe now accepts `--case-file FILE` inputs rather than requiring runner edits.
+One operator workload covers array/string indexes and object deletion. Both
+architectures pass all 62 program cases plus 32 live-value scenarios using the
+unchanged source builds. Selected-entry coverage, raw outputs, statuses and input
+bindings remain checked; no pilot, model or solver work was needed.
+
+Eleven Nix gates pass. Repository/architecture checks reveal five failures,
+enumerated in the audit. The missing public preparation root and generated-path
+documentation are corrected; layer ownership and responsibility-based module/test
+splits still need reconciliation. A broader PE32 fixture realization also reports
+a content-addressed cache conflict and is not counted as passing. The active goal
+therefore stays open. Evidence and exact commands are retained under
+`build/practical-product-audit-2026-09-25/`.
+
+### Replace retained jq object lifecycle bodies — 2026-09-25
+
+The [object storage workflow](../tests/fixtures/jq-object-storage/README.md) now
+replaces table creation, final-reference destruction and copy-on-write beneath
+the existing object lookup/deletion and interpreter consumers. Their ordinary C
+owns initialization, slot traversal, reference transfer and table disposal.
+Declarations reuse the existing value convention, observer and composition APIs;
+the shared object layout is defined once. Manual C adapters express the pinned
+private entry ABIs and portable source wrappers. No checker, artifact format or
+compiler machinery was extended.
+
+The connected native comparison passes four cases: shared aliases with inactive
+slots and growth, unique ownership with an aliased input/output holder, real
+interpreter mutation, and nonlocal allocator failure. Create and release also
+pass separate local cases without selecting neighboring component bodies.
+Omitting the transferred input release preserves returned values but is diagnosed
+through allocation/lifetime observations. Repair and retained replay pass; the
+edited check compiles one translation unit and reuses eight. The unchanged repeat
+takes 0.605s with zero compiler/link/execution/model/solver work.
+
+Normal source-program execution passes on x86-64 and AArch64 under QEMU. The
+workload invokes authored creation 53 times, release 143 times and unsharing 287
+times while exercising the existing object/path components. All 20/19 neighboring
+component objects and their declarations are preserved. Incremental builds take
+0.62s/7.38s; the new component/binding objects, diagnostic counters and affected
+backend translation unit rebuild. The selected original private symbols are
+absent from the backend archive, and each replacement occurs once in the program.
+
+This exposed a shared source-assembly limitation: additional bindings assumed
+value-token transport and the backend scanner only accepted public definitions.
+The recipe now accepts explicit private definitions, preserves their declarations
+for existing callers, and lets opaque/scalar entries use declared C headers.
+Compatible wrappers remain operator C outside the backend archive, preserving the
+existing body-absence gate. This is a backend recipe improvement, not automatic
+ABI inference or a new proof model.
+
+The recorded authoring window from initial retained disassembly to the first
+matching connected check is 416s; investigation before capture is excluded and
+this is not a human usability timing. Current preparation takes 0.375s internally
+(0.512s including command startup). Commands, separated costs, failed first
+attempts, replay, symbol inventories and both program runs are retained under
+`build/component-object-storage-2026-09-25/`. No pilot rebuild was needed.
+Guarded allocation, generic value services, rehash/insertion and the remaining jq
+backend are still dependencies. New source-program failure coverage and broader
+program matrices were not claimed or substituted for this scoped handoff.
+
+### Refactor files inside an exported source project — 2026-09-25
+
+An ordinary exported-C refactor was blocked: `--reuse-source` could not combine
+with explicit file edits, and adding a private helper invalidated the old file
+inventory before import. The same `component start` command now accepts
+`--source-file`, `--remove-source` and `--private-header` with that selection,
+for either a local component or a supplier in an existing consumer. Exported
+implementation files may already have been physically renamed or removed.
+Shared inputs, existing public-header roles and contracts remain checked; no
+metadata editing or new artifact family is required. A matching partial export
+adopts the helper files and retires the old source while preserving neighbors.
+
+The jq string-hash refactor now returns through native local and consumer
+comparisons, partial source publication and normal host program execution. Its
+source project retains all 18 neighboring components and 48 component/binding
+objects, rebuilding only the two changed component objects. The workload invokes
+the selected hash component 12 times and matches the original result. The native
+local/consumer checks took about 7.35s/11.80s; their older saved compiler-engine and
+environment bindings required refreshing 8/43 translation units. This is recorded
+separately from program-build reuse, not claimed as warm comparison-cache reuse.
+The source-program build took 0.16s; model and solver work were zero.
+
+Eight focused regressions pass, including a helper defect detected through its
+consumer, undeclared file rejection and preserved neighboring builds. Commands,
+phase costs and validation are retained under
+`build/component-export-refactor-2026-09-25/`. This closes a shared local-editing
+gap; it adds no component coverage and does not make the source-assisted jq project
+a complete lift. Full jq still requires replacing its retained runtime/backend
+dependencies through the public workflow. Further work should close those
+practical preparation/integration gaps, rather than polish this refactor example.
+
+### Check portable C before preparing an executable fixture — 2026-09-25
+
+Interface-first workspaces offered syntax commands but could not use the public
+source/profile check without registered target products. A file-scope mutable
+counter in jq's draft compiled successfully while violating the existing C
+profile. Operators otherwise had to reach comparison preparation or write a
+separate source-check wrapper to get that feedback.
+
+`component check --source --authoring-workspace DIR` now runs the existing source
+checker directly on current authored C and helper headers. It regenerates interface
+declarations, compiles on host and PE32, and reports the existing profile diagnostics
+without a target/provider build, driver, original execution or recipe execution.
+Default feedback is temporary for repeated edits; optional `--output` retains
+source inputs and existing source-check reports. Generated authoring guides print
+the command. No profile rule or proof standard changes, and adapter syntax/linking,
+memory transport and behavior remain separate checks.
+
+The jq counter is diagnosed before a fixture exists; repair passes on both
+compilers. The same command passes on Hello's grouped allocation C. Each check
+compiles the authored body and generated conformance unit on both toolchains:
+about 0.36s total, including 0.067s/0.071s compiler time for jq/Hello. Model, solver,
+link and program-execution work are zero. The checked drafts attach through the
+public command with exactly their previous comparison plans and unchanged
+original inputs. Existing behavioral receipts are neither relabelled nor rerun.
+
+Nine focused tests pass in 1.839s, including current helper discovery, profile and
+compiler-error repair, fresh declarations despite edited editor headers, and the
+existing source/adapter workflows. Inputs, commands, phase costs, metadata refresh
+and repository-gate results are retained under
+`build/component-authoring-source-check-2026-09-25/`. No pilot or program rebuild
+was required. These are early authoring diagnostics, not new component coverage or
+broader target qualification.
+
+### Preserve authoring choices during boundary refinement — 2026-09-25
+
+Reopening an interface-first workspace required repeating its compiler, entry
+symbols and private-header choices. Omitting them reset jq's PE32 compiler to
+host `cc` and changed `lifted_string_split` to `lifted_string_split_run`; the actual
+driver then failed on its Windows headers. Hello's grouped allocation interface
+required repeating eight entry symbols as well as its compiler. This was repeated
+setup bookkeeping, separate from reviewing changed boundary semantics.
+
+Workspaces now retain those choices in editable `authoring.json` data consumed by
+the existing preparation recipe. Reopening carries names for surviving operations,
+gives new entries defaults, preserves helper roles for surviving files and accepts
+explicit overrides. An unavailable retained compiler requires a replacement.
+No old recipe is executed, and comparison attachment retains its own execution
+setup and header-role rules. Legacy workspaces without these choices need them
+supplied once. The existing contract/evidence formats are unchanged.
+
+After moving and reopening both workspaces without repeated choices, all eight jq
+and six Hello translation units syntax-check with their intended tools. Preparation
+reproduces the previous plans and generated runtimes exactly. Both public checks
+match their existing two/nine cases, including Hello's allocation-failure outcome,
+with zero compiler/model/solver work; each links once and executes its cases.
+Reopening takes about 0.10s each, removing two repeated options for jq and nine for
+Hello. Checks take 6.540s/0.564s. Wine uses headless Wayland; original inputs remain
+unchanged. These handoffs exercise existing boundaries and do not expand coverage.
+
+Five focused tests pass in 2.407s, including an actual changed-signature edit and
+comparison, grouped-entry refinement, missing-compiler recovery and existing
+adapter/supplier workflows. Inputs, commands, phase costs, metadata refresh and
+repository-gate results are under `build/component-authoring-choices-2026-09-25/`.
+No extraction/proof pilot or source-program/architecture rebuild was required.
+
+### Prepare resource and handler support with the boundary — 2026-09-25
+
+The full jq adapter handoff exposed a circular preparation dependency: value
+transport could not compile until comparison preparation generated its resource
+header. Hello's allocation driver similarly needs handler declarations before
+the executable fixture exists. Interface-first authoring now uses the existing
+resource and service runtime generators. `--resource-checks FILE` retains the
+reviewed operation settings, exposes their roles/limits in `BOUNDARY.md`, and
+carries them into `prepare.py`. Editor commands include all adapter and generated
+runtime C. The comparison factory still owns runtime generation and linking;
+operators do not copy generated files into their authored inputs.
+
+Reopening preserves resource settings and uses the existing revision rules for
+unrelated schema changes. Changed operation values or reachable types require
+explicit reviewed settings. C-only attachment checks any supplied resource
+settings against the selected boundary, alongside its catalog and assumptions.
+This extends the shared preparation path without new contract or runtime formats.
+
+All eight jq and six Hello authoring translation units syntax-check before a
+comparison exists. Both handoffs reproduce their previous plans and generated
+runtimes exactly, with original inputs unchanged. The native PE32 jq comparison
+matches two cases and reuses every compiled object. The retained-C Hello allocation
+comparison matches nine cases across eight entries, including an actual nonlocal
+allocation-failure outcome; it recompiles six units in this execution context.
+Workspace creation takes about 0.10s each, all syntax checks 0.309s/0.079s, factory
+preparation about 0.020s each, and public checks 6.640s/1.284s for jq/Hello. Both
+link once and perform zero model/solver work. Wine runs in headless Wayland.
+
+Six focused tests pass in 2.404s, covering generated support, recipe preparation,
+adapter discrepancy detection, revision and existing local/supplier imports.
+Inputs, commands, phase costs, metadata refresh and repository-gate results are
+retained in `build/component-authoring-runtime-2026-09-24/`. No extraction/proof
+pilot or source-program/architecture rebuild was needed for this preparation
+change. These are existing reviewed boundaries; this closes an authoring obstacle,
+not new component analysis, broader runtime coverage or a heap proof.
+
+### Prepare adapter C before the executable fixture — 2026-09-24
+
+The service bridge generator already handled typed calls and explicit transport,
+but interface-first authoring could not retain those binding choices or prepare
+adapter files/editor commands. `component start --interface-intent` now accepts
+the existing `service_bridge` specification plus named adapter C and support
+files. It renders the existing generated bridge, retains the inputs locally, and
+lists them in `prepare.py`. Editor commands include the selected adapter C and
+headers using the operator's selected compiler. No new bridge semantics, contract
+format or automatic backend choice is introduced.
+
+Interface revision carries edited adapters/headers and reviewed bindings with
+`--reuse-source`; invalid binding selections reject before publication. Adapter
+bodies still need operator review against changed declarations. C-only imports
+retain the selected comparison's adapters. The existing boundary-revision API
+adopts explicit adapter changes without replacing its original/runtime setup,
+cases or neighboring selections. Early bridge generation supplies syntax and
+call/transport scaffolding; comparison preparation retains its resource checks.
+
+The jq string-split handoff compiles its authored C and two reviewed adapters with
+the PE32 compiler before a comparison exists. DX-Ball uses the same workflow for
+its authored initializer and portable graphics adapter. A local adapter comment
+edit survives reopening and explicit adoption. Both existing two-case comparisons
+match, with unchanged plans, original inputs and neighboring adapters. Initial
+workspace preparation takes 0.101s/0.108s, syntax checks 0.037s/0.024s total, and
+public comparison 4.907s/0.867s for jq/DX-Ball. Each comparison recompiles only the
+edited bridge; model and solver work remain zero. Wine uses headless Wayland.
+
+Five focused tests pass in 2.005s. The compiled regression starts without a fixture,
+prepares a comparison from the generated recipe, carries a behavior-changing adapter
+edit through revision, and detects its discrepancy. It also rejects missing service
+bindings without leaving a partial workspace. Existing knowledge, C-import and
+supplier workflows still pass. Metadata refresh and the metadata, module-closure,
+production-lint and SDK gates pass, as does the diff check.
+Evidence: `build/component-authoring-adapters-2026-09-24/`.
+No extraction/proof pilot or source-program/architecture rebuild was needed for
+this preparation change. The real-target handoffs reuse existing reviewed boundaries;
+they are not fresh component analysis or broader runtime qualification.
+
+### Retain boundary knowledge before comparison preparation — 2026-09-24
+
+Interface-first C workspaces previously retained service signatures and contract
+identities without their definitions or authoring assumptions. Operators had to
+reopen another component's catalog or recipe to recover ownership, effects,
+outcomes and admitted-state premises. `component start --interface-intent` now
+accepts the existing service catalog and assumption text files, keeps local copies,
+and uses the shared boundary renderer for a readable `BOUNDARY.md` beside the C.
+The generated preparation recipe reads those copies directly. No new contract
+schema, proof rule or execution format is introduced.
+
+Interface revision retains this knowledge with `--reuse-source` and regenerates
+the guide. Incompatible service definitions need a reviewed replacement catalog;
+explicit assumption files replace inherited premises. A revision removing every
+service drops its unused catalog. Attaching the C to an existing comparison also
+checks any supplied catalog and assumptions against that selected boundary, so
+incompatible premises cannot disappear during the handoff. Missing knowledge is
+identified without asserting unrestricted inputs or guaranteed service behavior.
+
+The existing jq string-split and DX-Ball initializer handoffs retain their eight
+and twelve service declarations, respectively, including the full ownership,
+effect/outcome and shared-state context. Removing the original catalog/premise
+files and moving/reopening each authoring workspace preserves that context and
+the preparation inputs. Public attachment reproduces both comparison plans
+exactly. Their two-case native jq and retained-C DX-Ball checks still match;
+all prior inputs remain unchanged. New workspace/reopen preparation takes about
+0.09–0.10s each; attachment takes 0.404s/0.578s and comparison 6.406s/2.671s.
+The jq comparison reuses all compiled units; DX-Ball recompiles fifteen in its new
+execution context. Model and solver work are zero. Wine runs under headless Wayland.
+
+Four focused tests pass in 1.363s, including contract/assumption carry-over,
+same-signature changed-contract rejection, explicit premise replacement and a
+conflicting-assumption import. Metadata refresh, module closure, production lint,
+repository metadata, SDK validation and the diff check pass.
+The DX-Ball trial initially retained the default
+stub alongside its supplied entry; the documented `--remove-source` selection
+corrected that preparation mistake. No target C, checker or transport change was
+needed. Evidence: `build/component-authoring-knowledge-2026-09-24/`.
+This is a shared preparation improvement on existing boundaries, not a fresh
+component analysis, source-program rebuild or broader graphics/portability claim.
+
+### Attach interface-first C to an existing comparison — 2026-09-24
+
+The source-library handoff exposed a missing connection: `--reuse-source` rejected
+an interface-first workspace because it required a comparison plan. Operators can
+now attach that workspace's current `source/` C and headers to a prepared comparison
+or retained result. The same input works as `--dependency-source` in a consumer's
+start/check/status commands. This uses the existing source-import path, without
+executing the editable preparation recipe or introducing another artifact.
+
+The selected comparison retains its exact interface, shared-header roles,
+operation symbols, assumptions, services, adapters, original inputs and cases.
+Declarations must match exactly; different signatures or otherwise changed
+declarations require explicit review. The actual symbols remain compiler/link
+checks. Importing C does not carry behavioral evidence. In the retained jq handoff,
+the previous service-derived declaration omitted an unused scalar type, so the
+operator explicitly reopened its C with the comparison's interface before import.
+
+An ordinary string-split C edit now travels through public start/check, partial
+source export, the existing source-binding refresh and normal jq execution.
+The two native comparison cases match under headless Wayland; comma/UTF-8 workloads
+also pass in the source-assisted x86-64 program. All 16 neighboring lifted objects
+retain their bytes and modification times. Preparation takes 0.387s, comparison
+8.115s, partial export 0.544s, binding refresh 0.284s and source rebuild 0.428s.
+The comparison recompiles eight units: compiler 0.520s, link 0.064s, execution
+0.356s and concurrent Wine startup 5.578s wall time. Model and solver work are zero.
+This is source-program neighbor reuse, not zero-work comparison reuse.
+
+Three focused tests pass in 1.333s, including direct and supplier imports,
+an introduced behavior defect, interface/shared-header rejection and unchanged
+consumer adapters. Metadata refresh and the metadata, module-closure, lint and SDK
+gates pass. Evidence: `build/component-authoring-attach-2026-09-24/`.
+This closes a shared handoff gap using an existing operation; it is not a new
+boundary trial or complete portable jq. The disposable edit was not rerun on
+AArch64. Broader operator/backend readiness remains the active delivery goal.
+
+### Reuse boundary knowledge directly from source libraries — 2026-09-24
+
+The standalone handoff retained full interfaces and service catalogs, but public
+service discovery required reopening a comparison workspace. `component list
+TARGET --source-project DIR` now browses exported components and their boundary
+guides; `--services` and `--service QUERY` use the same exact-contract inventory as
+comparison workspaces. Generated library guidance exposes the commands. Recorded
+comparison adapters are explicitly examples, separate from current backend choices.
+Ordinary C drafts remain visible without preventing declaration inspection.
+
+`services_from_source_export` selects local names from `COMPONENT/SERVICE` references
+using the existing interface/catalog reader. It preserves types, nullability,
+lifecycle, outcomes, effects and declared gaps, checking shared declarations and
+exact contract identities. No C body, adapter, transport, comparison setup or
+assurance is imported. Operators supply those execution choices explicitly.
+Source guides and live inventory share their boundary projection; no new artifact
+or parallel contract system is introduced.
+
+The retained jq source library supplies eight exact service definitions from four
+owners for the existing string-split boundary. Public interface-first start carries
+its existing ordinary C/header selection, which compiles against those declarations.
+No native comparison folder or old preparation recipe is read. Inventory takes
+0.209s, service selection 0.075s, workspace preparation 0.078s and syntax compilation
+0.011s. The source project remains unchanged. This is a preparation-only handoff,
+not a new component or behavioral result; model, solver, link and execution work
+are zero. Evidence: `build/component-source-services-2026-09-24/`.
+
+Focused source-export checks remove the original comparison folders, exercise
+declaration discovery/reuse and compile/run a separately selected backend; a wrong
+backend result remains detectable. They also cover visible C drafts, changed
+contract rejection, existing comparison inventory and unaffected-neighbor updates.
+Five focused tests pass in 2.632s, as do metadata, module-closure, lint and SDK gates.
+The practical goal remains active; execution adapters and broader backend coverage
+still require operator work.
+
+### Keep ordinary input names usable in generated C — 2026-09-24
+
+Reviewing callback/shared-object preparation found a concrete generator restriction:
+an input named `context` duplicated the implicit component context, and `s`, `e`
+or `spx_result` could collide with bridge locals. The accepted declarations then
+failed C compilation. Generated prototypes, skeletons and service/operation bridges
+now choose unused internal names while preserving authored inputs. The same
+allocator handles the existing induction wrapper's local names. No boundary,
+artifact, callback model or proof rule is added.
+
+A retained before/after C reproduction records the compiler failure and corrected
+execution. A compiled regression authors the generated skeleton, passes a live
+callback object through a service, observes mutable aliases and keeps two object
+instances distinct. The existing DX-Ball initializer then uses a reviewed input
+rename through public boundary revision/start/check. Its retained success and
+synchronous-callback cases both match, with unchanged neighboring C and adapters.
+This is a prepared retained-C handoff, not a new boundary, native game execution
+or general callback coverage. The original workspace remains unchanged.
+
+Generation remains byte-identical for all 18 selected Hello/jq/DX-Ball components
+before that deliberate boundary rename, so unrelated pilots need no rebuild.
+Preparation takes 0.077s and the two-case public check 2.471s: 1.357s compiler,
+0.064s link and 0.014s execution, with zero model/solver or Wine work. Twenty-seven
+focused tests pass in 0.523s, as do the metadata, module-closure, lint and SDK gates.
+Exact commands and results are retained with
+`build/component-boundary-names-2026-09-24/`. This closes an ordinary C authoring
+failure; broader operator/backend readiness remains open.
+
+### Keep resource declarations through unrelated interface edits — 2026-09-24
+
+The service-selection handoff exposed unnecessary ownership-declaration work:
+renaming an internal service changed the whole interface schema digest, so its
+unchanged operation resource rules had to be authored again. Boundary revision
+now rebinds those existing declarations automatically when the operation's
+input/result declarations and recursively referenced types stay exact. It keeps
+roles, classifications, limits, instrumentation sides and observation gaps, using
+the existing lifecycle builder to derive the new bindings. Removed operations,
+changed values and changed declared types require explicit `resource_checks`.
+This preserves declarations without inferring compatibility or retaining evidence.
+
+The same jq service rename now prepares without supplying resource rules. All 37
+prepared files match the inputs of the previous passing native comparison exactly,
+including generated instrumentation. The selected supplier can also be revised
+inside its existing network: `value-get/indexes` still requires explicit caller
+review, and other selected C/adapters remain unchanged. Original workspaces remain
+untouched. This is preparation-only validation; the revised network has no new
+behavioral result or compatibility claim. No Wine execution, compiler, model,
+solver, link or pilot rebuild is needed to establish these input identities.
+
+The public revision API, generated recipe guidance and component documentation
+describe the behavior. Focused checks cover retained limits and roles, stale
+schema rejection outside revision, and changed nested types despite an unchanged
+signature. Evidence: `build/component-resource-revision-2026-09-24/`.
+Ten focused tests and the metadata, module-closure, lint and SDK gates pass. Local
+preparation takes 0.031s and reviewed network preparation 0.368s. The broader goal
+remains active.
+
+### Select reusable services across a component network — 2026-09-24
+
+New-boundary preparation previously selected services from only one component and
+required manual catalogue/binding assembly to combine owners or choose local C
+names. `retained_service_inputs` now also accepts an explicit mapping from local
+names to `COMPONENT/SERVICE` references within the selected workspace. Exact
+contracts, outcome bindings and needed transports are retained. Shared layouts
+and transports must agree; conflicts identify their origins. Multiple local
+aliases can share one exact catalogue entry, while conflicting contracts with the
+same identity reject. File selection and executable adapter review remain manual.
+Service inventory guidance and the public authoring documentation expose the route.
+
+A compiled small consumer uses independently selected write/read services over
+one mutable object, including two aliases for the same read contract. It checks
+actual mutation and service observations and rejects conflicting transports.
+The existing jq array-search boundary then selects seven service definitions from
+five owners and uses `retain` as its local name for the existing copy contract.
+Its reviewed primitive native adapters and original/case/observation inputs stay
+unchanged. The interface-bound lifecycle declarations regenerate explicitly;
+retaining the old schema binding correctly rejects before execution.
+
+The public jq start/check handoff passes one existing aliased-input case in 7.799s
+inside headless Wayland. Initial package preparation takes 0.603s, service selection
+0.277s and boundary revision 0.031s. The comparison compiles seven C inputs and
+performs no model or solver work. These are reuse/preparation costs, not a new
+operation's analysis effort. The source network remains unchanged; a service
+rename does not establish compatibility with its existing consumers or inherit
+their evidence. No component, case matrix, pilot or source-program rebuild was
+added. Evidence: `build/component-service-selection-2026-09-24/`.
+Twenty-four focused tests and the metadata, module-closure, lint and SDK gates
+pass. The broader practical goal remains active.
+
+### Share observation formatting across component drivers — 2026-09-24
+
+Allocation and graphics drivers repeated JSON punctuation, integer formatting and
+byte encoding. The installed portable C `spx-observation.h`, available through
+`observation_headers()`, now supplies these mechanics for ordinary comparison
+adapters. Generated preparation recipes point to it, and the component workflow
+documents its use. It writes explicit integer/byte observations and nested
+arrays/objects, reports incomplete output, and uses the existing comparison JSON
+format. Operators still choose observed contents, identities, lifetimes and
+interactions; the helper infers none of those semantics.
+
+Two retained Hello allocation cases and two DX-Ball graphics/callback cases pass.
+For each, the complete original and replacement observations equal their earlier
+captures, rather than merely agreeing with each other after changing the writer.
+Application C, interfaces and original inputs are unchanged. Package revision
+takes 0.017s and 0.074s; initial checks take 1.267s and 2.942s, with subsequent
+cases taking 0.472s and 0.780s and compiling no additional C. These are bounded
+host-C checks, not first-time boundary preparation measurements.
+
+Evidence: `build/component-observation-helper-2026-09-24/`. This removes shared
+driver boilerplate without adding components, case matrices, proof rules or an
+artifact format. No pilot, native-program or architecture rebuild is needed for
+this output-formatting change. Existing JSON-library drivers remain appropriate.
+
+### Carry authored C through interface design — 2026-09-24
+
+The interface-first route previously rejected `--reuse-source` and file-selection
+options, so revising a declaration required creating fresh stubs and manually
+moving current C/helper headers and reconstructing preparation inputs. It now
+accepts an earlier interface authoring workspace, copies its current `source/`
+C/header tree and applies the existing explicit source-file/removal choices.
+Declarations, editor commands and the recipe's source list regenerate for the new
+interface. A separate generated skeleton shows operation signatures without
+overwriting the carried C. Existing source-path and private-header checks apply;
+this adds no semantic artifact or compatibility/assurance claim.
+
+A focused signature-changing trial retains a handwritten helper across a new
+parameter, exposes the expected C type conflict, then passes an executable
+comparison after the implementation is adapted. The same public source handoff
+works for jq's service-using array search and DX-Ball's grouped mutable-state
+operations. Their two authored files each carry in 0.082s and 0.078s; syntax checks
+take about 0.01s. Preparation into their existing comparison setups preserves the
+original inputs, cases, adapters and neighboring C. One existing DX-Ball host-C
+case passes in 1.805s. jq is prepared here without a new behavioral run; these
+timings do not measure first-time ABI or adapter analysis.
+
+The original workspaces remain unchanged. The new interface workspace's comparison
+recipe is deliberately unconfigured, and custom operation symbols are repeated
+explicitly. Existing executable comparisons still use their boundary-revision
+workflow to preserve transport and review consumers. This closes a source-editing
+handoff gap; it does not automate boundary selection or adapter semantics.
+Evidence: `build/component-interface-revision-2026-09-24/`. No additional target
+cases, pilot rebuild, architecture run or proof campaign is part of this change.
+
+### Close the prepared-runtime experiment without expanding the product — 2026-09-24
+
+The object-deletion edit loop exposed fresh Wine initialization as a large cost.
+An isolated prototype initialized Wine without target execution, retained that
+state and restored separate original/replacement copies for every comparison.
+Raw cloned-prefix startup improved from 4.460s to 0.383s, but that did not translate
+into a similarly large whole-command saving. The initial compressed archive
+implementation took 10.677s for an edit/check. Reading the archive once for both
+sides reduced it to 5.685s, compared with the preceding fresh-prefix edit's 6.659s.
+Restoration alone still cost 3.321s. The archive adds 328 MiB to retained inputs,
+and an unchanged check rose from 0.479s to 1.093s. Preparation took 11.195s.
+These are single measurements, not a guaranteed performance improvement.
+
+All three retained jq cases matched in both environments. Local editing compiled
+one C file and reused seven objects; alias-defect diagnosis, repair and retained
+replay worked. All Wine execution stayed inside headless Wayland. Those results
+establish a feasible experiment, not a worthwhile default or broadly validated
+environment replacement. Experimental-package integration was not completed.
+
+The prototype was removed from production code and its two tests, with source,
+patch, commands and observations retained under
+`build/component-runtime-startup-2026-09-24/`. Restored comparison-engine hashes
+match the preceding completed object-deletion checkpoint. Existing runtime
+isolation and fresh-prefix behavior remain in place. No new command, artifact
+boundary, pilot rebuild or qualification campaign is delivered by this experiment.
+Return to first-boundary preparation and integration effort rather than continuing
+to optimize this one edit loop.
+
+### Reuse a live-object boundary for mutation and program integration — 2026-09-24
+
+The [object-deletion handoff](../tests/fixtures/jq-object-delete/README.md) uses
+the existing lookup layout, hash/release services, live-value transport and binary
+driver. Its ordinary C owns chain traversal and unlinking; the explicit unshare
+service returns an owned object plus a mutable view into that returned allocation.
+Native ABI analysis remains operator work. The same service has a normal C
+accessor in the portable backend. Boundary preparation and local execution need
+no new checker, artifact or compiler machinery.
+
+Three native cases cover shared tables, unique ownership and actual interpreter
+updates/deletion. Preparation takes 0.376s and the initial comparison 8.367s.
+An ordinary C rename compiles one file in 0.016s, retaining seven compiled inputs;
+the full comparison takes 6.659s, chiefly fresh Wine startup. Skipping unshare
+preserves the deletion result but corrupts a retained input alias. The standard
+comparison reports `$.samples[0].left_after.key0`; retained replay still fails
+after repair. A repeated matching check takes 0.479s with no compiler, link,
+execution, model or solver work. All Wine execution uses headless Wayland.
+
+Partial export and the existing source recipe integrate the replacement without
+editing the value/path/lookup components. Normal program output matches the native
+interpreter on x86-64 and AArch64 under QEMU, and counters record the affected
+consumer entries. All 19 and 18 prior component objects reuse in those two existing
+projects; builds take 0.565s and 6.525s. Copy-on-write and the other jq backend
+operations remain explicit unlifted dependencies.
+
+The older AArch64 project exposed a source-recipe gap: an unrelated handwritten
+seed accessor caused refresh to reject its own already-preserving proposal.
+Refresh now records the exact current backend bytes used for selected-body removal
+and checked include-block edits. It preserves surrounding C, detects concurrent
+changes and keeps the prior-file backup. Generated binding/Makefile conflicts
+retain their manual merge path. The resumed refresh matches the original proposal
+exactly, retains the accessor and passes the program workload.
+Binding header includes also use a stable order after choices are saved and
+reopened, removing a redundant binding rebuild on the next refresh. Completed native
+comparisons were also retained when correcting a summary-script key; they were
+not rerun. Commands, phase costs and inputs are in
+`build/component-object-mutation-2026-09-24/`. No pilot or expanded runtime matrix
+is required for this operator trial; failure callbacks and concurrency remain open.
+
+### Import operator case lists without changing the driver — 2026-09-24
+
+`component start --case-file FILE` accepts the existing list of named string
+arguments, with repeatable files and the same merge behavior as `--reuse-cases`.
+It retains selected C, adapters, boundaries and existing case order. The workspace
+copies the argument data; later checks do not depend on the external JSON files.
+Opening a single-case result with either import option prints a check for the
+expanded suite and retains the result as its initial reuse baseline.
+
+The public jq array-indexes handoff imports a shared-record overlap case and eight
+seeded generated samples in one batch. All seven suite cases match the original
+under headless Wayland; the existing 26 C/header inputs and component contract are
+unchanged. Workspace preparation takes 0.360s. Checking against the older retained
+baseline takes 8.374s with seven compilations and 14 case executions; the next check
+takes 0.591s with no compiler, linker, execution, model or solver work. The focused
+regression also exercises case-only expansion with zero compilation, conflicting
+names and invalid argument data before workspace publication. Two focused tests
+pass in 1.114s. Exact commands and inputs are in
+`build/component-case-files-2026-09-24/`.
+
+This closes a case-authoring step in the existing workflow. Driver transport and
+the admitted boundary still determine which inputs can run. No pilot rebuild,
+component-count increase, new artifact format or proof rule is needed.
+
+### Connect a supplier without rewriting the caller adapter — 2026-09-24
+
+An explicit `declare=True` option on the existing service binding emits an
+`extern` prototype using the selected native/portable types and optional context
+argument. The generator reuses the same calling shape as its wrapper. Default
+bindings remain unchanged; macros, custom calling conventions and semantic
+conversions retain explicit C adapters. This removes manual prototype insertion,
+not the need to review ABI and service behavior. No new artifact or proof rule is
+introduced.
+
+The documented jq object-lookup connection now changes the requirement and service
+binding only. All 54 existing C/adapter files, caller implementations, case inputs
+and original runtime inputs are preserved. The existing `program-builtins` native
+interpreter case matches and observes four lookup service scopes. Preparation
+takes 0.911s and the comparison 11.085s; its older baseline predates compiler-cache
+changes, so 39 translation units are rebuilt. Repeating with the current result
+takes 1.965s and performs no compilation, linking, execution, modeling or solving.
+
+Public partial export and binding refresh carry the same choice into the existing
+portable source project. One binding rebuilds in a 0.214s build; all 19 component
+objects and the backend objects reuse. The normal program workload matches the
+retained original result and reaches the lookup through the value/path operations.
+The focused service-authoring/float suite passes 25 tests, including a separately
+linked context-taking adapter. Native execution uses headless Wayland. No pilot,
+new component or broad runtime matrix was needed. Exact commands, phase costs and
+inputs are in `build/component-service-declarations-2026-09-24/`.
+
+### Keep exported boundary navigation local — 2026-09-24
+
+Exported component guides now expose the reverse requirements already available
+in local workspaces. Direct suppliers, consumers and shared-representation or
+recursive-group members link to their own guides. The library index gives access
+to the rest of the selection without repeating every unrelated component beside
+each C implementation. Existing requirement declarations supply these links;
+they are neither an inferred application call graph nor new assurance evidence.
+
+The public partial-export handoff on the retained jq library now identifies
+`value-get/string-slice` beside the string-slice C and links storage suppliers and
+shared layouts from the getter. All twelve component records and compiled objects
+remain unchanged, and Make has no work. The two existing source-export/update
+regressions pass, including moved projects and retained neighbor builds. No new
+fixture suite, target execution or pilot rebuild is required for this navigation
+change. Evidence is in `build/component-source-neighbors-2026-09-24/`.
+
+### Carry the cold consumer through the public component workflow — 2026-09-24
+
+The [string-slice failure recipe](../tests/fixtures/jq-string-slice/README.md#use-the-failure-consumer-in-the-ordinary-component-workspace)
+now reuses an existing local boundary in the real warm/cold interpreter consumer.
+The ordinary C driver emits the identified context's logical contents and exact
+remaining heap observations; physical measurements remain in stderr. The standard
+comparator and portable runner both compare exact stdout, replacing the earlier
+target-specific Python normalization. No checker, compiler infrastructure, proof
+rule or artifact format was changed.
+
+Public start/check/history/status, local C editing, retained defect replay and
+repair pass. Moving release before construction is caught by the existing expired
+resource diagnostic. Replaying the failed result still catches it after the
+editable C is repaired. A private-helper rename rebuilds one source file and
+reuses seven support translation units. The five-case edit check takes 6.934s;
+repair takes 5.374s; unchanged reuse takes 0.482s with zero compiler, link,
+execution, model or solver work. Initial preparation is 0.249s and the first
+comparison was 8.475s; these are recipe/runtime timings, not a first-time human
+preparation measurement. Exact phase costs and inputs are retained with results.
+
+The first recipe incorrectly added selected test conditions to the component's
+assumptions, changing its contract. Source export correctly demanded caller
+refinement. Keeping those conditions in comparison scope preserves the original
+contract and allows the checked edit to return through
+`candidate export --update-components --component string-slice`. The corrected
+comparison reuses all compiled inputs; no compatibility bypass was added.
+The exporter already omits fixture-only headers from compiled component inputs.
+
+Both portable projects retain the other eleven components' contracts, comparison
+records and source identities. Their older export records gain the current
+exporter's build-input inventory; that metadata addition is not a neighbor edit.
+The host rebuild takes 0.214s and AArch64 2.267s, each compiling one component and
+zero backend objects. All eight failure cases pass on both architectures, including
+the explicit physical context difference. Native execution runs in headless
+Wayland; AArch64 runs under QEMU. No extraction, pilot or universal proof campaign
+was needed. This closes the observation-to-workspace handoff in its selected scope;
+it does not establish full jq portability or broad-target readiness.
+
+Evidence, costs, the rejected initial recipe and the corrected contract/source
+handoff are in `build/component-jq-failure-workflow-2026-09-24/`.
+
+### Compare a changed runtime layout without pre-initializing it — 2026-09-24
+
+The retained cold jq failure case differed only in a context containing nine
+pointers: 36 bytes on Win32, 72 on x86-64/AArch64. An ordinary C observation now
+identifies that actual heap allocation at its initializer, records its generation,
+and checks its lifetime, extent and all nine null slots after the real failure and
+cleanup. The initializer also serves temporary stack objects, so observing its
+calls alone was insufficient. Allocation-generation queries are reusable in other
+C fixtures; the checker, compiler and proof rules are unchanged.
+
+The target recipe compares this one named logical object separately from the
+remaining exact allocation observations. Raw streams, physical sizes and their
+differences stay in the result, alongside the explicit representation relation.
+Populated context contents remain outside this adapter; they produce a diagnostic
+failure instead of a size-only match. This does not establish general heap or
+cross-platform equivalence.
+
+All eight existing warm/cold allocation-failure inputs now match on x86-64 and
+AArch64 under QEMU. A deliberate unbalanced retain in the string constructor is
+still detected as `references.0`, and repair passes. Each binding edit rebuilds
+one object and links in 0.214s. Diagnostic observation changes preserve every
+component/backend object; the final ordinary jq and live-value executable hashes
+match the earlier validated builds on both architectures. No pilot or application
+recompilation was needed. All native execution ran in headless Wayland.
+
+This closes the documented initialization restriction with an executable manual
+representation adapter. Manual work was identifying the original initializer,
+its heap-versus-stack uses and the observed empty context. Compilation and execution
+costs are retained separately; first-time human setup effort is not measured here.
+Exact sources, commands,
+native disassembly, preliminary probes, physical differences and the defect/repair
+sequence are in `build/component-jq-cold-context-2026-09-24/`. The earlier cold
+mismatches remain historical evidence; they are not relabeled as passing.
+
+### Share receipt and contract reads during check preparation — 2026-09-24
+
+The repeated consumer check validated the same prior receipt three times before
+any compiler or target execution, reparsing its contracts as well. Preparation
+now shares one validated receipt and plan across refinement and reuse decisions.
+The later refinement check still reads fresh evidence after execution, and
+independent reader calls continue to validate their inputs afresh. There is no
+persistent cache, new artifact format or change to evidence authority. The initial
+receipt validation now appears in phase timings; older totals omitted that read.
+
+The installed old/new jq consumer checks take **2.998s / 2.063s** when warm, both
+with zero compiler/link/model/solver/execution work. The first updated-tool run
+reuses all 42 compiled translation units and refreshes runtime observations for
+the changed comparison engine. All comparisons match the retained native case in
+headless Wayland. These are single end-to-end measurements on the same retained
+inputs and pinned environment, not a general performance guarantee. No pilot or
+source-program rebuild was needed.
+
+The 42 existing comparison/cache/domain regression tests pass. An additional
+optional-proof shard has two failures: expected `proved` and unwind-`incomplete`
+results are reported as `disproved`. Both also reproduce with the prior installed
+toolkit, before the receipt-sharing change. Their cause remains separate follow-up
+work; this checkpoint does not claim a passing optional-proof suite or alter its
+standards. Commands, costs and both failure logs are retained under
+`build/component-receipt-preparation-2026-09-24/`, with workflow results in
+`checkpoint.json` and the older-tool check in `optional-proof-baseline.json`.
+
+### Reduce duplicated work in the retained consumer check — 2026-09-24
+
+The previous warm consumer check still took about three seconds with no compiler
+or execution work. Read-only profiling found 11,256 include-path probes across
+42 translation units but only 6,526 distinct paths. Cache validation now shares
+those observations within a pass and computes each relative path once. It still
+checks every entry's byte/object hashes, discards observations after invoking a
+compiler, and starts fresh on the next check. No evidence format, contract rule,
+environment binding or assurance authority changed.
+
+Median isolated include validation falls from 0.457s to 0.252s. Full installed
+warm checks improve from 3.226s to 3.004s, with zero compiler/link/model/solver/
+execution work on both sides. Repeated receipt and contract processing remain a
+measured cost; this does not solve all check overhead. A new-engine baseline
+correctly recompiles 42 translation units before its warm measurement. Both
+versions match the retained native jq consumer case in headless Wayland. Existing
+cache and comparison regression shards pass, including changed/read/optional/
+shadowed headers and repair reuse. Profiles, inputs, commands and costs are in
+`build/component-reuse-overhead-2026-09-24/checkpoint.json`; the
+[performance notes](performance-and-invalidation.md) separate the read-only
+microbenchmark from full workflow evidence. No pilot or source-program rebuild
+was required.
+
+### Keep the resumed edit/check command usable across iterations — 2026-09-24
+
+The retained-result handoff initially printed a one-time output directory and
+kept naming the old reuse result. It now uses the existing append-only comparison
+history, with `--history-baseline RESULT` supplying the first reuse input only
+while that history is empty. Later invocations select the latest completed check.
+`--reuse-comparison` remains an explicit override; a stale latest result still
+reports an error instead of silently returning to the baseline. No evidence
+format or compiler/solver reuse rule changed. Result and experimental reopening,
+the authored-C guide and the exported-source guide use the repeatable command.
+
+The installed jq trial reopens the hash check, edits a private C helper and runs
+the same printed command again. It then carries that C into the enclosing consumer
+and repeats its printed command. Initial resumption reuses all seven translation
+units while rerunning observations for the current runtime environment. The edit
+compiles one file, reusing six local and 41 consumer translation units. Warm checks
+perform zero compiler, linker, model, solver or execution work, taking 0.623s
+locally and 3.315s for the consumer's retained-result processing. The consumer's
+`program-builtins` case selection stays fixed.
+
+Existing regression cases also cover mismatch/repair history, replay stability,
+reopening an experiment and removal of the initial result location after the first
+check. The experimental suite exposed a stale expectation of the caller's name
+in a focused supplier command; it now checks both the selected supplier and the
+explicit retained consumer. Current commands, phase costs and terminal evidence
+are in `build/component-resumed-history-2026-09-24/checkpoint.json`. All native Wine
+work ran through headless Wayland. No pilot or source-program rebuild was needed
+for this CLI/history change; the prior program handoff remains separately recorded.
+
+### Resume a component from its retained comparison — 2026-09-24
+
+Opening a result's `inputs/` directory through `--comparison-package` lost the
+result as a reuse baseline in the printed next command. Public
+`component start --comparison-result RESULT` now checks that retained result and
+opens its inputs as an editable draft. Its next command names the reuse baseline
+and preserves an explicit case selection; appending cases instead requests the
+expanded suite. `--reuse-source PROJECT/lifted` imports only the focused unit's C
+under the existing boundary. The existing checker still determines actual reuse;
+opening the result executes nothing and grants no assurance to edits.
+
+The installed handoff extracts a private little-endian load helper in jq's
+string-hash C, then follows the printed commands for its local and enclosing
+consumer results. Both match, compiling one changed translation unit and reusing
+six and 41 others respectively. The consumer retains `program-builtins` rather
+than unexpectedly expanding to its whole prepared corpus. Reopening the unchanged
+result performs zero compiler, linker, model, solver or execution work.
+
+The partial export retains neighboring contracts and returns the edit to the
+normal host source program. Its build takes 0.164s, recompiles one component,
+retains 48 other component/binding objects, and produces the matching workload
+result. The commands, selected inputs and phase costs are retained in
+`build/component-source-local-return-2026-09-24/checkpoint.json`. Existing
+source-export regressions cover the new origin and reuse command. This uses
+prepared boundaries; no pilot rebuild, new boundary or stronger qualification
+claim is involved. All native Wine execution used headless Wayland.
+
+### Navigate the component's actual portable bindings — 2026-09-24
+
+The source project's boundary guides described comparison bindings but did not
+identify the adapters selected by the portable program. Preparation and refresh
+now generate `COMPONENTS.md` and one `bindings/COMPONENT.md` from the actual binding
+choices and exported declarations. They link the generated C entry, boundary,
+service symbols, declared suppliers/consumers, shared support and backend headers.
+Missing supplier declarations are explicit; the guide does not mistake them for
+proof that execution stays in unlifted backend code.
+
+The retained eighteen-component jq project refreshes its guides in 0.22s with no
+executable-input changes. All 232 local links resolve; all 116 compiled objects
+retain their bytes and mtimes. A second refresh is unchanged. Documentation-only
+refreshes preserve prior validation scope without requesting another program run.
+The focused handoff is retained in
+`build/component-portable-guides-2026-09-24/checkpoint.json`. No compiler, linker,
+solver, Wine application or pilot was run. This improves navigation of an existing
+source-assisted project; it does not establish new target or behavioral coverage.
+
+### Retain backend service C with the component's source binding — 2026-09-24
+
+The hash handoff still required manually appending its private-state accessor to
+each source project. The existing source binding recipe now accepts
+`backend_headers`: explicit ordinary C headers included after the definitions in
+a reviewed backend translation unit. Preparation and refresh retain the headers
+beside that source file and maintain one include block. This supports access to
+the backend's actual private state without inventing a second global object or
+exposing private functions in every component. It introduces no new artifact or
+assurance authority. The [source-binding guide](../tests/fixtures/jq-portable/README.md)
+and [hash example](../tests/fixtures/jq-string-hash/README.md) document the inputs.
+
+Both existing source projects now use the retained seed header and pass the same
+normal-entry interpreter workload on x86-64 and AArch64 under QEMU. The build
+recompiles one backend translation unit on each architecture, with zero component
+or binding compilation. Removing the original operator input directory still
+allows unchanged refreshes. Fresh preparation from the exported source library
+produces the same backend C, header and generated entry as the exercised project;
+it requires no original comparison folder or manual append.
+
+A subsequent local header edit marks program validation stale, rebuilds only
+the affected backend and preserves all existing component/binding objects. A
+conflicting incoming header leaves the project unchanged, retains the proposal
+and accepts the operator's named reviewed merge through the existing
+`--keep-reviewed` workflow. The merged program passes its affected workload.
+Exact source inputs, costs, preservation checks and repository validation are
+recorded in `build/component-backend-adapters-2026-09-24/checkpoint.json`. Native
+component comparison inputs did not change, so their earlier evidence is retained;
+no Wine, pilot rebuild, new component or expanded runtime matrix was needed.
+The accessor's semantics and context still require operator review. Broader
+backend/target readiness and strong qualification remain separate open work.
+
+### Lift a mutable hash-cache dependency through the existing consumer — 2026-09-24
+
+The [string-hash handoff](../tests/fixtures/jq-string-hash/README.md) supplies the
+object lookup's retained hash service. It owns the complete consuming public entry,
+including the real hash loop, cached result, shared cache writes and release. Its
+ordinary C uses explicit 32-bit arithmetic and little-endian byte grouping. A live
+view borrows the existing allocation; the process seed/once service and reference
+management remain executable dependencies. The view reads the hash word only when
+its validity flag is set. No checker, artifact or compiler machinery changed.
+
+Local comparisons exercise controlled seeds, cached/uncached strings, aliases,
+unique ownership, embedded NUL/malformed bytes and loop/tail lengths. Deliberately
+omitting the validity-bit write preserves the returned result but reports the
+changed `after.length_hashed` memory field. Repair and a private C helper rename
+pass with one compilation and six supporting units reused; the immediate repeated
+check takes 0.602s with zero compiler/link/model/solver/execution work. Final adapter
+refinement is independently rechecked. The new connection recipe reproduces the
+checked network byte for byte, retaining the existing cases and surrounding C.
+The existing interpreter workload reaches four hash/seed calls through
+`path-set → value-get → object-get → string-hash` and matches original x86 output.
+
+Source assembly exposed a concrete ABI gap: the public operation returns
+`unsigned long`, but the component's result is deliberately 32-bit. The source
+recipe now accepts `backend_symbol` separately from the generated entry name.
+Its ordinary C wrapper preserves the public ABI on both tested word sizes, while
+the original backend body is removed. An explicit backend C accessor shares the
+existing seed rather than creating an inconsistent second hash environment.
+Initial assembly also exposed a missing adapter header; the retained binding
+declaration now supplies both headers. Repeated refreshes preserve the backend
+edit and require no original adapter paths.
+
+Normal source-program execution matches the retained native interpreter case on
+x86-64 and AArch64 under QEMU, with twelve calls through the selected hash entry
+on x86-64. The host build takes 0.515s and compiles only the new component object;
+18 neighboring component objects preserve hashes and mtimes. The AArch64 build
+takes 15.339s and retains 16 neighbor objects; it also imports the previously
+edited lookup and migrates its older diagnostic bindings once. These are affected
+program runs, not a new pilot or runtime matrix.
+
+Fresh automatic preparation takes 0.245s. From the retained disassembly timestamp
+to the first local result is 288.552s, including adapter/C authoring and execution
+but excluding earlier boundary selection; it is agent wall time, not a human
+usability measurement. Manual seed/layout/ABI review remains necessary. Exact
+inputs, commands, initial assembly failure, separate phase costs and repository
+validation are retained in `build/component-string-hash-2026-09-24/checkpoint.json`.
+The private backend hash, entropy, allocator and other jq subsystems remain
+unlifted. Concurrent cache access and big-endian backend interoperability are
+outside this finite checkpoint; stronger qualification keeps its prior scope.
+
+### Name service resource roles without repeating lifecycle records — 2026-09-24
+
+Repeated jq preparation recipes assembled the same nested consume/borrow/produce
+records manually. `service_resource_roles` now accepts explicit consumed and
+shared-borrowed parameter names, a produced-result flag and a common resource
+classification. It emits the existing records in signature order; full resource
+declarations remain available for nested fields and heterogeneous classifications.
+This is authoring convenience, with no ownership inference, new artifact or
+additional assurance claim. The [public guide](components.md#reusable-c-service-authoring)
+shows the form used by object lookup and the shared path service library.
+
+The installed preparation retains all 23 path-service contracts and generated C
+in both existing allocation modes. Fresh object-lookup preparation takes 0.714s;
+all 37 package files are byte-identical to the previously executed package. No
+compiler, model, solver, link or execution work is needed for this declaration-only
+change. The 20 service-authoring regressions, module closure, production lint and
+SDK checks pass. Commands and exact comparisons are retained under
+`build/component-service-roles-2026-09-24/`. This reduces repetitive setup; defining
+the boundary and reviewing its live-memory adapters still require manual analysis.
+
+### Supply a retained service from its selected component workspace — 2026-09-24
+
+The object-lookup follow-up exposed a preparation restriction: a selected getter
+could change its C and declarations, but adding the newly lifted supplier required
+reconstructing the getter as a separate package first. The existing revision API
+now accepts explicit `dependencies` for a named selected caller. Its requirements,
+service bridge and C adapter can change in the same transaction; the enclosing
+driver, cases, caller contracts and other bodies remain. The existing resolver
+still rejects unused additions, conflicting shared bodies and unresolved edges.
+Global removals and execution changes remain root revisions. Generated boundary
+recipes and the public guide show the existing `bind_dependencies` operation;
+there is no new flag, artifact or compatibility authority.
+
+The installed jq handoff selects `object-get` beneath the network's `value-get`
+directly from its editable recipe in 0.901s, preserving 53 existing C/adapter files,
+the original inputs and all 46 case definitions. The retained `program-builtins`
+interpreter case passes and reports four lookup service scopes. A subsequent local
+loop refactor passes its three standalone cases, returns through public C-only
+dependency selection and passes the same consumer. The consumer compiles one file
+in 0.016s; all other compiled inputs reuse. Its repeated matching check takes
+3.095s with zero compiler/link/model/solver/execution work. Fresh execution still
+spends roughly five seconds in Wine startup, inside headless Wayland.
+
+Partial export carries the getter's reviewed binding and edited lookup into the
+existing standalone source project. The source recipe explicitly maps the
+comparison entry to `jv_object_get`. Normal x86-64 program output matches the
+retained native consumer. Its 0.164s incremental build compiles only the edited
+lookup, with no binding or backend compilation. This turn adds no target cases,
+pilot rebuild or architecture matrix. The 39 composition/dependency regressions
+and metadata, module closure, lint and SDK gates pass. Evidence is in
+`build/component-selected-service-2026-09-24/checkpoint.json`; the
+[walkthrough](../tests/fixtures/jq-object-get/README.md#connect-the-existing-native-comparison-network)
+keeps local and consumer evidence distinct. First-time C boundary/adapter review
+and the remaining unlifted jq backend are still practical limitations.
+
+### Lift a shared object lookup through existing facilities — 2026-09-24
+
+The previously unprepared complete `jv_object_get` operation now owns ordinary C
+bucket selection and collision-chain traversal over a borrowed view of the actual
+object allocation, result copying and input release. The reviewed table layout is
+defined once in shared adapters; lifetime, aliases, hash-cache mutation and frame
+assumptions travel with its workspace. Selecting the whole consuming operation
+preserves the callers' existing API. Native hashing/equality/reference services
+remain explicit dependencies. No checker, compiler or artifact extensions were
+needed. The [walkthrough](../tests/fixtures/jq-object-get/README.md) records the
+manual entry/layout/adapter work separately from automated preparation (0.596s).
+
+Three native comparisons pass: retained object tables, unique ownership and a
+real interpreter workload reading aliases around updates and deletion. A C edit
+compiles one file in 0.016s and reuses five supporting objects. A deliberately
+skipped loop produces a readable present-versus-absent result discrepancy; replay
+reproduces it and restoring C repairs it. A repeated matching check takes 0.764s
+with zero compiler/link/model/solver/execution work. Fresh native executions still
+spend about five seconds in Wine startup. All Wine runs use headless Wayland.
+The temporary handoff harness initially expected exit 1 for a mismatch; the CLI
+correctly returned 2. Its retained mismatch was reused when correcting the harness.
+
+Partial export and the existing source binding recipe replace `jv_object_get`
+under the selected value/path components without editing those components.
+Normal program execution passes on x86-64 and AArch64 under QEMU; the latter
+incremental build takes 14.187s. This is a source-assisted partial jq program with
+native-derived allocation, other object operations, parser and VM still present.
+The finite checks do not prove arbitrary shared heaps, failures or callbacks.
+
+This integration exposed diagnostic counter ordinals embedded in every generated
+binding: adding the component recompiled eighteen binding/observation files.
+Bindings now use their stable component names and cache counter lookup once per
+entry. Refresh also updates the shared counter implementation through its existing
+review/backup path. After the one-time counter migration, adding the same component
+preserves all 25 existing binding C files, 26 existing application objects and 18
+lifted objects, including hashes and mtimes. Only the new component, its binding,
+the counter table and the backend's changed `jv.c` compile. Binding compilations
+fall from eighteen to two; the x86-64 incremental build takes 0.565s instead of
+1.015s. Normal entry still reports the new lookup and existing path/value callers.
+
+Evidence is retained in `build/component-object-lookup-2026-09-24/checkpoint.json`.
+Repository metadata, module closure, production lint and SDK checks pass; no
+additional pilot or architecture matrix is added for the diagnostic counter change.
+Preparation is still appreciably more manual work than editing the 29-line lookup.
+This closes a practical shared-state handoff and one measured integration cost;
+it is not broad-target readiness, a new component-count milestone or formal closure.
+
+### Revise a boundary from its component workspace — 2026-09-24
+
+`component start` now supplies an editable `revise-boundary.py` beside the entry,
+or inside `dependencies/COMPONENT/` for a focused supplier. Its small
+`boundary_changes(unit)` function receives the current declaration and returns
+only proposed changes through the existing `revise_comparison_package` transaction.
+The operator names reviewed incoming edges with repeatable `--review-requirement`.
+The recipe and guides preserve existing edits, retain omitted inputs and print
+the next workspace command. Empty recipes and missing reviews publish no output.
+There is no new contract format, compatibility rule or qualification authority.
+
+The installed handoff rewords existing admitted-state premises in jq's getter and
+DX-Ball's blit scope. Jq names both `path-get/get` and `path-set/get` before the
+revision is accepted. All 54/10 declared C/adapter files respectively remain
+unchanged, and the edited recipes survive reopening. The existing native jq and
+retained-C DX-Ball comparisons match with zero compiler/model/solver work, one
+link and two executions each. This is a prepared refinement/handoff, not a new
+boundary or a claim that finite comparisons prove compatibility.
+
+Jq revision takes 0.804s; its native check takes 9.045s, including 1.569s validating
+prior evidence, 0.064s linking and 5.118s concurrent Wine startup wall time.
+DX-Ball revision takes 0.316s and its check 0.644s. The jq partial export updates
+the getter and its two reviewed callers in the existing source project. The build
+takes 0.114s with no component or backend object rebuilds; all fourteen unselected
+objects keep their hashes and mtimes. Normal CLI entry produces the expected
+nested negative-index update.
+
+Evidence is in `build/component-boundary-recipe-2026-09-24/checkpoint.json`.
+The 38 existing composition/dependency tests pass, including the generated recipe,
+missing shared-caller reviews, neighbor reuse and a wrong-body discrepancy after
+review. Metadata, module closure, lint and SDK checks pass. All Wine runs use the
+headless desktop. No new components, pilot or architecture matrix are added.
+
+### Keep unrelated editing out of SDK fixture inputs — 2026-09-24
+
+The reporting handoff also exposed avoidable validation work: SDK semantic-link
+and native-realization fixtures placed the entire checkout on `PYTHONPATH`.
+Unrelated documentation, operator or desktop-runner changes therefore changed
+their derivations and rescheduled downstream selection/status checks. The semantic
+fixture now uses the existing discovered source closure of its semantic-link unit
+tests; the native receipt fixture uses the existing checked Python module closure.
+No new artifact format, execution policy or validation exemption is introduced.
+
+The SDK check passes with these inputs. Four Nix evaluations in an isolated
+checkout show that documentation and operator-reporting edits preserve the complete
+SDK check's derivation identity, while editing the actual semantic fixture changes
+it. The probe's final report initially encountered the current Nix derivation-JSON
+envelope; its already completed evaluations were retained and finalized without
+repeating them. Metadata freshness is checked after the documentation update.
+Evidence is in `build/component-sdk-invalidation-2026-09-24/checkpoint.json`.
+This removes one measured rebuild cause. Toolkit implementation changes still
+rebuild the installed toolkit, and actual fixture/engine dependencies still
+invalidate their checks. No pilot or target program is rerun for this change.
+
+### Read the outcome before the unchanged component network — 2026-09-24
+
+The interactive jq handoff exposed a reporting obstacle: one successful retained
+case printed 49 contract edges and all unchanged component names before its work
+counts. Concrete check reports now lead with the outcome, actual work and reuse.
+Unchanged bindings, neighbors and complete replacement-group membership are
+summarized; changed inputs, affected integrations, missing members, failures and
+replay diagnostics remain visible. The focused component's domain stays explicit.
+A printed boundary command opens its retained interface, assumptions, services,
+callers and contract identities through the existing inspection workflow. Full
+JSON receipts remain unchanged. This changes presentation only, not comparison,
+invalidation, qualification or admission behavior.
+
+The installed CLI inspection of the actual retained jq result shrinks from 68
+lines to 16. Its zero-work reuse and experimental scope remain visible. Inspection
+of a retained DX-Ball memory mismatch preserves the first differing value,
+surrounding observations and exact replay command. Both printed boundary commands
+open the bound inputs, and receipt bytes remain unchanged. These are read-only
+inspections; neither target is rerun to validate the reporting change.
+
+Evidence is in `build/component-check-summary-2026-09-24/checkpoint.json`.
+The 31 existing comparison/dependency tests pass, including actual compilation,
+discrepancy/replay and selected-supplier checking. Metadata, module closure, lint
+and SDK gates pass. No new fixtures, proof rules or pilot runs are added. Wider
+boundary preparation and target coverage remain open under the practical plan.
+
+### Keep a usable terminal open for repeated component checks — 2026-09-24
+
+The recommended persistent desktop command previously buffered output until exit
+and gave `bash` a pipe instead of a terminal. It therefore did not support the
+interactive workflow the guide described. `spaghetti-headless-wayland --interactive
+bash` now supplies a controlling terminal with live output, job control and resizing.
+Ctrl-C reaches the foreground job; exiting restores the operator's terminal and
+removes the desktop. The ordinary batch command retains separate captured streams
+and its existing cancellation behavior. No runtime evidence rule is weakened.
+
+The installed wrapper now runs the retained jq getter/path-set case in an actual
+interactive lifting shell. The initial interactive environment differs from the
+earlier batch session, so it recompiles 37 small translation units (1.542s), links
+(0.064s), starts the private Wine sessions (3.390s wall) and matches both sides.
+The repeated command in that same shell matches with **zero compiler, linker,
+model, solver or execution work**; preparation takes 0.367s and retained-evidence
+validation 1.563s. Input hashes and the execution context remain identical between
+those two checks. A persistent desktop does not retain Wine process state between
+comparisons or remove revalidation after actual environment/input changes.
+
+Evidence is in `build/component-interactive-shell-2026-09-24/checkpoint.json`.
+The focused headless-desktop check passes terminal input/output, resizing,
+foreground interruption, subsequent shell use, exit status and terminal restoration,
+alongside its existing batch/cancellation checks. Repository metadata passes.
+The real jq session exits cleanly and removes its runtime directory. All Wine
+activity stays inside headless Wayland; no pilot, program or architecture matrix
+is rebuilt. This closes the documented repeated-check interaction gap, not the
+remaining first-boundary analysis or broader target coverage work.
+
+### Prepare an independent local check from a selected workspace — 2026-09-24
+
+A supplier-focused `component start` now supplies an editable
+`<workspace>/dependencies/<component>/prepare-local.py`. The script uses the existing
+`retained_component_inputs(..., retain_dependencies=True)` and retained execution
+environment APIs. Current C, interface, shared headers, services, assumptions and
+declared supplier closure travel together; the operator fills in the local
+driver/oracle/cases/observations and scope. It does not inherit consumer cases or
+evidence. Additional adapter headers have explicit names. Existing shared headers
+remain boundary inputs. Reopening the workspace preserves recipe edits, and
+workspace guides link to it. The recipe is ordinary Python outside the compared
+source/include inputs, rather than a new artifact format.
+
+The installed handoff uses the reviewed jq getter and DX-Ball blit choices through
+these generated recipes. All 265 jq and 30 DX-Ball prepared files match their
+existing dedicated preparation recipes byte for byte. The getter retains its nine
+declared suppliers without importing the path callers; the blit uses its shared
+graphics view with no authored supplier closure. Both local comparisons pass.
+An unfinished recipe provides an actionable setup error without leaving a partial
+destination. This is reuse of reviewed boundaries/drivers, not a fresh-boundary or
+independent human usability trial.
+
+Jq preparation takes 0.864s and its local native check 8.316s, including 1.155s of
+compilation and 3.458s of fresh Wine startup. That older local baseline had a
+different source layout and supplier selection; 31 translation units compile for
+the current local setup. DX-Ball preparation takes 0.367s and the host retained-C
+check 1.798s, including 1.050s of compilation. Model and solver work are zero.
+The public getter return to its existing consumer has identical comparison inputs
+and reuses all 37 compiled objects. Its process-environment digest changed across
+sessions, so it correctly relinks and repeats observations in 7.468s. The initial
+handoff expectation of zero total work was corrected from terminal evidence,
+without rerunning either program. No runtime reuse rule was weakened.
+
+Evidence is in `build/component-local-recipe-2026-09-24/checkpoint.json`. The 38
+existing focused composition/dependency tests and metadata, module-closure, lint
+and SDK gates pass. The focused regression exercises the generated recipe with
+shared/private headers and a transitive supplier, executes the resulting local
+comparison, and preserves an edited recipe when reopening. All native Wine work
+runs inside headless Wayland. No pilot, source-program or architecture matrix was
+rebuilt. Cross-session environment sensitivity remains distinct from source or
+neighbor invalidation; manual adapter semantics remain explicit operator work.
+
+### Keep the selected component name through checking and publication — 2026-09-24
+
+Starting and inspecting a selected supplier already accepted its component name,
+but checking rejected that name and required operators to switch to the enclosing
+entry. The installed jq `value-get` command reproduced that rejection before any
+execution. `component check --comparison-package` now accepts any component in the
+existing selection and routes it through that package's ordinary consumer check.
+Start, editor instructions and boundary guides keep the chosen component name.
+Text output names the actual consumer; receipts, replay commands, optional checks
+and history reuse keep the consumer identity and scope. JSON remains the ordinary
+receipt. Unknown names reject before execution. This supplies no independent
+supplier comparison and changes neither the engine nor the receipt format.
+
+The installed handoff edits the getter's private index helper, checks by the name
+`value-get` through the retained `path-set` comparison, and publishes only
+`value-get` from `checks/latest` into the existing source project. The negative
+index workload matches natively and through normal x86-64 jq CLI execution, with
+three getter calls and unchanged output. Native checking compiles one translation
+unit and reuses 36; the source project rebuilds the selected component's two
+objects and preserves all 16 neighboring objects and their mtimes. Backend objects
+and unrelated workspace C remain unchanged. No new component or service is added.
+
+The complete check takes 9.146s: preparation 0.362s, compiler 0.016s, link 0.064s,
+evidence validation 1.557s and concurrent fresh Wine startup 5.193s. Model and solver
+work are zero. Partial export takes 0.943s and the source build itself 0.214s.
+All Wine activity runs inside headless Wayland. Evidence is in
+`build/component-selected-check-2026-09-24/checkpoint.json`. The driver initially
+expected finer source-object invalidation than the existing component update
+provides; both getter objects rebuild. That expectation was corrected and the
+already passing execution evidence finalized without repeating the native run.
+
+The 31 existing focused comparison/dependency tests and metadata, module-closure,
+lint and SDK gates pass. The focused regression detects an incorrect supplier,
+checks repair, confirms zero-work history reuse when switching the focused name
+back to the entry, and retains consumer replay/JSON identity. No pilot or
+architecture matrix was rebuilt for this CLI routing change.
+
+### Carry interface-first authoring into a preparation recipe — 2026-09-24
+
+`component start --interface-intent` now supplies an editable `prepare.py` beside
+the generated C and editor inputs. Its `source_inputs()` carries the interface,
+authored paths, component identity and chosen operation symbols; operators list
+additional helper C/headers there. `comparison_inputs()` marks the execution
+environment, adapters, original, cases, observations and assumptions still needed.
+This is ordinary Python calling the existing preparation API, with no new artifact
+format or changed evidence authority. An unfinished recipe gives a setup diagnostic
+without creating its destination. Populated authoring workspaces remain preserved.
+
+The installed handoff fills that recipe with the reviewed jq string-split setup,
+adds its existing object-view header, prepares the comparison, opens a component
+workspace and inspects it. All 40 prepared files match the retained comparison
+inputs byte for byte, including generated headers, services, resources and native
+bindings. The new workspace remains unevaluated; it does not inherit a passing
+receipt. Preparation takes 0.324s, opening 0.347s and inspection 0.310s. These are
+command costs, not human boundary-analysis or adapter-authoring time. Exact input
+equality avoids a redundant native run: compiler, model, solver, link and program
+execution costs are zero for this handoff. The original receipt and inputs remain
+unchanged.
+
+Evidence is in `build/component-preparation-recipe-2026-09-24/checkpoint.json`.
+The 24 existing focused comparison tests, including first-time C authoring through
+the generated source inputs and a small host execution, pass alongside metadata,
+module-closure, lint and SDK checks. No pilot or architecture matrix was rebuilt.
+This improves an existing prepared workflow; it is not a new boundary trial or
+independent human usability result. Adapter semantics remain the substantial
+manual work, rather than a reason to introduce another source manifest.
+
+### Inspect retained cases for the component being edited — 2026-09-24
+
+Result inspection previously accepted only the enclosing comparison entry.
+Asking about a selected supplier rejected its identity, leaving operators to
+search the full receipt and trace manually. `component status TARGET COMPONENT
+--comparison-result RESULT` now provides a focused view for a selected component;
+`--details` enables the same view for the entry, and `--case` filters its display.
+The view shows case arguments, consumer/resource outcomes, source service-scope
+observations, trace paths and a boundary-inspection command. Its replay command
+uses the actual consumer and original case selection/order, even after filtering
+the display. Plain entry `--json` still returns the original receipt.
+
+This projects existing validated evidence and adds no instrumentation or receipt
+format. Unique service catalogs identify observed adapter scopes. Shared catalogs
+remain ambiguous; missing or incomplete traces supply no absence claim. A scope
+start is not an operation count or branch-coverage result. These observations help
+operators choose relevant examples without automatically removing other cases.
+
+The installed read-only handoff exposes a useful distinction in current jq
+evidence: the matching negative-index case records zero array-search scopes,
+while the matching array-search interpreter workload records two. A retained
+missing-release failure remains a mismatch in the focused view. DX-Ball's grouped
+graphics state has no service catalog and correctly reports unavailable scope
+information. Filtering the two-case string-split receipt to its program case
+keeps both cases in the printed suite replay. The boundary command also works
+for the selected supplier. All five original receipts remain unchanged.
+
+Inspection commands take 0.320–0.782s and perform no compiler, model, solver or
+program-execution work. Evidence is in
+`build/component-case-participation-2026-09-24/checkpoint.json`. Fifty existing
+focused comparison/dependency/service-authoring tests and the metadata,
+module-closure, lint and SDK gates pass. The first focused run exposed an old CLI
+guard rejecting retained-result case filters; the corrected dispatcher passes
+the same test. Tests also retain shared-catalog ambiguity and incomplete traces.
+No native pilot, source program or architecture matrix was rebuilt for this view.
+
+### Inspect a new transitive supplier before selecting it — 2026-09-24
+
+Reviewed refinement already supported a caller gaining another lifted supplier,
+but public status rejected the same proposal because its new unit was absent
+from the current selection. The retained jq array-search handoff reproduces that
+failure: proposing the checked getter reports `replacement adds unselected
+supplier array-indexes` instead of showing the operator what will change.
+
+The dependency preview now reports newly proposed units as `added`, combines their
+declared requirements with existing outer callers, and distinguishes current from
+proposed consumers. It prints a command to inspect each new supplier's boundary,
+C adapters and assumptions in the proposed package. Bundled defaults remain
+separate from explicit selections; this inspection does not resolve competing
+choices or change the selected network. The existing named refinement and
+comparison steps still apply.
+
+The installed jq handoff previews array search beneath `value-get` and both
+`path-get`/`path-set` consumers, follows the printed inspection command, and leaves
+the input selection unchanged. Unreviewed replacement still rejects without
+publishing a workspace. Reviewed refinement preserves 27 existing authored files
+outside the getter and the operator's notes. The existing interpreter workload
+then matches the original, compiling two files and reusing 34 objects from the
+retained comparison cache. Preview takes 0.943s, refinement 1.530s and checking
+8.846s; the check includes 0.048s compilation, 0.064s linking, 1.178s evidence
+validation and 5.412s concurrent Wine startup. No model or solver runs.
+
+Evidence and commands are in
+`build/component-new-supplier-preview-2026-09-24/checkpoint.json`. The 31-test
+composition and seven-test dependency shards plus metadata, module-closure, lint
+and SDK checks pass. Validation uses the existing native interpreter case; no new
+program/pilot build or architecture matrix is needed for this inspection change.
+
+### Reuse service-owned types when establishing a boundary — 2026-09-24
+
+First-boundary preparation still required copying a neighboring component's type
+schema even when the selected services already carried every shared value
+declaration. The installed old builder rejects the jq byte-length boundary with
+only its local signed result type because `jv_value` is absent. This is redundant
+authoring work: the reviewed contents/release contracts already define that value,
+its fields and the borrowed string view.
+
+`component_interface` now merges those service-owned declarations automatically;
+`types` supplies only additional local declarations when needed. The same
+`service_types` helper supports authoring a related lower service. Exact duplicates
+merge, while incompatible definitions identify the type and both origins.
+Nested records, nominal opaque objects and nullable values retain their existing
+semantics. Explicit old type lists remain supported, and unrelated types from a
+neighbor's interface are not imported implicitly. No new artifact, adapter
+inference or proof rule is introduced.
+
+The installed operator-project handoff now prepares jq byte length using only its
+additional `i32` declaration. All 38 package files exactly match preparation with
+the former recipe, including the interface, generated C, service contracts,
+adapters, cases and original bindings. Public start/status and the native
+interpreter case pass. DX-Ball's initializer separately reconstructs its exact
+interface from twelve selected services with no local type list, preserves all
+17 authored/adapter files in the connected selection, and passes the retained
+shared-state consumer case through the same public workflow.
+
+The jq preparation command takes 0.344s; its native check takes 5.973s, including
+0.488s compiler work and 3.674s concurrent Wine startup. DX-Ball interface/package
+preparation takes 0.319s and checking takes 2.527s, including 1.225s compilation.
+The older receipts have different compiler environment/exclusion/engine bindings,
+so these are revalidation costs: seven jq and fourteen DX-Ball compilations, with
+no compiled-object reuse claimed. Neither check performs model or solver work.
+Unchanged program inputs need no source-program, pilot or architecture rebuild.
+
+Evidence, the prior rejection, exact package comparison and costs are retained at
+`build/component-shared-types-2026-09-24/checkpoint.json`. Nineteen focused service
+authoring tests and the metadata, module-closure, lint and SDK gates pass. Tests
+exercise nested declaration conflicts and generated C using mutable aliases and
+grouped state. Native layout analysis, service selection, C transport, observations
+and platform bindings remain explicit operator work.
+
+### Organize a component's C through the public workflow — 2026-09-24
+
+Ordinary file additions, renames and splits no longer require a Python revision
+script or a complete replacement file inventory. `component start` accepts
+repeatable `--source-file NAME=FILE`, `--remove-source NAME` and
+`--private-header NAME` for a root or selected supplier. Other authored files,
+notes, caller setup and neighboring selections remain in place. Names are relative
+to the selected unit, including `source/`. A new helper header can be private;
+existing shared/header roles remain part of the boundary. Preparation publishes a
+new draft without invoking a compiler. Keep listed input files until the command
+retires them in that draft; newly written local files can be explicitly adopted
+by naming their exact paths. No automatic file discovery is introduced.
+
+The installed jq handoff splits the existing getter into an entry file and a
+negative-index helper with a private header. The native `path-set` caller exercises
+that helper with a middle negative path index, retaining unrelated inner and outer
+object fields. It matches the original in 8.748s, compiles two files in 0.048s and
+reuses 35 objects. Concurrent Wine startup accounts for 5.293s; preparation takes
+0.361s, evidence validation 1.189s and linking 0.064s. No model or solver runs.
+The file-selection command itself takes 1.248s and preserves the original workspace.
+
+Partial source publication then refreshes the existing jq project. Normal entry
+produces the same output and getter call count before and after the change. The
+0.164s program build compiles only the getter's two objects, retains all 16
+neighboring component objects and rebuilds no backend object. The boundary,
+adapters and operator notes remain unchanged; no new component or service is needed.
+
+Evidence and exact inputs are in
+`build/component-file-editing-2026-09-24/checkpoint.json`. The existing focused
+comparison/composition tests and applicable metadata, module-closure, lint and SDK
+checks pass. Generated workspace/source guides and the public workflow document
+the commands. This checkpoint covers local C organization through an existing
+native consumer and host source project; it does not expand target qualification
+or require another pilot or architecture matrix.
+
+### Keep the compiler environment stable across toolkit edits — 2026-09-24
+
+The preceding round trip's 36 initial compilations came from a changed compiler
+environment. Read-only probes now establish that two fresh shells for the same
+toolkit have identical compiler fingerprints. Across the retained toolkit shell
+versions, the changed exported variables are `NIX_CFLAGS_COMPILE`, `PATH`,
+`nativeBuildInputs` and `NIX_GCROOT`. The Nix environment descriptions identify
+different toolkit packages and random-seed flags; ignoring the aggregate change
+would misdescribe the actual compiler inputs.
+
+The existing `nix develop --profile` facility separates that environment from
+Python toolkit edits. The installed handoff creates a profile, then changes the
+toolkit version and the getter C in a fresh headless desktop while reusing the
+same profile. Its retained native caller case matches: one C file compiles in
+0.032s, its dependency indexing takes 0.024s, and 35 neighboring objects reuse
+unchanged. The 9.027s check includes 5.265s concurrent Wine startup wall time and
+1.522s evidence validation; runtime startup remains the largest measured cost.
+The baseline reused all 36 existing objects and took 7.168s, so these runs do not
+claim a total wall-time speedup from the local edit. Neither run performs model
+or solver work, and no pilot is rebuilt.
+
+The public workflow now documents creating the profile once and invoking
+`python -m spaghetti_extractor` from the checkout through it. A read-only public
+CLI invocation verifies that route too. Intentional toolchain/native dependency
+updates still require refreshing the environment. The subsequent checkout preview
+exposed `SHLVL` as another accidental compiler input: redirecting command output
+changes this shell-nesting counter. Compiler/linker processes now withhold it,
+while runtime evidence still fingerprints its inherited value. Other actual
+compiler inputs and proof standards retain their existing checks. The profile
+uses existing Nix infrastructure. Evidence and exact
+inputs: `build/component-shell-invalidation-2026-09-24/checkpoint.json` and
+`diagnosis.json` beside it.
+
+The shell-counter fix's installed follow-up passes the same caller case after
+changing `SHLVL` from 2 to 7, editing the supplier and redirecting output. Initial
+revalidation for the new compiler policy takes 9.946s and compiles 36 files. The
+edit takes 8.497s, compiles one file and reuses 35; compiler configurations match.
+The documented checkout-module command, with redirected output, then previews all
+36 objects as reusable. Thirteen focused compiler-cache tests, metadata/module
+closure and production lint pass. Receipts and costs are retained under
+`build/component-shell-invalidation-2026-09-24/shell-level/`. No broader native case
+matrix or pilot rebuild is required for this environment-handling change.
+
+### Return a source-project edit through the actual caller — 2026-09-24
+
+The exported supplier guide previously printed `component check TARGET SUPPLIER`
+even when the retained comparison's entry was its caller. That command rejected
+the package identity. New source-export comparison records retain their entry
+`component_id`; the guide focuses the supplier when opening C, checks the actual
+comparison entry, then publishes only that supplier. It prefers an independent
+local comparison when available. Older exports remain readable and direct the
+operator to the check command printed by `component start` when entry metadata
+is absent. This adds origin information to the existing export, not a new artifact
+or an independent-proof claim.
+
+The installed handoff reproduces the old command failure on retained jq inputs,
+then follows the generated guide to carry a `value-get` source-project C refactor
+through its `path-set` caller. The native `nested` case matches in 11.871s, with
+36 initial C compilations, two executions and no model/solver work. This is a
+cross-session check, not a zero-work neighbor-proof claim. Partial publication
+preserves the source project; refresh needs no new backend bindings. The ordinary
+host program rebuild takes 0.164s, compiling only `value-get` and linking the two
+consumers. All sixteen neighboring component objects keep their bytes and mtimes,
+and no backend object rebuilds. Normal CLI execution returns `[7,11,9]` with empty
+stderr before and after, exercising `value-get` eleven times in each run.
+
+The original prepared project is preserved. This change reruns one affected native
+caller case and a normal program workload; it does not repeat the existing broad
+case matrices or architecture trials. The eighteen source-export tests now include
+executing a supplier guide's generated commands; metadata/module closure and
+production lint pass. Exact commands, inputs, observations and costs are retained
+in `build/component-source-entry-2026-09-24/checkpoint.json`.
+
+### Collect regression inputs while retaining current C — 2026-09-24
+
+`component start --reuse-cases DIR` now collects case definitions from saved
+results or comparison packages into the current workspace's next draft. Repeat
+the option for several sources. Current authored C, neighboring selections,
+driver and boundary remain selected; importing an old mismatch cannot restore
+its failing implementation. Existing order is retained, new cases append,
+identical definitions coalesce and conflicting names are rejected before a draft
+is published. Supplier-focused work still uses the enclosing consumer's cases.
+This reuses the existing comparison format and preparation path.
+
+The installed-tool handoff collected the retained jq overlap case and a saved
+missing-release discrepancy while preserving a local C refactor. All five cases
+matched in 6.512s. Collection itself took 0.365s. The initial check compiled seven
+files because the retained compiler environment digest differed, with no model
+or solver work. The DX-Ball handoff added a seed through the public check command,
+then collected it while preserving all seven authored files, including edits in
+both the consumer and selected supplier. Collection took 0.504s; the selected
+case recheck took 1.018s, compiled those two changed files and reused twelve
+objects. Its initial case setup took 2.589s. No pilot or assembled program needed
+rebuilding for this input-management change.
+
+Imported definitions supply inputs, not old observations or assurance. The
+operator must review the current driver's argument convention and boundary if
+either changed, retain any necessary earlier setup, and check the resulting
+suite. The five-case jq suite ran in full; DX-Ball's collected seed ran through
+its existing consumer without repeating its whole matrix. The focused 24-test
+comparison and 31-test composition shards, repository metadata/module closure,
+production lint and SDK checks pass. Commands, exact retained inputs and phase
+costs: `build/component-case-collection-2026-09-24/checkpoint.json`. The public
+walkthrough is in [the component workflow](component-workflow.md#try-another-input).
+
+### Choose ownership context and optional storage observations — 2026-09-24
+
+The shared jq driver now supports `unique` inputs without keeping additional
+references or inspecting consumed values afterward. It records pre-call reference
+counts and normal result/allocation observations. `unique-address` is an explicit
+opt-in for the result's same-address relationship to the left input. It captures
+integer address bits while the input is live; address equality supplies neither
+heap contents nor lifetime proof and is not required by ordinary unique mode.
+An optional C admission/observation callback lets a component retain existing
+input-domain checks. `SPX_JQ_ANY_VALID` supports append's arbitrary valid second
+value without pretending its type is always an array.
+
+The [existing append operation](../tests/fixtures/jq-array-append/README.md#shared-driver-and-unique-owner-context)
+now uses this path with its original C, interface, raw-value representation and
+length constraint. Four native cases pass in 7.829s. A balanced extra-reference
+edit still returns `[1,2,3]`: ordinary unique mode matches, while the optional
+address case detects the forced copy. That distinction prevents the convenience
+driver from imposing storage identity on every idiomatic lift. The address
+mismatch replays; repair reuses the baseline in 0.494s with zero compiler,
+execution, link, model or solver work. One existing array-search and both existing
+string-split cases pass with the updated common serialization and dispatch.
+All Wine runs in headless Wayland. No production checker, proof machinery, target
+component or pilot/program rebuild was added.
+
+Evidence is `build/component-unique-driver-2026-09-24/current/checkpoint.json`.
+The first attempt selected an obsolete v1 append fixture whose unused helper
+failed strict compilation; its inputs and failure remain retained. The successful
+handoff uses the later passing v2 fixture and preserves its boundary. Repository
+metadata, module-closure and production-lint checks accompany the native handoff.
+Raw malformed bytes, nonlocal failure and other call shapes remain explicit driver
+work. The original specialized append driver still covers its earlier slice and
+nested-object contexts; the new recipe is an additional operator handoff.
+
+### Reuse observation drivers and supply cases as data — 2026-09-24
+
+The next preparation improvement factors the repeated jq binary-value driver into
+[ordinary shared C](../tests/fixtures/jq-value-transport/README.md#reusable-comparison-driver-for-two-owned-values).
+Array search and string split now supply 9- and 10-line entry wrappers rather than
+55- and 72-line bespoke drivers. A shared 107-line header handles both owned inputs,
+retained aliases, results/reference counts, allocation observations and a real
+interpreter consumer. Original entry ranges, admitted kinds and boundary contracts
+remain explicit. The split case data moves from C constants into JSON arguments.
+Prepared packages retain the common header; checking needs no sibling fixture
+lookup. No production tool, proof machinery or artifact format changed.
+
+The six existing comparison cases pass (7.922s for the four array cases, 7.580s for
+the two string cases). An operator-supplied overlap input passes in 6.651s with
+zero compilation and all seven array translation units reused; it still links and
+executes the original/replacement. A missing release retains the correct `[0,2]`
+result but changes the observed references from `[1,1]` to `[1,2]`. The discrepancy
+is reported and replays after repair. That edit compiles one file and reuses six;
+restoring the source reuses the baseline in 0.663s with zero compiler, execution,
+link, model or solver work. Fresh Wine startup remains the dominant native cost.
+All Wine runs in headless Wayland; no pilot or portable program rebuild was needed.
+
+The new `samples` observation layout is explicit and earlier receipts retain their
+old inputs/layouts. Batch rows add retained references while they remain live;
+they are part of the new driver context. JSON parsing does not preserve arbitrary
+malformed raw bytes. Unique-owner mutation, nonlocal failure and other call shapes
+still require appropriate custom drivers. This is reusable support for an actual
+recurring jq boundary, not a universal driver inferred from a signature.
+Algorithms, interfaces and service declarations are unchanged. Evidence is
+`build/component-shared-driver-2026-09-24/checkpoint.json`; focused native comparisons
+and repository metadata, module-closure and production-lint checks pass. Operator
+semantics and adapter review remain necessary, but ordinary input examples no longer
+need duplicated observation code or C recompilation.
+
+### Find existing service boundaries and C adapters — 2026-09-24
+
+The new-boundary trial exposed a discovery cost before service reuse: operators
+had to open individual component descriptions or preparation scripts to find
+existing contracts and executable adapters. Public `component list --services`
+now browses those declarations across a retained comparison workspace.
+`--service QUERY` filters by component, local service, contract identity or C
+symbol, and shows signatures, lifecycle roles, effects, outcomes, unobserved
+behavior and C definition candidates. Repeated queries include multiple matches;
+`--json` supplies complete declarations and per-component assumptions, transports
+and available adapter/header inputs. Existing status guides link to the command.
+This projects existing interface/source-navigation data, with no new artifact
+format. Grouping uses exact bound contracts; equal signatures or declarations
+do not imply that different adapters are compatible.
+
+The installed jq handoff finds the three borrowed-string services in 0.727s and
+reopens their selected component in 0.849s. The structurally different DX-Ball
+blit service is found in 0.168s and reopens in 0.183s. Discovered bindings feed
+`retained_service_inputs` with explicitly reviewed C paths. All selected C and
+adapter bytes remain unchanged; subprocess execution is prohibited throughout
+the handoff. No new behavioral evidence or complete adapter closure is inferred.
+Operators still review bundled adapter code and choose meaningful observations;
+this removes searching through internal JSON/scripts, not that semantic work.
+
+Evidence is `build/component-service-inventory-2026-09-24/checkpoint.json`.
+The focused composition and comparison suites pass, including a same-signature,
+different-effect inventory regression. Repository metadata, module closure,
+production lint and the target SDK check pass. No native/pilot/program rebuild or
+additional target component was needed for this authoring change.
+
+### A previously unprepared operation through the interface-first workflow — 2026-09-24
+
+The [string-split trial](../tests/fixtures/jq-string-split/README.md) now establishes
+a new boundary, opens its typed C workspace before comparison preparation, attaches
+native observations, diagnoses/replays a meaningful wrong result, reuses the
+repaired implementation's evidence and updates normal program execution. It uses
+the installed toolkit and existing services/transport; no checker, compiler,
+artifact machinery or source-assembly recipe code needed changing. No pilot was
+rebuilt. The complete original operation is trapped during replacement comparison
+and removed from the portable source backend.
+
+Two comparison cases cover direct retained/shared references and a real interpreter
+workload. A deliberately omitted terminal field gives a useful first-difference
+report and replays from retained inputs. The baseline takes 7.545s; the bad edit
+takes 6.743s, compiling one file and reusing seven. Restoring the C reuses both cases
+in 0.689s with zero compiler, execution, link, model or solver work. Compiler work
+is 0.520s initially and 0.032s for the edit; each link is 0.064s. Fresh Wine startup
+dominates these native checks (about 5s wall time). All Wine runs in headless Wayland.
+
+The incremental x86-64 source build takes 0.665s and keeps all 16 prior component
+objects. The same affected CLI workload passes on AArch64 under QEMU, retaining
+that project's prior component objects too. Both executions observe six calls to
+the lifted operation: five explicit workload inputs and another normal-program
+call. The initial bookkeeping incorrectly expected exactly five; the final record
+retains six and corrects that premise without repeating native comparisons. The
+ARM build's first invocation lacked `make` outside the development shell; resuming
+only the build in the documented shell succeeds. These are handoff issues, not
+behavior mismatches hidden by the report.
+
+First preparation still takes substantially more operator work than a local edit:
+57 lines of implementation, 72 of driver, 91 of preparation, 28 of C adapters and
+32 of boundary notes. Scripted preparation is 0.768s, but that excludes manual
+analysis and authoring; it is not an operator-effort timing. Shared service/file
+selection and the driver observations remain manual. The slice component's
+preallocated-empty service cannot simply substitute for `jv_string("")`, despite
+similar types: allocation behavior differs. Reusing its other three contracts and
+shared object representation does avoid redoing transport or loading a neighboring
+algorithm. This is a source-assisted agent trial, not an unfamiliar human operator
+study or new evidence of broad Win32 coverage.
+
+Evidence is `build/component-first-boundary-2026-09-24/checkpoint.json`. The
+empty-separator branch assumes well-formed UTF-8; malformed text for that branch,
+allocation failure, arbitrary callbacks and concurrency remain outside this finite
+checkpoint. The source project still uses the unlifted jq parser, VM, allocator and
+other services. Keep the next usability work focused on reducing repeated service,
+adapter and observation setup; another routine string component or broader edge-case
+matrix alone would not resolve that cost.
+
+### Start authoring C before preparing a comparison driver — 2026-09-24
+
+First-time setup had a bootstrap gap: the generated C API/editor workspace arrived
+with a work package or an already prepared executable fixture. Public
+`component start --interface-intent FILE` now starts directly from a reviewed
+interface, without target registration or a build. It creates typed operation
+stubs, standard generated headers, editor commands and the exact inputs needed for
+later comparison preparation. Named operation symbols and a syntax compiler are
+optional choices. Multi-entry components use the same shared context declaration.
+Each stub has an explicit unimplemented `#error`; no oracle, comparison result or
+stronger assurance is invented. Existing preparation and transactional directory
+helpers are reused, with no new artifact format.
+
+The installed handoff starts jq array-search and grouped DX-Ball state workspaces
+in 0.066s each. Their existing authored implementations pass host syntax checks;
+the same C can then enter the existing comparison setup while preserving original
+inputs, drivers and neighbors. The DX-Ball reset/bind implementation in one C file
+passes its retained `seed-7` case in 1.193s. jq preparation is demonstrated without
+claiming a new behavioral result. All 56 generated files across the selected
+interfaces remain byte-identical after sharing prototype rendering with the stub
+generator. No native/Wine run, pilot rebuild or additional case matrix is needed.
+
+Evidence is `build/component-interface-start-2026-09-24/checkpoint.json`. The existing
+first-boundary regression now starts from the interface, authors and syntax-checks
+C, preserves an edited destination on retry, then prepares and executes its
+comparison. Comparison, interface and public start suites pass alongside repository
+metadata, module closure, production lint and target-SDK validation. Operators
+still establish boundaries, transport and meaningful observations; this closes the
+editing bootstrap gap rather than claiming general target recovery.
+
+### Show boundary declarations before accepting a refinement — 2026-09-24
+
+The prior revision workflow named affected callers, but interface differences
+still appeared only as paths and hashes. The shared contract diagnostic now shows
+changed declarations by name: operation inputs, types/layout fields, nullability,
+service/resource rules and requirements. Named lists retain explicit order changes;
+matching names or identical C types cannot hide a reordered parameter list. Existing
+status/proposal views use this projection, and a selected revision needing caller
+review includes the proposed changes before publishing. Full old/new values remain
+in the JSON view. This adds guidance, not a new artifact or compatibility rule.
+
+Installed-toolkit review of retained inputs exposes jq's proposed `value`/`needle`
+argument swap in 0.150s and DX-Ball's proposed nullable graphics state in 0.034s,
+naming their respective getter/initializer requirements. Both proposals remain
+unpublished and all original files remain unchanged. Neither proposal is asserted
+to work with its current C. Public status also displays the preceding real jq
+assumption refinement. Process launches are forbidden during this handoff; compiler,
+link, execution, model and solver work are zero.
+
+Evidence is `build/component-boundary-review-2026-09-24/checkpoint.json`. The existing
+30 composition and 7 dependency tests pass with metadata, module closure and
+production lint checks. No native run, new fixture matrix or pilot rebuild is
+needed for this inspection change. Boundary semantics and subsequent behavioral
+comparison remain explicit operator work; broader readiness keeps its prior scope.
+
+### Revise a selected supplier without a separate local fixture — 2026-09-24
+
+Focused supplier editing exposed a related gap: the revision API could change
+only the root. `revise_comparison_package(component_id=...)` now revises an existing
+supplier's interface, C files, adapters, headers and declarations inside its
+consumer selection. The consumer's original, driver, cases, tools and neighboring
+implementations remain. Changed incoming contracts require explicit named
+`reviewed_requirements`; missing reviews identify every affected caller before
+publishing. This records manual review, without proving compatibility or inventing
+independent local evidence. Shared-layout and execution changes keep their existing
+root/group revision paths. No new artifact format is introduced.
+
+The installed jq handoff refactors the existing array-search loop into `search.c`
+and a private machine-index helper header, clarifies its allocation-observation
+assumption, and reviews `value-get/indexes`. Preparation, including the rejected
+missing-review attempt, takes 0.525s. The retained native interpreter case passes
+in 11.475s. A changed compiler environment recompiles all 36 files; that cost is
+not presented as warm reuse, and no extra run is added merely to obtain a cache hit.
+Public partial export updates array-search and the getter's requirement declaration
+in the existing standalone jq project. The build itself takes 0.164s, recompiles
+one component object, preserves fifteen neighbors and does not rebuild backend C.
+Normal x86-64 program entry again produces `[[0,2],[0,2]]`.
+
+Evidence is `build/component-selected-revision-2026-09-24/checkpoint.json`, including
+exact installed inputs and validation. A focused regression removes the old local
+supplier packages, revises the selected supplier with two explicit callers, reuses
+neighbor compilations and detects a wrong implementation. Composition and cache
+checks, metadata, module closure and production lint pass. All Wine runs use
+headless Wayland. This improves boundary/refactor handoff on the same component
+selection; no new pilot, matrix, architecture or general-readiness claim is added.
+
+### Preserve compiled C when only the Python launcher changes — 2026-09-24
+
+The supplier editing handoff still encountered a cold compile when its aggregate
+environment fingerprint changed. Inspection found one unnecessary coupling:
+Python launcher/import settings reached the native compiler and linker. Both
+processes now omit five documented Python variables; cache fingerprints describe
+the environment actually passed. Runtime comparisons retain the full environment.
+Compiler flags, tool identities, headers and other inherited inputs still control
+reuse. A compiler wrapper using Python helpers must provide its own import setup.
+This is a narrow editing-loop improvement, not a general environment cache bypass
+or a claim that Python was the only cause of earlier revalidation.
+
+One retained jq array-search interpreter case establishes the new baseline in
+12.174s (36 compilations). Changing only the toolkit import path then passes in
+8.757s with all 36 objects reused, one link and two executions. Component inputs,
+compiler configuration and object hashes remain unchanged; runtime evidence reruns
+because its environment changed. Fresh concurrent Wine startup accounts for 5.011s
+of the second run. No pilot is rebuilt and no component, case or proof rule is added.
+
+Evidence is in `build/component-compiler-launcher-2026-09-24/checkpoint.json`.
+The 13 focused cache tests, installed package, repository metadata, module closure
+and production lint checks pass. The added regression checks actual runtime access
+to the retained environment; existing coverage verifies that C flags still change
+compilation and observed behavior. All Wine runs use headless Wayland. Broader
+operator readiness and the remaining assembly/backend work keep their prior scope.
+
+### Open a selected supplier without reconstructing its test setup — 2026-09-24
+
+Inspection could already select a supplier by name, but `component start` still
+rejected it unless the operator supplied a separate local fixture. Start now opens
+any selected component for editing while retaining the existing consumer, adapters,
+neighbor bodies and cases. Its editor commands and boundary link focus on the named
+unit, while its printed check command names the enclosing comparison entry. No new
+artifact or synthetic production API is introduced, and no independent local
+evidence is implied. A supplier-focused `--reuse-source` imports only that unit's C
+through the existing boundary-checked source handoff; unrelated edits in the source
+workspace stay out. Existing local comparison setup remains preferable when one
+is retained in an experimental package; otherwise reopening uses this same consumer
+selection with an explicit scope message.
+
+The installed workflow opens `value-get` from the current thirteen-unit jq network,
+edits its C and checks one retained array-search interpreter workload. Initial
+preparation takes 1.140s. The compiler environment differs from the prior retained
+run, so the initial check compiles all 36 files in 11.329s; this is recorded separately
+from warm editing. The getter edit compiles one file and reuses 35 in 9.273s. Reopening
+only that edited getter in the current consumer preserves every other selected
+source/adapter, including the existing caller edits. An intentionally unrelated
+caller draft in the source workspace is excluded. The returned check reuses all
+evidence in 2.814s, with zero compilation, execution, linking, model or solver work.
+
+Publishing just the getter through the public partial export updates an existing
+standalone jq project. Its build takes 0.214s, compiles one component object, retains
+fifteen neighboring component objects and does not rebuild backend/binding C. Normal
+x86-64 CLI entry produces `[[0,2],[0,2]]`. The same opening path transfers to DX-Ball's
+blit component from a retained experiment with no independent blit setup; its
+initializer check scope and original selection remain explicit. No new DX-Ball or
+second-architecture execution is claimed.
+
+Evidence is in `build/component-supplier-focus-2026-09-24/checkpoint.json`, including
+commands, editor scope, preserved inputs, native comparison costs and source-program
+execution. The 24 comparison, 7 dependency and 14 experimental tests pass, alongside
+repository metadata, module closure, production lint and target-SDK checks. All Wine
+runs use headless Wayland. This closes an editing/handoff obstacle; independent local
+checks still need their own reviewed driver/oracle/cases, and broader target readiness
+and the separate strong-qualification objective remain open.
+
+### Make ordinary component inspection readable — 2026-09-24
+
+The connected jq getter's full workspace view had grown to 103,443 bytes, including
+repeated shared-header definition candidates, detailed call listings and the full
+input fingerprint inventory. That made an ordinary local edit require searching
+through substantially more material than its immediate boundary. The default
+`component status --comparison-package` now gives a local overview: C and shared
+input locations, operation signatures, service-to-supplier/adapter mappings,
+outcomes, caller requirements, every declared assumption and unobserved effect,
+a few examples and the appropriate check command. `--details` retains the full
+current boundary, lifecycle/effect declarations and source navigation; `--json`
+retains the complete structured projection. Generated workspace guides remain
+the full snapshots. Existing source-navigation work is preserved.
+
+The installed CLI shows the same getter in 6,984 bytes, including its new
+`array-indexes` supplier and both `path-set/get` and `path-get/get` callers. It also
+handles the independent array-search workspace and the structurally different
+DX-Ball blit supplier. An authored C edit and a proposed supplier selection retain
+their existing reuse/contract previews in the overview. All selected assumptions
+remain visible, and supplier inspection still labels the enclosing consumer's
+cases rather than claiming an independent local check. Printed Wine check commands
+include the headless Wayland wrapper.
+
+The handoff forbids subprocess/provider launches during inspection, verifies
+that source/declaration files remain unchanged, and uses the installed toolkit.
+Evidence is in `build/component-local-overview-2026-09-24/checkpoint.json`, with
+the actual overview/details/JSON outputs, input hashes and preview commands.
+Existing comparison/dependency tests and repository metadata, module closure,
+production lint and target-SDK checks pass. No program, native comparison, pilot
+or solver run was added for this presentation change. This improves local
+operator work; it supplies no new equivalence or broader target-readiness claim.
+
+### Retain operator-defined source bindings with the project — 2026-09-24
+
+The array-search handoff exposed a smaller assembly gap: each new portable entry
+still needed an edit to the shared jq recipe. Both initial preparation and refresh
+now accept `--bindings FILE`, with explicit entry symbols, backend definition
+locations, copied adapter headers and caller service-symbol overrides. The
+[array-search declaration](../tests/fixtures/jq-array-indexes/portable-bindings.json)
+replaces its hardcoded recipe entry and getter special case. Selected choices are
+retained in the existing `portable-project.json` and its source inventory; no new
+proof artifact, automatic boundary inference or compatibility claim is introduced.
+
+The public partial export and refresh use the retained comparison and an existing
+source build. Refresh takes 0.278s; initial preparation from the same source export
+takes 5.631s, with no comparison or compilation. Both reproduce the earlier
+array-search selection's generated bindings and modified backend files exactly.
+The source build takes 1.015s, retains thirteen neighboring component objects,
+and runs the affected normal jq workload with result `[[0,2],[0,2]]` and two
+search calls. The two explicitly selected caller C updates are imported; all
+unselected component C and operator notes remain intact.
+
+Moving the original JSON/header directory away and running copied preparation/
+refresh scripts without sibling fixtures yields `unchanged` in 0.288s. The project
+retains all selected inputs for subsequent refreshes. Header/build conflicts still
+use the existing proposal and manual-merge path. Existing entry names/backend
+locations cannot silently change. New service bodies, compiled adapters or layouts
+still need explicit C integration; this is a jq source recipe, not a universal
+application backend mapper.
+
+Evidence is in `build/component-backend-inputs-2026-09-24/checkpoint.json`.
+The handoff's initial neighbor assertion incorrectly included two selected caller
+updates; it was corrected without repeating the successful export/refresh.
+Validation stays focused on the operator outcome: no native comparison, formal
+model, solver, pilot or second-architecture rerun. Earlier x86-64/AArch64 execution
+is retained evidence for the identical generated C, not new architecture evidence.
+Whole jq recovery and broad arbitrary-target readiness remain open.
+
+### Lift a previously retained dependency through local and program work — 2026-09-24
+
+The next [array-search handoff](../tests/fixtures/jq-array-indexes/README.md) closes
+the actual `jv_array_indexes` service used by the value getter. Source/disassembly
+analysis identifies the complete pinned PE32 body at RVA `0x2c226..0x2c5e3`.
+The new ordinary-C component preserves empty-pattern behavior, overlapping
+positions, comparison order after a mismatch and defined 32-bit index arithmetic.
+Its local package imports no neighboring authored bodies: copy, length, get and
+release reuse the selected getter's service declarations and live-value transport;
+equality, result construction and append remain explicit lower services.
+
+Local preparation takes 0.587s. Four focused cases cover retained references,
+aliased arguments, an empty pattern and the actual interpreter. The baseline
+takes 6.400s; a compatible C edit takes 5.666s with one compilation and six reused
+units. Dropping a release preserves positions but changes references and residual
+allocations (one block in the original versus four in the replacement), and the
+retained defect replays after repair. Restoring compared C reuses all evidence
+with zero compiler/link/execution/model/solver work in 0.692s. This is behavioral
+preservation within the observed scope, not a claim that the original is leak-free.
+
+The existing getter consumer passes, but returning its new supplier into the
+full network exposed a tooling gap: explicit named refinement rejected a newly
+declared transitive unit. Shared refinement now imports that reviewed closure,
+preserves compatible current neighbors and still checks every frozen requirement
+and reachability. Ordinary implementation replacement remains unable to introduce
+the new boundary. The final interpreter comparison passes through `value-get`
+and `path-get`; a subsequent C-only search edit compiles one unit and reuses 35
+in 8.286s. The getter's public contract remains unchanged: naming both call sites
+was an explicit review in this handoff, not a new requirement to review unchanged
+caller contracts. The toolkit update changed the compiler environment for the
+separate local follow-up, which compiled seven units; it is not reported as warm
+local reuse. Earlier successful local/getter checks were retained.
+
+The same checked selection updates copies of existing standalone source projects.
+The explicit jq backend recipe removes the old `jv_array_indexes` definition and
+binds the new component. Normal CLI entry produces `[[0,2],[0,2]]` on x86-64 and
+AArch64 under QEMU, with two search calls on each. Thirteen host and twelve ARM
+neighboring component objects retain bytes and mtimes. The first ARM link
+requested unavailable static libraries; the retained dynamic-link setup completes
+using those compiled objects. No successful host/native run was repeated for
+that correction. Parser, VM, allocation, equality and other services remain an
+explicit source-assisted backend; this is still partial jq.
+
+Evidence is in `build/component-array-indexes-2026-09-24/checkpoint.json`, including
+retained disassembly, first preparation/C inputs, commands, differences, phase
+costs, installed toolkit identities, source builds and program observations. This
+is a new-boundary trial with a recorded shared integration fix, not a claim that
+unfamiliar operators need no tool development. All Wine runs use headless Wayland.
+The 29-test composition and six-test dependency shards and applicable repository
+gates pass. No extraction/proof pilot, expanded runtime matrix or new proof rule
+was needed. Allocation failures and arbitrary callbacks/concurrency remain outside
+this trial. The broader practical delivery goal remains active.
+
+### Establish a boundary using services from the selected network — 2026-09-24
+
+First-time preparation still required finding an earlier per-component package
+to use `retained_service_inputs`: it only read root service declarations. The
+helper now accepts a named component in the selected network and explicit
+destination-to-package-path mappings for adapters and headers. It preserves exact
+service contracts, transports and outcomes without importing neighboring bodies
+or evidence. Existing root-package file lists retain their behavior.
+
+The installed [jq string-search recipe](../tests/fixtures/jq-string-indexes/README.md#start-from-the-selected-path-network)
+now starts from the current twelve-unit path workspace's `string-slice` services.
+It reuses shared live-value transport and the allocation observer. The selected
+network C bundled the contents reader with slice-entry installation; a reviewed
+15-line C adapter isolates that reader while retaining the original byte-length
+lower service. This is still explicit operator analysis/C work. The shared
+authoring helper needed an extension for this setup route; no new memory model,
+compiler support, artifact format or proof rule was required.
+
+The copied operator project prepares in 0.576s. Its existing retained-reference
+case matches in 7.224s. A compatible loop edit takes 6.297s, compiling one file
+and reusing seven. Omitting one release leaves search positions unchanged but
+retains seven native blocks; public feedback catches that lifetime difference
+and replay reproduces it after repair. Restoring the already compared edit takes
+0.627s with zero compiler/link/execution/model/solver work. The existing real jq
+interpreter case then passes in 6.154s with all eight compiled units reused and
+five calls through the replacement. Source export and an ordinary host C library
+build pass. The selected network's 49 source/adapter files remain unchanged.
+
+Evidence is in `build/component-network-services-2026-09-24/checkpoint.json`, with
+the copied preparation/C inputs, exact service bindings, public commands, retained
+discrepancy, phase costs and repository validation. All Wine execution uses the
+headless Wayland desktop. The 28-test composition shard and applicable metadata,
+module-closure, lint and target-SDK gates pass. This improves preparation of the
+existing search boundary; it does not add a component, establish a new-boundary
+generality claim, rerun a pilot, or repeat the earlier portability matrix.
+
+### Diagnose the exact adapter precondition — 2026-09-24
+
+The DX-Ball runtime previously reported only a generic invalid state/argument/
+lifetime message. Its ordinary C check wrapper now includes the failed condition,
+file/line and function. The wrapper stays private to the adapter, evaluates the
+condition once and preserves the callable check entry; shared headers, contracts
+and authored component C remain unchanged. Existing command feedback and retained
+stderr display the diagnostic without toolkit or proof-engine changes.
+
+`build/component-adapter-diagnostics-2026-09-24/` retains the installed-tool handoff.
+The existing `seed-7` state defect reports the exact `dx_caps` predicate at
+`adapters/runtime.c:119`. Saved status and replay retain it after repair. The
+comparison remains incomplete on runtime failure; no missing observation becomes
+a passing result. Repair takes 0.967s and recompiles one file while reusing its
+15 neighbors; replay compiles nothing and reuses all 16 objects. The native adapter
+also compiles as PE32 in 0.155s, without native execution. Repository metadata and
+build-infrastructure checks pass. This focused diagnostic change adds no cases, components, Wine runs,
+solver work or pilot rebuilds.
+
+### Bind caller services to named network components — 2026-09-24
+
+`bind_dependencies` now accepts the same `{id, package, adapters?}` selection used
+by preparation, alongside standalone package paths. An operator can bind a new or
+revised caller to the current supplier inside a network without extracting its old
+local package or calculating a contract hash. Repeated requirements share one
+selection; absent units and conflicting package/adapter choices reject. This
+records a reviewed boundary decision, not a compatibility proof.
+
+`build/component-network-bindings-2026-09-24/` retains the installed DX-Ball handoff.
+The initializer's reset/bind services share the current `graphics-state` selection,
+and its blit consumer uses the current private-helper implementation. Preparation
+takes 0.423s and reproduces the previous contracts, graph and C/adapter bytes.
+The existing `seed-7` case passes. A deliberate initialization-state defect causes
+source exit 3 at the caps service; the command reports the last service and retained
+stderr. This is an incomplete comparison with a diagnosed runtime failure, not a
+completed value mismatch. Repair passes in 0.991s, compiling one file and reusing
+15 objects. The source-project update/build preserves neighboring object bytes,
+mtimes and notes. The 27-test composition shard and four applicable repository
+checks pass. No additional components, Wine, pilot rebuilds or proof campaign were
+needed; this remains a retained-C/controlled-service workflow checkpoint.
+
+### Prepare local work with the currently selected suppliers — 2026-09-24
+
+Extracting a component previously preserved its requirements but still needed the
+suppliers' original standalone packages to satisfy them. Preparation can now name
+a unit inside an existing network and retain its declared supplier closure.
+`retained_component_inputs(..., retain_dependencies=True)` supplies those selections
+to the existing resolver. It preserves the selected C/adapters and exact contracts,
+deduplicates shared suppliers and keeps applicable synchronous cycle declarations
+with their members. The operator still chooses the local driver, oracle and cases.
+No new artifact or proof authority is introduced.
+
+The [jq local recipe](../tests/fixtures/jq-path-network/prepare-local.py) uses only
+the current path network to prepare the getter with its eight storage/string
+suppliers. `build/component-retained-suppliers-2026-09-24/` records the installed
+handoff: preparation takes 0.967s, preserves the independently edited storage
+getter, and omits unrelated path callers. The existing negative-index case catches
+a 30-to-20 result defect; repair changes one compiled C file and reuses 27 objects.
+Its wrong inputs remain retained. Returning the repaired C through
+`--dependency-source` passes the existing native `nested` consumer and preserves
+every neighboring C/adapter file. The handoff exposed and fixed misplaced supplier
+cycle metadata that initially made this return look like a getter boundary change.
+
+The updated toolkit changes the compiler environment, so final local/consumer
+revalidation recompiles 28/34 files, taking 10.136s/11.247s; these are separate from
+warm-edit reuse costs. The 27-test composition shard and four applicable repository
+checks pass. All Wine work runs in headless Wayland. This is a prepared workflow
+improvement using two retained cases, without another pilot, more components or a
+new-boundary/operator-readiness claim. The practical delivery goal remains active.
+
+### Inspect a selected component by name — 2026-09-24
+
+The public status command previously rejected a supplier's identity when given
+its enclosing network workspace. It now opens any selected component by name,
+shows its recorded caller requirements, and prints the enclosing consumer check
+command. Generated supplier guides retain that component in their refresh command.
+`component list TARGET --comparison-package WORK` discovers the selection without
+building target products. Boundary inspection remains separate from local evidence;
+the enclosing driver's cases and optional reuse preview are labeled accordingly.
+
+`build/component-navigation-2026-09-24/` retains the old rejection and installed
+jq/DX-Ball command handoff. The jq getter shows both `path-set/get` and `path-get/get`;
+DX-Ball's blit view follows its renamed C and private helper. Opening the jq
+workspace takes 1.057s, listing it 0.415s and focused inspection 0.719s. All selected
+C/adapters remain unchanged. Two existing focused tests and four applicable
+repository checks pass. No component execution, compiler/model/solver/link work,
+Wine invocation or pilot rebuild was needed for this read-only usability change.
+
+### Refine a shared supplier across selected callers — 2026-09-24
+
+Named refinement previously addressed only the package entry's requirements;
+changing a shared supplier required rebuilding intermediate caller packages.
+`--refine-requirement` and `revise_comparison_package(refine_requirements=...)`
+now accept `CONSUMER/REQUIREMENT` names for any selected caller. Bare requirement
+names retain their root meaning. The revision updates only explicitly reviewed
+edges, reports remaining missing reviews together, and rejects duplicate aliases,
+conflicting supplier choices or retargeted/removed reviewed requirements. Bundled
+suppliers with matching declared contracts retain the current network bodies,
+preserving independent neighboring edits. This is explicit authoring and concrete
+revalidation; matching declarations and manual review are not compatibility proofs.
+
+`build/component-network-refinement-2026-09-24/` retains both old-tool rejections
+and the installed jq handoff. It makes the getter's owned-reference alias premise
+explicit, reviews the actual `path-get` and `path-set` call sites, and updates
+`path-get/get` plus `path-set/get` in one public command. All selected C/adapters,
+the independent storage getter edit and operator notes survive. Preparation takes
+1.467s; the existing `nested` original-x86 consumer check takes 7.188s with no
+compilation. This clarifies a reviewed boundary premise; it does not add a theorem
+covering every alias context.
+
+An ordinary subsequent getter edit runs through the existing local `negative`
+case. Wrong negative-index normalization is detected and remains replayable after
+repair. The repaired C returns through `--dependency-source`; its consumer check
+takes 7.597s with one compilation. The source-project update includes the supplier
+and both reviewed callers, preserving neighboring objects, mtimes and notes.
+All Wine work uses one headless Wayland desktop. The 26-test composition shard,
+six dependency tests and seven repository gates pass. These two retained cases
+add no pilot rebuild, expanded matrix, full jq lift or qualification claim.
+
+### Reopen a component after a C file refactor — 2026-09-24
+
+The source round trip still rejected a valid refactor when reopening the component
+itself, although named supplier imports already supported it. `component start
+--reuse-source` now carries the declared authored file selection from another
+workspace or an exported project, removes retired C, creates new directories and
+updates editor/build inputs. It retains the chosen local adapter, cases and
+neighbors. File ownership and installation use the same helpers as supplier
+imports; exported drafts retain the existing boundary/shared-input checks.
+Direct workspace carry-over into an explicitly revised setup remains supported.
+Existing header roles come from that chosen setup; new private helpers keep their
+declaration. Neither path supplies compatibility or new assurance.
+
+`build/component-root-refactor-2026-09-24/` retains both old-tool rejections after
+a passing local refactor. The installed handoff splits DX-Ball blit into a renamed
+entry, helper C and private header, then reopens it from both a local workspace
+and a source export. A subsequent private helper rename imports with no manual
+file copying or hash editing. A wrong rectangle extent is detected and remains
+replayable after repair. The repaired local check takes 0.605s with one compilation
+and nine reused objects; its consumer takes 1.006s with two compilations and
+fourteen reused objects. The partial source update and library build preserve
+neighboring objects, mtimes and operator notes.
+
+The existing retained-C `seed-7` case supplies the handoff. The 67 comparison,
+composition and source-export tests and seven repository gates pass. No pilot
+rebuild, native rerun, expanded case matrix or qualification claim is added.
+
+### Prepare an independent local check from a selected network — 2026-09-24
+
+Starting a selected supplier from a network previously returned only an identity
+error. The diagnostic and component guide now explain the missing local setup.
+The existing authoring API gains `comparison_environment.retained_component_inputs`:
+it carries a named unit's interface, shared headers, source/private-header roles,
+assumptions, representation and resource/service declarations into preparation.
+Supplier requirements remain explicit. The operator supplies the local driver,
+oracle, cases, observations and any required suppliers; network evidence does not
+manufacture an independent comparison. No new artifact format or proof rule is
+introduced. The helper supports the existing prepared source/header layout;
+custom include layouts use explicit authoring inputs.
+
+`build/component-local-setup-2026-09-24/` records the old diagnostic and the installed
+handoff. The new DX-Ball `prepare-local.py` recipe prepares blit using only the
+selected retained-C network, without a previous per-component setup or repeated
+interface/service declarations. Its reviewed driver branch and runtime preserve
+live sprite/backbuffer aliases and the selected graphics service. This is reuse
+of a known boundary, not another previously unprepared boundary trial.
+
+Preparation takes 0.391s, the first local check 1.169s and a warm C edit 0.579s.
+A deliberately wrong coordinate changes both pixel effects and the service call;
+the mismatch remains replayable after repair. The repaired edit returns through
+the public C-only consumer handoff in 1.034s with one compilation and fourteen
+reused objects. The partial source-library update preserves neighboring objects,
+their mtimes and operator notes. Local fixture semantics remain reviewed C work;
+these timings exclude that analysis and shell setup.
+
+The existing `seed-7` case supplies the handoff. The 25-test composition shard,
+24-test comparison shard and seven repository gates pass. No native run, pilot
+rebuild, extra case matrix or formal qualification is claimed. The broader
+practical goal and separate G1–G7 objective remain open.
+
+### Keep implementation-header edits local — 2026-09-24
+
+The next DX-Ball helper rename exposed a remaining handoff restriction: changing
+its internal prototype was rejected as a boundary-header change. Comparison
+packages now accept explicit `private_headers` declarations for implementation-only
+authored headers. The same role follows dependency selection, component/source
+guides and exported projects; the Nix helper accepts `privateHeaders`. Original
+and named shared-representation inputs cannot use this role. Existing role changes
+require explicit refinement, while later edits use ordinary C-only selection.
+The declaration records operator knowledge; it does not prove header-use isolation
+or weaken exact source binding and strong qualification.
+
+`build/component-private-headers-2026-09-24/` retains the old rejection and the
+installed workflow. After reviewing the helper's role once, its rename and inline
+helper edit pass local and connected retained-C checks with the original boundary,
+adapters and neighboring implementations. Source updates preserve initializer/blit
+objects and notes. A wrong count introduced directly in the exported private header
+produces the expected memory discrepancy. Repair matches in 1.184s, compiling
+its two C consumers and retaining thirteen objects. Saved failing inputs remain
+unchanged after repair.
+
+The existing `seed-7` case supplies this checkpoint. The 66 comparison/composition/
+export tests and seven repository gates pass. No new native run, pilot rebuild,
+case matrix or proof machinery is added. This removes repeated review of internal
+helper edits after their role has been established; shared state and externally
+used headers still require appropriate boundary analysis.
+
+### Carry a component file refactor into its existing consumer — 2026-09-24
+
+A locally valid C file split previously failed the C-only supplier handoff because
+the consumer expected the old filenames. `--dependency-source` now carries the
+unit's declared C additions/removals/renames and newly introduced private helper
+headers. The existing revision API defines the complete file selection; status
+shows its additions/removals, and start/check update that unit's sources and editor
+inputs. Consumer adapters, neighboring implementations and boundary declarations
+remain intact. Existing header changes and contract changes still need review;
+new files cannot overwrite unowned consumer inputs.
+
+`build/component-c-files-2026-09-24/` retains the original rejection and the actual
+DX-Ball handoff. The grouped state component factors its reset loop into a helper
+C/header and renames the reset entry file. The existing local and connected
+retained-C `seed-7` comparisons match. Setting the helper's bank count incorrectly
+produces a memory discrepancy; repair matches in 1.103s, compiling one file and
+retaining fourteen objects. Saved failing inputs remain available after repair.
+
+The handoff also exposed an exporter rule that classified any added header as a
+changed boundary. Source updates now recognize new authored helper headers while
+retaining review for existing headers and declared contract changes. The selected
+unit updates in the existing source library, preserving initializer/blit objects
+and notes; the refactored exported source can return to the old consumer directly.
+The 42-test composition/export suites and seven repository gates pass. This uses
+one existing retained-C case, without a pilot rebuild, native rerun, broader case
+matrix or proof claim. Scope and exact commands/results are in the checkpoint.
+
+### Revise shared inputs after regrouping components — 2026-09-24
+
+The shared-layout recipe previously rejected the delivered three-component DX-Ball
+selection because it assumed the original four components. It now follows the
+declared replacement group. The existing revision API accepts named shared-input
+updates and explicit `consumer/requirement` reviews, applies them to all selected
+members, and derives their bindings. Missing reviews name the affected callers;
+failed preparation leaves the destination available for a corrected retry.
+Implementation C, adapters, notes and pinned original inputs remain intact.
+Partial local groups remain partial; this does not infer contract compatibility.
+
+`build/component-shared-inputs-2026-09-24/` retains the original rejection and the
+installed-toolkit handoff. The regrouped state component keeps its existing
+reversed reset loop while the sprite-bank fields move back to slots-first order.
+Local, connected retained-C and original-x86 comparisons match on the existing
+`seed-7` case. Native execution uses headless Wayland and the same redirected-entry,
+controlled-services scope. The existing source library accepts the three reviewed
+boundary changes, preserves operator notes and rebuilds successfully.
+
+Preparation takes 0.461s for the host setup and 0.472s for the native setup; local,
+connected and native checks take 1.840s, 2.570s and 7.429s respectively. These are
+shared-boundary revisions, not warm implementation edits. One focused regression
+covers transitive caller review, retained C, absent members and pinned originals;
+the existing 23-test composition shard passes. Applicable repository gates and
+exact inputs/results are recorded in the checkpoint. No pilot, expanded case
+matrix or new proof machinery is needed for this authoring improvement.
+
+### Import one component's C without replacing its neighbors — 2026-09-24
+
+`component start/check/status --dependency-source COMPONENT=DIR` now carries only
+the named unit's authored C from a local package, a containing network workspace
+or a source project. The consumer keeps its adapters and other selected bodies.
+This closes a practical independence gap: ordinary `--dependency-package` selects
+a complete package and its bundled suppliers, which can replace newer supplier C
+already selected by the consumer. That complete-selection behavior remains
+available explicitly. Reopened experiments now print the C-only handoff command.
+
+The new choice uses the existing comparison snapshot, exact contract checks,
+source validation, compilation reuse and receipts. Requirements, assumptions,
+representation inputs, source-file layout and authored headers still need to
+match; boundary changes require review. No proof rule or artifact format changes.
+
+`build/component-local-source-2026-09-24/` applies it to the existing twelve-unit
+jq path/storage/string network. A separately edited storage supplier is preserved
+while `value-get` C is imported from another network workspace containing its old
+supplier and an unfinished neighboring C file. Preview reports only the named
+edit. Original-x86 consumer comparisons under headless Wayland match; a wrong
+array index produces a discrepancy, and repair matches again. The compatible edit
+takes 8.426s, compiling one file and retaining 33 objects. Source export and its
+ordinary library build pass. The existing `nested` case supplies this handoff;
+no new case matrix, pilot rebuild or claim of complete portable jq is added.
+
+A focused regression covers preview/preparation without execution, preserved
+neighbors/adapters, one-file recompilation, defect detection and rejection of a
+changed same-signature boundary. Targeted suites and repository validation are
+recorded in the checkpoint. This is a practical C-import choice, not evidence that
+an unexecuted neighbor or a changed contract is correct.
+
+### Correct a late network-preparation error without cleanup — 2026-09-24
+
+The main DX-Ball preparation recipe now uses the existing `comparison_preparation`
+helper around recovery, generated adapters and all four packages. Previously, a
+missing initializer C file left three complete-looking supplier packages behind;
+after restoring that input, the same command failed because its destination
+already existed. The staged recipe publishes only a complete selection. Its
+reported package paths name the published output rather than temporary staging.
+No comparison engine, boundary format or proof machinery changes were needed.
+
+`build/component-preparation-retry-2026-09-24/` retains both the old failure and
+the corrected handoff using installed tools and isolated operator files. A late
+missing-source error leaves no output; restoring the C and repeating the identical command prepares
+the network in 0.584s. The three earlier supplier packages remain byte-identical
+to the previous preparation. Opening reset, editing its loop and checking its
+initializer consumer all pass, followed by source export and a conventional
+library build. The local edit takes 0.549s with one compilation; its existing
+`seed-7` consumer takes 1.629s. No new cases, native run or pilot rebuild are added.
+Repository validation is recorded in the checkpoint. This closes a setup-retry
+obstacle in the documented workflow; first-boundary analysis and target-specific
+memory mappings still require operator work.
+
+### Repeat component checks without managing result paths — 2026-09-24
+
+`component check --comparison-package WORK --history CHECKS` now supports the
+ordinary edit loop with one repeatable command. It creates a separate retained
+comparison for every check, supplies the previous completed result for reuse and
+updates a relative `latest` symlink after validation. Failures remain inspectable;
+`latest` does not mean passing. Replay names the specific saved inputs, and
+preparation errors leave the prior terminal result available. Each history has one
+target/component and a process lock. New ordinary workspaces print this command;
+explicit `--output`, reuse overrides and the seeded experimental handoff remain
+available. The existing comparison engine, receipt format and formal-check/reuse
+rules are unchanged.
+
+`build/component-check-history-2026-09-24/` first reproduces the former nuisance:
+the printed fixed-output command rejects the next edit because the result already
+exists. The installed history workflow then edits the grouped DX-Ball reset loop,
+detects a wrong bank count, repairs it and replays the retained defect after the
+editable C is correct. All five local checks use identical command arguments.
+The compatible edit takes 0.566s with one compilation and nine reused objects;
+repair takes 0.563s, and unchanged reuse 0.486s with zero compiler/link/execution/
+model/solver work. The existing initializer consumer matches in 1.073s, compiling
+only the edited file and retaining thirteen objects. Export directly from
+`CHECKS/latest` updates the existing source project while preserving neighboring
+objects and notes. No native run, original recovery, pilot or new input matrix is
+needed for this destination/reuse convenience.
+
+Two focused regressions cover repeated edit/failure/replay/repair, immutable prior
+results, serialization, component separation and preparation failure. The 24-test
+comparison suite passes; required repository validation is bound in the checkpoint.
+This removes operator bookkeeping from local editing without introducing another
+assurance artifact or treating a history pointer as correctness evidence.
+
+### Regroup complete operations without replacing the source project — 2026-09-24
+
+The [DX-Ball grouping walkthrough](../tests/fixtures/dxball-graphics-network/README.md#group-complete-operations)
+combines reset and bind into one two-entry `graphics-state` component. Initializer
+and blit C, original inputs, shared layout and case drivers stay in place. The
+two supplier context type names and their ordinary C bridge reflect the grouping;
+the algorithms and original entry points stay the same. The local driver compares
+reset followed by bind. This changes ownership of complete operations, not proof
+regions or control-flow cuts.
+
+The trial exposed two related handoff gaps. `revise_comparison_package` could add
+suppliers but could not retire superseded selections, and source export required
+a separate project after removal. Explicit `remove_dependencies` now resolves
+reviewed replacements in the existing preparation transaction. Public
+`candidate export --update-components --remove-component COMPONENT` removes the
+reviewed old source packages while preserving other components, operator files
+and a full backup. Dangling caller requirements, duplicate symbols and conflicting
+C edits reject. Retired objects and the archive are invalidated, including a
+removal that requires no compilation, so obsolete objects cannot survive linking.
+These are shared preparation/export changes, not new proof machinery or formats.
+
+`build/component-regrouping-2026-09-24/` retains the installed workflow. Host/native
+preparation takes 0.412s/0.198s; the existing `seed-7` local and connected host checks
+pass in 1.154s/1.843s. The original-x86 consumer passes in 6.371s in the lifting
+shell under headless Wayland, with the same four operation-call counts and all
+seven observation fields as the pre-grouping result. Source update takes 0.428s;
+its 0.023s build compiles only the two grouped files and preserves initializer/blit
+object bytes and mtimes. A consumer linked against that exported archive also
+matches; its link omits the comparison's authored implementation objects. Native
+comparison provenance then updates without recompiling the library.
+
+Two focused regressions cover supplier retirement/dangling consumers and source
+removal preserving neighbors while rebuilding an archive without retired members.
+Targeted suites and required repository gates are recorded in the final checkpoint.
+The first native attempt outside the documented lifting shell compiled C but
+could not link `mcfgthread`; the subsequent shell run supplies that dependency.
+This is the same controlled-services/redirected-entry scope, not full game startup
+or a general semantic split/merge proof. No pilot rebuild or additional case matrix
+is needed for this workflow improvement.
+
+### Carry a shared layout change through local work and integration — 2026-09-24
+
+The [DX-Ball layout walkthrough](../tests/fixtures/dxball-graphics-network/README.md#revise-the-shared-portable-layout)
+now prepares a reviewed header change across the existing four-member graphics
+representation group. It retains selected C, dependency adapters, local drivers,
+original inputs and operator notes, and refines the initializer's requirements
+together. This uses the existing revision/composition APIs; no checker, compiler
+or proof machinery changes are needed. Ordinary implementation edits remain local.
+
+`build/component-layout-handoff-2026-09-24/` moves the bank count and retained
+words before its slot array, preserving the original x86 layout through existing
+named-field adapters. Preparation takes 0.474s. The local reset check passes in
+1.142s and the connected retained-C consumer in 1.482s, retaining five compiled
+objects. The same selected C also passes the actual original-x86 consumer in
+6.138s under headless Wayland; all four replacements execute. Observations of
+banks, pixels, resources, results, services, state and windows match the retained
+pre-change observations. Mixed old/new layouts and an unreviewed library update
+are rejected before changing the destination.
+
+The reviewed export preserves operator notes and rebuilds the four affected
+source-library objects. Updating its comparison provenance from the native result
+then requires zero recompilation. Commands, phase costs, source hashes and
+repository validation are retained in the checkpoint. This is the existing
+`seed-7` redirected-entry/controlled-services experiment, not normal game startup
+or real DirectDraw. Changing field meaning or lifetime still needs adapter and
+boundary work. The trial demonstrates a usable shared-layout review and handoff;
+it does not establish general representation compatibility or broad Win32 readiness.
+
+### Refine reviewed caller requirements through the CLI — 2026-09-24
+
+`component start --refine-requirement REQUIREMENT=SUPPLIER` now exposes the existing
+named refinement operation. After reviewing a supplier's changed boundary, the
+operator opens an editable caller directly, retaining C, adapters, cases, notes
+and unrelated selections while regenerating editor commands and guides. The
+command requires explicit requirement names; other shared callers remain frozen
+and are identified when they also need review. Ordinary implementation replacement
+still rejects changed contracts. Preparation supplies no compatibility proof or
+inherited behavioral assurance.
+
+`build/component-requirement-command-2026-09-24/` exercises the installed command
+with DX-Ball's existing initializer and reviewed reset package. Refinement takes
+0.571s. The existing `seed-7` consumer matches in 1.122s, compiling the supplier's
+changed loop once and retaining fourteen objects. Unchanged reuse takes 0.917s
+with zero work, and source export takes 0.403s. Twenty focused composition checks
+include the public nested/shared-caller review path; all required repository gates
+pass. The trial retains the same
+controlled graphics scope and original inputs; no pilot or new case matrix is
+needed. This removes routine Python scripting from that operator step without
+introducing another boundary format or changing the refinement engine.
+
+### Repair compiler errors without rebuilding neighbors — 2026-09-24
+
+A failed compilation now retains successful objects and later eligible cached
+neighbors in the existing compilation manifest. After fixing the editable C,
+operators pass the failed result to `--reuse-comparison`; the CLI prints this
+hint, and status previews the remaining compilation. Failed files are excluded
+from the cache, and repair still links and executes the selected comparison.
+
+`build/component-compile-recovery-2026-09-24/` reproduces the former lost-cache
+behavior and exercises the installed fix on DX-Ball's existing retained-C
+`seed-7` initializer consumer. Repair falls from fifteen compilations in 1.887s
+to one compilation with fourteen reused objects in 0.996s. Unchanged reuse takes
+0.935s with zero work; public source export passes. Twelve focused cache
+regressions and the required repository gates pass. The controlled graphics scope remains unchanged;
+no native/Wine execution, new cases, pilot rebuild or formal campaign is needed.
+
+### Adopt lifted suppliers without rebuilding caller setup — 2026-09-24
+
+`revise_comparison_package` now accepts reviewed `dependencies` alongside explicit
+root requirements. It uses the existing resolver to import exported adapters and
+transitive selections while preserving caller edits, cases, notes and selected
+neighbors. Shared conflicts reject atomically; existing requirements remain frozen
+unless explicitly revised. Reviewed service/adapter changes still provide the
+executable route, and selected bodies still need affected comparisons.
+
+`build/component-supplier-addition-2026-09-24/` adopts the existing array-storage
+selection into an edited jq controlled caller. The 0.382s revision retains its C,
+cases, notes and original inputs. Its existing nested case matches in 6.933s. A
+subsequent length edit takes 5.746s, compiles one file and retains 22 objects;
+unchanged reuse takes 1.339s with zero work, and public export takes 0.478s.
+Twenty composition regressions and repository gates accompany the installed
+handoff. Wine remains under headless Wayland. The get service is an explicit
+transcript; this extends practical selection/refinement, not proof authority,
+component counts or the runtime matrix. Component removal remains separate assembly.
+
+### Avoid repeated include searches during local checking — 2026-09-24
+
+The preceding handoff spent more time indexing compiler dependencies than compiling
+its local C. Shared headers repeatedly requested the same include searches. Cache
+indexing now collects each directory/name pair once, preserving each including
+file's relative lookup, read hashes, missing-header probes and existing cache rules.
+
+`build/component-include-index-2026-09-24/` reindexes the retained Hello local and
+program compilations without rebuilding or executing them. All 23 generated unit
+records are identical. Indexing falls from 1.120s to 0.565s locally and from 2.242s
+to 1.261s for the program. These are indexing measurements, not whole-check times.
+An installed DX-Ball public edit handoff passes its existing retained-C `seed-7`
+consumer: the compatible reset edit takes 1.178s, compiles one file and retains
+14 objects. Unchanged reuse takes 0.934s with zero work. Eleven existing cache
+regressions and repository gates accompany the change. No new cases, native/Wine
+execution, semantic recovery, pilot rebuild or proof work is needed. This removes
+repeated bookkeeping from the component loop without changing its commands or
+the conditions for reusing evidence.
+
+### Define a relocated entry and cold fragments together — 2026-09-24
+
+`native_entry_header` now accepts disjoint additional ranges, adjusts PE32 HIGHLOW
+entry relocations, and exposes installation against an explicit loaded image plus
+a reusable body-absence check. Hello string conversion replaces its handwritten
+relocation/protection/trap code with this generated header. The same adapter works
+with the routine DLL and the normal executable; its C implementation, interface,
+decoder observations and memory transport remain unchanged.
+
+`build/component-native-fragments-2026-09-24/` retains installed preparation,
+one existing 192-sequence local case, normal Hello default startup and unchanged
+reuse. Preparation takes 0.199s locally and 0.414s for program assembly. Checks
+match in 8.957s/15.031s; the selected string entry and both TLS callbacks execute.
+Unchanged program reuse takes 1.159s with zero compiler/link/execution/model/solver
+work. All Wine processes run in headless Wayland. Four focused recovery/entry
+tests and the required repository gates accompany this bounded handoff. Shared
+tails and alternate entries remain explicit bindings; no new component, broader
+runtime matrix, pilot rebuild or formal qualification is added.
+
+### Generate repeated native entry setup from reviewed boundaries — 2026-09-24
+
+`native_entry_header` turns an explicit contiguous PE32 range and pinned image
+into ordinary C using the existing interception helper. It derives the prefix,
+allocates saved-body storage and verifies that the removed body is trapped.
+Byte length, codepoint length and string-indexes now use it. Complete ownership,
+ABI/state adapters and observations remain operator inputs. This first checkpoint
+covered contiguous bodies; the later Hello handoff above adds disjoint fragments
+and HIGHLOW prefixes. Shared tails and alternate entries retain manual bindings.
+
+`build/component-native-entry-authoring-2026-09-24/` prepares all three through
+installed APIs and passes their existing actual interpreter cases. Preparation
+takes 0.224s/0.050s/0.063s; checks take 6.609s/6.908s/6.560s. A compatible search
+edit takes 5.037s with one compiler invocation, then unchanged reuse takes 0.638s
+with zero work and export 0.364s. All Wine processes use headless Wayland.
+The focused recovery/entry checks and repository gates are retained. No component
+count, case matrix, proof rule or pilot rebuild is added for this setup improvement.
+
+### Add a checked component to an existing source project — 2026-09-24
+
+Partial exports now accept new units explicitly named with
+`--accept-boundary-change`, retaining existing C, provenance, operator files and
+eligible objects. Combined dependency/representation checks still apply; the
+operator supplies the new application/backend bindings and affected program run.
+`build/component-source-addition-2026-09-24/` extends an existing built jq project
+with the already compared string-indexes operation. Export takes 0.523s; reviewed
+integration rebuilds in 0.765s, retaining all fourteen earlier component objects.
+Five normal CLI searches match the prior executable and retained native values,
+with five calls through the new lifted entry. This closes a progressive-assembly
+handoff gap without new boundary analysis, native execution or a pilot rebuild.
+The focused source-export shard and repository checks are retained with the
+checkpoint. Backend mapping and component removal remain explicit assembly work.
+
+The follow-up at `build/component-binding-refresh-2026-09-24/` reuses that recipe
+for the actual integration. `refresh.py` generates bindings, removes the selected
+backend definition, refreshes build/provenance files and retains compiled neighbors.
+An operator-edit conflict leaves the project unchanged and supplies proposed files;
+`--keep-reviewed` retains a manually merged Makefile. Export/refresh/build take
+0.529s/0.255s/0.715s. Fourteen prior component objects survive and five normal CLI
+searches match retained native results, with five calls through the added entry.
+The initial binding inputs remain byte-identical after refactoring; unchanged
+refreshes preserve mtimes. This removes repeated integration bookkeeping without
+new tool internals, original recovery or runtime test expansion. New backend
+choices and shared-layout changes still need operator review and C work.
+
+### Carry selected C into a reviewed execution driver — 2026-09-24
+
+The native DX-Ball recipe previously copied inputs and rewrote generated plans,
+tool/oracle hashes, composition and headers itself. `revise_comparison_package`
+now accepts complete root adapter/header/link/runtime replacements, explicit tool
+changes and the existing program-driver declaration. Oracle changes require a
+reviewed original-file selection. The normal validators and transactional
+publisher regenerate derived data; selected C, neighbors and frozen requirements
+remain intact. This extends an existing authoring API, not the evidence format.
+
+`build/component-driver-revision-2026-09-24/` opens a retained host graphics
+selection, edits its bind supplier, and prepares the native driver through the
+revised recipe. The old/new recipes have the same consumed C, adapters, runtime,
+declarations and generated inputs after normalizing equivalent tool paths. The
+source workspace and its edit are preserved. Public start/status/check/reuse/export
+pass on `seed-7`: preparation takes 0.109s, native checking 7.525s, unchanged reuse
+0.967s and export 0.412s. Reuse does zero compiler/link/execution/model/solver work.
+Every Wine process runs in headless Wayland. This remains redirected-entry and
+controlled graphics execution, not game startup or native DirectDraw.
+
+Forty focused composition/comparison checks pass, including one connected test
+that replaces a reviewed driver, retains selected C and reuses neighboring objects.
+The existing original pin rejects an unreviewed oracle change; a corrected retry
+uses the same output path. Repository checks are retained with the checkpoint.
+No original recovery, pilot rebuild or broader runtime matrix is needed.
+
+The follow-up `build/component-program-entry-revision-2026-09-24/` transfers this
+API to Hello's normal-entry recipe, including the independently selected string
+operation. `program_entry_packages` imports exported adapters and transitive
+selections through the existing resolver, retaining current work and frozen
+requirements. Shared suppliers remain unique; conflicting selected bodies or
+contracts reject before publication. The recipe no longer installs dependency
+rows or rewrites derived metadata itself.
+
+Both its base and additional-entry preparations have byte-identical consumed
+inputs to the former recipe, including a local string C edit. Preparation takes
+0.137s and 0.192s respectively. Public default-workload checking takes 11.668s;
+the selected string body executes and both TLS callbacks run. The untouched
+control confirms original output and exit status; original/replacement output,
+exit status and reported state match.
+Unchanged reuse takes 1.131s with zero compiler/link/execution work; export takes
+0.467s. This is one normal-entry workload, not a new twelve-case matrix. All Wine
+processes use headless Wayland. Forty-one focused checks pass, including shared
+supplier retention/conflict rejection and retry, with repository checks retained
+in the checkpoint. No new original recovery or pilot rebuild is involved.
+
+### Keep component edits local across fresh shells — 2026-09-24
+
+The preceding consumer handoff exposed a full rebuild when resuming in another
+Nix shell. A small environment comparison identifies five changing compiler inputs:
+`NIX_BUILD_TOP`, `TMPDIR`, `TMP`, `TEMP` and `TEMPDIR`. Interactive compilation now
+withholds those variables from the actual compiler/linker, using the compiler's
+default temporary directory. They remain inherited and hashed when
+`NIX_ENFORCE_PURITY=1`, because Nix uses them for input-path filtering. Other build
+inputs remain tracked, and runtime execution retains its full environment.
+
+`build/component-shell-reuse-2026-09-24/` uses the installed public workflow on nine
+retained Hello allocation cases, opening a separate lifting shell for the edit.
+The baseline takes 1.323s and compiles six files. The compatible C edit takes
+0.719s, compiles only its one changed file, and reuses the other five objects.
+The read-only preview predicts that work; original/replacement observations match.
+Execution environments differ while actual compiler configurations agree. This is
+a host retained-input workflow check, not a new native or whole-program result.
+The existing eleven cache checks pass, including real flag-change invalidation;
+applicable repository checks are retained with the checkpoint. No pilot rebuild,
+new fixture matrix or proof machinery is needed for this usability fix.
+
+### Replace a grouped component in its real consumer — 2026-09-24
+
+`build/component-group-consumer-2026-09-24/` carries the preceding allocation
+authoring/binding improvements into an existing native quoting selection through
+public `component start --dependency-package`, status preview, check, reuse and
+source export. The supplier contributes its authored C, exported adapter and
+generated binding. The caller and other components keep every consumed input;
+all boundary contracts stay unchanged. No caller preparation script, adapter or
+tool internals are edited to install the replacement.
+
+The retained `style-0-kind-0` case runs actual Hello quoting plus twenty native
+allocation success/failure probes covering eight primary entries and both machine
+aliases. The driver confirms every selected C entry runs and the original entry
+bodies/shared tail remain trapped. Original/replacement output, memory/errno/
+lifetime observations and declared service interactions pass. This is the existing
+routine scope with explicit initialization and intercepted fatal allocation;
+normal program entry and actual fatal termination are separate retained evidence.
+
+The baseline takes 7.495s; selected-consumer check 7.194s; unchanged reuse 0.926s
+with no compiler/link/execution work; export 0.414s. The trial's first reporting
+script used the wrong JSON preview key after its successful baseline. That
+baseline was retained, and the resumed desktop reran only the read-only preview
+before continuing. Its fresh Nix shell changed the compiler environment: fourteen
+files recompile, correctly predicted by the preview despite unchanged neighbors.
+This is an observed invalidation cost, not a warm two-file compilation result.
+At this checkpoint, environment inputs beyond desktop connection variables remain
+conservative; the subsequent fresh-shell fix above addresses the measured cause.
+
+No production code changes or additional synthetic tests are needed for this
+integration. The preceding 34 focused tests and seven repository checks still
+cover the unchanged implementation; the seven repository checks also pass for
+this handoff. Current file hashes and outputs are retained in the checkpoint.
+Every Wine process runs in the headless Wayland
+desktop. No pilot/toolchain rebuild or new proof machinery is involved.
+
+### Generate service wiring around operator-owned entries — 2026-09-24
+
+Grouped or stateful components previously had to bypass the package's generated
+service binding and manually construct service tables and trace scopes. The
+existing `service_bridge` now accepts `native_symbol=None` for operator-owned
+entries. It generates service wrappers, table construction and catalog-scope C
+helpers in the existing header. The adapter owns context state/lifetime, entry
+dispatch, argument/result transport and any operation resource frames. Generated
+coverage names these responsibilities; no semantic or proof rule is inferred.
+Automatic entry requests for a grouped/stateful interface now explain this mode.
+
+Hello's allocation preparation/adapter use the standard generator, removing the
+separate manually generated `checked-services.h` and handwritten service table.
+`build/component-manual-entry-bindings-2026-09-24/` retains the installed recipe
+using the pinned transfer plan, followed by public start/check/repair/export.
+Nine cases cover the eight entries and one nonlocal allocation failure. They
+match the previous original/replacement observations with unchanged interface
+and service contracts. Omitting the adapter's scope-end call still returns the
+same values, but service applicability becomes incomplete and the CLI rejects
+with exit 2. Restoring the adapter reuses the passing result with zero compiler,
+link or execution work. Source-export binding regeneration reproduces the same
+manual-entry header; ordinary jq entry generation remains byte-identical.
+
+The recipe records 2.300s loading the retained plan, 0.064s rendering its owned C
+and 0.029s preparing the package. Start/check/repaired-check/export take
+0.352s/0.915s/0.544s/0.337s. This is prepared adapter plumbing, not a new-boundary
+analysis measurement. The trial's first reporting assertion conflated behavioral
+match with service applicability; the completed execution was retained and the
+report corrected before continuing. No Wine, native pilot or solver is run.
+The later setup-error diagnostic does not change the generated C; final generation
+and focused validation are recorded in the checkpoint without rerunning pilots.
+
+The service-authoring and source-export shards pass 34 focused tests. Actual
+compiled stateful calls verify adapter-context forwarding, retained shared state,
+separate component contexts and generated traces. Repository checks are recorded
+in the checkpoint. Full manual memory adapters and platform-service semantics
+remain explicit operator work.
+
+### Author related entries as one component — 2026-09-24
+
+The convenience authoring API previously handled only one stateless `run`
+operation. Related public entries required manually constructing the full
+signature/projection payload, as Hello's allocation family did. Existing
+`component_interface` now accepts named `OperationDefinition` entries and explicit
+shared context state. Each entry specifies its allowed services and nullable
+values. The helper reuses the existing schema/interface validators and generated
+C; it adds no artifact or inference about ownership, lifetime, coverage or effects.
+Richer protocols and lifecycle/projection declarations retain the full V5 API.
+
+The allocation recipe shrinks from 62 to 39 lines, with byte-equivalent interface
+payload, service contracts and generated C headers. Its eight public entries and
+private shared check remain one component. The installed workflow retained at
+`build/component-operation-groups-2026-09-24/` revises the declaration over retained
+original inputs, opens/inspects the workspace, compares all eight entries plus
+one allocation-failure case, edits the private helper and exports the checked C.
+All nine baseline and edited comparisons match; only the authored C changes and
+the edit compiles one file. Preparation takes 0.016s, baseline 0.891s, edited check
+0.569s and export 0.323s, excluding interpreter startup for preparation. This is a
+prepared-boundary authoring improvement, not a new-boundary analysis measurement.
+
+The 18-test service-authoring shard passes, including actual compiled calls sharing
+state within a context while keeping separate contexts independent. Unknown service
+selections and mixed single/group declarations reject. Required repository checks
+are recorded in the checkpoint. No native pilot, original recovery, standalone
+program rebuild or formal proof is repeated for this unchanged declaration.
+
+### Keep compiled neighbors when reopening a desktop — 2026-09-24
+
+The edit-impact preview exposed unnecessary compilation when only the headless
+desktop connection changed. Compiler/linker processes now omit the six desktop
+connection variables listed in the performance ledger; cache metadata binds that
+actual environment. All other compiler inputs remain tracked. Runtime execution
+still inherits and fingerprints its full environment, so a new session reruns
+observations without recompiling unchanged C. Prior compilation caches invalidate
+once for the changed compiler policy; no old evidence is relabeled as fresh.
+
+`build/component-desktop-build-reuse-2026-09-24/` retains installed public
+`component start/check` handoffs for jq `path-set` and DX-Ball graphics initialization.
+After a baseline, unchanged checks in separate desktops compile zero files;
+compatible `path-get`/bind edits in a third desktop compile one file each, reusing
+33/9 neighboring compiled files. All six selected native comparisons match.
+Contracts and adapters remain unchanged. Edited checks take 7.085s/5.387s, excluding
+Nix/desktop setup; Wine startup remains their largest cost. No pilot, standalone
+program or formal proof is rebuilt. This is one retained case per target, using
+controlled DX-Ball graphics services rather than actual game execution.
+
+The compiler-cache and dependency shards pass 17 focused tests, including a real
+compiler-flag change that recompiles and detects changed behavior. The first test
+attempt rejected a conditional-compilation fixture; defining the fixture parameter
+through compiler flags corrected it without changing the supported C dialect.
+Required repository checks are recorded in the checkpoint. The improvement is
+limited to object reuse across desktop connections; other changed environment
+inputs remain conservative, and runtime evidence reuse has not been broadened.
+
+### Inspect edit impact before running a check — 2026-09-23
+
+Workspace status now accepts `--reuse-comparison`, with the check command's
+optional case selection and compatible supplier/source-draft inputs. It compares
+actual prepared inputs against the retained result, reports each unit's authored
+C, adapter and contract changes, and follows recorded consumers. A per-file cache
+preview uses existing compiler input/include resolution checks; execution reuse
+uses the same decision helper as the real check. Source profiles and selected
+formal checks remain subsequent checks, not claims made by this inspection.
+Input snapshot preparation and reuse assessment are shared with execution rather
+than separately approximated. No new receipt or contract format is introduced.
+
+The installed handoff at `build/component-change-preview-2026-09-23/` inspects the
+actual jq `path-get` and DX-Ball `graphics-bind` edits from exported source projects.
+It names the one edited file and affected consumer in each case, with unchanged
+contracts and neighboring C. It also correctly reports that the current process
+environment differs from the retained compilation environment: 34 jq and 10
+DX-Ball files would compile under that conservative cache policy. The original
+same-environment edits compiled one file each; these are distinct findings.
+JSON/text inspection takes 1.704s/1.415s for jq and 0.294s/0.290s for DX-Ball, with
+subprocess execution prohibited. All 644/207 observed input/evidence files remain
+unchanged. No pilot or target execution is repeated.
+
+The focused comparison/dependency/export shards pass 44 tests. The supplier-edit
+regression verifies eligible unchanged reuse, a one-file compilation prediction,
+and agreement with the subsequent actual comparison's inputs and compiler count.
+Required repository checks are recorded in the checkpoint. This is an operator
+review step, not new behavior evidence or a change to cache/qualification policy.
+
+### Correct a first preparation and retry without cleanup — 2026-09-23
+
+A misspelled original-input path in the real jq index setup left 26 files in its
+destination and prevented a corrected retry. `prepare_comparison_package` now
+uses the existing staging/publication mechanism, publishing only after its input,
+declaration and generated-header checks succeed. Failed preparations leave the
+destination absent or empty. The public `comparison_preparation` wrapper lets an
+operator apply the same behavior to generated adapters and several package calls.
+The jq index recipe now uses it around its complete preparation, so recipe-owned
+bridge files cannot leave the enclosing output half-prepared either.
+
+`build/component-preparation-retry-2026-09-23/` retains the installed before/after
+reproduction and complete recipe repair/retry. The repaired package's 39 files
+match the retained working inputs exactly. Public `component start` and `status`
+open the corrected workspace. Package preparation takes 0.016s; the complete
+recipe takes 0.032s, excluding interpreter setup. No compiler/model/solver/link,
+Wine or pilot execution is needed for this preparation-only fix. The existing
+22-test comparison and 17-test composition shards pass; required repository checks
+are recorded in the checkpoint. This removes a setup obstacle without reducing
+the manual boundary/adapter analysis still needed for a new operation.
+
+### Publish one component while neighboring C remains under edit — 2026-09-23
+
+Partial source updates now accept repeatable `--component` selections from a
+matching consumer result. Only named units receive the new source/provenance;
+unselected authored C drafts retain their bytes, mtimes, recorded source hashes
+and previous comparison references. CLI output and generated guides identify the
+unchecked drafts. Their old build objects are invalidated, while clean neighbors
+retain their normal build reuse. Headers and source-layout changes still require
+boundary authoring/refinement. This uses existing source artifacts and does not
+turn a consumer comparison into an independent unit check.
+
+The installed public commands in `build/component-publish-drafts-2026-09-23/`
+publish jq `path-get` and DX-Ball `graphics-bind` from retained consumer results,
+with deliberately unfinished `path-set`/`graphics-initialize` C beside them.
+Publication takes 0.745s/0.129s. Each preserves the neighboring draft exactly;
+strict whole-library provenance validation still rejects those unchecked bytes.
+Supplier inspection remains usable. Restoring the consumer's already compared C
+and publishing only that consumer restores a fully matching source inventory.
+No new behavior claim follows from this publication trial: no compiler, model,
+solver, link, Wine or pilot work runs. The harness prohibits subprocess execution.
+
+The existing 16-test source-export shard passes, covering the public named update,
+draft preservation, restoration and existing boundary/build/atomic-update behavior.
+Repository validation is recorded in the checkpoint. A reporting-only field-name
+error was corrected by resuming from the completed commands, without repeating them.
+
+### Read runtime failures without repeating execution — 2026-09-23
+
+The public comparison feedback now lists process exits/timeouts and sides which
+were not run, followed by any last parsed source service/handler event. It shows
+six nonempty stderr lines with instrumentation records omitted from the excerpt,
+and links the unchanged full log. This is diagnostic trace context; it does not
+infer a fault location or turn missing observations into a completed comparison.
+`component status --comparison-result` uses the same rendering without execution.
+
+`build/component-runtime-feedback-2026-09-23/` exercises the installed CLI against
+the retained DX-Ball bad-handle result and its replay. It now exposes original
+exit 0, source exit 3, the `dxball.graphics.blit_fast` call and the fixture's
+invalid-state message together. Inspection takes 0.304s/0.072s in one process,
+with tool execution prohibited. Each result's 168 retained files stays unchanged,
+as do comparison-engine file hashes. Classification remains incomplete.
+The existing 22-test comparison shard passes, including explicit timeout feedback;
+repository validation is recorded in the checkpoint. No Wine, program comparison,
+pilot or proof run is needed for this operator-only change.
+
+### Check an exported supplier through its existing consumer — 2026-09-23
+
+`component start`, `status` and `check` now accept an exported source project as
+the named `--dependency-package` input. The existing source-draft reader checks
+that component's boundary and non-C inputs against the consumer, then carries
+only its authored C edits. Unselected source-project edits stay outside the
+selection; consumer adapters, contracts and neighboring bodies remain intact.
+Status shows changed files. This gives network-only units a practical edit path
+without inventing an independent oracle or requiring manual package reconstruction.
+
+`build/component-supplier-source-2026-09-23/` retains the installed jq/DX-Ball
+walkthrough. Each selected C edit passes one actual x86 consumer case, compiling
+one file and preserving every other consumed input. jq's edit takes 6.840s and
+DX-Ball's 5.566s; each spends about 0.016s compiling and 0.064s linking. An unfinished
+neighbor edit in each exported project is deliberately left unselected.
+The wrong DX-Ball handle is rejected by the fixture with source exit 3; replay
+reproduces that runtime failure after repair. It is an incomplete observation,
+not a returned-value mismatch. Restoring the checked C reuses with zero
+compiler/model/solver/link/execution work in 0.825s. The focused unit regression
+separately detects a returned-value mismatch and rejects a changed shared header.
+
+The source/dependency/composition shards pass 39 tests and all seven required
+repository gates pass. No pilot, standalone program or broad runtime matrix is
+rebuilt. Wine runs inside headless Wayland. Preparation scripts retain the two
+reporting corrections without repeating completed checks; each native comparison
+keeps its own engine/environment identity. These are existing-boundary integration
+trials, not a new independent-boundary or general graphics-runtime claim.
+
+### Declare source-backend helper dependencies once — 2026-09-23
+
+The jq recipe's `EXTRA_BINDINGS` groups each additional string entry with its
+portable helper headers. That declaration now supplies accepted selections,
+original-definition removal, entry symbols, file copying and generated includes.
+Missing headers name the component/file before backend unpacking or configuration.
+This addresses the actual index-search assembly omission through the existing
+recipe; new service semantics and compiled C/build wiring still need review.
+
+`build/component-backend-dependencies-2026-09-23/` retains one fresh preparation
+from the exported library, taking 5.282s. Its 278 C/header/build inputs match the
+previous successful build, including the repaired header; entries and removed
+backend operations also match. The missing-header check rejects in 0.107s before
+backend preparation. No compiler/model/solver/link work, program execution or
+pilot rebuild is needed for this recipe-only change. Repository gates are recorded
+with the checkpoint; runtime evidence remains the earlier bounded program runs.
+
+### Author resource roles without constructing lifecycle payloads — 2026-09-23
+
+`components.resource_authoring.component_resource_checks` takes explicit consumed
+parameter/produced result names, classification, instrumentation sides, gaps and
+count limits. It builds the existing lifecycle/check declaration and validates it
+before preparation. Optional binding-ID mappings preserve identities in migrated
+recipes. It does not infer ownership, require unique backing objects, implement
+new transport or add checked-summary authority. The full declaration API remains
+available for heterogeneous resources and multiple operation contracts.
+
+The helper is an authoring-only module: existing runtime validators and their
+comparison-engine file hashes remain unchanged. This separates a convenience
+change from execution invalidation, without introducing an artifact format.
+The slice, codepoint-length, byte-length and index-search recipes now use it.
+
+`build/component-resource-authoring-2026-09-23/` records the installed handoff.
+Index search, byte length and codepoint length reproduce all 39/37/37 prepared
+files byte-for-byte. Slice preserves the same lifecycle and all executable inputs;
+its only difference is a preexisting update to `headers/BOUNDARY.md` explaining the
+shared string view. That note is preserved and recorded, not silently treated as
+an unchanged whole package. Preparation takes 0.247/0.279/0.286/0.229s respectively.
+
+Public start and the retained native interpreter case pass, with unchanged
+observations. The 6.500s cold check spends 0.503s compiling, 0.064s linking,
+3.640s in Wine startup wall time and 0.228s executing. Public commands including
+preparation total 8.178s. No warm-cache claim is made across the new environment.
+Seventeen focused resource tests and all seven required repository gates pass.
+No program assembly, broad runtime matrix or extraction/proof pilot is rebuilt.
+The initial handoff stopped on the already changed boundary note; the continuation
+retains completed preparation and records that difference explicitly.
+
+This removes repetitive schema construction from the operator recipe. Choosing
+correct ownership semantics, memory observations and backend bindings remains
+manual work; those semantic tasks are not solved by the helper.
+
+### Establish a new two-input component with shared live objects — 2026-09-23
+
+`tests/fixtures/jq-string-indexes/` defines the previously unprepared complete
+`jv_string_indexes` operation at RVA `0x28fc3..0x292ff`. Native disassembly and
+source assistance establish both assertion tails, overlapping-match behavior,
+lead-byte position counting and release order. Two owned input references may
+share one live allocation; the result is a growing array. The existing string
+view, contents/release services, value transport and allocation observations are
+reused. New operator inputs are 38 lines of algorithm C, a nine-line number/append
+adapter, 83 driver lines, 78 preparer lines and boundary notes. No checker,
+artifact, compiler, proof model or state-transport extension was needed.
+
+The external installed workflow at `build/jq-string-indexes-2026-09-23/` passes
+four scenarios: unique inputs, retained aliases, mutually aliased inputs and an
+actual jq interpreter consumer. They execute 21 direct searches and five
+interpreter searches per complete check. A compatible loop edit compiles one
+file. Omitting the second release leaves returned indexes unchanged but exposes
+seven live allocations; the saved defect replays after source repair. Restoring
+the checked C reuses with zero compiler/link/execution/model/solver work.
+
+The source assembly removes the original search definition and generates its
+binding from the retained declarations. Its first host/ARM builds stopped at a
+missing adapter header: exported implementation C does not carry all native
+fixture helpers. The recipe now supplies the small portable adapter explicitly.
+The corrected builds reuse completed objects; both normal CLI executables match
+the native reference on the selected five-search workload and record five calls
+to the authored component. This does not rerun or extend the earlier full CLI
+matrix. Existing neighbor comparisons are retained as inputs, without new local
+checks. The parser/VM/allocator backend remains source-assisted and unlifted.
+
+From first retained disassembly to the first local result takes 285.068s,
+including authoring/execution but excluding earlier exploration. Automatic local
+preparation takes 0.239s; public workflow commands total 25.375s. The compatible
+check takes 5.613s, with 0.016s compiler, 0.064s link and 0.612s execution; Wine
+startup wall time is 3.909s. Source preparation takes 6.735s; corrected host/ARM
+builds take 18.242s/215.060s. ARM compilation itself runs under emulation; these
+are fresh source-assembly costs, not local proof or pilot rebuild costs.
+
+The remaining manual work is choosing and documenting the boundary, designing
+useful observations and binding lower services into a portable backend. The shared
+object transport transfers to this operation, but arbitrary Win32 runtimes,
+callbacks and concurrency are not thereby covered. Nonlocal allocation failure
+is declared and unobserved in this focused handoff. Strong qualification remains
+separate. Required repository checks and exact inputs/commands are retained with
+the checkpoint; no broader test campaign or extraction/proof pilot is added.
+
+### Give a selected unit an independent local setup — 2026-09-23
+
+The installed handoff at `build/component-network-local-2026-09-23/` takes the
+previous DX-Ball experiment's network-only `graphics-bind` selection and attaches
+an independent local comparison using existing commands. The external reviewed
+recipe prepares identical C, headers and declarations in 0.427s; its eight
+retained-machine-C cases pass in 1.890s. The fixture contains no other lifted
+component bodies. This reuses a prepared boundary, not a newly discovered one.
+
+`candidate build --reuse-experimental` retains the new local setup while keeping
+the exact program selection, binary, policy and neighboring reset receipt. It
+takes 1.503s, including symbol inventory, with zero compiler/model/solver/link/
+execution work. `component start --experimental-package` then opens bind by name
+in 0.698s and prints its normal check command. That command passes all eight cases
+in 1.998s; a changed Nix environment required fresh local compilation/execution,
+so this is not a warm-reuse measurement. Public commands total 6.770s.
+
+No toolkit or fixture implementation changed. The documented missing-local-setup
+path now includes attaching the matching check and reopening it by name. Existing
+native program evidence keeps its original scope; the unchanged program was not
+rerun. No Wine, pilot build, formal check or additional regression campaign was
+needed. Earlier integrated checks remain applicable to the unchanged code;
+documentation links/whitespace were checked. Retained logs distinguish three
+harness expectation/setup interruptions from the six successful public commands.
+First-time boundary analysis and adapter work remain the important usability gap.
+
+### Reopen a handed-off component by name — 2026-09-23
+
+`component start TARGET COMPONENT --experimental-package EXPERIMENT --output
+WORKSPACE` now selects a retained comparison setup through the existing manifest.
+It restores the boundary, original adapters, C and cases, regenerates editor and
+workspace guides, and prints a check command with the corresponding comparison
+already selected for reuse. It also prints how to reopen the main program with
+this component workspace selected. Existing source-carrying and dependency options
+remain available. Opening performs no compilation or execution and creates an
+editable draft, without inheriting new qualification authority.
+
+The main component opens the program/network setup. A selected unit with no local
+receipt receives a diagnostic naming the missing setup and a command for opening
+the main workspace. Program selection alone cannot construct independent input
+transport, an oracle or controlled services. The original experiment stays intact.
+
+An installed external handoff reopens Hello's multibyte-conversion and DX-Ball's
+graphics-reset by name, preserves their sources and comparison plans, restores
+guides, and follows the printed commands into their program consumers. One retained
+local case and one program case per target pass. The quote-buffer/graphics-bind
+network-only selections report the missing local setups without creating misleading
+workspaces. Earlier full edit/program matrices remain retained; this is focused
+workspace recovery, not additional runtime coverage. The three affected shards
+pass 71 tests and seven required repository/SDK/build gates pass. Evidence is in
+`build/component-experiment-workspace-2026-09-23/`. No pilot rebuild, solver work or
+new boundary is involved; broader target readiness remains open.
+
+### Carry a local edit into the next runnable experiment — 2026-09-23
+
+`candidate build --experimental-comparison NEW --reuse-experimental PREVIOUS
+--component-comparison EDITED=FRESH --output NEXT` now retains the prior policy and
+matching component receipts. Exact source/header/contract bindings determine
+reuse; a changed retained receipt is rejected before creating output, with the
+fresh-check argument named. A new reviewed policy can be supplied explicitly.
+The original inputs, comparison tools, main component and selected unit set must
+remain the same. The prior experiment stays intact; ordinary preparation handles
+other selections. Units already accepted through network evidence retain that
+explicit status. This is receipt reuse within experimental assembly, not a new
+contract-compatibility or formal proof rule.
+
+The installed external loop changes the reset implementation in Hello's multibyte
+component and DX-Ball's graphics-reset component without changing their boundaries.
+It starts editable workspaces, checks 27/8 local cases, runs the affected 12/37
+program cases and packages the updated programs. Each local edit and program
+integration compiles exactly one C file; other selected component bindings remain
+unchanged. Hello reuses five neighboring receipts with zero neighbor check work.
+DX-Ball's other selected units have network evidence, so no separate neighbor
+receipt is invented. Omission of each edited unit's fresh check produces the
+expected named diagnostic. Final program runs pass after the supplied previous
+experiment and new comparison folders are removed.
+
+The two affected CLI/experimental shards pass 48 tests and seven required
+repository/SDK/build gates pass. Exact inputs, commands, costs and terminal results
+are in `build/component-experiment-edit-2026-09-23/`. The first walkthrough stopped
+on a stale source-text edit pattern after passing baselines; the corrected
+continuation is retained separately. No pilot, solver, new boundary or broader
+runtime qualification is involved. Hello uses normal entry; DX-Ball remains the
+controlled graphics scope.
+
+### Prepare experimental policy through the public workflow — 2026-09-23
+
+The previous runnable-program handoff still assembled policy using internal Python
+helpers. `candidate policy TARGET --comparison CHECK --configuration NAME --output
+DIRECTORY` now computes the existing policy fields from retained evidence and
+writes a readable review guide beside editable JSON. The guide exposes assumptions,
+domains, service/resource declarations, representation requirements, actual formal
+statuses and the supplied evidence. Its printed build command includes the selected
+component receipts. No new artifact family or qualification authority is introduced.
+
+Default preparation keeps every component check required and names missing receipts.
+`--network-only COMPONENT` explicitly chooses network evidence for a selected unit;
+the shared admission reader still rejects any supplied incompatible check. The
+main network comparison is distinguished from separate component evidence, and
+runtime dependencies remain explicit. Changed accepted declarations require policy
+review; ordinary compatible implementation edits can reuse it.
+
+An installed external Hello/DX-Ball trial reproduces the previous policies exactly
+as JSON values, builds with the printed commands and retains identical selection
+bindings. It passes twelve Hello program cases and 37 controlled DX-Ball cases
+after supplied comparison folders are removed. Policy preparation requires no
+compiler, model, solver, linker or execution work; no local receipt is rerun.
+The two affected CLI/experimental shards pass 48 tests and seven required
+repository/SDK/build gates pass. Evidence is in
+`build/component-policy-handoff-2026-09-23/`. This removes policy-authoring friction;
+first-boundary analysis, wider runtime backends and broader target coverage remain
+separate open work.
+
+### Hand off a compared program as a runnable experiment — 2026-09-23
+
+`candidate build --experimental-comparison` now retains PE program selections,
+including the authored observer/component DLL. The old fixture-only restriction
+blocked this practical handoff despite a passing program comparison. Packaging
+reuses those binaries without compiler, linker, model or solver work. Normal-entry
+`candidate test --experimental-package` preserves actual arguments/exit codes and
+compares the retained memory/state observations and raw streams. A focused native
+test detects a state-only defect through the CLI even when output and exit match.
+
+Experimental policy may explicitly set `required_component_checks` to the separate
+local checks it requires; the default still requires every selected component.
+Every supplied check must match exactly. All selected assumptions/contracts and
+complete representation groups remain required. The CLI lists units with only
+selected-network evidence, without claiming independent assurance or coverage of
+every operation. This is practical experimental delivery, not strong qualification.
+
+The installed external handoff passes twelve normal-entry Hello cases and 37
+DX-Ball controlled graphics cases after removing the supplied comparison folders.
+Hello has seven matching component receipts (including the program root) and one
+unit with selected-network evidence; DX-Ball has two of each. Existing local
+receipts are retained without rerunning them. DX-Ball still uses redirected entry
+and controlled graphics services, rather than game/DirectDraw startup. Original
+runtime services remain in both mixed programs; standalone source export remains
+the portability route.
+
+The first relocated Hello run correctly exposed pathname-dependent allocation
+observations (90 versus 77 bytes). Normal program preparation can now explicitly
+declare `process.drive`, invoking `P:\hello.exe` in each private prefix. A fresh
+Hello comparison under that input passes before packaging; no old observation is
+rewritten. Tests also exercise relocation with the actual module pathname in output.
+Evidence, the failed run and command costs are retained in
+`build/component-experimental-program-2026-09-23/`. Eighteen affected tests and
+seven required repository/SDK/build gates pass. No pilot rebuild or proof work
+is needed for this handoff. Broader target support
+and first-boundary preparation effort remain open.
+
+### Prepare native process observations without a checkout fixture — 2026-09-23
+
+The process observer used by three Hello component recipes now ships through
+`native_adapter_headers("pe32-process-observer.h")`, alongside the existing
+entry/import helpers. Its 128 lines of C are byte-identical to the former fixture
+header; the recipes and existing native test now use the installed copy. Default
+header selection stays unchanged, avoiding unused inputs in unrelated packages.
+
+A fresh external string-conversion project needs only its local recipe/C,
+reviewed shared layout/license and pinned original. No sibling `native/` directory
+is present. Preparation takes **0.303s** including Python startup (**0.221s** inside
+the recipe), with unchanged comparison plan and C/header inputs. Public
+start/status/check/reuse/export/make completes: the actual CRT-abort case matches
+in **6.080s**, unchanged reuse takes **0.451s** with zero compiler/link/execution
+work, and the source library builds in **0.030s** without the native observer.
+
+Evidence: `build/component-native-helper-handoff-2026-09-23/`. The existing native
+observer regression and seven required repository gates pass; all Wine execution
+uses headless Wayland. This removes a reusable-helper packaging dependency, not
+target ABI analysis or handwritten memory/service observations. No new components,
+pilot rebuild, proof work or broader program/architecture claim is involved.
+
+### Keep component boundaries beside standalone C — 2026-09-23
+
+The exported library's README now links to a guide beside each component's C.
+Guides reuse the workspace boundary renderer for operation signatures, state,
+shared types, services and lifecycle declarations, then expose assumptions,
+requirements, source locations, recorded cases/observations and edit commands.
+Native binding specifications remain labeled comparison examples; handwritten
+adapters and replay inputs remain in the separate comparison workspace. Generated
+guides describe the exported snapshot, not unchecked edits or a validated backend.
+
+The installed public partial-export workflow refreshes retained Hello and jq
+projects in **0.459s / 0.492s**. The projects relocate successfully, all generated
+file links resolve, and incoming comparison directories can be removed afterwards.
+Both libraries report `Nothing to be done` from make. All source/header bytes,
+implementation/contract identities, object bytes and timestamps remain unchanged.
+Retained neighbors gain guides without supplying their old comparison directories.
+
+Evidence: `build/component-source-guides-2026-09-23/`. The two affected shards pass
+37 tests and all seven required repository checks pass. The trial initially counted
+the updater's backup as new source and expected a generated binding for Hello's
+handwritten adapter; correcting those trial assumptions required no product changes
+or repeated export. No native/program execution, Wine, pilot rebuild, compiler,
+model or solver work ran in this handoff. Wider target readiness remains open.
+
+### Refactor one component's C files without reconstructing its setup — 2026-09-23
+
+`revise_comparison_package(..., source_files=...)` now replaces the root component's
+complete authored C/header set while retaining its interface, original oracle,
+adapters, cases, dependencies and operator notes. Superseded authored files are
+removed from the new workspace. Oracle inputs and unowned files cannot be
+overwritten. This uses the existing source-package builder and comparison format;
+splitting helper code into a separate translation unit does not create a component
+or service boundary.
+
+The installed external Hello trial moves the string-conversion scan into `scan.c`
+and `scan.h` and renames the operation file to `convert.c`. Its declared contract
+identity and original inputs remain unchanged. The local 192-sequence comparison
+passes in **4.962s**, compiling only the two new C files; unchanged-neighbor reuse
+takes **0.593s** with zero compiler/link/execution work. A helper defect reduces a
+service's offered input size from five to four, is diagnosed at the interaction
+observation, and remains replayable after repair. Repaired-local reuse takes
+**0.645s** with zero work.
+
+The partial source update preserves nine neighbors' build outputs and application/
+backend files. It takes **0.414s** after the existing explicit header review;
+ordinary library make takes **0.030s**. Fresh standalone normal-entry comparison
+passes the greeting on both x86-64 and AArch64 under QEMU. The two clean program
+builds take **0.421s / 12.055s**. Header additions still conservatively require
+`--accept-boundary-change COMPONENT` after integration review; private and shared
+headers do not yet have separate export-update policies.
+
+Evidence: `build/component-source-refactor-2026-09-23/`. The affected comparison
+shard passes 22 tests and all seven required repository checks pass. A trial
+assertion initially looked for the expected header-review diagnostic on stdout;
+it was correctly on stderr. The trial resumed from retained comparisons without
+repeating them. All Wine execution used headless Wayland. No new components,
+pilot rebuilds or proof work were needed; wider target readiness remains open.
+
+### Prepare a manual original boundary without wiring engine internals — 2026-09-23
+
+The installed `comparison_original.recover_original_c` helper now accepts a pinned
+original image, entry RVAs and hand-selected instruction ranges. It runs the
+existing extraction/normalization/rendering sequence and retains machine C,
+runtime headers, semantic inputs and C source locations. The DX-Ball recipe now
+uses this helper instead of nine internal imports. Its initializer binding can be
+supplied explicitly with `--initializer-boundary`, so a separate operator project
+can prepare the current network from its reviewed files and original executable.
+No prior comparison, fixture Python import or pilot build is required.
+
+The installed external preparation passes in **0.413s**, reproducing the previous
+generated C, semantic inputs, boundaries and source map exactly. The focused
+public workflow then passes local editing, zero-work neighbor reuse, an actual
+initializer consumer, a missed bank-slot discrepancy, retained replay, repair and
+source export/build. The warm edit takes **0.627s**, neighbor reuse **0.483s** and
+consumer recheck **1.149s**; each edited check compiles one C file. These runs use
+retained machine C and controlled services, without native game startup or actual
+DirectDraw. First-time boundary analysis and adapter authoring remain manual.
+
+The jq probe exposed an existing lowering limit: `call_memory_load` in the selected
+byte-length body cannot produce retained C. The helper reports the failing block
+without publishing a partial selection. The same component's existing
+`native-original` comparison still passes a fresh local case in **6.411s**. No new
+semantic or proof rule was added to force this optional recovery path to succeed.
+Keep both findings: executable local lifting is available, and retained-C recovery
+does not yet cover that body. Native transport/adapters still require review.
+
+Evidence: `build/component-original-preparation-2026-09-23/`. The installed
+walkthrough takes **18.517s** of public commands after preparation/staging; two
+focused recovery tests and all seven required repository checks pass. Wine runs
+inside headless Wayland. Component counts and proof authority are unchanged.
+This is a prepared operator handoff, not an independent human usability study.
+
+### Edit source-project C and return directly to local comparison — 2026-09-23
+
+`component start --reuse-source` now accepts an exported source library as well
+as another comparison workspace. Operators can edit a component in the standalone
+project, import its C under the existing local boundary, compare it against the
+original and publish the matched edit with `candidate export --update-components`.
+No manual file copying, hash editing or pilot rebuild is needed. Only the selected
+unit is imported, so neighboring C can also be under edit. The native oracle and
+adapters still come from the local comparison package. Changed C is an unverified
+draft; headers, contracts and source-layout changes use authoring/refinement.
+Import leaves the source project's previous provenance untouched.
+
+The installed Hello source-project walkthrough passes in **48.846s**. It imports
+each draft through the public command, checks the loop edit locally, reuses an
+unchanged neighbor, updates the source library and executes the standalone program.
+A deliberately wrong output is detected, refused by export, replayed after repair,
+and repaired with zero compiler/link/execution work. Imports take **0.298–0.316s**;
+the warm edited local case takes **6.165s**, neighbor reuse **0.592s** and repaired
+reuse **0.610s**. The focused case contains 192 sequences; program execution uses
+the normal greeting. Application/backend work and operator notes survive updates.
+
+The same installed workflow imports jq's string-byte-length C edit in **0.331s**,
+freshly compares one native case in **7.537s**, publishes in **0.427s** and recompiles
+one portable component plus the final link in **0.076s**. Thirteen neighbors retain
+their objects. The real portable jq consumer produces identical raw output before
+and after, representing `[0, 5, 4]`; this is not a fresh native whole-jq comparison.
+
+Evidence: `build/component-source-roundtrip-2026-09-23/`. The two affected test
+shards pass 36 tests and all seven required repository/SDK/build checks pass after
+refreshing the generated format registry for the new reader.
+All Wine execution used headless Wayland. No new components, proof machinery,
+pilot rebuilds or broad case matrices were introduced. This closes a concrete
+edit/check/integrate handoff; broader target/backend coverage remains open.
+
+### Update one assembled component without gathering every comparison — 2026-09-23
+
+The public `candidate export --update-components` now refreshes the components
+in supplied matching comparisons and retains the other exported units with their
+own exact source/boundary/provenance. A local comparison updates one unit; a
+connected comparison contributes all its selected units. Operators no longer need
+every neighboring comparison directory merely to publish a local C edit into an
+existing source project. The original complete-selection `--update` remains.
+Retained caller requirements and shared representation groups are checked against
+the combined selection; accepting a changed supplier declaration does not silently
+refine its consumers. Application work and a prior-library backup are preserved.
+
+Per-component build inputs now accompany the existing source export. Recognized
+older generated Makefiles migrate as data, without executing them. A local C-file
+split can regenerate the library recipe while preserving neighbor objects; a unit
+test exercises this after deleting the old comparison directories. This adds no
+assurance format or qualification authority. Combined program validation remains
+required after an update.
+
+The installed external Hello walkthrough passes in **48.725s**, using one local
+192-sequence case and one normal greeting. It performs the real C edit, native
+comparison, zero-work neighbor reuse, partial export, standalone execution,
+known-defect rejection, retained replay and repair. Updates take **0.380s / 0.402s**
+and preserve nine neighbors' 18 object/dependency outputs. The same component update
+then passes standalone normal-entry comparison on AArch64 under QEMU. The public
+walkthrough defaults to these focused cases; `--all-cases` retains the wider option.
+
+The same facility updates jq's existing string-byte-length component, retaining
+13 other components without their comparison directories. Export takes **0.430s**;
+ordinary make recompiles one component and relinks in **0.067s**, without rebuilding
+the source backend. The real jq consumer returns identical raw output before and
+after, representing `[0, 5, 4]`. This jq check compares the portable programs; it
+does not claim a fresh original-PE run. Its local native receipt remains retained.
+
+Evidence: `build/component-partial-export-2026-09-23/`. The source-export shard
+passes 14 tests and all seven required repository/SDK/build checks pass. The first
+external harness expected compact JSON despite matching pretty-printed jq output;
+only that expectation was corrected, and the audit completed from retained results
+without another program run. All Wine execution used headless Wayland. No pilot,
+broader matrix or solver work was introduced. General target/backend coverage and
+strong qualification remain separate, unfinished objectives.
+
+### Independently selected components through one public program loop — 2026-09-23
+
+Program comparisons can now declare several entry components using the existing
+`program_driver.entries`. Their graph keeps program participation separate from
+caller requirements; no artificial call edge or production API connects unrelated
+entries. Existing contract, shared-representation, recursion and evidence checks
+remain in force. Any selected implementation edit invalidates program integration,
+while unchanged local comparisons can reuse. Workspace guidance and CLI results
+show this distinction explicitly.
+
+Hello's independently defined string-conversion operation now joins the existing
+quoting selection through one DLL and observer. Its local boundary remains usable
+on its own; the program adapter reaches selected multibyte conversion through the
+existing service entry. Public check/status/replay/export replace the second-DLL
+assembly and private runner for ordinary editing. Historical bundle recipes remain
+available for retained consumers. This removes an operator integration obstacle;
+it adds no component, proof rule or assurance format.
+
+The installed-tool walkthrough outside the checkout passes **14 public commands
+in 93.170s**, with **0.410s preparation** and a **0.370s** source-library build.
+One local case contains 192 sequences; the program checks the default greeting.
+A compatible string edit compiles one C file locally and one in the program,
+reusing the other 19 program objects. Unchanged-neighbor and repaired local/program
+results reuse with zero compiler/link/execution work. A deliberate defect produces
+`Xello, world!` and is caught both locally and in program output; the printed replay
+reproduces it after draft repair with zero compilation. The observer confirms one
+selected string call and compares its implicit state alongside TLS/allocation state.
+
+Evidence: `build/component-program-entries-2026-09-23/`. Four affected Nix shards
+pass 54 tests, including one new selection-semantics test, and seven required
+repository/SDK/build gates pass. Every Wine process ran inside headless Wayland.
+No wider pilot, runtime-startup experiment or architecture matrix was rerun. This
+is the bounded connected edit/integration workflow; manual adapter work, unsupported
+interactions and broader target readiness remain explicit limitations.
+
+### Read program discrepancies directly in the operator CLI — 2026-09-23
+
+Normal-program failures now show bounded escaped stdout/stderr excerpts around
+the differing byte. The retained Hello defect reads as `Hello, world!\r\n` versus
+`XXXXXXXXXXXXX\r\n` at byte zero, alongside the existing exact difference and
+replay command. Byte escapes preserve target encodings, NUL/control bytes and
+line endings; no text normalization or new observation semantics are introduced.
+Program state links now point to the observer reports instead of stdout files.
+
+The installed public `component status --comparison-result` reads that failure
+in **0.300s** and the existing jq string-state discrepancy in **0.046s**, excluding
+Python/Nix startup. Subprocess execution is blocked during inspection. Input and
+artifact bytes, machine-readable JSON, and the jq structured diagnostic remain
+unchanged. Evidence is under `build/component-output-diagnosis-2026-09-23/`.
+This changes operator presentation only; it adds no execution, proof, pilot or
+runtime-startup work and leaves the earlier startup investigation parked.
+The existing 21-test comparison shard, seven required repository/SDK/build gates
+and `git diff --check` pass. No new case matrix is introduced.
+
+### Prepare isolated native boundaries with installed facilities — 2026-09-23
+
+The string-conversion and stream-close recipes previously imported the quoting
+fixture's Python implementation merely to prepare their routine image. The
+existing four-header-field transformation is now the installed
+`prepare_routine_image` API. It retains every section byte, records the exact edits
+and original/prepared identities, and explicitly omits original entry/TLS
+initialization. Routine ABI, complete body ranges, shared-state initialization,
+contents/lifetimes and observations remain the operator's C responsibilities.
+Imported DLLs still use the normal loader; no program-equivalence claim is added.
+
+Both independent recipes prepare from a staged operator directory with checkout
+reads blocked, then use public start/status/check commands. The selected native
+string case (192 sequences) and failed-close case pass. Preparation commands take
+**0.292s / 0.337s**, including Python startup and compiler-runtime discovery;
+checks take **6.931s / 6.305s**. Original local suites remain separate. The quoting
+recipe uses the shared helper while retaining its reviewed target declarations;
+its full image, generated header and preparation report are byte-identical to the
+previous eight-component selection, so no broad quoting or pilot rebuild is needed.
+
+The existing PE32 integration check also exercises the distinction: actual program
+startup observes one original TLS attach, while loading the prepared routine image
+observes zero. This is a small shared authoring extraction, not a new proof rule,
+boundary format or inferred initialization model. Evidence is under
+`build/component-routine-image-2026-09-23/`; all Wine runs use headless Wayland.
+Both existing PE32 integration tests, seven required repository/SDK/build gates
+and `git diff --check` pass. The installed helper and staged preparation recipes
+match current source bytes.
+
+### Assemble Hello from the exported source handoff — 2026-09-23
+
+The standalone Hello recipe now accepts `--source-export`, using the same installed
+source-handoff reader as the partial jq project. Preparation no longer requires
+the operator's comparison directories or native runtime/compiler tools. It checks
+the exported identities, boundaries and file inventory, copies the listed source
+inputs and adds the existing reviewed application/backend C. Ordinary build
+products and unlisted operator files stay out of the assembled project. The old
+comparison-input mode remains available as an export-and-assemble shortcut.
+
+The external operator trial exports the newest normal-program selection together
+with the previously checked string and stream units. It assembles outside the
+checkout while blocking comparison readers, checkout/original-oracle reads and
+subprocess execution during preparation. The resulting ten-component source
+project builds on x86-64 and AArch64 and passes the default normal-entry comparison
+on both, including existing live conversion observations. AArch64 executes under
+QEMU; the source executable loads no original application bodies. Original-oracle
+Wine execution remains inside headless Wayland.
+
+Preparation takes **0.105s**; clean compiler/link work takes **0.434s / 12.672s**
+and the selected comparisons **3.758s / 3.784s**. Evidence is retained under
+`build/hello-export-assembly-2026-09-23/`. This extends the public handoff using
+existing facilities, with no new checker, compiler or artifact machinery. Only
+the selected default case is rerun here; the broader prior locale/output/failure
+matrices remain separately bound to their earlier builds. Updated source and
+stream guides also use the current normal-program result paths.
+Seven required repository/SDK/build gates and `git diff --check` pass. Validation
+uses the actual exported selection and standalone consumer; no new unit-test
+matrix or pilot rebuild is added for this preparation change.
+
+### Run normal programs through the component edit loop — 2026-09-23
+
+Hello's eight-component normal-entry experiment no longer needs a separate
+program build/run/replay loop. The existing comparison plan's PE program driver
+now has an optional process mode: unchanged arguments, accepted exit statuses,
+raw stdout/stderr and a C observer's reported state. Each case also runs the
+untouched original to check instrumentation transparency. Selected call counts
+remain diagnostics, while allocation events, logical live allocations, conversion
+state and TLS counts are compared. Reports, executables and input bindings use
+the existing result artifact and reader; no proof authority or format is added.
+
+The installed-tool [walkthrough](../tests/fixtures/hello-program/README.md) outside
+the checkout passes all twelve existing startup/argument workloads, including
+three exit-one cases. A reversed reset loop passes 27 local cases and the selected
+default program workload, compiling one file in each check. A decoded-character
+defect reports `$.stdout[0]` (72 versus 88); the printed public replay reproduces
+it after the draft is repaired. The unaffected allocation neighbor and restored
+local/program results reuse with zero compiler/link/execution/model/solver work.
+The repaired selection exports and builds as a conventional source library.
+
+The fifteen public commands take **85.276s**; program preparation takes **0.336s**
+separately. The program edit/check takes **11.129s**, including **8.904s** Wine
+startup wall time; repaired program reuse takes **1.108s** and neighbor reuse
+**0.447s**. All Wine processes run inside headless Wayland. Evidence and staged
+operator inputs are under `build/component-normal-program-2026-09-23/`. These
+prepared-example costs exclude original boundary analysis and adapter authoring.
+The full baseline covers twelve cases; the changed/repaired program covers the
+explicitly selected default case, not a fresh twelve-case matrix.
+
+The public path supports the reviewed observer envelope and eight-component
+selection. The older bundle recipes remain for string-conversion and standalone
+consumers with additional observers. Program-driven experiments execute with
+`component check`; experimental executable packaging still accepts fixture
+drivers only, with an actionable diagnostic. Source export is available. This
+closes duplicated operator steps without claiming broader locale, arbitrary
+process/file-system behavior, complete portable Hello or strong qualification.
+Four affected Nix shards pass **38 tests**, seven required repository/SDK/build
+gates pass, and `git diff --check` passes. The executed installed engine, staged
+recipes and C observer match the current files. No pilot rebuild runs.
+
+### Check DX-Ball units independently against x86 — 2026-09-23
+
+The native recipe's initializer-only restriction prevented isolated original-x86
+checks of the existing reset, bind and blit boundaries. It now accepts each of
+those packages using the same C adapter and public program-driver support. Each
+local build contains one authored implementation plus three adapters, without
+neighboring lifted implementations. The retained original PE still contains all
+machine bodies; the driver enters only the chosen local operation and the source
+side traps all four reviewed original bodies. Shared state and controlled services
+remain executable boundary dependencies, not inferred memory/lifetime guarantees.
+
+The installed-tool [native walkthrough](../tests/fixtures/dxball-graphics-network/native-workflow.py)
+outside the checkout passes eight existing cases for each of the three local
+units. It inspects and explicitly adopts their updated experimental premises in
+the initializer's named requirements, then checks the actual consumer. Rewriting
+the reset loop compiles one file locally and one file in the affected consumer;
+bind/blit reuse their passing evidence with zero work. Clearing only 254 slots
+reports `$.banks[0][254]`; the printed replay reproduces it after source repair.
+Restoring the compared C reuses local evidence with zero work. Exporting the
+connected selection and building its conventional C library also pass.
+
+The public command sequence takes **60.708s**. The local reset edit takes
+**7.282s**, its selected consumer **6.628s**, unaffected neighbor reuse
+**0.469s / 0.511s**, and repaired reuse **0.462s**. Wine startup dominates executed
+checks. Preparation of all four packages totals **0.428s** and named requirement
+refinement **0.106s**, separately from warm edits. No component, checker rule,
+compiler facility or proof format was added. Evidence is retained under
+`build/dxball-independent-native-2026-09-23/`; all Wine processes run inside a
+headless Wayland desktop. Consumer execution here covers the selected successful
+initialization path. The earlier broader network matrix remains separately bound
+to its retained selection. Normal game startup and actual DirectDraw remain open.
+The workflow passes with the installed toolkit and current recipe bytes; seven
+required repository gates and `git diff --check` pass. The existing native C
+adapter and production engine are unchanged by this checkpoint.
+
+### Use public component commands against a PE program — 2026-09-23
+
+DX-Ball's actual-x86 comparison previously required a separate native bundle,
+build/run loop and receipt. An optional `program_driver` declaration now selects
+the existing PE import helper inside ordinary `component check`. The selected C
+and adapters link as an observer DLL; its import is added to the retained program.
+The existing result binds both artifacts, original bytes, case outputs and
+preparation report. Compiler reuse, supplier selection, replay, inspection and
+source export use their existing paths. No new proof or admission format exists.
+
+The native recipe only prepares an editable package, without requiring a passing
+retained-C result first. The installed-tool walkthrough outside the checkout
+passes all 37 existing cases, then selects an independently edited reset supplier.
+Clearing 254 slots reports `$.banks[0][254]` against x86, compiles one file and
+reuses nine objects. The printed replay still reproduces the discrepancy after
+the working C is repaired. Restoring the original selection reuses its passing
+evidence with zero compiler/link/execution/model/solver work. Public retained
+inspection and source-library export/build also pass.
+
+Preparation takes **0.315s**; baseline comparison **26.597s**, local defect check
+**6.165s**, replay **4.888s**, and restored reuse **0.817s**. The public command
+sequence totals **38.818s**, excluding Nix/desktop startup, input copies and source
+library build. Phase costs and exact retained inputs are in
+`build/component-program-driver-2026-09-23/`. All Wine execution is inside headless
+Wayland. The scope remains the four original graphics bodies, redirected process
+entry and controlled services. Normal game startup, actual DirectDraw, broader
+target support and whole-program portability remain open. No pilot rebuild or
+formal-rule work is involved.
+
+Twenty-one comparison tests, two native program tests and seven repository gates
+pass. The new normal-startup regression initially used an unmanaged per-command
+Wine fixture; it now uses the same managed session and prefix disposal as public
+comparisons, within one headless desktop. That fixture correction and the earlier
+failed validation log are retained. The installed DX-Ball walkthrough is bound to
+the current production implementation.
+
+### Carry reviewed boundaries into an existing source project — 2026-09-23
+
+The preceding refinement workflow exposed its next handoff gap: ordinary
+`candidate export --update` rejected the changed boundary and required a new
+library plus a manual application merge. Operators can now pass repeatable
+`--accept-boundary-change COMPONENT` arguments after reviewing application/backend
+bindings. The same update machinery retains application work and a prior-library
+backup, lists unreviewed components/fields, and records the accepted changes.
+Local-edit protection remains enforced; additions now use the reviewed partial
+update described above, while removals need separate assembly. This is explicit
+source integration, not a compatibility proof or reuse
+of old program evidence. Header/source changes invalidate affected objects; a
+changed build recipe still invalidates all library objects.
+
+The installed workflow revises the existing jq byte-length declaration, runs its
+native interpreter comparison, updates the fourteen-component source project on
+x86-64 and AArch64, and exercises normal program entry against the untouched
+original. Both architectures produce `[0,3,2,3,4]` for empty, ASCII, multibyte,
+embedded-NUL and supplementary-character strings; each executes the lifted
+byte-length entry eight times. Existing library sources, component objects,
+backend objects and application bindings remain intact. Only program linking
+runs. The host executable hash changes on relink, so behavior is checked afresh;
+this checkpoint does not inherit the earlier broad program matrix for that binary.
+
+Public component/export commands take **19.609s**, with the revised native check
+compiling no files. Source updates take **1.228s / 1.275s**; program make/link takes
+**0.052s / 0.579s**. The same reviewed update also transfers the actual DX-Ball
+initializer/reset refinement while preserving application notes. All Wine runs
+inside headless Wayland. Thirteen source-export tests and seven repository gates
+pass. Initial harness failures and their corrections are retained separately:
+an import-path override hid a Nix Python dependency, and an unnecessary executable
+byte-identity assertion interrupted the otherwise valid host relink. No pilot,
+new component, formal rule or backend compilation is introduced. Evidence is in
+`build/component-source-refinement-2026-09-23/`; the workflow guide documents the
+public update path. Broader runtime readiness and independent human handoff remain
+open.
+
+### Carry a reviewed supplier change through its caller — 2026-09-23
+
+`revise_comparison_package(..., refine_requirements={"reset": supplier})` now
+updates explicitly named caller requirements and imports the chosen supplier
+through the existing selection machinery. Caller C, adapters, cases, original
+bindings and unrelated selections remain intact. Other requirements stay frozen;
+shared/transitive callers must be refined in their own packages. Ordinary body
+selection still rejects changed contracts. Refinement prepares an experimental
+configuration and does not establish semantic compatibility or inherit evidence.
+
+The installed workflow outside the checkout previews the changed DX-Ball reset,
+rejects an unreviewed selection, refines the initializer's `reset` requirement,
+starts a workspace, checks the real consumer and exports its source library.
+Only the named requirement and its selected supplier declaration change. The
+other suppliers and local initializer edit survive byte-for-byte. Refinement
+takes **0.090s** without subprocess execution; public commands take **2.953s**.
+The revised consumer check takes **0.725s**, with zero compilations, one link and
+the existing original/source case rerun. No pilot or program rebuild is needed.
+
+The trial also exposed a review problem: truncating whole assumption lists hid
+the added premise. Status and rejection diagnostics now show added/removed
+assumption text. An installed CLI inspection confirms the actual new premise is
+visible. One focused shared-caller regression and all **43** comparison/dependency/
+composition tests pass, along with seven repository gates. Evidence and timings
+are retained in `build/component-caller-refinement-2026-09-23/`. The workflow and
+workspace guides explain named refinement and subsequent consumer checking.
+This closes the declaration-edit-to-consumer loop within the existing scope;
+broader runtime coverage and independent human handoff remain open.
+
+### Revise a boundary without reconstructing unchanged setup — 2026-09-23
+
+The preceding selection trial exposed a concrete authoring burden: a one-line
+assumption edit made the saved graph stale, while valid re-preparation required
+restating sources, adapters, headers, tools and cases. The public
+`revise_comparison_package` helper now takes explicit declaration changes over a
+valid package, preserves current C and fixtures, and regenerates the existing
+interface headers and composition metadata. It also accepts a reviewed interface
+for the same component. Start from the result to refresh editor commands and the
+local boundary guide. No new artifact or proof rule is introduced.
+
+Unspecified supplier requirements stay frozen; regeneration does not accept new
+contracts on behalf of callers. Validation finishes before the new package is
+published. The installed helper, exercised outside the checkout, revises the
+retained DX-Ball reset assumption in **0.010s** with subprocess execution forbidden.
+The public workflow takes **1.466s** plus that revision, including a baseline check,
+new workspace, comparison and the expected initializer selection rejection.
+The revised comparison takes **0.260s**, reuses every compiled object and executes
+the existing original/source case again. Its only changed bound input is the
+plan; current C, fixtures, originals and the starting package remain intact.
+
+The operator guide and generated workspace guidance describe this authoring path.
+One focused regression covers interface/declaration revision, preserved C and
+frozen callers; all 42 comparison/dependency/composition tests and seven repository
+gates pass. Exact inputs, commands and costs are retained in
+`build/component-boundary-revision-2026-09-23/`, with the installed run under
+`installed/`. This improves an existing workflow; it adds neither a target nor
+new case coverage, and needs no pilot, Wine or program rebuild. Independent human
+handoff and broader backend coverage remain the practical completion work.
+
+### Keep selected suppliers in an editable caller workspace — 2026-09-23
+
+`component start --dependency-package COMPONENT=DIR` now materializes the selected
+supplier bodies through the same contract/representation/transitive-selection
+checks used during comparison. It composes with `--reuse-source` to preserve
+caller edits. Generated headers, editor commands and workspace guides describe
+the retained selection, so later checks need no repeated selection flags.
+External supplier edits do not silently change that snapshot. Preparation stages
+the selection before publishing the workspace; a rejected supplier leaves no
+new draft containing the old defaults. This performs no behavioral checking.
+
+Installed CLI use on DX-Ball preserves local caller C, selects a reverse-order
+reset, and runs its actual initializer consumer. A wrong selected reset compiles
+one file and gives the expected memory discrepancy; replay compiles none, and
+restoring the supplier reuses the baseline with zero work. Preparation runs with
+subprocess execution forbidden. A valid changed-contract package, authored through
+the existing factory, rejects without creating a draft. The initial direct-metadata
+negative instead hit the stale-graph check and is retained as a harness correction.
+Command time is **5.677s**; evidence is in
+`build/component-selected-workspace-2026-09-23/`. The 41 comparison/dependency/
+composition tests and seven repository gates pass. No new component, artifact,
+proof rule or pilot rebuild is introduced.
+
+### Try and retain operator-supplied inputs without package editing — 2026-09-23
+
+`component check --case NAME --case-arguments JSON` now accepts an explicit array
+of driver argument strings. It retains a new named case in the existing result
+input plan while leaving the editable workspace intact. Existing names cannot
+silently change arguments. The driver, boundary and observations remain explicit;
+this is one case from fresh runtime state, with no inferred input transport or
+stronger authority. Printed replay needs only the retained inputs. The existing
+`component start --reuse-source` path can carry the case into a workspace for
+subsequent suite checks, without editing hashes or a preparation script.
+
+The installed CLI workflow on DX-Ball takes **5.361s**: a new seed, an observed
+reset defect, replay after repair, zero-work repaired reuse, the expanded
+nine-case suite and an actual initializer consumer all pass their expected
+outcomes. The defect compiles one file; replay and the expanded suite compile
+none. The initial workspace is unchanged. The operator guide and generated
+workspace guidance describe the workflow. The 21-test comparison shard and seven
+repository gates pass; exact commands, inputs and phase costs are retained in
+`build/component-case-inputs-2026-09-23/`. This extends input experimentation
+through existing components, without a new artifact, proof rule or pilot rebuild.
+
+### Put the executable component workflow at the documentation entry — 2026-09-23
+
+The main README now starts with the practical component loop. Its old global
+claim that original binaries never execute during iteration is scoped correctly
+to static qualification; native comparisons explicitly execute the pinned
+original. The stronger pipeline keeps its separate instructions and authority.
+The [operator guide](component-workflow.md) covers workspace knowledge, local C,
+discrepancy replay, repair, consumer selection, source export and the existing
+manual boundary/service authoring APIs. It links program assembly separately from
+library compilation and requires headless Wayland for Wine.
+
+The guide's command blocks were exercised from fresh DX-Ball packages using
+retained original bytes: eight local cases, the deliberate 254-slot defect,
+printed replay after source repair, zero-work repaired reuse, 37 connected
+consumer cases, public source export and ordinary Make compilation all pass.
+Command time is **10.163s**, excluding Nix startup and an isolated harness path
+substitution correction. Evidence, exact commands and both harness outcomes are
+retained in `build/component-workflow-guide-2026-09-23/`. This is a prepared-example
+rehearsal; new-boundary analysis and independent operator effort remain separate.
+There is no new component, case matrix, proof rule or pilot rebuild.
+
+### Preserve earlier case setup during discrepancy replay — 2026-09-23
+
+The public replay command previously selected only the first failing case, even
+when it came from a suite with shared runtime files/Wine state. A two-case
+regression reproduced a real diagnostic failure: the second case detected an
+implementation defect, but its isolated replay passed because the first case's
+setup was missing. Replay now preserves the original selection and order; an
+explicit single-case check remains single-case. Retained wrong inputs still
+replay after the editable C is repaired, with eligible object reuse.
+
+The extended existing regression now reproduces the discrepancy with zero
+compiler work. Installed CLI inspection/replay also reproduces all eight cases
+of the retained DX-Ball reset defect, with identical observations and differences
+in **1.859s**. Its older compiler engine/environment is revalidated; that run recompiles
+nine units. The existing 20-test comparison shard and seven repository gates
+pass. Evidence is in `build/component-suite-replay-2026-09-23/`. No new component,
+artifact, proof rule or pilot rebuild is involved; this closes a misleading
+operator diagnostic, without changing assurance or external-state assumptions.
+
+### Reuse executable service inputs when establishing a boundary — 2026-09-23
+
+The byte-length recipe no longer reconstructs shared service wiring or reads
+sibling fixture directories. The installed `retained_service_inputs` helper
+returns exact selected service definitions and existing comparison-factory
+arguments: tools/runtime, explicitly selected C/header files, transports and
+bindings. New operation declarations, native entry, driver, observations, cases
+and assumptions remain explicit. Operators must review the selected adapters;
+reusing a declaration does not establish independence from the replaced body.
+No new artifact, compiler rule or proof machinery is introduced.
+
+An external project uses four local authoring files plus a reviewed shared
+workspace, with test-fixture imports and Python checkout reads blocked. Its
+prepared jq package reproduces all **37 files** exactly; public start/status and
+the existing native interpreter case pass. The same helper preserves DX-Ball's
+context-bearing blit service, reproduces its **30 files** and passes the existing
+eight retained-C cases. This sequence takes **8.088s**; it demonstrates preparation
+and API transfer, not another previously unprepared boundary or native graphics
+coverage. Existing service-authoring/comparison shards (**37 tests**) and seven
+repository gates pass. Evidence is in
+`build/component-service-inputs-2026-09-23/`. Unchanged compiled inputs retain the
+earlier program evidence, without another pilot or architecture rebuild. Manual
+semantic analysis and broader operator readiness remain separate work.
+
+### Navigate service implementations from the component workspace — 2026-09-23
+
+The byte-length trial's hidden adapter dependency now has a practical navigation
+aid. Generated workspace pages and `component status --comparison-package` link
+operations/services to candidate C definitions and list the calls written there,
+with links to local helpers in shared headers. Status reads current source and
+refreshes locations/fingerprints after edits. It uses the selected package files,
+without invoking a compiler or changing comparison admission/reuse decisions.
+These are lexical source clues, not a preprocessed or resolved dependency graph;
+macros, indirect dispatch, ambiguous definitions and external implementations
+still require operator inspection.
+
+Public start/status on the retained jq adapters now exposes the old call to
+`jv_string_length_bytes` and links the new `spx_jq_string_contents` helper to
+`headers/string-storage.h:13`. The same view works on all four DX-Ball graphics
+units. Inspection takes **0.013s** for jq and **0.141s** for the DX-Ball workspace
+through the in-process CLI. Subprocess attempts are blocked during the trial;
+original inputs remain unchanged. Evidence is under
+`build/component-source-navigation-2026-09-23/final/`. The existing 20-test comparison
+shard and seven repository/SDK/build checks pass. This reduces manual searching
+during boundary establishment without new target execution or proof machinery.
+
+### Remove a recursive adapter dependency through a new boundary — 2026-09-23
+
+The [jq byte-length trial](../tests/fixtures/jq-string-byte-length/README.md) removes
+a retained dependency of the existing string subsystem. Its previous `contents`
+adapter called `jv_string_length_bytes`, so lifting that operation with the same
+adapter would recurse. A stable service declaration did not establish independence
+from its implementation. Native disassembly and source-assisted layout review
+establish one shared live-string projection, now reused by slicing, codepoint
+length and byte length in native comparisons and the portable source backend.
+The portable operation still uses the existing contents/release interfaces.
+No checker, artifact, compiler or proof-rule changes were needed.
+
+Public preparation/start/status/check/edit/replay/repair pass. Three native cases
+include raw byte contents, hash-cached/uncached strings, unique/retained references
+and actual interpreter consumers, with the complete native byte-length body
+trapped on the source side. An omitted release leaves every returned length
+correct but changes retained reference counts **1 to 2**, leaks twelve allocations
+and violates the recorded lifecycle. The discrepancy replays after source repair.
+A local compatible edit compiles one file; the unaffected neighbor and repair
+reuse with zero compiler/link/execution/model/solver work. The workflow takes
+**30.458s**, excluding initial analysis/adapter authoring.
+
+The source assembly removes the original byte-length definition. Existing 61 CLI,
+32 live-value and seven allocation-failure comparisons pass on x86-64 and AArch64
+under QEMU. The selected byte-length operation executes **8,697 times** in each
+CLI run. Existing native slice and codepoint-length suites also pass with the new
+view. Seven repository/SDK/build gates pass. Inputs, disassembly, commands, separate
+costs and terminal results are retained under `build/jq-string-byte-length-2026-09-23/`.
+
+This is a concrete dependency/assembly improvement, not a component-count exit or
+complete jq lift. Manual work still includes native entry analysis, the shared
+layout/lifetime premise, cases and reviewed program symbol binding. It demonstrates
+that this boundary can be established with ordinary C adapters and existing tools;
+it does not infer service implementation dependencies automatically or establish
+broad human usability. Further work should follow an observed operator obstacle,
+rather than a queue of small native functions or expanded proof requirements.
+
+### Diagnose retained component failures without execution — 2026-09-23
+
+`component status --comparison-result DIR` now reads an existing comparison
+through the public CLI, including its first discrepancy, nearby observation
+record or array window, full observation paths and replay command. The same
+context is printed by `check`, and new workspaces include the inspection command.
+The existing receipt reader validates retained evidence; inspection neither runs
+the program nor assesses current workspace edits. Recorded failures remain
+inspectable after repair. No new evidence format or assurance claim is introduced.
+
+The retained jq string-length truncation failure now shows bytes `61e282`, shared
+state/reference count and the original/replacement counts **2 versus 3** together.
+The interpreter failure also shows its surrounding observed values. Inspection
+takes **0.272s / 0.022s** through the in-process public CLI; reading the repaired
+receipt as JSON takes **0.145s**. Subprocess attempts are blocked, all retained
+inputs/artifacts remain unchanged, and a wrong component identity rejects.
+Evidence is under `build/component-result-inspection-2026-09-23/`. The existing
+20-test comparison shard and seven repository/SDK/build checks pass. This closes
+a local diagnosis gap without new target execution, proof work or pilot rebuilds;
+first-boundary preparation and broad backend coverage remain separate work.
+
+### Installed native program assembly helper — 2026-09-23
+
+The PE32 experimental import helper now lives in the installed toolkit as
+`components.comparison_pe32_program.add_experimental_import`. Its implementation
+is unchanged; all four active Hello/DX-Ball recipe consumers use the installed
+API and the old test-fixture copy is removed. Existing import, original-section,
+startup/TLS and evidence-binding checks retain their behavior and authority.
+
+The external operator project at
+`/tmp/spaghetti-program-operator-2026-09-23-v1/` uses staged reviewed recipes and
+comparison inputs. Fixture imports and Python checkout file reads are blocked;
+the helper resolves from `/nix/store`, and the native compiler's dependencies are
+local retained inputs or external toolchain headers. Both original/DLL input pairs
+reproduce their retained import-extended executables byte-for-byte. One existing
+Hello workload passes through normal entry/TLS and selected components; one
+DX-Ball case passes against its actual x86 component bodies and controlled services.
+The complete handoff takes 17.612s. This uses previously prepared boundaries and
+does not claim an independent human usability study, full DX-Ball startup, a new
+portable backend or broader qualification. Every Wine process uses headless Wayland.
+Staging, execution and validation evidence are retained under
+`build/installed-program-helper-2026-09-23/`. The existing native startup/TLS/import
+regression and all seven repository/SDK/build checks pass.
+
+### Inspect supplier boundary changes before integration — 2026-09-23
+
+`component status --comparison-package CONSUMER --dependency-package ID=SUPPLIER`
+now compares a proposed supplier's declared contract with the consumer's retained
+selection. It names changed declarations/shared files and the selected direct and
+transitive consumers, without modifying inputs, compiling or running a program.
+Bundled defaults remain distinct from explicit edits. The report is authoring
+guidance, not a compatibility theorem or an evidence-reuse decision. Existing
+exact contract checks retain authority; their failures now show the same concrete
+changes before replacing retained files.
+
+The real DX-Ball handoff's opaque rejection was a changed `runtime.h` input in the
+shared representation. The public preview now names
+`representation.inputs.runtime-contract`, both files and `graphics-initialize/reset`.
+The operator sequence then carries the earlier reverse-order reset C into the
+current boundary with `--reuse-source`, verifies unchanged declarations in the
+preview, and passes all 37 existing connected host-C cases. Both input workspaces
+remain byte-identical; the refused snapshot retains the expected supplier files.
+The sequence takes 5.356s; initial inspection takes 0.386s and the comparison
+3.103s. No Wine, pilot, model or solver runs. Evidence is in
+`build/component-contract-preview-2026-09-23/`. Focused dependency/composition
+tests and all seven repository/SDK/build gates pass. This improves boundary
+review and local editing without adding a contract format or automatically
+accepting changed assumptions, interfaces or representation inputs.
+
+### Original-x86 comparison for the existing DX-Ball workspace — 2026-09-23
+
+The [optional native recipe](../tests/fixtures/dxball-graphics-network/README.md#compare-a-workspace-selection-with-the-original-x86)
+now consumes a public connected component comparison, preserves its selected C
+and adapters, and runs the same cases against the four actual original x86 bodies.
+DX-Ball's nonrelocatable image prevented the earlier routine-DLL loading approach.
+The existing experimental program-import helper instead lets Windows load the
+fixed-base executable, then redirects entry to the component case driver. Normal
+game startup is not executed. The source side traps the original component bodies;
+no retained machine-derived C body is linked into the native observer.
+
+All 37 existing connected cases match, including controlled COM resource creation,
+the actual reset/bind calls, shared bank contents, the blit consumer and synchronous
+window mutations. Public start/edit/check detects a deliberately short reset;
+native replay retains the same `$.banks[0][254]` discrepancy after the draft is
+repaired. Native preparation takes 1.764s; all cases take 10.598s. Preparing the
+defect takes 0.537s with one compiler invocation and nine objects reused. Its
+single-case replay takes 4.590s, mostly Wine startup. Model and solver work are zero.
+
+Evidence is in `build/dxball-native-components-2026-09-23/final-workflow/`, with
+fresh host comparisons in the parent directory. An attempted old supplier reuse
+was correctly rejected for a changed contract; the successful trial uses a new
+workspace under the current declarations. The recipe uses existing compiler,
+cache, service observation, PE interception and Wine-session facilities. It adds
+target C transport and an assembly recipe, without changing checker internals or
+adding components. Manual adapter preparation remains substantial; this is still
+a repository recipe, not an independent human handoff. Controlled graphics services,
+unobserved surrounding memory, omitted game startup and no second-architecture
+DX-Ball execution remain explicit. Strong qualification is unchanged. Every Wine
+process ran in headless Wayland; no pilot or fidelity matrix was rebuilt. All seven
+required repository/SDK/build checks pass, with terminal results and adapter input
+bindings in the parent directory's `validation.json`.
+
+### Preserve local C while revising a boundary — 2026-09-23
+
+`component start --comparison-package REVISED --reuse-source WORKSPACE --output NEW`
+now carries the selected component's authored C and headers into a fresh boundary
+workspace. The revised package supplies declarations, adapters, cases and selected
+neighbors. Both inputs remain intact; editor configuration and generated headers
+are refreshed. Changed source-file layouts require explicit operator transfer.
+This uses existing packages and validation, without a new receipt or compatibility
+claim. The following comparison applies normal invalidation.
+
+The real jq string-length trial retains a local C implementation edit while
+renaming its declared input and matching resource path. Its revised workspace
+starts in 0.382s. The six-case comparison, including the actual interpreter caller,
+passes in 7.347s with four affected translation units compiled and three reused.
+The unchanged string-slice neighbor reuses its result in 1.007s with zero new
+compiler/link/execution/model/solver work. Source export and host library compilation
+pass. Native ABI and admitted behavior are unchanged in this declaration trial;
+it does not establish compatibility of arbitrary contract changes or a new whole-
+program portability result. Evidence is in `build/component-boundary-restart-2026-09-23/`.
+Twenty-five focused tests and seven repository/SDK/build checks pass. Every Wine
+command ran inside the headless Wayland desktop; no pilot was rebuilt.
+
+### Adapter editing and operation boundary inspection — 2026-09-23
+
+Component workspaces now include native/comparison adapters in their editor
+configuration, using the correct compiler and each component's own include paths.
+Previously only portable source files had those entries. Operation descriptions
+also show the existing comparison resource roles and normal/nonlocal allowances;
+an absent checked interface lifecycle no longer obscures a declared consuming
+boundary. The declarations remain in the existing comparison settings, with no
+change to proof authority, transport or validation rules.
+
+Public start/status on the retained jq string-length and string-slice inputs
+shows the consuming/producing roles and allocation-failure allowance. The native
+driver and generated bridge compile through their editor commands; an adapter
+typo points at the editable file and its repair compiles. The sequence takes
+1.849s in `build/component-lifecycle-authoring-2026-09-23/`. It executes no Wine,
+pilot, model or solver and does not claim a newly analyzed boundary or fresh
+behavioral evidence. The earlier contract-helper draft was discarded after
+inspection found that V5 lifecycle bindings require checked interaction contracts;
+experimental declarations must not be relabeled as checked merely to improve
+authoring. The delivered change improves the workspace using the existing data.
+The 24 existing comparison/dependency tests and seven repository/SDK/build checks
+pass. All 55 inventoried C/header/interface/plan inputs across the two workspaces
+match their retained packages, so no program-behavior or portability rerun was
+needed for these authoring-only changes.
+
+### Fresh case replay with compiled-object reuse — 2026-09-23
+
+The subsequent bounded startup experiment in `build/wine-bootstrap-2026-09-23/`
+does not justify changing Wine initialization: automatic initialization saves
+0.47s in one probe, with about four seconds of startup still remaining. Both
+variants preserve the existing registry/file separation checks. Keep production
+startup unchanged and stop this investigation. Boundary preparation, local C
+editing, useful discrepancy diagnosis and integration determine the next work;
+additional startup benchmarks or runtime edge-case matrices do not.
+
+Printed discrepancy replays now use `--reuse-comparison DIR --rerun`. The new
+option executes the selected cases again while retaining eligible compiled
+objects; it also supports rechecking previously passing cases. Existing compiler,
+header and environment invalidation remains in force. Concrete observations are
+not reused when requested to rerun; optional formal checks retain their separate
+existing reuse rules.
+
+The actual jq interpreter case reruns both when matching and when deliberately
+wrong. The printed command reproduces `$.program[0][0]` as original 4 versus source
+9 after the editable C is repaired, using zero compiler invocations, one link and
+two fresh executions. The matching rerun takes 5.987s and the failure replay 6.284s;
+Wine startup dominates both. Twenty-eight focused tests and seven repository/SDK/
+build checks pass. Evidence is in `build/component-replay-cache-2026-09-22/`.
+No proof rule, receipt format, pilot rebuild or broader runtime coverage was added.
+
+### Installed native setup and an external component project — 2026-09-22
+
+Fresh native setup and entry/import interception previously depended on repository
+test-fixture files. `components.comparison_environment` now exposes the existing
+PE32/host tool discovery and `native_adapter_headers` through the installed Python
+API. The two headers moved unchanged into package resources; current recipes and
+their existing native tests use that single implementation. No shell redesign,
+new runtime behavior or artifact format was needed.
+
+An operator project at `/tmp/spaghetti-component-operator-2026-09-22-v1` now
+prepares the reviewed jq string boundary using installed APIs, local C/adapters,
+shared declarations and pinned native libraries. It does not import toolkit
+fixtures or consume a completed comparison package. Public start/status/check,
+a meaningful local edit, actual interpreter defect/replay, repair reuse, export
+and host source-library compilation pass. The sequence takes 35.049s; the edit
+compiles one file, while repair reuses the previous matching result with zero new
+compiler/link/execution work. Every Wine command stays inside headless Wayland.
+Evidence and reproduction scripts are retained in
+`build/installed-component-workflow-2026-09-22/`. Two existing native interception
+tests, installed-package build and seven repository/SDK/build checks pass.
+
+This removes a repository-layout dependency from practical setup. The inputs
+were already analyzed and their target-specific C adapters were supplied; this
+does not demonstrate newly inferred boundaries, complete jq recovery or a new
+whole-program portability result. Manual semantic analysis, object transport and
+meaningful observations remain explicit operator work.
+
+### Reusing service declarations without preparation recipes — 2026-09-22
+
+The string-length setup was still importing another fixture's Python recipe to
+reconstruct its shared services. The public `services_from_interface` helper now
+selects exact declarations from an existing interface/catalog, using the same
+reader as C bridge generation. The migrated jq recipe reuses contents/release
+without importing the string-slice declaration script. Types, lifecycle, effects,
+outcomes, nullability and unobserved behavior retain their existing bindings;
+adapters, new-operation lifecycle and evidence remain explicit inputs.
+
+The public jq start/inspect/edit/compare/replay/reuse/export sequence passes in
+`build/service-boundary-reuse-2026-09-22/`. The local edit takes 7.242s with one
+compiler invocation; the unchanged neighbor takes 0.995s with zero compiler,
+link, execution, model or solver work. Both deliberate defects replay after
+repair. All 129 exported source files match the previous standalone selection,
+so no program rebuild or new cross-architecture execution was needed. Reusing
+declarations directly from jq and DX-Ball source exports also passes, together
+with one real retained-C DX-Ball initialization/consumer case. Native DirectDraw
+remains outside that controlled consumer's scope.
+
+Twenty-two targeted tests and seven repository/SDK/build checks pass. This is a
+preparation-workflow improvement to an existing trial, not another newly analyzed
+operation or independent human usability study. No semantic rule or artifact
+format was added. Manual native adapters and surrounding-code analysis remain
+the next sources of operator effort to reduce through concrete component tasks.
+
+### Component handoff and bounded console follow-up — 2026-09-22
+
+Component workspaces now include concrete check, edit/reuse and source-export
+commands, with guidance on retained failure replay, updating a program library
+and the remaining runtime bindings. `component start` emits absolute paths so
+the suggested check also works after entering the generated workspace. The
+guide states the Wine desktop requirement and current session-dependent reuse
+limitation. These are authoring aids; no boundary or assurance rule changes.
+Public start generated the jq string-length workspace at
+`build/component-usable-handoff-2026-09-22/draft/`; this was a guidance check,
+not another behavioral handoff execution. The 24 existing comparison/dependency
+tests and seven repository/SDK/build checks pass. Retained validation paths and
+logs are under `build/hello-console-2026-09-22/final-validation.*`.
+
+The preceding console investigation supplies a reusable experimental UTF-8 text
+sink and a real Win32-console/PTY observer. The current host build matches 113 of
+114 program cases; the all-byte control sweep remains a mismatch and the complete
+command returns exit 2. An earlier sink revision matched 106 of 107 cases on
+AArch64; the final narrow-write refinement has been built for AArch64 but that
+expanded console matrix has not been rerun. Current host redirected output still
+matches all 82 cases. The original Latin-1/1252 terminal defect is retained and
+replays after repair. Independent CRT consumers check shared/mixed streams and
+wide/narrow output. Evidence is in `build/hello-console-2026-09-22/`.
+
+Its profile assumes a fixed-size UTF-8 terminal, column-zero entry and one writer.
+Other controls, resizing, concurrent writers and general console APIs remain
+unsupported; glyph pixels/colors and bell delivery are unobserved. This records
+useful runtime progress, not completed console compatibility. The operator's
+subsequent direction stops further edge-case expansion and makes component
+handoff usability the next work. No component count, model or solver work was
+added, and strong qualification remains separate.
+
+### Source integration from standalone exports — 2026-09-22
+
+The jq assembly recipe previously reopened original comparison packages to obtain
+service bindings, coupling source integration to retained native tools and runtime
+files. Public source exports now retain original input identities and per-comparison
+binding references with the existing exact service contracts. The new source
+handoff reader and batch bridge API reuse V3 source/interface readers and the
+existing C generator. Backend adapter/transport/outcome selection stays explicit;
+original resource hooks and native assumptions are not inherited as portable facts.
+
+The [jq recipe's `--source-export` path](../tests/fixtures/jq-portable/README.md#source-handoff-without-the-native-comparison-environment)
+passes with comparison access and Wine execution disabled. All 316 compiled
+source/build inputs match the previously tested project. Public updates preserve
+all library build outputs; make compiles zero objects and produces byte-identical
+program, live-value and failure binaries on x86-64/AArch64. Existing program and
+memory/failure results are reused explicitly, not presented as fresh execution.
+The same API reproduces existing Hello stream and DX-Ball graphics bindings.
+
+The source-handoff regression removes comparison directories before building and
+running a new binding, retains distinct adapter references for the same component,
+and detects a wrong portable backend. Stale sources and incompatible service
+contracts reject. This is a practical integration improvement with no component
+expansion or new proof machinery. Evidence is under
+`build/source-binding-handoff-2026-09-22/`. Broader backend semantics and unfamiliar
+operator trials remain open; this checkpoint does not complete the overall goal.
+Twelve targeted source-export tests, seven repository/SDK/build gates and the
+retained-input/unchanged-executable checkpoint audit pass.
+
+### Local boundary workspace and reusable jq services — 2026-09-22
+
+`component start --comparison-package` now supplies a generated workspace guide
+for the component and each selected neighbor. It projects inputs/results, shared
+types and representation inputs, lifecycle, service contracts/adapters, outcomes,
+assumptions, requirements and example observations from existing declarations.
+`component status --comparison-package` reads the current declarations locally,
+without target evaluation, compilation or execution. These are authoring aids
+with `assurance: not-evaluated`, not a new semantic artifact or proof result.
+
+The [new jq string-length boundary](../tests/fixtures/jq-string-length/README.md)
+uses this workspace with the exact existing string contents/release definitions,
+live views, transports and ordinary C adapters. Six cases include 1,380 direct
+calls and an actual interpreter consumer. The public sequence passes preparation,
+local C editing, malformed-input and interpreter-defect diagnosis, retained replay,
+repair and zero-work reuse of the independent string-slice neighbor. No new
+semantic checker, compiler mechanism or proof rule is needed for the boundary;
+the workspace UI is itself shared tool development. This is an agent-run,
+source-assisted first-boundary trial, not independent human usability evidence.
+The same guide/start/status path also renders the existing Hello stream and
+four-unit DX-Ball graphics packages without executing them. Twenty-seven targeted
+tests and seven repository/SDK/build gates pass for the shared tooling.
+
+A reviewed addition to the existing source recipe selects this component alongside
+the twelve-unit network. Clean x86-64/AArch64 builds remove all thirteen selected
+public bodies and pass 61 CLI cases, 32 live-value scenarios and seven selected
+allocation-failure cases each. The new entry runs 43 times in the CLI suite.
+The remaining source backend and its initialization/platform assumptions stay
+explicit. This does not make jq fully lifted or establish broad Win32 readiness.
+
+Evidence is under `build/component-workspace-2026-09-22/`; the public workflow is
+`public-workflow-v3`. The 54.147s sequence includes a 7.137s local edit/check with
+one compiler invocation and 1.018s neighbor reuse with zero new work. The first
+recipe failure and an incorrect-path launch remain recorded. Automatic preparation
+is not the manual boundary-analysis cost. The [performance ledger](performance-and-invalidation.md)
+keeps those scopes separate. Practical next work remains reducing repeated boundary,
+adapter and backend effort and testing transfer to unfamiliar operations; a formal
+qualification campaign is not the next product-delivery gate.
+
+### Portable jq subsystem, program execution and local updates — 2026-09-22
+
+The [source/runtime recipe](../tests/fixtures/jq-portable/README.md) carries the
+existing twelve-unit storage/path/string selection through jq's actual command-line
+entry. The selected original public bodies are removed from the pinned source
+backend; the archive and executable symbol inventories verify the selected entries.
+Array release delegates only guarded foreign destruction, whose nested releases
+return through selected C. The remaining CLI, parser, compiler, VM, object/string/
+number primitives, allocator and regex engine are explicit unlifted source
+dependencies. No original PE or Behavioral-C is needed to compile/run the exported
+project. This is standalone source assembly of a partial lift, not a full jq lift.
+
+Separate builds outside the checkout pass **61 normal-entry comparisons and 32
+live-value scenarios on each architecture**, x86-64 and AArch64 under QEMU. Raw
+output, diagnostics and exit status are compared against the untouched pinned
+Windows executable using its real binary-stream option. Generated nested inputs,
+shared mutation, Unicode/NUL slicing, growth, errors, streaming/file input, regex
+and a 500-record aggregation workload reach all twelve selected operations. The
+additional C API consumer observes actual aliases, contents, references and
+view-release effects. Host-width pointers preserve existing live objects; the
+PE32 token instrumentation's premises are not silently transferred to this backend.
+
+Actual program execution found a portability discrepancy that component tests
+could not expose. The Windows CLI passes an import thunk as its input callback;
+the DLL sees a different address. Static source assembly changes input-location
+queries and fatal error handling. An explicit C adapter now preserves that identity
+distinction and the observed UTF-16LE assertion/exit 3, including the original defect.
+The failing original/source runs remain retained. Other assertions and terminal
+presentation remain outside the tested backend scope.
+
+The public edit/update workflow also found a shared tooling gap: source updates
+deleted every library object. Compatible updates now invalidate changed units and
+the archive while preserving ordinary make outputs for unchanged units. A changed
+generated Makefile invalidates all units; changed boundaries/headers still require
+separate integration review. Compiler/flag changes require a clean build, and
+object reuse grants no assurance. A regression exercises changed-unit compilation,
+neighbor preservation, no-op updates and whole-library build-recipe invalidation.
+
+`build/jq-portable-subsystem-2026-09-22/workflow-v3/` passes the full sequence in
+108.353s, including fresh environment revalidation. The local decoder edit checks
+in 7.754s with one compiler invocation; its independent getter reuses all evidence
+in 0.898s. The affected 44-case PE32 network passes with one compilation. Public
+exports preserve runtime work, then compile one portable object on each architecture
+(0.164s host / 2.018s emulated AArch64, including both final links) without rebuilding
+the backend. Both programs and live-value consumers pass. A deliberately successful
+fatal exit is caught, replayed from its retained executable after source repair,
+and repaired through normal program execution.
+
+The initial source build is 19.999s on the host and 240.351s using an AArch64
+compiler itself running under QEMU; that is not a host cross-compiler performance
+comparison. Preparation, configure, backend/binding/component compilation, links
+and execution have separate records. Entering the expanded tool environment
+invalidates old receipts; this revalidation is charged separately from warm reuse.
+All failed preparation/build/workflow attempts remain visible. No extraction or
+formal-proof pilot is rebuilt. The [performance ledger](performance-and-invalidation.md)
+records costs and limits.
+
+Ten integrated source-export tests and seven repository/SDK/build-infrastructure
+gates pass. The checkpoint audit revalidates exact inputs, retained executables,
+program/memory observations, source correspondence, reuse and negative controls.
+The final `build/jq-portable-subsystem-2026-09-22/portable-project/` has the same
+compiled source/build inputs as the repaired executable. Earlier Hello/DX-Ball
+regressions remain bound to the unchanged comparison engine; they are retained
+evidence, not fresh executions of this exporter-only production change.
+
+This closes the bounded non-Hello source/runtime handoff. Manual adapter analysis
+remains substantial, and the exporter fix is recorded as required tool development
+during the trial. Full jq lifting, broad runtime/locale/terminal coverage, source-
+backend failure behavior outside the follow-up below and independent human handoff
+remain open. The prior PE32 failure checks keep their own scope. Strong qualification remains
+separate; finite program comparisons do not establish universal equivalence.
+
+### Portable jq allocation-failure interaction — 2026-09-22
+
+The [optional diagnostic consumer](../tests/fixtures/jq-portable/README.md#allocation-failure-in-this-source-backend)
+extends the same twelve-component source project without a new boundary or proof
+rule. The existing C allocation observer now also supports GNU linker wrappers;
+the original continues to use its pinned PE32 import hooks. The actual guarded
+allocator and registered handler deliver nonlocal failure. Normal jq execution
+does not include these wrappers.
+
+Seven cases match the original on x86-64 and AArch64 under QEMU: copied/empty/
+invalid strings, array creation, shared mutation, growth and string slicing reached
+through the actual interpreter. Observations include handler context, sentinel
+output, retained contents and reference counts, failed allocation size/count and
+residual allocation sizes after real cleanup. The nonzero residuals reproduce
+original failure behavior; they do not establish leak freedom or heap safety.
+
+An initial cold interpreter probe exposes a physical representation difference:
+the thread-local number-conversion context contains nine pointers, occupying
+36 bytes in PE32 and 72 on either portable host. Both cold comparisons remain
+reported as mismatches. Initializing numeric conversion before observing the
+component yields identical residuals of two blocks/418 bytes. This initialization
+precondition is explicit in the consumer and recipe; no general adjustment hides
+different allocation sizes. Handler registration also precedes observation.
+
+An unbalanced retain in the ordinary string constructor changes the retained
+reference count from two to three while callback delivery, contents and residual
+bytes remain unchanged. The comparison reports `references.0`, replays the
+retained wrong executable after source repair, and passes all seven cases after
+rebuilding. Editing that adapter compiles one binding, reuses all component/backend
+objects and takes about 0.215s including three links. The existing normal-program
+and live-value binaries remain byte-identical to the prior tested handoff on both
+architectures; their earlier execution results are retained, not claimed as fresh.
+
+Evidence is under `build/jq-portable-failure-2026-09-22/`. The source/backend
+handoff uses the same facilities, C fixtures and build recipe; no checker,
+artifact format, compiler infrastructure or proof machinery was extended. Manual
+analysis of initialization and failure scope was still necessary. First-time setup
+effort remains distinct from a prepared edit. A fresh prepared project has 309
+compiled source/build inputs identical to the retained repaired build; all seven
+repository/SDK/build-infrastructure gates and the checkpoint evidence audit pass.
+This closes only selected executable
+failure paths, not arbitrary allocator faults, returning handlers, concurrency or
+physical exhaustion. Keep independent operator handoff and broader backend
+coverage ahead of another component-count or universal-proof campaign.
+
+### New jq string-slice boundary and real failure consumer — 2026-09-22
+
+The [fresh string-slice recipe](../tests/fixtures/jq-string-slice/README.md) owns
+the complete `jv_string_slice`, RVA `0x29e0a..0x2a145`, beneath the existing jq
+array/path network. Its 827-byte original body is absent on source execution.
+The 58-line ordinary C algorithm borrows actual backing bytes through a shared
+11-line C view; target descriptors, constructors, release and allocation remain
+explicit adapter/service responsibilities. The pinned source and disassembly
+informed authoring; this is not blind binary recovery.
+
+Eight local cases cover 504 retained/unique/generated calls and three actual
+allocation failures. Byte/codepoint normalization, malformed UTF-8, embedded NUL,
+extreme signed indices, shared contents, output aliasing, references and cleanup
+allocation state match. The 44-case connected suite includes normal interpreter
+string slicing and failure armed at its actual string-slice entry. Native callback
+context, the sentinel, retained references and actual teardown effects match;
+the failure leaves the original's two residual allocations/418 bytes on both sides.
+
+The public workflow edits the decoder and recompiles one unit locally and in the
+affected network. Its independent 19-case storage getter reuses without new
+compiler/link/execution/model/solver work. A Unicode defect differs in local and
+interpreter results and replays after repair. An allocation-order defect passes
+156 ordinary retained calls but leaves two input references instead of one after
+failure, with 27 rather than eight residual bytes. Runtime resource allowances
+are satisfied in that case; the independent memory/lifetime comparison catches it.
+The repaired local and connected checks also reuse with zero new work.
+
+This trial **did require a shared toolkit fix**: lifecycle validation demanded
+token roles for plain scalar indices. It now permits integer/float value parameters
+and results without roles while still requiring them for explicit scalar resources,
+records, pointers and opaque objects. Four focused regressions cover acceptance,
+missing ownership and unsupported transitions. No new proof rule, artifact format
+or compiler mechanism was introduced. Declared live-byte premises remain distinct
+from checked summaries. This closes an exposed gap but does not establish that
+ordinary new components never require tool development.
+
+Recorded investigation-to-first-match is 563.422s, excluding initial repository
+inspection; it is an agent interval rather than a human effort measurement.
+Preparation takes 0.351s, a local edit/check 6.551s and unaffected-neighbor reuse
+0.864s. The warm affected-network check takes 17.804s, including 3.615s evidence
+validation, 3.710s runtime startup wall time and 5.899s execution. No solver or
+pilot rebuild runs. The complete prepared walkthrough takes 288.649s; experimental
+assembly takes 12.209s and its 44-case execution 30.293s. All twelve selected
+component checks bind to that configuration. Seven Nix shards pass 86 tests with
+no skips, plus six repository/SDK gates. Current Hello connected/string/stream
+and DX-Ball regressions pass 63/12/7/37 cases respectively. The initial format
+registry freshness failure is repaired by regenerating the existing registry.
+`build/jq-string-slice-2026-09-22/` retains the inputs, native disassembly, failed
+setup/walkthrough attempts, corrected comparisons and terminal checkpoint audit.
+The broader practical delivery and separate G1–G7 qualification objectives remain
+open; neither a standalone portable jq nor cross-architecture jq execution is claimed.
+
+### Previously unprepared stream boundary and shutdown integration — 2026-09-22
+
+`build/hello-stream-boundary-2026-09-22/workflow-v2/` passes the public workflow for
+the complete native `close_stream`, RVA `0x6894..0x68f8`. Only its partition row and
+the older portable output backend existed at investigation start. Disassembly
+supplied a 15-line C algorithm. Existing service definitions, generated bridges,
+native image preparation and entry/import helpers supplied the machinery; no
+checker, artifact, compiler, Nix expression or proof rule was developed per unit.
+The shared ordinary C stream view carries the existing handle in both native and
+standalone adapters. Consuming it invalidates aliases of that view, not arbitrary
+heap aliases or independently fabricated references.
+
+Seven local cases pass: 216 controlled combinations across two stream identities
+and five actual MSVCRT file scenarios. They compare result, errno, service order,
+arguments/results, consumption, controlled frames and real file contents. A
+premature errno clear changes 73 to 0 after a real failed close while the result
+remains minus one; it is caught, rejected by source update and replayed after draft
+repair. Access after close trips the transport guard with exit 77 and a named
+diagnostic. That comparison is incomplete, not a pass or proved lifetime claim.
+Repaired local checks and the unchanged allocation neighbor reuse with zero new
+compiler/link/execution/model/solver work.
+
+The first working interface exposed target errno numbers. Before assembly it was
+refined to a bad-descriptor predicate and clear operation, keeping platform
+constants in C adapters. This changed contract was freshly checked and exported.
+A public update from the earlier interface is rejected despite the unchanged
+operation signature, preserving the previous source tree.
+The backend now supplies lower pending/error/close services; the assembled program
+uses the selected component for decision logic without a duplicate backend policy.
+Normal execution passes 82 cases on x86-64 and AArch64 under QEMU and the 17-case
+allocation-failure regression on x86-64. An adapter discarding close failure is
+detected through `/dev/full` by exit/diagnostic differences, replayed after repair
+from its retained bad executable, then repaired successfully. The conventional
+project builds outside the checkout to the exact compared binary; both entries run.
+
+Recorded investigation-to-first-match is 578.834s, excluding initial repository
+inspection. It includes agent analysis, authoring and execution, not human hands-on
+time. Automatic preparation takes 0.263s; the prepared walkthrough 72.035s; a
+one-unit edit/check 5.523s and neighbor reuse 2.107s. The algorithm is 15 C lines
+versus 141 native adapter/scenario/observation lines, 33 program adapter lines,
+27 declaration and 59 preparation Python lines. Initial failures caught a strict
+C warning and an omitted adapter-only header in the assembly recipe. Both are
+retained. The corrected recipe explicitly packages shared backend inputs.
+
+Six Nix shards pass 48 tests plus six repository/SDK gates in 34.135s. The
+[fresh recipe](../tests/fixtures/hello-stream-close/README.md) records commands and
+boundary knowledge. No pilot rebuild or model/solver work runs. Broader target/
+runtime coverage and the separate strong qualification objective remain open.
+
+### Concurrent fresh runtime startup — 2026-09-22
+
+`build/wine-startup-2026-09-22/` addresses the measured local-edit bottleneck without
+adding reusable prefix state or an artifact format. Original and replacement
+prefixes initialize concurrently, with at most two workers. Cases remain ordered
+and cannot start until both prefixes are ready. Cancellation stops and joins
+startup processes before server shutdown and prefix disposal; command logs and
+separate elapsed startup timing remain available. Runtime engine changes correctly
+invalidate older comparison context. This checkpoint rechecks the retained inputs.
+
+Two alternating serial/concurrent probe pairs reduce startup from 10.297s/8.193s
+to 6.076s/6.076s. Actual Windows registry values and relative files remain private
+between sides, shared within each side's suite and fresh across runs. Production
+probes with normal Wine settings also pass. This is finite isolation testing;
+absolute host paths and external services remain outside the isolation boundary.
+
+The public Hello workflow passes a real C edit, one-unit recompilation, zero-work
+neighbor reuse, safe source-library update, a deliberate memory defect, rejected
+bad update, retained replay and repair. The local edit/check takes 8.648s, including
+3.660s startup wall time, 0.032s compiler, 0.064s link and 1.740s execution; the
+complete workflow takes 72.127s versus the earlier 90.349s. These are observed
+prepared-workflow timings, not guarantees or first-boundary effort measurements.
+Current connected Hello, jq and DX-Ball comparisons pass 63, 42 and 37 cases.
+Standalone Hello passes 82 program cases on x86-64 and AArch64 under QEMU, plus
+the 17-case controlled allocation-failure regression on x86-64.
+The unchanged 522-case allocation neighbor and repaired local check reuse with
+zero compiler/link/execution/model/solver work after their current baselines.
+
+Six integrated Nix shards pass 62 tests and six repository/SDK gates. The new
+native test initially reaches its startup deadline with inherited settings; it
+passes using the existing offline console-test profile. Production runtime settings
+are unchanged and the public workflows run with their normal configuration.
+This closes a measured cost gap; it does not expand target coverage or turn finite
+comparisons into strong qualification. First-boundary adapter effort remains next.
+
+### Public component-to-program update — 2026-09-22
+
+`build/hello-component-roundtrip-2026-09-22/workflow-v2/` closes a real handoff gap:
+the exporter previously refused an existing library directory, leaving operators
+to replace it manually after checking a component. `candidate export --update`
+now stages the complete incoming checked selection, preserves operator files,
+retains the previous tree and invalidates the named library build outputs.
+Conflicting local edits, changed component sets, declarations or shared/header
+inputs reject with a request for separate export/integration review. Same signatures
+alone are insufficient. This is conservative provenance management and finite
+behavioral checking, not a strong contract-compatibility rule.
+
+The public workflow rewrites the string-conversion operation's bounded byte scan
+into a different C implementation and produces a different program binary. Twelve
+local cases pass; only one C unit recompiles. The unchanged allocation neighbor
+reuses with zero compiler/link/execution/model/solver work. The library updates
+without changing application/backend C, the top-level Makefile or operator notes.
+A wrong output word is detected locally (65 versus 88 in the observed output frame),
+and its mismatching comparison cannot overwrite the assembled selection. Retained
+replay still detects it after the draft is repaired. Repaired local checks reuse
+with zero work; the public export updates again and normal execution passes.
+
+The new implementation passes 82 program cases on x86-64 and AArch64 under QEMU,
+plus the 17-case controlled allocation-failure regression on x86-64. The updated
+source snapshot also builds outside the checkout with ordinary tools, producing
+the exact compared binary. Superseded library backups remain available but are
+excluded from active build inputs. The same public export/update/build facility
+works for the connected jq selection, preserving operator notes and its archive
+bytes. That jq check is source integration, not a new complete jq execution.
+
+The complete Hello workflow takes 90.349s. Export updates take 1.077s and 1.240s;
+source program compile/link takes approximately 0.42s. The compatible local check
+takes 14.513s, including 0.033s compiler, 0.064s link, 1.742s execution and 9.495s
+Wine startup. First-time boundary discovery is not remeasured by this prepared
+component edit. Program evidence builds remain clean; no compiler-cache reuse is
+claimed for them. No model/solver work or pilot rebuild runs.
+
+Six integrated Nix shards pass 50 tests and six repository/SDK gates in 33.948s.
+Tests include conflicting edits, changed boundaries/headers, symlink paths,
+concurrent edits and publication rollback. The terminal audit revalidates current
+source/tool/binary bindings, local replay/reuse, raw program observations, preserved
+operator work, retained backups, relocated builds and existing Hello/jq/DX-Ball
+receipts. The stronger G1–G7 objective and broader runtime coverage remain open.
+
+### Allocation failure during normal standalone execution — 2026-09-22
+
+`build/hello-allocation-failure-2026-09-22/` closes the missing controlled-failure
+path through the standalone Hello program. The test-only native DLL intercepts
+the pinned `_rpl_malloc` caller's lower `malloc` import; the original allocation
+checks, fatal body, diagnostics, atexit handlers and CRT exit remain real. A
+separate portable test object uses ordinary GNU linker wrappers around the
+corresponding allocation service. The ordinary source build omits those wrappers.
+This uses existing import/entry hooks and C adapters, with no new checker, proof,
+artifact or compiler infrastructure.
+
+All 17 selected cases pass on x86-64 and AArch64 under QEMU. Ten actually inject
+failure; seven cover bypass, disabled or unreached requests. The observations
+bind requested ordinal, attempts, size, actual injection, fatal entry/errno,
+program state, raw output and process status. Fault-only and fault-plus-observer
+originals must agree; disabled controls also match the untouched PE. Observed
+and unobserved source processes must agree. Failed redirected streams are included.
+The ordinary UTF-8 build separately passes the full 82-case program regression.
+
+`workflow-v1/` changes the fatal exit to success while preserving the diagnostic
+and memory state. The comparison detects the process-outcome discrepancy,
+replays the retained bad binary after the draft is repaired, then passes repair.
+Restored source and binary hashes equal the baseline. Existing component bodies,
+contracts and comparison receipts are unchanged; affected program integration
+reruns. This clean build workflow makes no compiler-cache reuse claim.
+
+The source project and its documented diagnostic overlay also build outside the
+checkout with plain make/C tools. The relocated binaries equal the compared
+binaries. Normal builds contain neither fault wrapper and ignore diagnostic fault
+environment variables; the explicit test build exercises fatal exit, early bypass,
+disabled/unreached requests and rejects missing/malformed configuration.
+
+The workflow takes 17.165s: source compile/link approximately 0.42s per x86 build,
+the 17-case baseline 4.864s, and each retained single-case run approximately
+3.66s including Wine setup. Project preparation takes 1.070s; native oracle
+preparation/compile/link takes 0.652s. AArch64 compile/link takes 12.910s and its
+matrix 5.434s. These are automated phase timings, not manual boundary-design
+effort or a human usability study; compiler and linker costs are combined.
+No model/solver work or full pilot rebuild runs.
+
+Six integrated Nix shards pass 46 tests and six repository/SDK gates in 29.337s.
+The terminal audit checks current recipe, input/source/tool/binary bindings,
+raw observations, fault reachability, relocated builds and unchanged component
+receipts. Hello/jq/DX-Ball receipts are revalidated against the current engine;
+the older jq/DX-Ball workloads are not rerun. Evidence and phase costs are retained
+with the checkpoint.
+
+This is a controlled lower service returning NULL/ENOMEM, not physical heap
+exhaustion. Argument-entry/observer/formatting allocation failure, broader CRT
+behavior, other locales and interactive terminals remain outside this boundary.
+The practical goal remains active; G1–G7 remain the separate strong-assurance
+objective. Further runtime work must close a demonstrated operator or workload
+gap, not accumulate isolated fixtures.
+
+### Portable UTF-8 entry and reusable argument boundary — 2026-09-22
+
+`build/hello-utf8-entry-2026-09-22/` supplies a reusable ordinary-C entry adapter,
+with its inputs, alias/capacity frames, failure outcomes and ownership documented
+in `windows-argv.h` and the exported backend README. The source project now builds
+`hello` for target narrow bytes and `hello-utf8` for valid UTF-8 arguments. Both
+share the same application and components; an identical C main signature does
+not make their input contracts interchangeable. The comparison/build recipe binds
+the explicit entry profile. The generated source project also carries its own
+build and runtime-contract README for work outside this repository.
+
+The UTF-8 configuration receives the original Unicode arguments directly. Its
+portable C adapter computes the Windows-1252 best-fit bytes, including two
+replacement bytes for supplementary scalars in this runtime. The comparison
+checks the actual narrow main-entry arguments, application state, raw output and
+exit against the original. No Windows service or oracle-provided byte mapping is
+used by the portable program. Original execution and independent reference
+conversion still use the pinned Windows API under headless Wine.
+
+All 82 program cases pass on x86-64 and AArch64 under QEMU; the existing raw-byte
+entry also passes all 82 cases. Added cases exercise best-fit option names,
+letters, combining marks, Unicode limits, supplementary characters and diagnostic
+paths. `workflow-v1/` changes the full-width hyphen mapping, observes altered
+option parsing, entry bytes, output, exit and allocation/conversion activity,
+replays the retained wrong binary after repairing the draft, then passes repair.
+The restored binary/source hashes equal the baseline. Its component contracts and
+comparison receipts are unchanged; these clean program builds make no compiler
+cache-reuse claim. The full workflow takes 21.272s with approximately 0.42s per
+x86 compile/link and 9.020s for the complete matrix. AArch64 compilation/linking
+takes 11.770s. No model/solver work or full pilot rebuild runs.
+
+The standalone native test compares all 1,112,063 non-NUL Unicode scalars and
+1,024 generated strings with `WideCharToMultiByte(1252, 0)` under the pinned Wine
+runtime. A separate sanitizer check covers malformed/truncated UTF-8, untouched
+failure frames, exact capacities, in-place conversion, vector permutation and
+disposal. The entry owns one allocation for the argument vector and strings and
+releases it after application atexit handlers, preserving shutdown observations.
+That platform-entry allocation, like native CRT argument preparation, is separate
+from application allocation counters. Both profiles also build and run outside
+the checkout using ordinary make/C tools; malformed host UTF-8 rejects clearly.
+
+Five integrated Nix shards pass 44 tests and six repository/SDK gates in 31.283s.
+The final audit revalidates source snapshots, entry-profile bindings, binary and
+raw observation bytes, regenerated lookup data and the unchanged Hello/jq/DX-Ball
+comparison receipts. Existing jq/DX-Ball evidence is revalidated, not rerun.
+The complete retained audit and phase costs are in this checkpoint directory.
+
+This closes the valid-UTF-8 argument transport gap for the selected Windows-1252
+environment, not native Unicode output or arbitrary Windows code pages/runtime
+versions. Raw output deliberately remains target bytes and CRLF. Other locales,
+terminal behavior and broader interactions remain open, as does the separate
+complete G1–G7 qualification objective. Controlled standalone allocation failure
+is covered by the subsequent checkpoint above.
+
+### Standalone Hello and AArch64 execution — 2026-09-22
+
+`build/hello-standalone-2026-09-22/workflow-v1/` passes the complete source build,
+73-case original/program comparison, deliberate memory-only defect, retained
+replay after source repair and repaired run in 20.916s. Both decode and encode
+use the changed table entry, so the faulty program prints identical output while
+its UTF-16 words differ. The memory observations detect it. The repaired binary
+has exactly the baseline source and executable hashes. Component contracts and
+comparison receipts remain unchanged; program integration reruns. These evidence
+builds are clean and do not claim incremental compiler-cache reuse.
+
+`build-aarch64-v5/` and `matrix-aarch64-v3/` compile an actual AArch64 ELF and run
+the same 73 cases through the host's existing QEMU binfmt registration. All match
+the original PE32 behavior. This is emulated execution, not physical ARM hardware.
+Original/observation-only and portable/observation-only runs must each agree in
+raw output and exit status. The runs also compare main-entry argument bytes,
+application allocations/releases, conversion calls, state/cursor/errno, initial
+UTF-16 words and a hash of the full converted buffer. They do not observe every
+heap object or syscall. The original program still runs through normal startup;
+the source program uses host startup and needs no original application body.
+
+The source project combines the existing nine-component export with ordinary
+application/adaptor C and shared Windows-1252/CRLF/runtime bindings. It retains
+the pinned upstream GNU option scanner and licenses. The frontend is source-assisted,
+not automatic recovery of an arbitrary stripped program. The free adapter maps
+opaque target tokens to full host pointers. Four-byte state and 16-bit words stay
+explicit rather than inheriting host layouts. A relocated project builds and
+runs using ordinary make/C tools with only PATH and LC_ALL supplied; those tools
+are Nix-provisioned, not evidence for a separate OS without a Nix store.
+
+Preparation/export takes 1.084s, observation-image compilation/linking 0.414s,
+clean x86 compile/link about 0.384s and emulated AArch64 compilation/linking 10.557s.
+The full x86 comparison takes 8.468s and AArch64 10.933s, including Wine session
+costs. These are automated timings, not first-time human preparation effort.
+Model/solver work and full pilot rebuilds are zero. The earlier local boundary
+trial retains its separate manual-analysis and adapter-effort measurements.
+
+Four integrated Nix shards pass 42 tests, including the 256-byte native decoder
+comparison, alongside six repository/SDK gates in 27.339s. The checkpoint audit
+revalidates retained sources/binaries, raw observations and current Hello/jq/DX-Ball
+component receipts. The latter is evidence validation, not new jq/DX-Ball execution.
+The first new native test timed out; using the established native-test settings
+to disable optional Wine helpers produced a terminal passing result. Failed input
+transport and pipe-output attempts remain retained alongside the accepted runs.
+
+The investigation corrected the earlier `café` -> `cafC)` explanation: Wine's
+Unix `LC_ALL=C` launcher changes input before main, and MSVCRT's default locale
+comes from Windows. A separate launcher now records Windows ACP1252 argument
+conversion before the program and checks actual main entry; identical narrow bytes
+are passed to the portable binary. No output normalization is used. Small runtime
+probes also exposed wide-output buffering and broken-pipe error behavior; retained
+failures led to checks around the 4096-byte boundary, CRLF and disk-full writes.
+
+This closes standalone source/runtime/second-architecture delivery **for the
+documented Windows-1252 redirected-stream configuration**. The binary's input
+contract remains target narrow bytes. Other code pages/localized catalogs, native
+Unicode CLI adaptation, interactive console behavior, physical allocation failure,
+general asynchronous interactions and additional operating systems remain open.
+The practical broad-target goal and separate full G1–G7 qualification are unfinished.
+
+### Source-library handoff — 2026-09-22
+
+The public `candidate export` command now revalidates matching comparisons and
+exports their authored C and compiled include closure through existing V3 source
+packages. Interfaces, assumptions, exact contracts, requirements and available
+license/boundary documents accompany a conventional Makefile. It rejects known
+mismatches, conflicting bodies/contracts, stale evidence and source changes during
+copying. The provenance report grants no qualification or program activation.
+
+`build/hello-source-2026-09-22/workflow-v2/` exports the current nine Hello components
+and builds their nineteen operations as an x86-64 static library outside the
+checkout. No original executable, DLL, native fixture adapter or comparison driver
+is copied. The build receives only PATH and LC_ALL; its ordinary compiler/tools
+are Nix-provisioned, so this is not a test of an OS without a Nix store. Export takes
+1.187s, the compile/archive build 0.224s and the complete four-command walkthrough
+1.422s, excluding development-shell startup. No pilot rebuild or solver work runs.
+
+The generic integration test relocates the source project, removes all original
+comparison inputs, and builds/runs a two-component consumer with an explicit
+portable binding. Two integrated Nix shards pass 40 tests and six repository/SDK
+gates in 33.003s. The first check exposed the fixture's inherited PE32 compiler
+being used for a host consumer; selecting consistent CC/AR fixes the test. The
+first real build also exposed an audit-writer path-type error. Both failed attempts
+are retained; the accepted workflow has terminal evidence.
+
+This is a source-library delivery, not a standalone Hello executable. The
+[dependency inventory](../tests/fixtures/hello-source/README.md#application-dependency-inventory)
+identifies main, option scanning/presentation, lower CRT conversion, output/errors,
+startup and termination. The later standalone checkpoint above corrects the
+historical accented-input attribution and supplies source/runtime closure and
+another architecture within its explicit environment scope. Current readers
+revalidate the unaffected jq/DX-Ball results;
+that is evidence validation, not a fresh program run or stronger qualification.
+
+### Previously unprepared boundary trial — 2026-09-22
+
+`build/hello-new-boundary-2026-09-22/workflow-v2/` passes 17 commands and seven
+comparisons in 159.405s. The operation is complete `rpl_mbsrtowcs`, previously only
+a partition row. Manual disassembly supplied its loop, live caller cursor, output
+array, explicit/implicit state, decoder service and abort outcome. The workspace
+retains [its boundary](../tests/fixtures/hello-string-conversion/BOUNDARY.md), shared
+conversion layouts, generated typed API, assumptions and examples. No checker,
+production artifact reader, compiler infrastructure, proof rule or Nix expression
+was changed for the new component.
+
+Twelve local cases pass: nine returning cases each contain 192 retained/generated
+sequences, plus three actual CRT-abort observations under a controlled service.
+They compare cursor, errno, full input/output frames, explicit/implicit state,
+live input/output aliases and ordered decoder arguments/results/state effects.
+Count-only conversion copies state; writing conversion updates live state. Main
+uses the writing path once, after sizing with `strlen`; count-only/resume/alias
+coverage is local and is not attributed to program workloads.
+
+The C replacement also passes twelve normal program workloads alongside the
+existing eight components, through original startup/TLS and the previously lifted
+decoder. A compatible edit compiles one C unit. Its unchanged conversion neighbor
+reuses with zero compiler/link/execution/model/solver work. Deliberately corrupting
+the first output word produces both a local memory discrepancy and wrong Hello
+stdout. Retained local and program inputs reproduce it after draft repair;
+repaired local evidence reuses without work and all twelve program cases pass.
+
+The recorded initial authoring interval is 503s through the first working boundary
+and adapters; automated package preparation is 0.246s. The recorded interval through
+the successful workflow is 1,034.690s. These are agent wall-clock intervals, include
+overlapping automated runs and documentation, and exclude the initial inspection
+before the timer. They are not a measured human hands-on duration. The algorithm
+is 51 C lines, versus 230 C adapter/driver lines and 35 declaration lines, plus
+preparation/program/walkthrough recipes. First-time effort remains substantial.
+
+Warm checking takes 12.056s: 0.016s compiler, 0.064s link, 1.741s execution and
+7.090s Wine startup. Neighbor reuse takes 4.272s with no new work; validation and
+retention still cost time. Program preparation relinks checked objects in 1.152s,
+then twelve workloads take 13.922s. Formal checks are not requested; model/solver
+work and pilot rebuilds are zero. The first workflow correctly invalidated a
+neighbor receipt from another desktop because the cache binds the complete
+environment. The accepted workflow establishes a same-session baseline; it does
+not weaken the cache or claim reuse across environments.
+
+Review corrected an assumed count-only main call and explicitly bounded signed
+pointer differences; the operation's large-allocation frontier remains outside
+this trial. Earlier compile-warning and cross-session-reuse failures are retained.
+This delivers H1 and closes the bounded H1–H3 milestone, not broad Win32 readiness.
+Four integrated Nix shards pass 14 tests and six repository/SDK gates in 27.197s;
+current readers revalidate the unaffected jq/DX-Ball receipts separately.
+The next practical exit is a standalone Hello source project with reusable runtime
+backends, followed by execution on another architecture. Additional fixtures and
+universal formal qualification do not substitute for that delivery work.
+
+### Normal-entry Hello handoff — 2026-09-22
+
+`build/hello-program-2026-09-22/workflow-v3/` passes the documented public C
+edit/check/reuse and program experiment: 20 commands and ten comparisons in
+182.802s. Each of twelve command-line cases runs the untouched original, an
+instrumented original and the selected implementation through the original entry
+point and startup. Both original TLS callbacks execute. Normal/custom/empty/
+accented/quoted/long greetings, help/version and argument errors match in exit
+status and output, as do observed allocation events and conversion state.
+
+The selected checked allocator, free wrapper, 16-bit conversion and reset execute.
+The installed quoting engine, slot growth/cleanup, reallocation, 32-bit conversion
+and initial-state query are not reached by these workloads; their counters remain
+zero. The independent 63-case native routine suite still covers those consumers.
+This is experimental mixed execution, not complete portable Hello.
+
+A compatible C edit compiles one unit locally and in native integration. The
+unaffected allocation comparison reuses with zero compiler/link/execution/model/
+solver work. A deliberately corrupted decoded character fails the local check but
+passes the selected native quoting case, which only needs character classification.
+Hello's actual output exposes the defect. The retained faulty program reproduces
+that output after the editable draft is repaired; repaired comparisons reuse
+without work and the repaired program passes all twelve workloads. This coverage
+gap is retained, not converted into a claim that routine testing was sufficient.
+
+The program recipe relinks existing checked objects into a DLL, adds one explicit
+import and reuses the existing native C adapters. It preserves original section,
+entry, relocation and TLS-directory bytes on disk. Original/source run at the same
+pathname: distinct directory names otherwise affect startup allocation sizes.
+An original CRT exit observer completes service telemetry before Hello's real
+atexit callback closes stderr, then forwards termination. Unchanged-original
+execution checks the observer's behavioral effect. Unexpected paths, missing
+reports, input changes and malformed telemetry reject; no proof reader is weakened.
+
+Fresh preparation with `--program-observer` takes 12.204s without historical
+comparison inputs. Program preparation after a compatible check takes 0.592s,
+relinking retained objects; its twelve-workload run takes 14.471s. Four integrated
+Nix shards pass 14 tests and six repository/SDK gates in 36.701s. The new small
+PE test independently exercises original startup/TLS and import failure cases.
+Current readers also revalidate the unaffected jq 42-case and DX-Ball 37-case
+receipts without rerunning their pilots. Exact inputs, prior failed/cancelled
+attempts, timings and the final audit remain in the checkpoint directory.
+
+This delivers H2's selected normal-entry workflow. The subsequent H1 boundary
+trial is recorded above with its workspace and analysis/declaration/adapter effort.
+Normal-entry allocation exhaustion, output-I/O
+failure injection and general termination/callback behavior remain outside this
+tested scope. The practical whole-program source/backends and another architecture,
+and the separate strong G1–G7 objective, remain open.
+
+### Fresh-input handoff checkpoint — 2026-09-22
+
+The [public recipe](../tests/fixtures/hello-handoff/README.md) uses pinned original
+bytes, the existing Hello transfer plan and `nix develop .#lifting`. It regenerates
+manual boundaries and packages without historical comparison outputs. DX-Ball
+recovers its initializer's 65 reviewed blocks directly from the pinned PE and
+existing binding. Current receipt readers revalidate all results in
+`build/operator-handoff-2026-09-22/checkpoint-audit.json`:
+
+| Accepted run | Result | Measured wall time |
+|---|---|---:|
+| Fresh Hello preparation | Original/plan/tool binding; no prior comparison input | 12.261s |
+| Hello public workflow | 33 commands, 30 comparisons, eight-unit / 63-case experimental assembly | 363.147s |
+| Fresh DX-Ball preparation | Original PE and reviewed boundary; no saved initializer C | 0.504s |
+| DX-Ball public workflow | 22 commands, 17 comparisons, four-unit / 37-case experimental assembly | 34.230s |
+| Connected jq regression | All 42 state/allocation cases match | Retained per-phase receipts |
+| Integrated Nix validation | 13 tests and six repository/SDK gates pass | 27.910s |
+
+Compatible edits, deliberate value/state/service defects, retained replay after
+repair and zero-work unaffected reuse pass. All formal checks are not requested;
+model/solver work is zero. The fresh DX-Ball original observations also match all
+37 previous retained original observations. No expensive pilot rebuild ran.
+The recipe is reproducible setup; these automated times do not establish the
+cost or adequacy of defining a previously unprepared boundary.
+
+The full toolkit development shell exposed an original-side Wine/Linux-loader
+crash on jq's long-argument cases, before target execution. The same compiled
+binary passes in the smaller lifting shell; all 42 cases now pass without runtime
+environment filtering or target changes. Failed runs and the investigation remain
+retained. Missing compiler runtime inputs reject before package creation.
+
+That checkpoint's successful Hello assembly uses the routine image without original
+startup/TLS. Ten unchanged-original command-line probes are retained separately;
+they do not demonstrate selected replacement execution. Their raw stderr includes
+host Fontconfig warnings, another environment detail to resolve for H2. The new
+boundary trial, complete portable source/backends and second-architecture execution
+remain open. The subsequent normal-entry checkpoint above supplies the separate
+replacement integration. No product-completion or strong-proof claim follows
+from the earlier routine checkpoint.
+
+#### Delivered basis and remaining limits
+
+The 2026-09-22 side-thread review reaffirms this order. Evaluate progress by the
+operator actions enabled, not by proof closure or component counts:
+
+1. The current jq storage/path checkpoint is delivered below: 42 connected cases,
+   real caller/interpreter failure, public repair/reuse and an eleven-unit
+   experimental assembly. The native adapter/source crossings are inventoried and
+   retained services remain explicit. Preserve that executable baseline while
+   completing the following workflow exits; it does not replace every jq allocator
+   or foreign value kind.
+2. The fresh jq caller recipe below now defines its boundary from retained runtime
+   inputs using documented authoring APIs and reusable C adapters. It generates the
+   C package and demonstrates public edit/check/replay/repair. Repeat this setup on
+   the different target; the jq recipe is not a broad usability or generality claim.
+3. The controlled jq get check now excludes the supplier body and demonstrates
+   accurate local/integration invalidation through a real supplier edit. Shared
+   suite admission now reduces the 42-case execution from the retained 212.155s
+   to 25.262s with unchanged policy and stale-input rejection. The complete
+   private-descriptor migration below now passes mixed-selection rejection,
+   conversion-defect replay/repair, independent editing, fresh component checks
+   and a 42-case eleven-unit experimental assembly. This closes the selected jq
+   representation example. The native backing-array layout remains shared with
+   retained readers and destructors; the evidence does not establish arbitrary
+   heap-layout migration.
+4. The connected DX-Ball walkthrough below now repeats fresh setup, normal
+   initialization, shared-table reset, current-surface binding and an actual blit
+   consumer through the same facilities. Public editing, discrepancy replay,
+   unaffected-neighbor reuse and a four-unit experimental assembly pass. No
+   per-unit checker or toolkit extension was required. Its original is retained
+   machine-derived C and its platform services are controlled; native DirectDraw,
+   arbitrary callbacks and whole-game execution remain separate unfinished work.
+
+Manual interface design, documented authoring APIs and target-specific C adapters
+are acceptable. Routine new units must not require new solver rules, bespoke
+checkers or hand-editing generated identities. Add a common runtime capability only
+when a selected consumer exposes a concrete missing behavior; retain a consumer
+regression and return to the walkthrough. Do not expand each such gap into a
+universal heap, callback or environment-model project before shipping the checkpoint.
+
+Both bounded target walkthroughs and the native Hello routine handoff are delivered.
+The next queue turns that basis into the fresh-input and program-entry handoff above.
+Select work only when it removes an executable-boundary gap,
+fixes a demonstrated discrepancy, makes a required operator action repeatable,
+or improves a measured edit-loop cost. Required regression checks still run.
+Formal closure and additional component counts alone do not justify displacing
+this delivery sequence.
+
+**Practical milestone completion means both public connected walkthroughs are
+reproducible without per-unit tool development.** Tested, assumed, unobserved and
+proved findings stay separate. Formal timeout or unavailable rules do not prevent
+an otherwise eligible experimental configuration; missing transport or a known
+discrepancy is not resolved by turning proof off. Complete Hello qualification and
+second-architecture execution remain later claims with their existing obligations.
+
+### Stateful conversion through two consumer levels — 2026-09-22
+
+The [multibyte component](../tests/fixtures/hello-multibyte/README.md) completes the
+conversion family beneath the quoting engine: four complete operations, two
+distinct implicit state cells, mutable input/output/state aliases and native
+invalid-state termination. Its 117-line C implementation uses existing interfaces
+and ordinary adapters; no proof rule, solver model or new artifact format is added.
+The original PE32 routines remain the oracle for this source-assisted lift.
+
+`build/hello-multibyte-2026-09-22/workflow-v1/` passes 28 public commands and 25
+comparisons in 378.236s. Local checks include 6,912 returning sequences per side
+and three actual abort cases. The composed quoting engine passes 220 cases;
+the eight-component native integration and experimental run pass 63 cases.
+A compatible edit compiles one unit at each affected level; the independent
+original-runtime engine comparison reuses with zero compiler/link/execution/model/
+solver work. Incorrect decoded output is detected and replayed at all three
+levels. A separate state-only defect is detected even when the decoded character
+matches. This is finite experimental assurance and accurate invalidation, not
+body-independent formal composition.
+
+The locale probe exposes a real environment limitation: `.65001` leaves this
+CRT's character type in `C`. Native `C` and Japanese conversion therefore remain
+separate from the explicitly controlled UTF-8 service context. PE32 state layout,
+lower CRT conversion, locale services and startup remain retained dependencies.
+The seven-component regression passes 21 cases and the actual-terminal regression
+nine; integrated Nix validation passes 13 tests and six repository/SDK gates in
+25.735s without a pilot rebuild. This closes the in-flight conversion checkpoint;
+the next work is H1–H3, not another unconstrained dependency-lifting cycle.
+
+### Complete quoting loop through native consumers — 2026-09-22
+
+The [quoting-engine component](../tests/fixtures/hello-quote-engine/README.md)
+replaces the complete retained algorithm at `[36ea,4eb3)` plus its cold fragment.
+The manually selected scope contains 531 original transfers. Its 224-line ordinary
+C implementation covers all eleven styles, truncation, embedded NUL handling,
+trigraphs, recursive restyling and multibyte conversion through eight explicit
+services. It reuses the existing interfaces, comparison packages and native
+consumer adapters; no new proof model, solver rule or artifact format is involved.
+The GNU source is an authoring reference with its license retained; the pinned
+original PE32 routine remains the independent oracle.
+
+The local matrix passes 165 cases with 112 transformations each: 18,480 per side.
+It observes lengths, errno, input/output/mask bytes and adjacent frames, including
+overlapping output/input and output/mask storage. Borrowed contents remain live
+through the bridge. Requested locales report widths 1 (`C`), 1 (`.65001`) and 2
+(`Japanese_Japan.932`); UTF-8 bytes do not imply that the UTF-8 multibyte path ran.
+Extent, termination, conversion-state and synchronous-service premises stay
+explicit. Declarations are not checked heap summaries.
+
+`build/hello-quote-engine-2026-09-22/workflow-v1/` passes all 59 public commands and
+50 comparisons in 344.145s, including the seven-component experimental assembly.
+The native integration passes all 21 caller sequences while the engine's entire
+6,089-byte main body and cold region are trapped apart from the jump into selected
+C. A compatible engine edit compiles one unit locally and one in the affected
+integration. The unchanged controlled caller reuses with zero compiler/link/
+execution/model/solver work. This is accurate finite-comparison invalidation and
+reuse; it is not a new body-independent proof.
+
+Substituting `?` where an embedded NUL should be elided produces both a local byte
+discrepancy and a native allocation-request discrepancy (9 versus 10 bytes).
+Both retained failures replay after the draft is repaired. Matching local and
+native results then reuse without new compilation or execution. Initial package
+creation takes 0.326s and native setup 0.470s; a full local engine edit/check takes
+33.801s, affected integration 11.704s and unchanged caller reuse 2.052s.
+
+The only shared fixture extension admits caller-owned storage for trapping larger
+native bodies; its actual PE32 test covers replacement, restoration and rejected
+storage. The current connected jq network passes all 42 cases with that helper,
+and Hello's separate actual-terminal regression passes all nine cases. Integrated
+Nix validation passes 13 tests across three shards plus six repository/SDK gates
+in 28.090s. No pilot or toolchain rebuild was required. Locale/conversion services,
+other runtime bodies, original startup/TLS and second-architecture execution
+remain unfinished. All G1–G7 exits remain required; the practical workflow continues
+to set implementation order. The retained `checkpoint-audit.json` revalidates all
+50 workflow receipts, public commands, experimental assembly, current code bindings
+and affected regressions; unaffected DX-Ball evidence validates without a rerun.
+
+### Actual terminal behavior through an ordinary C adapter — 2026-09-22
+
+The [native terminal recipe](../tests/fixtures/hello-native-quoting/README.md#actual-fatal-diagnostics-and-process-termination)
+extends the existing selected components through actual `xalloc_die`, diagnostic
+output and CRT `exit`/`abort`. Nine cases cover three real allocation entry paths
+and exit-status settings 1, 37 and 0. A child-process observer captures the DWORD
+exit code and binary stdout/stderr; at the fatal boundary it also observes errno,
+preserved old-block bytes, allocator requests and logical live objects. Raw
+allocation failure is injected, but the fatal body and termination are native.
+This removes a concrete executable-boundary gap without adding a component,
+proof rule, solver model, comparison format or tool-internal implementation.
+
+`build/hello-native-terminal-2026-09-22/workflow-v2/` passes all 18 public commands
+and 15 comparisons, including experimental build/test. A compatible edit compiles
+one local unit and one native integration unit. An unchanged realloc neighbor and
+both repaired results reuse with zero compiler/link/execution/model/solver work.
+Removing the failure call is detected locally and through the native consumer:
+the original exits with status 37 and the faulty replacement returns with 0.
+Both retained failures replay after repair. The ordinary 21-case quoting workflow
+remains a separate regression; terminal cases do not claim those other operations
+executed merely because their implementations were selected.
+
+The terminal walkthrough takes 84.409s; its unchanged realloc check takes 0.960s.
+The full normal quoting regression also passes all 47 commands and 39 comparisons
+in 207.937s, including its 21-case experimental run. Integrated Nix validation
+passes 13 tests across three shards and six repository/SDK gates in 33.534s, with
+no failures, errors or skips. The new recipe required refreshing its existing
+format-registry writer entry; the initial stale-registry rejection is retained.
+The checkpoint audit revalidates 54 comparison receipts, 65 public commands, both
+experimental assemblies and current source/engine bindings. The unaffected jq and
+DX-Ball receipts still validate; those pilots were not rerun for this fixture-only
+change. No pilot/toolchain rebuild was required.
+
+The reusable process observer has a real PE32 integration test covering binary
+streams, full exit-code values, abort, timeout, live descendants retaining pipes,
+output overflow and launch errors. Capture failures remain failures. Generated
+service trace lines are checked separately from program diagnostics; their
+reserved prefixes are a declared fixture limitation. The supervisor transports
+the observed outcome only after actual child termination. It does not substitute
+a jump handler for the child's fatal path.
+
+The accepted setup is `packages-v4/`. The initial probe exposed generated trace
+lines mixed with target stderr and a missing outer service scope; the adapter now
+forwards those records to the existing checker. Prior attempts remain retained.
+Original startup/TLS, diagnostic callbacks, signals, asynchronous behavior and
+actual allocator exhaustion remain outside scope. The quoting engine, lower
+allocation and runtime services still execute native bodies. All G1–G7 exits
+remain required; this finite experimental checkpoint is not strong qualification.
+
+### A complete multi-operation allocation boundary with shared tails — 2026-09-22
+
+The [checked allocation family](../tests/fixtures/hello-checked-allocation/README.md)
+manually groups eight public operations, two alternate machine entries and their
+shared `check_nonnull` return/failure tail. Its ordinary C uses a private helper;
+the boundary exposes the actual allocation operations. Twenty-seven retained
+original transfers include the whole shared tail and omit nine supplier bodies.
+All 630 local cases match, including nullable blocks, full size/count words,
+memory/lifetime observations and nonlocal failure. This is a practical manual
+merge example, not automatic split/merge authority or a checked heap summary.
+
+Native integration replaces all eight wrapper bodies and traps the shared tail.
+The two-byte aliases remain validated ABI entry branches into selected C. Every
+entry receives a success/failure probe; actual quoting and growth also execute
+the selected family and realloc component. Failure probes retain actual lower
+allocator/errno behavior around injected raw failures, then intercept `xalloc_die`
+as a declared nonlocal service. Actual fatal diagnostics and process termination
+remain outside the scope. All observed native allocations are released.
+
+The public walkthrough at `build/hello-checked-allocation-2026-09-22/native-workflow-v1/`
+passes 47 commands and 39 comparisons in 198.331s, including its six-component
+experimental assembly. A compatible family edit compiles one local and one native
+integration unit. The lower realloc neighbor and repaired local/native results
+reuse without compiler/link/execution/model/solver work. A wrong resize request is
+detected locally and through native callers, and both retained failures replay
+after the draft is repaired. The previous five-component configuration passes
+its complete 36-command walkthrough on the same implementation.
+
+This consumer exposed an authoring gap: an effect-only `void(void)` failure service
+was rejected for lacking value ports. Existing interaction contracts now permit
+empty type/port lists while retaining ordering, reference validation, exact
+bindings and concrete outcome checks. Compiled C verifies nonlocal delivery and
+rejects an undeclared outcome; changed same-signature effects still reject.
+No artificial callback parameter, proof rule or new artifact format is needed.
+The connected DX-Ball workflow passes all 22 commands and 37 cases, and the existing
+eleven-unit jq comparison passes 42 cases with the shared format change.
+
+Integrated Nix validation passes 56 tests across four shards and six repository/SDK
+gates in 41.918s, with no failures, errors or skips. The retained checkpoint audit
+revalidates 86 comparison receipts, 105 recipe commands, all three experimental
+assemblies, current code bindings, alias/tail execution checks, negative replays
+and zero-work reuse. The accepted setup is `packages-v4/`; earlier preparation
+attempts retain the missing void-service support and unused-dispatch link failures
+as investigation evidence. No pilot or toolchain rebuild was required.
+
+Remaining manual work includes declaring grouped ownership, writing transport and
+entry adapters, and selecting relevant observations. The scalar wrapper family
+does not establish general callback delivery or complete allocator lifting. Lower
+malloc/calloc/array allocation, the quoting engine, CRT and startup/TLS remain
+native; stronger qualification and all remaining G1–G7 exits stay open.
+
+### Complete reallocation through the existing native network — 2026-09-22
+
+The [reallocation component](../tests/fixtures/hello-reallocation/README.md) now
+replaces the complete `rpl_realloc` normalization, error handling and return.
+Its nine-transfer local oracle excludes both CRT supplier bodies. All 216 cases
+match across zero/high-bit requests, in-place/moving/failing resize, immediate
+errno writes, contents prefixes, logical lifetimes and adjacent frames. Raw
+allocation behavior and synchronous object transport remain explicit assumptions.
+The full byte-request representation is admitted, but large local allocations are
+metadata-only and observations cover at most a 64-byte prefix.
+
+The native walkthrough accepts `--reallocate-package`, selects five authored
+components with cleanup, and checks actual quoting growth through native
+`xrealloc` into selected realloc C. It also probes zero-size behavior through that
+caller, controlled raw allocation failure and high-bit rejection. Normal quoting
+allocations still forward the actual CRT; the error probes do not establish native
+exhaustion. Trapped original bodies and counters confirm all selected units run.
+Across 21 cases, the scope retains 147 quoting calls per side, six realloc calls
+per case, correct errno observations and no residual observed allocations.
+
+`build/hello-reallocation-2026-09-22/native-workflow-v1/` passes all 36 public recipe
+commands and 29 comparisons in 141.578s, including its experimental assembly.
+A compatible realloc edit compiles one local and one native integration unit;
+unchanged free and repaired local/native results reuse with zero compiler, link,
+execution, model or solver work. A deliberate zero-to-two normalization defect
+fails locally and through actual `xrealloc`, and both failures replay after repair.
+The existing four-unit regression passes its 25-command recipe on the same code.
+No new checker, proof rule, solver model or package format is needed.
+
+Integrated Nix validation passes 30 tests across two shards and six repository/SDK
+gates in 25.592s, with no failures, errors or skips. The retained checkpoint audit
+revalidates all 48 comparison receipts across both walkthroughs, 61 public commands,
+both experimental assemblies, current code producers, execution counters, negative
+replays and terminal validation. Manual setup remains substantial: the 19-line C
+implementation has 63 lines of bridge/header, a 118-line controlled driver and
+115 lines of declaration/preparation Python, plus native walkthrough extensions.
+These are operator-effort limits, not evidence of general automatic transport.
+
+The higher `xrealloc`/allocation wrappers still share native `check_nonnull` return
+and fatal-failure tails; their symbol ranges are not independent whole-operation
+boundaries. Native quoting, other allocation services, CRT, startup/TLS and general
+callbacks remain outstanding. This checkpoint broadens an executable operator
+workflow; it does not close strong qualification or any remaining G1–G7 exit.
+
+### Complete shared-cache cleanup through native consumers — 2026-09-22
+
+The [cleanup component](../tests/fixtures/hello-quoting-cleanup/README.md) replaces
+the actual `quotearg_free` loop and return at `[52f2, 5374)`. It shares the existing
+quote-state objects, preserves release order and call-time state publication, and
+uses typed release callbacks. Thirteen retained original transfers run locally
+without the release supplier body. All 224 local cases match, including repeated
+cleanup, null buffers, static/dynamic table aliases and lifetime observations.
+The release contract is a controlled assumption locally, not a checked summary.
+The final boundary admits 0..64 slots and the native adapter enforces that limit.
+Review caught the first local declaration's 16-slot limit below the consumer's
+24-slot state; the corrected suite includes both 24 and 64, and the old frozen
+contract rejects replacement until explicitly rebound. The quoting and cleanup
+components also bind shared cache definitions through the existing representation
+group, so a mixed 32/64-bit count layout rejects before compilation despite equal
+signatures. Agreement of those inputs still does not establish a heap theorem.
+
+The existing native walkthrough now accepts `--cleanup-package`. Its four-unit
+selection replaces complete quoting, growth, free and cleanup bodies; entry/trap
+and execution-counter checks confirm selected C runs. At
+`build/hello-cleanup-2026-09-22/native-workflow-v3/`, 25 public recipe commands and
+19 comparisons complete in 115.518s, including the 21-case experimental run.
+Actual native consumers make 147 calls per side, including cleanup and reentry;
+all observed allocations are released at case completion.
+
+A compatible cleanup edit compiles one local and one integration translation
+unit. The unchanged growth neighbor and repaired local/native results reuse with
+zero compiler/link/execution/model/solver work. A deliberate 256-to-255 reset
+defect is caught in call-time local state and after native consumer reentry;
+both failures replay from retained inputs after the draft is repaired. No proof
+rule, solver model or transport format was added for this component.
+
+The first local build exposed an operator diagnostic bug: verbose successful
+compiler output hid an error in a later adapter. The CLI now locates the actual
+error and names its retained log; an actual multi-unit compilation regression
+covers this path. Initial preparation loads the retained plan in 1.883s, renders
+the slice in 0.006s and prepares the package in 0.055s. The native quoting engine,
+lower allocators, CRT, process startup/TLS and general callbacks remain explicit
+unfinished coverage. Strong qualification and all eventual G1–G7 exits remain.
+
+The current three-unit regression also passes all fourteen commands and its
+21-case experimental run. Integrated Nix validation passes 30 tests across two
+shards and six repository/SDK gates in 34.413s, with no errors, failures or skips.
+The retained checkpoint audit binds all 28 comparison receipts across the two
+walkthroughs, both assemblies, current producers, contract/layout rejection and
+terminal validation. Earlier runs with narrower domains or unbound shared
+definitions remain investigative evidence; the accepted setup is `packages-v4/`
+with `native-workflow-v3/`. No complete Hello or strong native claim is added.
+
+### Fresh component packages and shared dependency binding — 2026-09-22
+
+The next setup pass at `build/first-time-components-2026-09-22/` removes an actual
+historical dependency: the errno-preserving free source and declaration existed
+only in a retained build directory. They now live beside the allocation fixture,
+with exactly the same source bytes and interface identity. A fresh input tree
+containing only the three original slices, with no authored interface/source
+packages or comparison results, prepares the Hello network in 0.053s. The native
+walkthrough accepts it with `--component-packages` and completes all fourteen
+commands, nine comparisons and the 21-case experimental assembly in 61.707s
+(`hello-native-workflow-v2/`).
+The independently prepared controlled network also passes all 144 sequences.
+
+The public `bind_dependencies` helper consolidates supplier selection and frozen
+contract requirements through existing readers. Hello, jq and DX-Ball now use it.
+It infers no compatibility or proof: ambiguous selections reject, and a changed
+contract still rejects before compilation when replacing an implementation. The
+jq and DX-Ball declaration graphs remain identical to the prior manually bound
+graphs. Internal recursion and unproved progress remain explicit.
+
+Fresh DX-Ball setup and the complete 22-command edit/replay/reuse/assembly recipe
+pass in 27.275s (`dxball-workflow-v2/`), including all 37 connected cases. Fresh jq storage/path packages
+pass the 42-case native consumer comparison with all eleven selected units. The
+Hello free neighbor reuses in 0.446s and its repaired native network in 0.730s,
+with zero compiler/link/execution/model/solver work; a compatible growth edit
+recompiles one network unit. All formal checks are not requested. Integrated Nix
+validation passes 47 tests across four shards and six repository/SDK gates in
+34.012s, with no failures, errors or skips.
+
+The retained `audit-checkpoint.py` revalidates all 28 comparison receipts, both
+experimental manifests/runs, the three unchanged declaration graphs, current
+code-producer hashes and terminal Nix reports. Its `checkpoint-audit.json` records
+36 public recipe commands and the explicit experimental-only scope. README edits
+after execution are identified separately from unchanged code producers.
+The earlier two walkthroughs preceded the last helper edit; their `-v2` refreshes
+bind the current engine and preserve the original runs as historical measurements.
+
+This demonstrates reproducible setup for the reviewed manual boundaries, not
+independent usability testing on an unfamiliar target. Native Hello still omits
+original process startup/TLS; DX-Ball still uses controlled platform services;
+jq retains its disclosed native dependencies. More general callback/heap
+transport, complete Hello assembly, strong qualification and another architecture
+remain open G1–G7 work. Continue connected Hello coverage through this workflow.
+
+### Native Hello consumer handoff — 2026-09-22
+
+The [native quoting walkthrough](../tests/fixtures/hello-native-quoting/README.md)
+passes at `build/hello-native-quoting-2026-09-22/workflow-v2/`. Actual PE32 quoting
+callers, the quoting engine, lower allocation, errno and cleanup execute around
+the same three authored units. Each selected original main body and the quote
+cold fragment are trapped; runtime checks verify the entry jumps/body removal
+and execution of all selected C. Twenty-one cases make 147 actual caller
+invocations per side, including growth, embedded NULs, buffer replacement,
+cleanup and reentry. Compared allocator interactions and residual lifetimes
+match; every case ends with no observed live allocation.
+
+Fourteen public recipe commands and nine comparisons complete in 64.397s. The
+compatible growth edit recompiles one of eight network translation units, then
+reruns the 21-case integration. The free neighbor and repaired network reuse with
+zero compiler/link/execution/model/solver work, in 0.438s and 0.721s respectively.
+Removing the embedded-NUL flag produces a retained native discrepancy: the first
+difference is an allocator request of 10 bytes instead of 9. Replay after repair
+reproduces it. The three-unit experimental assembly passes all 21 cases in 9.245s;
+all formal checks are not requested. Independent growth/free checks still cover
+522 and 32 host-local cases, with their distinct controlled-service assumptions.
+
+The earlier `workflow-v1/` interruption is retained. Its core dump identifies a
+Weston kiosk-shell crash while committing an Xwayland surface. The shared headless
+runner now uses the desktop shell. Its process/stream/cancellation check and both
+native entry/import-hook tests pass. The existing eleven-unit jq experimental
+assembly also passes all 42 cases freshly under that runner; no pilot was rebuilt.
+Final integrated validation passes the two native tests, the headless runtime
+check and all six repository/SDK gates in 32.691s (`validation-v1/`). The retained
+checkpoint audit rechecks nine comparisons, selection/binary bindings, native
+execution counters, allocator/errno observations, the jq run and terminal checks.
+
+The test-only routine image changes only reviewed loader-header fields; it omits
+original process startup and TLS callbacks. Allocator exhaustion, arbitrary
+callbacks/reentrancy, native whole-program admission, complete portable Hello and
+another architecture remain open. No new source unit or proof rule was needed,
+but the native adapter/driver comprises 297 lines of C and preparation/walkthrough
+still require 272 lines of Python. This reuses an already authored network and
+does not establish fresh-boundary usability. That repeated setup effort, rather
+than proof closure or more component counts, is the next practical work.
+
+### Actual Hello allocation through quoting — 2026-09-22
+
+The [growth walkthrough](../tests/fixtures/hello-allocation-growth/README.md)
+removes the simulated `xpalloc` algorithm beneath quoting. Ordinary C now owns
+the complete 25-transfer operation, including target-width growth/overflow logic,
+count publication, allocator interaction and return. Its local 522-case suite
+uses controlled lower allocation/failure services. The connected consumer executes
+actual quoting, growth and errno-preserving free bodies in 144 stateful sequences;
+all three authored components also have independent executable local checks.
+The free neighbor's 32 cases replace the earlier non-executable selection package.
+
+The public edit/check/replay/reuse and three-unit experimental assembly pass at
+`build/hello-allocation-2026-09-22/workflow-v2/`. A compatible growth edit compiles
+one network translation unit and reuses ten. The unchanged free comparison does
+zero compiler/link/execution/model/solver work. Incorrect count publication fails
+locally and through the consumer even though the consumer's failure outcome and
+return agree; retained discrepancies replay after repair. Repaired comparisons
+reuse with no new execution. Formal checks are not requested.
+
+This consumer exposed two shared runtime/authoring gaps: nullable opaque inputs
+now remain explicit through service/interface construction, and a completed
+handler can report zero supplier coverage when an uninstrumented root exits
+without calling that supplier. Eighteen consumer cases exercise this path; absent
+or unbalanced instrumentation still fails closed. These changes add no formal
+proof rule. The allocator's contents/lifetime premises, finite object transport,
+remaining quoting engine and platform services stay explicit. This is another
+usable experimental checkpoint, not complete Hello assembly or native admission.
+
+The fresh retained-input recipe reproduces the operation without rebuilding a
+pilot. The older 128-sequence controlled quoting regression and the 37-case
+DX-Ball connected network also pass with the current shared facilities. Authored
+growth compiles for PE32; current quoting passes its host/PE32 source preparation.
+Integrated validation passes 103 tests across eleven Nix shards with no failures,
+errors or skips, plus all six repository/SDK gates in 41.549s (`validation-v1/`).
+The full practical recipe takes 54.280s; its connected edit is 2.472s, with no model
+or solver work. Experimental execution takes 26.678s, predominantly 25.197s of
+evidence validation. Complete Hello coverage, actual remaining services, strong
+admission and another architecture remain open G1–G7 exits.
+
+### Connected DX-Ball graphics reuse — 2026-09-22
+
+The [public graphics walkthrough](../tests/fixtures/dxball-graphics-network/README.md)
+is retained at `build/dxball-lifecycle-2026-09-22/workflow-v1/`. Four manual
+components cover the actual initialization tail at `cd5c`, table reset at `bc90`,
+surface binding at `bd60` and sprite blit at `bd90`. The successful original calls
+reset and bind before returning; the earlier authored draft omitted these calls.
+The actual primary/backbuffer slots are `0x4349ac`/`0x4349b4`, also differing from
+the older draft's mapping. The new experimental identities and explicit transport
+handle this connected scope; they do not upgrade that old strong-provider claim.
+
+Preparation uses pinned original bytes, retained initializer C and the existing
+semantic extractor/renderer for the three small helpers. The operator writes
+ordinary C, service declarations, shared-state layout and platform/transport
+adapters. Existing APIs generate identities, interfaces, headers, service bridges,
+dependency requirements and comparison packages. No solver rule, checker or tool
+internal changed. Each execution transports all selected scalar state, every word
+of three sprite banks, and actual sprite contents/aliases. Normal continuation
+feeds the newly created surfaces into the real blit consumer, then changes its
+destination through the real binding operation and consumes it again.
+
+All 37 connected cases match, including positive/negative failures at seven
+stages, optional clipper paths, caps failure with readable output, and selected
+synchronous window mutations during cleanup services. Residual resources match
+the original's lack of cleanup. Eight local cases separately exercise each smaller
+unit. The public recipe records 22 commands and 17 comparisons. A compatible
+reset edit compiles one of fifteen network translation units and reuses fourteen;
+the affected integration reruns while unchanged bind/blit checks reuse with no
+compiler/link/execution/model/solver work. A missed final table slot fails both
+locally and through the consumer. Capturing a stale window produces a different
+message argument despite equal returns. Both retained discrepancies replay after
+repair; the restored network reuses in 1.178s. The four-unit experimental assembly
+executes all selected operations and passes all 37 cases in 2.678s. All formal
+checks are not requested; the complete recipe takes 26.473s.
+
+The old eight-case early-failure comparison also passes freshly. Final integrated
+validation passes 76 tests across eight Nix shards, with no failures/errors/skips,
+and all six repository/SDK gates in 26.076s (`validation-v2/`). The first validation
+correctly rejected the stale format registry after the new walkthrough added an
+existing policy-format consumer; regenerating that registry resolves the gate.
+`checkpoint-audit.json` revalidates all seventeen comparisons, selected source
+and engine bindings, experimental observations and terminal Nix reports. It
+confirms fourteen successful cases execute the connected resource consumer,
+alongside the twenty-three initialization-failure cases.
+
+This delivers the selected P4 execution/reuse workflow and completes the bounded
+P1–P4 implementation milestones. Manual setup is still substantial: 80 lines of
+operation C, 22 of state layout, 39 of service declarations and 455 of adapter/
+driver C, plus the preparation and walkthrough recipes. Resource validity/lifetime
+here is checked by C and compared observations, not a checked heap summary. The
+selected window mutations do not establish arbitrary callback delivery or
+reentrancy. Native-original execution, actual DirectDraw/GUI behavior, whole-game
+coverage, Hello qualification, all G1–G7 exits and another architecture remain
+open. Strong readers and all corresponding pilot/link/export obligations remain
+unchanged. The earlier ledger entries below are historical checkpoints.
+
+### Coherent jq descriptor migration through real consumers — 2026-09-22
+
+The [public representation walkthrough](../tests/fixtures/jq-array-storage/README.md#private-descriptor-representation-change)
+is retained at `build/jq-array-storage-2026-09-21/representation-workflow-v1/`.
+It prepares native and unpacked private descriptors through the existing authoring
+API, with explicit C conversions at native and array-element crossings. Shared
+headers are bound on both the source and adapter sides. Native backing objects,
+their identities and their layout remain available to outside-scope native readers
+and destructors. No object is reconstructed from an address or equal JSON.
+
+Both layouts pass the 42-case connected path corpus. The changed representation
+invalidates the earlier integration despite unchanged operation signatures:
+twenty translation units compile and eleven unaffected objects reuse. Mixing an
+old supplier or independently changed shared header bytes rejects before compilation.
+A coherent group with an incorrect offset conversion reaches comparison and fails
+the nested-slice consumer: it returns an indexing error instead of the updated
+value, and its residual allocations differ. That exact failure replays after the
+input C is repaired. The repaired network reuses in 6.273s with no compiler, link,
+execution, model or solver work. An unchanged nine-case native get-service check
+reuses in 0.481s; that evidence is service conformance, not an authored-caller proof.
+
+The same workflow then edits the setter compatibly in the new representation,
+rechecks the real consumer with one translation unit compiled and thirty reused,
+detects/replays incorrect copy-on-write, and reuses the unaffected getter in 0.785s.
+The full wrong-copy-on-write run is incomplete because one case has an invalid
+observation; its retained mismatch still replays. Repair restores every case.
+Fresh checks for all eleven selected units admit the experimental assembly, whose
+42 execution cases and resource/service observations pass in 26.723s. All formal
+checks are not requested. The complete recipe takes 350.026s and records thirty
+public commands, twenty-three comparison results and the experimental build/run;
+these are development timings, not a controlled benchmark.
+
+A small compiler test additionally checks 46,080 descriptor metadata/payload
+combinations per layout, including offset/size boundaries, signed zero and NaN
+payload bits, plus live pointer aliasing. Eight integrated Nix shards pass 58 tests
+with no failures, errors or skips; all six repository/SDK gates pass in 26.092s
+(`representation-validation-v1/`). The final checkpoint audit rechecks retained
+comparisons, selected bindings, execution observations and current implementation
+hashes. No per-unit solver/checker extension or pilot rebuild was needed.
+
+This delivers the bounded jq representation/edit/assembly exit. Connected DX-Ball
+normal continuation and resource-consumer reuse is now the next work. P1–P4 as a
+whole, general Win32 usability, Hello qualification, every G1–G7 exit and another
+architecture remain open.
+
+### Shared suite admission with stale-input rejection — 2026-09-22
+
+The measured experimental execution bottleneck is addressed. A suite performs
+the existing full admission once, then rechecks complete package contents,
+external tool/compiler inputs and include lookups before and after each case.
+Actual runtime files and effective suite inputs are checked too. Resource/service
+observations still run independently against the admitted declarations. Changes
+during admission or during the final case reject; timestamps and file sizes
+cannot conceal content edits. Direct cases still create their own full admission.
+Unknown optional build inventory falls back to repeated full admission rather
+than blocking a valid experimental package. This creates no persistent cache,
+authority format or proof exception.
+
+`build/jq-array-storage-2026-09-21/shared-admission-run-v1/` passes the same retained
+eleven-unit manifest and all 42 cases, including actual interpreter/allocator
+failure, in 25.262s. The earlier suite took 212.155s. Evidence validation falls
+from 188.378s to 18.551s; all 42 resource/service results remain satisfied.
+The executable and suite are unchanged, and no compilation, linking, model,
+solver or pilot rebuild was required. These are development measurements;
+execution and startup time also varied, so the ratio is not a benchmark guarantee.
+
+Twelve direct experimental tests pass. Negative controls cover policy, manifest,
+source/interface, retained output/trace, binary and symbol changes, directory
+membership, external header contents and include lookup/target changes. They
+also cover mutation during admission and changes made by the final case.
+Integrated validation passes eight Nix shards with 86 tests, no skips, and six
+repository/SDK gates (`shared-admission-validation-v2/`). The checkpoint
+audit revalidates the new execution reports and earlier controlled-caller
+comparisons against current readers and implementation bindings.
+
+The subsequent representation checkpoint above completes the selected migration.
+Connected DX-Ball normal resource-consumer reuse is next. This performance
+checkpoint does not close P1–P4, Hello qualification, G1–G7 or second-architecture
+execution.
+
+### Fresh boundary authoring and controlled neighbor reuse — 2026-09-22
+
+The [controlled jq recipe](../tests/fixtures/jq-path-controlled/README.md) now
+builds a `path-get` interface from the original value-get runtime/type inputs,
+manual parameter/result and service declarations, ordinary C and reusable target
+adapters. It does not clone a prepared caller interface or source package. The
+existing preparer accepts a boundary object plus source files; a helper reuses
+validated tool/link/runtime inputs without inheriting old component contracts or
+bodies. This is a common authoring convenience, not a new artifact format or proof
+rule. The one-time toolkit addition is recorded separately from the recipe's
+manual operator inputs. Preparation takes 0.465s; public start provides headers
+and editor configuration for both caller and supplier in about 0.4s each.
+
+`build/jq-array-storage-2026-09-21/controlled-authoring-packages-v2/` contains six
+controlled caller cases and nine separate native service scenarios. Caller mode
+traps all 2,734 bytes of native `jv_get` on both execution sides, checking its
+interior before and after execution; the portable `value-get` body is absent from
+its inputs and link. Seven real authored array services remain selected. Logical
+call arguments/outcomes, retained caller reference counts and residual allocations
+match. The controlled outputs use fixture-owned storage, so this does not establish
+native-get alias equivalence or arbitrary allocation-failure behavior. The pinned
+original DLL remains an exact input even though that get body cannot execute.
+
+`controlled-authoring-workflow-v1/` passes 15 public commands and 13 comparisons.
+Extracting a helper in ordinary `value-get` C compiles one of its 25 translation
+units; the controlled caller reuses in 1.321s with zero compiler/link/execution/
+model/solver work. Actual path-get integration reruns all 27 cases, compiling only
+the changed supplier among 27 translation units. Its impact report identifies
+`value-get` and `path-get` as the affected integrations while storage inputs stay
+unchanged. A deliberately wrong negative-index edit leaves the conditional local
+result reusable but fails both the supplier and real integration at `$.result`.
+The failure replays after repair. Repaired supplier/integration checks reuse in
+1.579s/2.498s without compiler/link/execution/model/solver work. Formal checks are
+not requested; a matching controlled result does not admit the faulty supplier.
+
+Seven integrated Nix shards pass 74 tests without skips, plus the six repository/
+SDK gates, in 36.690s (`controlled-authoring-validation-v1/`). The seventeen direct
+comparison tests include first-time boundary/source authoring and profile rejection
+of an authored header. The current checkpoint audit validates all thirteen
+receipts and their current engine bindings. It also revalidates the retained
+42-case experimental manifest; that earlier assembly was not reexecuted in this
+checkpoint. Its historical measurements remain identified separately.
+
+This closes the selected jq setup and get-isolation demonstration, not P1–P4 as a
+whole. Manual boundary recovery, useful observations and semantic C adapters still
+require operator judgment. Representation-change transport, repeated-validation
+performance, and connected DX-Ball setup/execution remain next. The eventual
+G1–G7 qualification and second-architecture exits are unchanged and remain open.
+
+### Authored jq array storage in real path consumers — 2026-09-21
+
+The [array storage fixture](../tests/fixtures/jq-array-storage/README.md) now supplies
+ordinary C for creation, reference copying, array release, length, reads, mutation
+and slicing. The layout preserves actual shared backing storage and slice views.
+Canonical nominal opaque types now pass through the existing service authoring
+and C bridge generator; contents/aliases/lifetime remain explicit adapter duties.
+Empty-service leaves use generated entries without fictitious service catalogs.
+No proof-engine rule or per-unit machine model was added.
+
+The first six-unit storage network passes ten native-oracle sequences. Its public
+walkthrough detects the wrong copy-on-write condition, replays it after the draft
+is repaired, checks an equivalent setter edit and reuses an unaffected getter.
+The setter edit compiles one translation unit and reuses thirteen; unchanged
+getter and repaired-network checks perform no compiler/link/execution/model/solver
+work. These are conditional finite comparisons, not body-independent theorems.
+
+The follow-up connects seven storage operations beneath the existing four authored
+path/value operations. `path-network-check-v1/` passes 37 paired cases, including
+ten actual native-interpreter programs. All eleven C profiles pass, and all 37
+resource/service applicability results are satisfied within their declared
+instrumentation coverage. `path-workflow-v1/audit.json` additionally records the
+public compatible edit, wrong-copy-on-write detection, retained replay, repair
+and unaffected getter reuse through that real consumer. The connected edit
+compiles one translation unit and reuses 28. Eight cases detect changed values,
+including the interpreter's shared-value case; one further case produces an
+invalid observation, so that negative run remains incomplete overall. Repair
+restores all 37 matches and reuses the compatible result without compiler, link,
+execution, model or solver work. Formal checking reports unavailable separately.
+
+`assembly-v1/` now passes public experimental build and test with all eleven
+selected component checks bound to the assembled configuration. The build reuses
+the compared binary; its 37 execution cases and observed resource/service checks
+pass. Current readers revalidate the comparisons, manifest, executable, observations
+and resource reports. This is explicit experimental execution with retained native
+dependencies, not strong native admission or a complete portable jq executable.
+
+The connected edit takes 20.578s; unchanged getter reuse takes 0.790s and repaired
+network reuse 6.794s. Experimental assembly takes 9.989s and its suite 180.314s,
+of which 160.798s is evidence validation and 10.861s candidate execution. This
+repeated-validation cost is the measured performance follow-up; it does not call
+for another solver optimization or pilot rebuild. See the
+[phase measurements](performance-and-invalidation.md).
+
+Evidence is under `build/jq-array-storage-2026-09-21/`. Four integrated Nix shards
+pass all 32 tests; six repository/SDK gates pass, together taking 45.824s. The
+ordinary shell's compiler loader overrides initially prevented reuse tests;
+the controlled tool environment and Nix runs pass without weakening invalidation.
+That run precedes final fixture integration. The final six repository/SDK gates
+pass in 25.870s (`validation-v3/`) after refreshing the format registry for the
+new assembly consumer. `checkpoint-audit.json` revalidates the retained workflow,
+experimental case outputs and resource reports, and binds the fixture and
+service-authoring implementation at that checkpoint. It is historical after the
+cleanup and contract changes below. No proof or pilot rebuild was needed for
+that checkpoint.
+
+The cleanup/generated-sequence follow-up below supersedes those initial gaps.
+The nonlocal follow-up below composes guarded-allocation failure in the array
+network. Carry it through the higher path/interpreter boundaries and inventory all
+representation crossings. Native foreign destructors still release nested arrays through
+original code; native reader/constructor paths outside the selected services
+remain dependencies. Complete that boundary inventory and runtime transport before
+claiming complete array-lifetime replacement. Controlled body absence, a compatible
+representation change, DX-Ball transferability and all later goal exits remain open.
+Initial setup still includes Python declarations/package construction and C adapters;
+the demonstrated public editing loop does not yet establish an ergonomic first-time
+boundary workflow for an unrelated operator.
+
+### Cleanup effects and simultaneous component edits — 2026-09-21
+
+The existing storage/path drivers now observe actual CRT allocations in the pinned
+DLL through final cleanup using a reusable test-only PE32 import hook. Nineteen
+storage sequences pass, including eight retained seeds with 48 operations each.
+All seven generated operation kinds execute, and no observed allocations remain
+live in those storage cases. All 37 real-consumer cases also match with the added
+lifetime observations. Some native consumer allocations remain live on both sides;
+their origins are unclassified. This is scoped correspondence, not a leak-free
+consumer or arbitrary heap theorem. Allocation strategy counts remain diagnostics.
+
+The real workflow exposed a replacement-selection limitation: an edited setter's
+bundled old release body conflicted with an explicitly edited release package.
+Named replacements now supply one global body regardless of argument order;
+bundled copies must preserve the current contract. Changed contracts, new topology
+and ambiguous bundled implementations still reject. Sixteen focused comparison/
+composition tests pass; the native import-hook tests and repository gates also pass.
+
+The omitted-disposal negative produces 35 lifetime-only discrepancies through the
+real path/interpreter consumer. A second negative releases only a slice's visible
+elements and leaks an allocation outside that view. The repaired local release and
+network results reuse evidence without compiler/link/execution/model/solver work.
+The v2 walkthrough itself failed its unchanged-getter reuse assertion after choosing
+evidence from a different engine and execution environment; its comparisons
+correctly reran. The corrected helper prefers current-run evidence.
+`lifetime-path-workflow-v3/audit.json` now records a complete passing walkthrough:
+fourteen comparisons across seventeen public commands, including both lifetime
+negatives, retained replay and repair. Unaffected getter, repaired network and
+repaired release checks perform zero compiler/link/execution/model/solver work.
+
+The pinned native failure probe now establishes an actual callback/nonlocal outcome:
+an injected array allocation failure calls the registered handler with its context
+preserved and escapes through `longjmp`. At that checkpoint generated service
+traces required normal returns. The nonlocal follow-up below supplies an executable
+protocol; the original probe remains diagnostic evidence rather than a public
+original/replacement comparison.
+
+### Preserving an original lifetime defect — 2026-09-22
+
+Checking every selected unit for the expanded assembly exposed a discrepancy
+missed by the earlier value-only observations. The pinned native `jv_set` NaN-index
+branch loses the incoming item's reference. The authored C released it instead:
+ordinary results agreed, but the original retained one additional 34-byte
+literal-number allocation. Native reference-count and allocation probes, and the
+pinned source, identify that lost reference. `lifetime-assembly-v1/` correctly
+stops at this mismatch before building an experimental configuration.
+
+The corrected setter uses an explicit `abandon` C adapter: it consumes the logical
+token without releasing the native reference. This preserves the original defect
+without relaxing the resource checks, hiding observed allocations or adding a
+solver rule. It changes the value-set service contract; the dependent packages
+are regenerated through the existing authoring interfaces, not silently reused
+under the old contract.
+
+`lifetime-value-set-corrected-v1/` passes all 29 local comparisons, including scalar,
+nested-array and aliased-item NaN cases with matching retained allocations.
+`lifetime-path-corrected-v1/` passes all 38 connected comparisons, including eleven
+actual interpreter programs. Formal checking remains unavailable. These results
+establish the tested correction. `lifetime-path-workflow-v4/` completes seventeen
+public commands against the revised boundary, detects 36 lifetime-only negative
+discrepancies, and replays and repairs the defects. The compatible edit compiles
+one translation unit and reuses 29; unchanged getter and repaired local/network
+checks perform zero compiler/link/execution/model/solver work.
+
+`lifetime-assembly-v2/` now passes public experimental build and test with all
+eleven selected local checks bound to the configuration. All 38 consumer cases and
+their resource/service observations pass, including final-cleanup allocation
+observations. Build reuses the compared binary in 11.138s. The suite takes 200.244s,
+including 179.550s evidence validation and 11.496s candidate execution. No pilot,
+model or solver rebuild was needed. The six repository/SDK gates pass in 26.750s
+(`lifetime-validation-v3/`); retained integrated native and composition shards
+pass eighteen tests with no skips. This is a usable experimental checkpoint with
+explicit original runtime dependencies. `lifetime-checkpoint-audit.json` revalidates
+the current manifest, all case outputs and resource reports, both lifetime negatives,
+the original defect/correction, zero-work reuse and 46 implementation-file bindings.
+P1–P4 and all eventual G1–G7 exits remain open where recorded above.
+
+### Composed allocation failure and operator repair — 2026-09-22
+
+Existing service definitions now support explicit nonlocal outcomes. The generated
+handler runtime records actual C callback/jump boundaries, checks interrupted
+service permissions and preserves the exact enclosing caller instances. Resource
+unwind reports lost references and retains existing allowances; it does not clean
+up native objects or waive lifecycle failures. No proof-engine rule was added.
+
+`nonlocal-array-check-v4/` passes 24 native-original/source comparisons: nineteen
+retained/generated storage sequences and five injected malloc failures through
+creation, shared mutation, growth, empty slicing and error construction. The native
+guarded allocator invokes the registered callback and actually jumps to the driver.
+Callback context, untouched output, retained aliases, reference counts and residual
+allocations agree. Local packages include failure cases only where their selected
+operations execute; a jump outside recorded service calls is not accepted as a
+checked interruption of those calls.
+
+`nonlocal-workflow-v1/` completes 24 public commands and twenty comparisons. An
+ordinary C edit publishes a null output before allocation; normal completion still
+produces the right array, but allocation failure changes the caller's sentinel
+from 12345 to null. Both local and connected checks detect that difference with
+matching callback/lifetime observations and satisfied protocol instrumentation.
+The full mutant corpus confirms nineteen ordinary cases still match and only
+the allocation-failure case differs (`nonlocal-normal-negative-v1/`). Retained
+replay still fails after the draft is repaired. The repaired creator and
+network reuse evidence with zero compiler/link/execution/model/solver work.
+The compatible setter edit compiles one translation unit and reuses fifteen.
+
+The walkthrough and assembly helpers now request formal checks only with explicit
+`--local-contracts`. The normal workflow runs with `formal_check: not-requested`;
+it does not require CBMC merely to record an unavailable heap rule. Reuse and
+experimental policy retain their existing evidence checks. `nonlocal-path-check-v1/`
+also passes all 38 ordinary path/interpreter consumer cases with the updated
+storage contracts and engine; this does not yet exercise allocation failure inside
+those higher consumers.
+
+The first integrated Nix run passes 67 tests in seven shards, with no skips, plus
+six repository/SDK gates in 38.283s (`nonlocal-validation-v1/`). The additional
+saved-caller-instance negative and final six gates also pass in 25.855s
+(`nonlocal-validation-v2/`), bringing the covered test set to 68. The current
+`nonlocal-checkpoint-audit.json` revalidates the comparisons, negative/replay/repair
+evidence, exact engine/source bindings and those integrated reports. The preceding
+lifetime checkpoint is retained history after this engine/contract extension.
+Current nonlocal evidence does not upgrade that older experimental assembly or
+close P1–P4/G1–G7.
+
+Next carry failure through the actual path/interpreter callers with correct
+outcome-specific lifecycle premises, then finish native representation crossings,
+dependency isolation, representation change and DX-Ball reuse. Arbitrary callback
+behavior, concurrency, original no-handler/returning-handler termination and full
+portable jq remain unverified. Optimize repeated validation separately from these
+runtime semantics; do not resume unrestricted Hello proof work first.
+
+### Allocation failure in path and interpreter consumers — 2026-09-22
+
+The next consumer exposed two real discrepancies in the authored C. `value-set`
+released its numeric index before an allocation that can fail; the original keeps
+that reference until mutation returns. `path-get` iterated without consuming the
+original's successive path views, omitting its empty-tail allocation and callback
+on failure. The setter now preserves release order, and the reader remains an
+ordinary C loop while preserving the path-view operations and their failure effects.
+Retained probes preserve both failures; no proof model was added to fix them.
+
+Resource-check rules now accept explicit `nonlocal_allowances` keyed by outcome.
+Only frames unwound to the matching handler's exact saved frame prefix use those
+counts. Normal completion keeps its existing counts; missing catches and invalid
+frame transport reject. The selected jq cases allow bounded stranded tokens on
+`nomem`, independently comparing native references, aliases and residual allocations.
+These are sampled applicability premises, not a general exception-safety theorem
+or permission to discard lost references. Twenty-one focused service/resource tests
+pass, including normal-return and missing-catch negative controls.
+
+`path-failure-packages-v3/` and `path-failure-workflow-v1/` now pass 42 connected
+comparisons: the previous 38 cases, three path failure contexts and a real interpreter
+failure. The interpreter enters pinned `jv_setpath` before fault injection is armed;
+the original entry is restored before executing its native body. Both sides retain
+caller aliases, register the actual jq handler, jump through it and run interpreter
+teardown. Their callback context, contents, references and observed residual
+allocations match. Compiled constants and pre-window runtime allocations remain
+outside allocation tracking. All Wine processes use headless Wayland.
+
+The public storage/path walkthrough passes fourteen comparisons across seventeen
+commands, including copy-on-write and lifecycle negatives, retained replay and
+repair. Repaired network/release and unaffected getter checks reuse with zero
+compiler/link/execution/model/solver work. Formal checking is not requested.
+`path-local-repair-v1/` passes ten public commands. The early-release setter
+mutant matches 29 ordinary cases but differs in both allocation-failure cases;
+its resource allowances remain satisfied, so they do not conceal the native
+reference discrepancy. The old path reader matches 26 ordinary cases but fails
+the failure driver because it never delivers the original's allocation callback.
+That run is recorded as incomplete with a runtime diagnostic, not as a passing
+comparison. Both retained failures replay after repair, and both repaired local
+checks reuse with zero compiler/link/execution/model/solver work.
+
+`path-failure-assembly-v1/` passes public experimental build and all 42 execution
+cases with eleven exact selected component checks. This supplies a current
+experimental checkpoint for the extended nonlocal contracts; retained original
+runtime dependencies remain explicit. Build takes 11.012s and reuses the compared
+binary. The suite takes 212.155s, including 188.378s evidence validation and 13.991s
+candidate execution. Repeated validation remains the measured performance issue.
+Seven integrated Nix shards pass 71 tests with no skips, plus six repository/SDK
+gates in 38.281s (`path-failure-validation-v1/`).
+`path-failure-checkpoint-audit.json` revalidates the current executable manifest,
+all 42 case outputs and resource reports, 29 retained comparisons, repair/reuse
+evidence, integrated reports and implementation bindings without launching Wine.
+
+The [native crossing inventory](../tests/fixtures/jq-array-storage/README.md#native-representation-crossings-reviewed-2026-09-22)
+now records the selected adapters, foreign-destructor reentry, native construction,
+retained services and observation paths. It explains the current native-layout
+coupling without claiming exhaustive binary access coverage or closing those
+crossings. Evidence is retained under `build/jq-array-storage-2026-09-21/`.
+The later [fresh-boundary checkpoint](#fresh-boundary-authoring-and-controlled-neighbor-reuse--2026-09-22)
+demonstrates the selected jq setup and controlled dependency isolation. That
+checkpoint has its own current engine audit; this earlier audit retains its
+original implementation bindings. Representation-change transport, repeated
+validation cost, DX-Ball reuse and the eventual G1–G7 exits remain open.
+
+## Retained stronger-assurance baseline
+
+Earlier next-step directions in the following experiment history are superseded
+by the immediate priority above. Their evidence scopes and open obligations remain.
+
+The `c_strcasecmp` -> `c_tolower` pair now has complete ownership, body-independent
+caller assurance, compatible supplier-edit/caller-proof reuse, and a qualified
+combined native selection/link. Public configured draft application and ordinary
+regional diagnostics now work. Retained evidence can now feed complete public
+checking, and the prepared edited-Hello qualification/selection/link now pass.
+The retained candidate-hint unchanged case now passes with zero caller proof work.
+Incorrect C and a valid weaker contract now produce concrete counterexamples,
+incomplete selection and native-build refusal. Restoring the guarantee restores
+admission. Public internal-region split/merge also passes, with checked flag
+transport and zero-work caller-proof reuse through the combined native link.
+Continue the [connected workflow acceptance checks](whole-target-independent-lifting.md#next-connected-workflow-acceptance),
+including the full SDK workflow and ownership-changing boundaries. Close stateful
+contracts, regional proof performance and full Hello assembly;
+verify a second architecture and the reused workflow. The completed pair is an
+intermediate gate, not goal completion.
+
+The first quoting-state boundary now has complete local qualification for the
+real get/set operations, including nullable image-backed options and shared
+defaults. The character setter additionally has checked conditional original/C
+equivalence for arbitrary live input storage. Its checked supplier facts now feed
+a complete conditional caller proof with actual C local storage. The public
+caller checker now accepts its typed local-object definition and the full
+symbolic-stack consumer proof passes; connected native qualification and
+caller-stack/heap admission remain open.
+Continue through the actual character-mask setter and its two stack-object
+consumers, rather than treating these leaf proofs as G4 completion.
+The full six-transfer options constructor now also passes conditional public
+source/original checking, including normal initialization and the style-10 abort.
+Its terminal outcome now composes in the full `_quotearg_n_style_colon` caller,
+alongside the checked character setter. A real setter edit reuses the current SDK
+caller proof with zero model/compiler/solver work. The following quote service,
+concrete termination environment and native admission remain unverified.
+
+| Exit | Acceptance | Status |
+|---|---|---|
+| G1 | Complete operation boundaries, including returns, memory and all outcomes | Open for whole Hello; complete comparison/lowercase local proofs pass |
+| G2 | Body-independent local assurance, exact compatibility/reuse and native admission | Comparison/lowercase proof, zero-work reuse and combined native admission pass; broader contracts remain open |
+| G3 | Public manual contract authoring/refinement, checked split/merge and invalidation | Partial: public guarantee refinement and internal-region split/merge reach caller reuse/native admission on retained builders; full SDK workflow and ownership-changing boundaries remain |
+| G4 | Reusable state/lifetime/interaction contracts and representation-change reuse | Open |
+| G5 | Checked regional coverage/progress and measured local edit/neighbor reuse costs | Open |
+| G6 | Complete portable Hello selection, strong native receipts and second-architecture execution | Open |
+| G7 | Different-target connected reuse, regressions, repository gates and terminal audit | Open |
+
+Keep the goal active until all exits have executable evidence. Preserve the
+existing contextual proof/qualification authority, unrelated dirty-tree work and
+headless-Wayland requirement for every Wine invocation. Use retained inputs and
+small fixtures before expensive pilot rebuilds. No commit, push or deployment is
+requested. The completed F1–F7 goal below is historical; its narrower completion
+conditions do not exempt this goal from whole-Hello assembly or portability.
+
+## Needs and goal review — 2026-09-20
+
+The [operator acceptance contract](whole-target-independent-lifting.md#operator-needs-and-acceptance-contract)
+maps the requested manual decomposition, independent C lifting and complete-program
+assembly workflow to G1–G7. The existing active goal already requires all seven
+exits and remains the implementation goal; no narrower replacement is needed.
+Its completion rule includes the public operator workflow, strong composition,
+zero-work caller reuse after compatible supplier edits, full portable Hello,
+second-architecture execution and connected reuse on another target.
+
+Goal review at 2026-09-20 08:36 UTC confirmed that the live goal still requires
+all G1–G7. Keep this goal rather than replacing it with a proof-performance task.
+The immediate acceptance result is the connected comparison/lowercase workflow;
+the public operator workflow and complete-program exits remain mandatory after it.
+The experiment history below explains outstanding work and does not redefine
+completion.
+
+The latest needs review checked the live goal, CLI/provider implementation and
+retained `ordinary-regional-check/validation.json`. The next deliverable is
+[regional evidence to complete public checking](whole-target-independent-lifting.md#immediate-deliverable-regional-evidence-to-complete-public-checking),
+with explicit cache validation, complete-obligation and qualification requirements.
+The retained edited caller now has five satisfied regions, complete qualification
+and prepared hybrid native admission. The generic candidate-hint path is implemented
+and tested; its retained-input unchanged runtime case passes, and the incorrect-edit
+rejection is now audited in the checkpoint below. The active goal already binds
+all G1–G7 to this mandatory plan, so it remains active without a narrower reset.
+The later checkpoint closes valid weaker-contract invalidation/restoration and
+internal-region split/merge on retained builders. Broader boundary changes and
+the stateful and whole-program exits remain required.
+
+Earlier experiment history follows; the terminal five-region proof and compatible
+reuse below supersede the earlier caller-incomplete results. The whole operator
+workflow remains unfinished.
+
+### General-purpose readiness review — 2026-09-21
+
+Independent local C work is demonstrated for supported boundary families. The
+practical jq path/value network supports comparisons, experimental integration
+and reuse of unaffected units. The stronger comparison/lowercase demonstration
+additionally has body-independent proofs, compatible supplier-edit/caller reuse,
+incompatible-contract rejection and qualified native admission. Its retained
+candidate-hint audit's four bound source hashes still match the implementation.
+The semantic-cut audit now differs at `machine_binding.py`, and the older
+scalar-contract-refinement audit differs at `work_package_v6.py`. Those terminal
+results are historical and need current replay before renewed admission claims.
+These are distinct assurance scopes.
+
+The broad workflow remains unfinished. The public checked caller interface now
+accepts fixed shared byte views as state, operation parameter views and typed
+caller-local byte objects for the checked live-object rule. The complete
+`_quotearg_n_style_colon` caller passes its conditional public check; the larger
+`_quotearg_n_options` operation does not yet have that proof. Allocation and lifetime
+transitions, following-service applicability, interactions and broader
+representation changes still need connected checked rules and operator support.
+Complete portable Hello, second-architecture execution and structurally different
+connected reuse under those rules remain open. Further proof measurements must
+not be mistaken for completing this operator workflow; all G1–G7 remain active.
+
+### Connecting actual entry through growth publication — 2026-09-21
+
+The next experiment connects actual `_quotearg_n_options` entry, errno capture,
+both growth sites, static-slot copying, normal clearing return and persistent
+count publication at the real `0x4f62` barrier. It uses the existing exact emitter
+and local-record transport, preserves the complete ordinary C and keeps all forty
+original transfers. It checks saved arguments/errno/registers/private words and
+the public memory frame. The following selected-slot array access remains outside
+this region, and successful allocation/liveness remain explicit premises.
+
+Current evidence is under `build/hello-quoting-growth-connection-2026-09-21/`.
+The initial complete attempts are **incomplete**, not positive or negative proof
+results: `positive-v4` spends 738.610s total and stops at an event-array bound;
+`positive-v5` spends 1102.682s and stops at a record-event pointer bound. Both
+negative v5 runs reach the same safety limit before semantic rejection.
+Every query retains the existing 60-second limit. Fixed event slots and direct
+callbacks preserve the actual stored event/count relation while removing the
+redundant pointer selection. Capacity and snapshot-frame checks remain required.
+Checked service-domain assertions now guard subsequent effects; an intentionally
+wrong errno call site still produces its assertion counterexample.
+
+The complete `positive-v7` attempt ends incomplete in 891.056s: its remaining
+checks are the private-word index bound and the unreachable invalid-index service
+pointer. Both semantic negative runs end at the same checks. The current v8
+fixture uses the same fourteen physical words with direct read/write slots and
+preserves every initialization/coverage assertion. An explicit checked consequence
+of the admitted nonwrapping eight-byte slot span proves the original/C index
+limit; only after proving it may later queries use it. This introduces no new
+input restriction. The v8 positive passes its array and pointer safety partitions
+but ends incomplete at record-byte extraction after 1551.686s. Both semantic
+negative runs end incomplete at snapshot indexing after about 910s, before
+producing their intended counterexamples. The subsequent v9 renderer selects the
+snapshot call inside each constant history slot and uses total record-byte
+extraction with an explicit offset assertion. All 73 affected Nix tests pass in
+273.553s; six repository/SDK gates pass in 60.701s. Preparing the current connected
+model takes 7.639s with no proof queries. Its focused shift and publication checks
+still reach their 60-second query limits; there is no complete connected result
+or native admission claim. These gates validate the shared engine, not the
+unfinished real proof. The fixture's `--prepare-only` mode supports diagnosis on
+the same compiled inputs before another expensive complete run.
+The v12 case diagnostics now check actual continuation reachability and the full
+compiled-property inventory for retained static, moved and in-place examples.
+All three examples pass; an incorrect count publication produces its expected
+counterexample through the same complete checker. Addresses, counts, scalar
+inputs and the observation byte are explicitly fixed in these diagnostics;
+remaining memory values and caller registers stay symbolic. Every case records
+`universal_region_complete: false`. This validates the real connection on those
+inputs and supplies useful negative feedback, not a symbolic regional theorem.
+The new witness checks actual original/C continuation reachability; the earlier
+admission queries only checked satisfiability of the input predicates.
+The final saved-errno negative also reaches its expected continuation-input
+counterexample in 106.283s. The unchanged static case reuses 57 queries in 26.554s
+but still compiles the model and executes two admission queries; it is not
+zero-work neighbor reuse. The wrong native errno-call site remains rejected.
+`case-audit-final-v12.json` replays all six case results and that call-domain
+negative without invoking proof tools. Six repository/SDK gates pass in 57.814s
+under `repository-gates-v12/`; the 73 affected tests remain the v9 engine run.
+Further performance changes require retained-query evidence. Earlier regional
+audits bind older fixture/engine producers and require current replay before
+renewed claims. Complete quoting, allocator/lifetime rules, the public workflow
+and every remaining G1–G7 exit remain required.
+
+Additional source-domain assumptions, count normalization, direct record-field
+writeback, direct non-copy effects, scoped count framing and reordered private
+lookups did not resolve the unrestricted publication query within 60 seconds.
+The record specializations were removed, and the other trials remain diagnostic
+copies. A scoped frame reduced symbolic execution from about 317,000 to 206,000
+steps but did not finish the proof. Checked transport between real regions remains
+the stronger-assurance follow-up. It is deferred behind the practical subsystem
+milestone; more standalone model variants and case counts do not close that
+workflow or G4/G5.
+
+### Checked record snapshots through actual growth — 2026-09-21
+
+The combined record/snapshot growth region now passes the complete existing
+compiled-property checker, including its safety and loop obligations. The
+unchanged quoting C copies its static slot through the shared record relation;
+the byte model preserves the arbitrary-length old prefix and clears the new
+suffix. Static, moved and in-place growth retain separate nonempty admission
+witnesses. Wrong static-slot copying and wrong clearing both produce their
+specific counterexamples.
+
+Two checked frame rules removed the previous bottlenecks. Readonly fields now
+prove whole-field nonoverlap with each byte event and require no reconstruction
+or writeback. Bulk record hooks can also retain the existing preserved-byte
+spans: native reads use that checked history frame, while C reads and copies
+still consult current fields and their saved snapshots. Partial-overlap writes
+reject; empty effects remain valid. Neither change narrows the admitted counts
+or grants object contents/lifetimes from pointer identities.
+
+Fresh regional checking takes 340.657s; the complete experiment takes 360.415s,
+including 4.931s compilation and 14.810s of admission witnesses. Exact-query reuse
+takes 22.565s, reuses 41 queries and executes three admission witnesses. It still
+generates/compiles the model and is not zero model/compiler/solver-work reuse.
+Wrong-copy and wrong-clear experiments finish in 317.746s and 230.941s. All 71
+tests in ten affected Nix shards pass in 376.251s, and six repository/SDK gates
+pass in 86.108s. These concurrent measurements are not controlled benchmarks.
+The terminal audit regenerates the bound inputs and replays all four regional
+results without proof tools:
+`build/hello-quoting-record-snapshots-2026-09-21/terminal-audit.json`.
+
+This closes the combined growth-region check and its negative/reuse cases. The
+record inventory here represents the static initial slot and count; the remaining
+array contents use the sparse byte world. General growing C arrays, allocation
+failure/generations/lifetimes, applicability of the resumed native state, the
+normal clear-return adapter and the complete quoting caller remain unproved.
+The primitive does not expose a public checked allocator or allow stateful
+record proofs to become unchecked suppliers. Next connect the actual entry,
+growth-service outcome and continuation through checked count/storage/lifetime
+transport, then carry the selected slot through buffer replacement and the
+quote/errno/return continuation. All G1–G7 remain active. Earlier engine receipts
+require current replay; no pilot rebuild, native application link or Wine run
+occurred.
+
+### Record snapshots and the combined growth check — 2026-09-21
+
+Historical attempt, superseded by the completed conditional region above.
+
+The existing sparse memory and C-record transport now compose pre-copy field
+snapshots with bulk copy/fill effects. Copies retain the source's earlier contents
+through overlap and later direct C writes. Ordered service effects read pending
+field updates before final C writeback. Snapshot capacity follows the byte-event
+inventory independently of the returned-identity inventory; the real fixture
+exposed and fixed a variable collision between those capacities.
+
+Six focused CBMC tests cover arbitrary copies, overlapping copy/fill sequences
+against an independent byte-array oracle, service ordering, nested copies,
+returned identities and rejected readonly writes/incomplete hooks. Ten affected
+Nix shards pass 69 tests in 305.517s; six repository/SDK gates pass in 61.661s.
+These are concurrent development measurements. The primitive is internal
+transport support; it does not expose a new public allocator contract or allow
+record-bearing callers to become unchecked suppliers.
+
+The actual growth fixture's `--record-snapshots` mode retains the full ordinary C
+and represents the static slot and count using that shared record transport.
+Nominal C field checking and the static/moved/in-place admission witnesses pass.
+The complete region is **incomplete**, not a replacement for the earlier byte-only
+proof: after 776.637s of property checking, the individual
+`spx_mutable_event.array_bounds.1` and `quote_slots.pointer_dereference.153`
+obligations still reach their 60-second limits. Total experiment time is 796.200s;
+compilation is 4.845s. Unchanged-global reads, a stable event index and direct
+non-copy effect evaluation each leave the isolated bounds query incomplete.
+The existing pinned SMT backend also times out on both obligations. None of
+those speculative model changes was adopted in production.
+
+Evidence is retained under
+`build/hello-quoting-record-snapshots-2026-09-21/checkpoint-audit.json`.
+The audit checks current generated inputs and passing regression reports while
+retaining the actual region's incomplete status. No complete combined theorem,
+real-region wrong-copy/wrong-clear result, or reuse result is claimed for this
+new mode. Earlier record-engine receipts require replay after the producer edit.
+
+Next inspect these exact safety queries and their C-record/memory representation
+dependencies before another full run. Finish the combined growth check and its
+negative/reuse cases, then compose actual entry, growth, selected-slot access,
+buffer replacement, quote/errno/return and their complete memory/lifetime
+contracts. Do not narrow symbolic array counts or promote the standalone tests
+to complete-operation assurance. All G1–G7 remain active; there was no pilot
+rebuild, native application link or Wine invocation.
+
+### Returned identities through real buffer replacement — 2026-09-21
+
+Checked scalar suppliers can now return opaque address identities through an
+explicit `result_transport`. Matching scalar parameters retain their exact
+contracts; mixed scalar/identity parameters use explicit mappings. The existing
+record relation introduces canonical zero-size tokens at paired service returns,
+within the checked call inventory. Null and aliases with incoming/earlier returned
+addresses are preserved. Ordinary C can retain and publish these pointers, but
+the tokens grant no contents, allocation generation or lifetime. Runtime-service
+results use the same relation with their premises still explicitly unverified.
+
+The retained connected regression proves repeated results and pointer publication
+with the scalar supplier body absent. A compatible supplier edit reuses the
+parent's identical proof key/files with zero model/compiler/solver work. Wrong
+publication, dereferencing a returned identity and absent/forged result transport
+reject. Existing stateful-summary export remains closed until callable lifetime
+and complete memory transport are implemented.
+
+The actual quoting continuation now checks all four transfers from `0x4fc3` to
+`0x4fec`: release, allocation, pointer publication and saved continuation state.
+It retains the original source statements and the actual calls, with both callee
+bodies absent. `_rpl_free` has a current checked supplier proof; allocation is an
+explicit normal-return premise with arbitrary effects outside the live slot and
+continuation frame. It is not a checked allocator or lifetime theorem. Fresh
+checking takes 115.398s; unchanged reuse takes 4.421s without proof-tool work.
+Publishing null instead of the returned buffer produces a counterexample in
+75.732s. The 58 affected tests and six repository/SDK gates pass; the current SDK
+free-supplier recheck takes 226.475s. No pilot rebuild, native application link or
+Wine invocation occurred. Evidence:
+`build/hello-quoting-returned-identities-2026-09-21/terminal-audit.json`.
+
+Region-entry applicability, allocation failure and release/lifetime transitions,
+growing typed slot arrays, the following quote/errno/return continuation and the
+complete caller's memory envelope remain required. This connects a real stateful
+continuation but does not complete `_quotearg_n_options` or authorize activation.
+All G1–G7 remain active. Earlier engine receipts need current replay after this
+producer change; historical measurements below retain their original scopes.
+
+### Opaque buffer identity into the real free summary — 2026-09-21
+
+The public caller definition now separates opaque identity from represented
+storage. An identity has no readable bytes or native lifetime grant. Canonical
+decoding preserves null and aliases; a checked `parameter_transport` maps that
+identity into a scalar supplier argument while retaining all entry, memory,
+frame and outcome checks. Embedded/projected storage cannot counterfeit an
+identity. The connected regression reuses its caller proof after a compatible
+supplier-body edit with zero model/compiler/solver work.
+
+The actual quoting region `0x4fc3` → `0x4fcf` now uses this rule with the current
+checked `_rpl_free` summary and no supplier body. It proves the buffer argument,
+saved continuation word, preserved registers, public memory and normal call
+continuation. Fresh checking takes 6.943s; unchanged reuse takes 4.168s with zero
+model/compiler/solver work. Wrong buffer transport rejects. Omitting the
+transport declaration rejects before compilation. Missing stack/import separation
+and an unresolved errno target each produce their specific counterexample.
+
+This is a proof-only projection of the actual call, not a production component
+boundary or complete quoting theorem. Its incoming state, private stack/import
+separation, resolved target and the supplier's CRT/TLS/free premises still need
+integration evidence. Native release generations, returning allocated identities,
+growing typed arrays and the complete caller's memory envelope remain required.
+Earlier free-wrapper receipts are historical after this producer change; the
+current SDK supplier recheck passes in 223.107s. No pilot rebuild, native
+application link or Wine run is involved. Terminal evidence is under
+`build/hello-quoting-reference-transport-2026-09-21/terminal-audit.json`.
+All G1–G7 remain active.
+
+### Preserved contents through actual slot growth — 2026-09-21
+
+The existing sparse byte world now supports checked snapshot-copy and fill
+effects. Copies read the pre-copy contents, including at overlapping addresses;
+later source writes cannot change them. Arbitrary byte lengths do not become
+solver loop bounds. The rule preserves checked frames, nonwrapping spans and
+event-capacity assertions. It does not grant allocation identity or lifetime;
+combinations with current-record hooks and initialization observers reject until
+their snapshot transport is checked.
+
+The actual quoting continuation now passes the complete compiled-property check
+from successful growth returns at `0x4f2c`/`0x505c` to the clearing call at
+`0x4f54`. Static, relocated and in-place cases have separate nonempty admission
+witnesses. Counts are symbolic within nonwrapping PE32 storage. The conditional
+growth rule preserves the old prefix and required globals while allowing other
+public bytes to change arbitrarily. The caller checks publication and memory at
+the call, copies the initial static slot when needed and clears the new suffix.
+Wrong-copy and wrong-clear implementations produce concrete counterexamples.
+
+This is still a conditional proof region, not a checked allocator or complete
+quoting caller. Allocation failure, lifetime/generation transitions, resizable
+typed-array transport, applicability of the resumed native state and composition
+with the preceding entry region remain open. The original stops at the modeled
+clearing call; its subsequent normal-return adapter is not proved here. No new
+production API or activation authority is introduced.
+
+Fresh complete-region checking takes 218.214s; compilation takes 5.342s and the
+three admission witnesses about 16.521s together. Exact-query reuse retains 29
+queries, but recompiles and executes the three admission witnesses: the current
+run takes 24.276s. That is distinct from zero model/compiler/solver-work reuse.
+All 45 tests in six targeted Nix shards and six repository/SDK gates pass. The
+current real free-wrapper SDK proof also passes; unchanged proof reuse/export
+takes 8.095s with zero model/compiler/solver work. Evidence is under
+`build/hello-quoting-growth-memory-2026-09-21/terminal-audit.json`.
+
+The next acceptance result remains the complete quoting consumer with checked
+growing-array contents/lifetimes, buffer-reference/free-summary transport and
+its enclosing memory footprint. Complete portable Hello, second-architecture
+execution and different-target connected reuse remain required. This checkpoint
+closes none of G1–G7 by itself. No pilot rebuild, native application link or Wine
+run occurred.
+
+### Borrowed errno storage and the actual quoting entry — 2026-09-21
+
+The complete quoting C now uses the existing call-scoped byte-view interface
+for runtime-owned errno storage. Small C helpers read and write its word; neither
+retains the view across a service call. Slot state and the local growth count
+remain ordinary typed structs. This representation uses the existing checked
+current-memory and lifetime rule, without adding a returned-record proof format
+or assuming that errno's address remains stable. Its concrete CRT/TLS applicability
+remains a runtime premise.
+
+The growth experiment now starts the original at its actual entry `0x4eb3` and
+executes its prologue and errno call before either growth site. The complete
+authored C executes to the same service. A proof-only assertion exposes its saved
+errno local; the query checks that value, preserved native input words, all five
+growth arguments and the local count's contents/writeback. Volatile registers
+and flags after errno are arbitrary. Returned errno bytes can overlap the public
+global words and retain the same byte correspondence.
+
+The admitted region is the growth branch, `count <= index < INT_MAX`, with a
+nonwrapping stack separated from the three accessed global words. The conditional
+errno rule provides four current public bytes outside the private frame. No
+slot-array size limit is introduced. The query takes 41.631s, plus a 5.268s
+admission witness and 5.291s compilation. Wrong saved errno, count contents and
+count-pointer offset each produce the intended counterexample. This supersedes
+the older assumed `0x4ef1` entry relation for this branch; growth outcomes,
+subsequent regions, general region composition and native admission remain open.
+
+Host/PE32 preparation and all 446 retained comparisons pass, including address
+and undefined-behavior sanitizers. The public two-unit author/edit/check/reuse
+walkthrough passes: unchanged comparisons do no work, a supplier edit recompiles
+only that unit, and incorrect C and an incompatible contract reject. Delaying
+the slot-size store still produces a service-state mismatch. These comparison
+results remain separate from proof reuse and full-operation equivalence.
+
+The 20 tests in four targeted Nix shards and six repository/SDK gates pass. The
+checker engine is unchanged; the existing real free-wrapper proof reuses with
+identical proof keys/files and zero model/compiler/solver work. Evidence import
+takes 1.299s; replay, reuse and checked-summary export together take 8.095s.
+Evidence is under
+`build/hello-quoting-borrowed-errno-2026-09-21/terminal-audit.json`.
+Continue through checked slot growth, preserved/initialized array contents,
+allocation/release generations, the buffer-reference/free-summary binding and
+the complete caller's memory footprint. Complete portable Hello, different-target
+reuse, second-architecture execution and all G1–G7 exits remain required.
+
+### Ordinary local records at the real growth cut — 2026-09-21
+
+`boundary.local_records` now transports actual C local structs through the
+existing synchronous paired-call object rule. It checks field types, native byte
+contents, liveness, permissions and exact aliases, then applies service writes
+before C continues. The operator declares the native address and maps the service
+parameter; authored C can retain `&new_count` without manually managing a byte
+view. Native padding and partial overlaps between different representations still
+need explicit relations. The service's no-escape premise remains unverified.
+
+The small complete caller passes in 4.828s. Current unchanged reuse and receipt
+replays pass with identical proof files and zero model/compiler/solver work;
+evidence import takes 1.050s. Five focused tests cover wrong initialization,
+stale post-call reads, a copied object posing as an alias, wrong native bindings,
+incomplete byte relations, changed C field offsets and summary-export refusal.
+The final audit also caught references to opaque types without checked record
+layouts. Those now reject before compilation, with a dedicated regression.
+
+The same field transport now checks the actual quoting count at both `xpalloc`
+sites. The original executes from `0x4ef1` to the call; the unchanged full authored
+C executes to its growth service. Under the explicit register/entry relation,
+the query checks all five native arguments, incoming count bytes and writeback.
+Both static-table and dynamic-table branches are covered. The count is at call
+ESP plus `0x4c`, which is operation entry ESP minus 32. Wrong count contents and
+a wrong pointer offset each produce the expected counterexample.
+
+This regional query takes 8.075s. An initial byte-array model timed out at 60s;
+representing the six complete stack words used by the region removes that cost
+while retaining checked access widths/coverage, source code, input domain and
+obligations. There is no fixed slot-array bound in this region. The predecessor's
+applicability, allocation outcomes and continuation remain unproved; stopping at
+the call is a checker boundary, not a claim that `xpalloc` cannot return.
+
+Evidence is under `build/hello-local-records-2026-09-21/terminal-audit.json`.
+The broad 13-shard Nix run passes 79 tests; after the final layout guard, both
+affected shards pass all 14 tests without failures, errors or skips. Six current
+repository/SDK gates pass. The retained real free-wrapper SDK recheck passes in
+214.658s; current read-only replay and summary export take 4.029s. Its receipt is
+`/nix/store/38zjiff0q3k825qj65vjznapvsfj7mv3-hello-quoting-object-authoring-preserve-errno-free-component-source-call-check`.
+Earlier caller-engine receipts are historical after this producer change.
+No pilot rebuild, native application link or Wine run occurred.
+
+Complete quoting still requires
+returned errno storage, growing arrays and allocation/release generations,
+buffer-reference transport to the checked free summary, an enclosing memory
+footprint and native applicability. Integrate the local count through that full
+caller; do not turn this proof region into a synthetic production API. All G1–G7
+remain active.
+
+### Checked incoming C records — 2026-09-21
+
+The public caller checker now relates ordinary C records to original byte
+storage, including mutable contents, canonical pointer aliases, embedded
+subobjects and projections of shared globals. Bound authored headers participate
+in type checks, proof identity and replay. A small complete caller using the real
+quoting header passes; stale reads, delayed writes, incorrect aliases, changed
+context identity and wrong field types reject. Reordered C fields pass a fresh
+proof with unchanged native offsets. This demonstrates representation transport,
+not compatible representation-change reuse through a real component network.
+
+The fresh conditional caller check takes 27.985s including replay. Unchanged
+reuse takes 3.852s with zero model/compiler/solver work. The actual quoting layout
+also passes a separate record-relation proof for incoming contents, a second-slot
+update, a state-pointer change, an embedded-mask alias and a service write in
+2.124s; writing the wrong slot rejects. This kernel does not execute or prove the
+complete quoting operation. The rule requires a fixed incoming inventory whose
+objects remain live throughout the operation. That lifetime premise is explicitly
+unverified, and callable-summary export rejects missing lifetime/memory transport.
+
+Evidence: `build/hello-record-transport-2026-09-21/terminal-audit.json`. All 74 tests
+in 12 affected Nix shards pass without failures, errors or skips; six repository
+and SDK gates pass. The current real free-wrapper SDK recheck takes 213.406s;
+its receipt replay and checked summary export take 4.626s. This producer change
+supersedes earlier wrapper receipts with
+`/nix/store/pi4n6ll6zf6crns8q8wrb6fbhbdlhzzr-hello-quoting-object-authoring-preserve-errno-free-component-source-call-check`.
+It retains its unverified CRT/TLS/free/frame premises. No pilot rebuild, native
+application link or Wine run occurred.
+
+Next connect these records in the actual `_quotearg_n_options` consumer: returned
+errno objects, its local count object, slot growth with preserved/initialized
+contents, allocation/release generations, the buffer-to-free-summary binding and
+the enclosing memory footprint. Then prove the complete caller with supplier
+bodies absent and check native applicability. Fixed-record success is a G4
+prerequisite; broad independent lifting, full portable Hello, second-architecture
+execution and connected strong reuse on jq or DX-Ball remain open.
+
+### Complete quoting C and public comparison network — 2026-09-21
+
+The complete `_quotearg_n_options` operation now has ordinary authored C with a
+typed persistent slot context and explicit nullable service arguments. Its host
+and PE32 source/profile checks pass. The real consumer exposed a generic C-header
+bug: opaque tags first introduced inside parameter lists had different identities.
+File-scope forward declarations fix it; standalone public/implementation headers,
+conformance and actual service calls have host/PE32 regression coverage.
+
+The [retained fixture](../tests/fixtures/hello-quoting-state/slots/README.md) now
+connects both complete original bodies (40 quoting transfers and ten free-wrapper
+transfers) to both authored C implementations. In 128 controlled sequences,
+446 invocations match service order/arguments, call-visible state, represented
+public bytes, results, terminal outcomes and modeled allocation generations.
+All ten parent and six child call sites are exercised. Repeated calls include
+static/dynamic and relocating/in-place tables, preserved contents, buffer aliases,
+changing errno cells, options mutation, size wrap and allocation failure. Host
+logical slots/options occupy 16/56 bytes versus the original 8/48 bytes. The
+explicit fixture conversion and lifetime bookkeeping are not checked relations.
+The address/undefined-behavior sanitizer run passes the same corpus. Wrong flags,
+delayed slot-size storage and omitted clearing each yield a concrete mismatch.
+
+Existing public `component start/check` commands support this network. Unchanged
+and repaired checks reuse the retained comparisons with all work counts zero.
+A free-wrapper C edit recompiles one unit, reuses six objects and reruns the
+integrations; wrong parent C and a same-signature incompatible supplier contract
+reject. Observed wall times are 2.561s for the baseline, 1.549s unchanged, 2.140s
+after the supplier edit and 1.529s repaired. This is practical comparison reuse,
+not independent formal proof reuse. `--local-contracts` explicitly reports the
+persistent opaque-state shape unavailable and runs no formal proof tools.
+
+Evidence: `build/hello-quoting-state-2026-09-21/complete-quoting-network-v2/`, with
+source preparation in `complete-quoting-authoring-v3/`. The generic header change
+invalidates older caller-engine producer bindings. The unchanged real wrapper
+has therefore been reproved through the SDK in 207.343s; its current receipt is
+`/nix/store/h4h7nckqsniw0c7spdszrhm5nfykjg4l-hello-quoting-object-authoring-preserve-errno-free-component-source-call-check`.
+Current replay and supplier export pass. Eight affected Nix shards pass 46 tests
+without failures/errors/skips, including the three-level proof/reuse regression.
+Repository gates, exact phase costs and terminal input bindings are retained in
+this checkpoint's audit. No pilot rebuild or Wine invocation is required.
+
+The next implementation is the checked relation for these actual persistent
+records and their contents, growth/release generations, buffer-reference
+transport into the scalar free summary and an enclosing operation memory
+envelope. Preserve the observed slot-size-before-free/allocation ordering, copied
+old slots, zeroed new slots, cached flags and reread option fields. Then prove the
+complete caller with supplier bodies absent and discharge runtime/native
+premises. The public comparison fixture does not close G4, whole portable Hello,
+second-architecture execution or different-target strong composition. All G1–G7
+remain active; the earlier checkpoint results below retain their original scopes.
+
+### Complete caller summaries and three-level reuse — 2026-09-21
+
+The public supplier reader now replays complete finite caller proofs and derives
+checked normal-return scalar summaries. It transports explicit admission and
+implicit entry-value definedness, current memory effects, physical argument and
+return bindings, register preservation and transitive runtime premises. Callers
+assert those requirements at each actual call. Typed universally quantified
+parameters permit a protected service frame to include live ancestor storage;
+they do not add production C arguments or establish concrete runtime protection.
+
+A retained three-level ordinary-C network now passes with supplier bodies absent
+at both caller levels. Replacing the leaf word store with a four-byte loop changes
+its own proof but reuses both callers' identical proof keys and files, with zero
+caller model/compiler/solver work. Nine focused tests also cover dynamic per-call
+footprints, incorrect code, changed entry requirements, implicit partial reads,
+missing register guarantees, invalid parameter bindings and caller-stack clobber.
+Exporting an operation whose footprint depends on internal call arguments still
+needs a checked enclosing-operation envelope; the new reader rejects that case.
+State/view/terminal transports outside this scalar summary rule remain explicit
+unsupported cases, alongside the existing separate live-object rules.
+
+The real complete `_rpl_free` now passes the SDK check with a universally
+quantified protected service frame. Its ordinary C and complete original slice
+are unchanged. The public supplier reader successfully derives its checked facts,
+including the actual stack argument, all four requested saved registers, current
+byte effects and unverified CRT/TLS/free/frame premises. This closes the earlier
+unsupported-evidence-family failure. The complete quoting parent is not proved.
+
+Evidence: `build/hello-quoting-state-2026-09-21/finite-supplier-composition/`.
+The current SDK is
+`/nix/store/9z7cqsl7nwbbg55nf1cdcfrxg5x2xqzg-hello-finite-supplier-preserve-errno-free-component-source-call-check`.
+The terminal build took 216.219s: input preparation 0.011s, model generation
+0.013s, compiler work 0.947s and solver work 209.464s. Current replay and unchanged
+reuse pass in 6.734s with zero model/compiler/solver work; checked supplier
+derivation takes 2.182s and runs no proof tools. The retained three-level
+walkthrough takes 74.326s; neighboring reuse takes 3.404s and 4.959s. Exact phase
+records, commands, proof inputs and integrated validation belong to this
+checkpoint's terminal audit. The affected 24-shard Nix aggregate passes 174 tests
+with no failures, errors or skips in 715.280s; six repository/SDK gates pass in
+43.040s. The separate retained negative walkthrough takes 22.136s and records
+wrong-source rejection and incompatible-contract invalidation. Older caller-engine
+receipts are historical after this producer change. No pilot rebuild, native link
+or Wine run occurred.
+
+Next consume the actual wrapper from the complete quoting operation, including
+persistent slot objects and allocation transitions, and discharge runtime and
+native-adapter premises. Proved local summaries are not native activation.
+The broader public workflow, whole portable Hello, second-architecture execution
+and different-target connected assurance remain open; all G1–G7 stay active.
+
+### Operation-entry capture and broader errno/free contract — 2026-09-21
+
+The generated external adapter and typed proof thunk now support explicit
+`target_sampling: "operation_entry"`. Existing bindings retain their previous
+sampling. Each invocation stores its own target and read fault; nested calls
+cannot overwrite the caller's capture. The public finite caller checks that
+every original indirect event uses that entry value. Unchecked sampling and
+authored overrides reject. Resumed contextual regions explicitly require missing
+capture transport instead of silently reading a new value at the cut.
+
+The actual ten-transfer `_rpl_free` wrapper now passes the public SDK check with
+no errno/import-slot separation and with free permitted to change the import
+slot. Its ordinary C and all five errno calls are unchanged. This closes the
+adapter-induced restriction identified below. It remains a conditional theorem;
+CRT/TLS applicability, release/lifetime effects and native admission remain open.
+
+Evidence: `build/hello-quoting-state-2026-09-21/entry-target-capture/`. The SDK is
+`/nix/store/214iy773iinkkbgsryc9vb98cdw85j26-hello-operation-entry-target-preserve-errno-free-component-source-call-check`.
+The terminal build took 212.595s: input preparation 0.008s, model generation
+0.012s, compiler work 0.873s and solver work 205.921s. Current receipt replay and
+unchanged reuse pass in 6.399s with identical proof keys/files and zero model,
+compiler or solver execution. The small public aliasing caller passes; changing
+sampling back to current-slot reads invalidates reuse and gives a counterexample.
+Generated native capture checks cover independent nested invocations, repeated
+calls, read faults, null targets and overflow. The affected integrated regression
+and repository checks are recorded in this checkpoint's terminal audit.
+No pilot rebuild, native link or Wine execution is part of this checkpoint.
+
+At that checkpoint, the public supplier reader could not consume
+this complete caller theorem; it falls back to a missing
+`region-composition/result.json`. The retained `supplier-consumption-probe.json`
+records that historical failure. The complete-caller summary checkpoint above
+implements a checked derivation/consumer rule and rechecks this wrapper. Its
+complete quoting consumer, runtime/lifetime admission and native realization
+remain required. All G1–G7 remain active.
+
+### Complete conditional errno/free consumer — 2026-09-21
+
+The actual `_rpl_free` wrapper now passes the public SDK/Nix caller check over its
+complete ten-transfer slice, all five errno calls, the free call and return. Its
+ordinary void C API is unchanged. The checker supports an empty checked-supplier
+map with explicit runtime premises, empty service memory footprints, and a
+call-scoped returned-byte-view rule. Each returned range uses current sparse
+contents and aliases; every service call ends the previous grant. Saved views
+used after that point reject. No stable errno address, fresh bytes or persistent
+allocation identity is assumed.
+
+The unrestricted first check correctly failed: a four-byte errno result starting
+at `0x4321e7` overlaps the last byte of the import slot, and the caller's zero
+store changes the next source target. The successful conditional contract adds
+explicit typed separation from that slot. Free may read/write all other public
+bytes outside the private frame; it can alias errno storage. Result-domain
+inhabitation is checked before applying result assumptions, so contradictory
+private/separation ranges reject rather than vacuously proving the caller.
+
+Evidence is under `build/hello-quoting-state-2026-09-21/returned-view-composition/`.
+The current SDK product is
+`/nix/store/3j5fg64ck2w5k2lkrfkflyg8fysxfclc-hello-call-scoped-returned-view-preserve-errno-free-component-source-call-check`.
+Its build took 241.380s, including 0.008s caller input preparation, 0.013s model
+generation, 0.904s compiler work and 233.495s solver work. Current read-only receipt
+replay and unchanged reuse pass with identical proof keys/files and zero model,
+compiler or solver execution in 6.688s, including two read-only replays. The six
+focused public tests cover wrong C, expired grants, missing/forged rules, ownership
+holes, exact reuse, refinement invalidation and empty result domains. The affected
+21-shard Nix aggregate passes 138 tests without skips in 752.667s. Six repository/
+SDK gates pass; exact outputs and current source hashes belong to this
+checkpoint's `validation.json` terminal audit.
+No pilot rebuild, native link or Wine execution is part of this checkpoint.
+
+This supersedes earlier caller-engine receipts; it does not discharge concrete
+CRT/TLS/free applicability, import-slot separation or release/lifetime authority.
+The physical original return observations still need an admitted native adapter.
+Next export/consume the actual wrapper summary from the complete quoting operation
+with those premises visible, close them through the runtime/provider path, and
+extend persistent objects and allocation transitions. Full portable Hello,
+second-architecture execution and different-target connected reuse remain open;
+all G1–G7 remain active.
+
+The subsequent checkpoint above compares the original's once-captured import
+target with the adapter's current-slot reads. If the admitted original runtime
+can mutate that slot, extend the generated capture semantics instead of imposing
+separation. The selected errno range relation supplies no separation proof;
+the selected free contract does already declare `msvcrt.heap` range release.
+
+### Captured indirect targets — 2026-09-21
+
+The public conditional caller now accepts the existing entry-register/image-slot
+target projection on explicit runtime premises. Native dispatch checks the actual
+indirect event, nonzero target, slot read and stack transport; the paired trace
+compares targets at each actual call position. Authored native/boundary target
+guarantees reject. The public register/slot fixtures retain body absence,
+zero-work unchanged reuse and wrong-capture/missing-read counterexamples.
+
+Retained Hello target checks are under `captured-indirect-targets/real-sites/`.
+The first owns the actual prologue through errno at `0x4ece`, including the
+options argument at entry ESP + 4 and the call frame at entry ESP - 108.
+The second owns the call at `0x501e` under an explicit incoming target/stack
+invariant. Both pass, and wrong-target/wrong-stack variants fail. These are
+call-site proof regions, not a whole-operation or C-equivalence result. Transport
+through the omitted middle, concrete import authority, returned errno contents
+and TLS lifetime remain open. No new production API or activation is supplied.
+
+The broader current-engine SDK recheck is complete. The unchanged real quoting
+caller spends 2.848s preparation, 0.023s model, 0.412s compiler and 85.896s solver
+work. A compatible setter edit reuses identical proof keys/files with zero caller
+model/compiler/solver work in 11.942s, including read-only replay. Wrong C and a
+valid weaker frame are refused without caller tools. Evidence is under
+`build/hello-quoting-state-2026-09-21/captured-indirect-targets/`.
+The outer build runner lost its final record across a continuation; completed
+Nix products and their exact receipts are retained, but total build wall time is
+unavailable. All 127 tests in 19 affected Nix shards pass without skips, and six
+repository/SDK gates pass. An older test helper omitted the no-flags jq form when
+moving large reader programs out of argv; that transport fix closes the only
+initial shard failure. The final 9.007s recheck reused the other completed shards.
+`captured-indirect-targets/validation.json` binds current source/document hashes,
+the SDK/reuse results, all six regional queries and the next consumer's draft.
+The shared-service checkpoint below predates these engine edits and is historical.
+Continue with call-time returned object transport and the slot/allocation
+contracts; all G1–G7 remain active.
+
+The actual `_rpl_free` supplier now has a retained complete ten-transfer slice
+and an ordinary C draft under `quoting-slots/rpl-free-authoring/`. Its five errno
+calls and one `free` call are kept in the original order. Each errno call yields
+a separately consumed view; the draft does not cache a single cell address.
+The allocation argument remains an explicit native token passed to its service,
+with no cast to a host pointer. The existing public source checker accepts the
+profile and compiles host and PE32 in 0.101s after 2.143s input preparation.
+This is authoring/compilation evidence only: original equivalence, per-call
+returned objects, release effects/lifetime, void-operation and runtime-only
+caller composition, physical return observations and native admission remain
+unchecked. Use this actual supplier alongside the complete quoting operation
+to exercise those rules; do not substitute a stable errno-address assumption.
+
+### Shared service sites and quoting-slot handoff — 2026-09-21
+
+One public C service can now bind several exact native call sites, with one
+checked supplier dependency. Every invocation still checks its own target,
+arguments, current memory and stack transport; compatible supplier edits retain
+the caller proof. Duplicate dispatch, missing direct-call coverage, inconsistent
+arity, wrong targets, wrong stack transport, changed current-buffer arguments
+and weaker initialization are covered by the public two-site fixture. Normal
+zero-argument services now traverse the native, typed-source and paired-call
+adapters, including result mismatch and zero-work reuse checks. Their runtime
+premises remain explicit. The current object rule requires the same derived
+footprint across sites; this is not yet dynamic allocation composition.
+
+The previous caller receipt correctly became stale after these engine changes.
+The unchanged real seven-transfer `_quotearg_n_style_colon` inputs now pass a fresh
+SDK/Nix check in 88.886s. Both leaf receipts remain valid and were reused. The
+already checked compatible setter edit reuses identical caller proof keys/files
+with zero model/compiler/solver work in 11.219s, including read-only replay.
+The wrong implementation and valid weaker EBX frame are refused in 2.926s and
+3.731s without caller proof tools. Evidence is retained separately under
+`build/hello-quoting-state-2026-09-21/shared-service-sites/`; prior receipts and
+measurements remain historical. This caller is still conditional on the quote
+service, termination environment and native admission.
+
+Seventeen affected Nix shards pass 111 tests with no skips in 611.843s. All six
+repository/SDK gates pass. `shared-service-sites/validation.json` replays the
+current SDK and edited-caller receipts without process execution and binds the
+negative cases, test reports, source/document hashes and next-operation inputs.
+No pilot rebuild, native link or Wine execution occurred.
+
+The next consumer is retained at `quoting-slots/inventory.json` with its complete
+40-transfer exact slice, ten calls and absent bodies for `_xpalloc`,
+`_quotearg_buffer_restyled`, `_rpl_free` and `_xcharalloc`. Loading the retained
+plan took 1.894s and extracting the slice 0.026s; compiler/model/solver/link runs
+were zero. Five direct-call consumers and three tail-call consumers are recorded.
+A fourth direct control edge is the quoting engine's cold abort fallthrough;
+it is retained pending a checked termination premise. The 2.12.3 source archive
+is retained only as an authoring reference, with its binary match unverified.
+The inventory also binds the retained `_errno` import at RVA `0x321e4` and its
+selected `dynamic_range_base` result relation, including four related bytes.
+That relation is existing infrastructure; the public caller still needs its
+captured-target, result-object and lifetime admission rules connected.
+
+The following boundaries must be connected next:
+
+| Boundary | Required checked transport and existing infrastructure |
+|---|---|
+| Two indirect errno accesses through the captured EBP target | Reuse captured external target projections and selected runtime authority; preserve TLS cell contents/lifetime and restore through the actual second result |
+| Two `_xpalloc` sites | Reuse allocation classes/generations; prove preserved slot records, new extent/count, old-object invalidation and terminal failure outcomes |
+| Zeroing new slots and two quoting-engine calls | Carry call-time readable/writable spans, aliases, option/text contents and observation order; allow a replaced buffer without inventing a second public service |
+| `_rpl_free`, `_xcharalloc` and the returned buffer | Preserve static-versus-dynamic ownership, release/reuse generations, initialization and the borrowed result's validity across subsequent slot updates |
+| Abort and external interactions | Discharge actual normal/nonlocal behavior, private-frame irrelevance and required runtime admission; do not constrain away invalid slots or failing allocations |
+
+Fixed live-object composition and direct normal lifetime-call rules already
+exist, but do not discharge these internal allocation, dynamic-view and indirect
+service obligations. Do not assume disjoint input/output buffers or substitute
+host pointer casts for preserved contents and lifetime. Continue through this
+operation and its existing constructor/setter caller; all G1–G7 remain active.
+
+### Checked terminal composition and real quoting network — 2026-09-21
+
+The public caller rule now derives terminal outcomes from checked live-object
+supplier evidence. Calls still compare their actual arguments, current readable
+memory, aliases and trace order before coupling outcomes. Normal register/stack
+frames and initialization guarantees are withheld on termination. Source stopping
+callbacks check the complete prefix, original nonlocal exit, public memory and
+live context/view frame; a temporary context corruption cannot disappear at exit.
+Caller-authored outcomes or footprints cannot replace checked supplier facts.
+
+The complete seven-transfer `_quotearg_n_style_colon` operation at `0x559e` now
+passes the actual public SDK/Nix checker in 87.244s. It owns the constructor call,
+setter call, quote call, epilogue and return. The original constructor and setter
+bodies are both absent. The constructor's existing receipt still validates and
+was reused; the setter's older observer model needed a 68.666s local refresh.
+The current stored caller receipt replays with process execution forbidden.
+
+The ordinary C uses a 48-byte local array and calls independently checked
+constructor and character-setter services before the following quote service.
+Its style parameter remains the full unsigned domain. A setter rewrite grows
+the C from 1,601 to 1,699 bytes and passes local checking in 69.000s. The caller
+then reuses identical proof bytes and keys, with zero model/compiler/solver work;
+the measured 11.797s includes a separate read-only replay. A wrong setter return
+is disproved. A valid weaker register frame is refused by the caller in 3.896s
+because it no longer preserves EBX; neither negative starts caller proof tools.
+Small connected tests additionally reject a weaker initialization
+claim and frame corruption that is restored only after a normal return.
+
+Retained inputs, commands, models and measurements are under
+`initialization-composition/terminal-caller-network/`, including `sdk-check.nix`,
+`sdk-check.json`, `sdk.stdout`, `sdk.log`, and `caller-compatible/validation.json`.
+Seventeen affected Nix shards pass 102 tests with no skips in 574.447s; all six
+repository/SDK gates pass. The final current-evidence audit is
+`terminal-caller-network/validation.json` and records the exact outputs, hashes,
+positive reuse and both negative cases.
+The first manual check passed in 77.340s; it predates the final authored-guarantee
+guard and its receipt is historical. Use the current SDK result instead.
+
+This is complete **conditional** caller assurance. `_quotearg_n_options` still
+has an explicit normal/no-escape runtime premise. Actual CRT/signal/handler
+behavior and private-frame irrelevance at termination remain unverified. No
+native selection, link, pilot rebuild or Wine execution is claimed. Next close
+the following quote service through reusable slot/heap/lifetime contracts and
+carry these checked operations into native admission. Broader interactions,
+whole portable Hello, second-architecture execution and connected transfer to
+jq/DX-Ball remain required; all G1–G7 stay active.
+
+### Real constructor and complete local partitions — 2026-09-21
+
+The retained real Hello constructor now passes the complete public source and
+original/C workflow in 197.265s. Its full unsigned style input remains admitted;
+separate SAT witnesses confirm style 10 and `UINT32_MAX` reach the original entry
+domain. The original slice still owns all six transfers and retains the abort
+import's exact event and nominal continuation. Normal return checks all 48
+initialized bytes, current public memory and the architectural frame. The abort
+path checks the corresponding terminal occurrence and public memory before it.
+
+The sparse-memory runtime now maintains an arbitrary byte observation and its
+actual-write initialization flag incrementally. Reads retain the existing event
+history, aliases and capacity assertions. A checked base/append invariant compares
+the observers with the original history rules. No input addresses, style values,
+outcomes or proof obligations were removed. Existing complete property partitioning
+now serves source and original checks as well as caller checks, with a shared
+read-only replay implementation and exact SMT tool/query binding. A combined query
+still times out; complete partitioning is required for this result. Small tests
+reject missing queries, weakened policy and wrong C, including terminal prefixes.
+
+Evidence is under `initialization-composition/real-constructor/`:
+`observed-partitions-v3-check.json`, `feedback-observed-partitions-v3/`, and
+`observed-entry-witnesses/validation.json`. The SDK accepts `terminalServices` and
+`originalComparison.serviceBindings` through its existing source-check product.
+These remain explicit unverified runtime premises. A successful conditional proof
+does not establish concrete CRT/signal/handler behavior or native admission.
+
+The same real inputs pass the SDK's Nix source-check product in 217.428s, with
+`source-check.json` reporting `complete`. Both its stored receipt and the local
+receipt replay against the current engine with subprocess execution forbidden.
+The refreshed `network-observed-v1/` controlled workflow retains both supplier
+bodies' absence, compatible-edit zero-work caller reuse and weaker-initialization
+rejection. Fifteen affected Nix shards pass 69 tests without skips, and six
+repository/SDK gates pass in 556.712s. The final read-only audit is retained at
+`initialization-composition/observer-validation/validation.json`. No pilot rebuild,
+native link or Wine execution occurred.
+
+At that checkpoint, the next step was terminal propagation and the actual
+constructor/setter/quoting consumer; the newer checkpoint above closes that
+conditional composition step. The following service's
+applicability, lifetime/representation relations and native admission remain open.
+All G1–G7 remain required; the constructor alone is not the connected-network exit.
+
+### Multiple checked suppliers and terminal prerequisites — 2026-09-21
+
+The existing finite caller now accepts a service-keyed set of checked live-object
+suppliers. Each service has its own requested frame, exact original binding,
+consumed contract and implementation evidence. Runtime premises must cover exactly
+the remaining services. The SDK carries separate supplier inputs while reusing
+source preparation; V6 work packages and `component start` preserve and display
+every declared dependency. The previous single-supplier form remains supported.
+
+The retained `initialization-composition/network-v1/validation.json` demonstrates
+two distinct canonical suppliers and a complete caller with both bodies absent.
+The caller reads storage initialized by the first supplier and passes that value
+to the second. A real second-supplier C edit preserves the consumed contract and
+reuses the caller with zero model/compiler/solver work. A freshly checked weaker
+first-supplier initialization contract invalidates the caller and fails the read
+before the second call. Missing, swapped and conflicting authority also reject.
+This is a controlled composition prerequisite, not the real Hello quoting network.
+Actual host and PE32 compilers run; no native link or execution is claimed.
+
+The terminal-source rule now has small original/C and public evidence tests for
+normal/terminal outcomes, public memory at termination, earlier frame failures,
+incorrect abort conditions and exact event binding. Its zero-argument void service
+premises explicitly remain unverified. A void signature alone cannot terminate a
+path. Evidence replay regenerates deterministic event checks. The normal-only
+caller adapter rejects terminal suppliers until checked outcome propagation exists.
+
+At this earlier checkpoint the real six-transfer Hello constructor was unproved:
+the source frame passed, but input-memory dependence timed out. Reduced storage, alternative encodings and
+a normal-outcome partition did not resolve it. Complete property partitioning
+isolates final-memory dependence; detailed timings show fast formula conversion
+and an unresolved solver query. The earlier attribution to conversion based only
+on the last low-verbosity message was incorrect. No experimental shortcut or
+narrower style domain has been adopted. Retained inputs and failures are under
+`initialization-composition/real-constructor/`.
+
+The later complete-constructor checkpoint above supersedes that proof blocker.
+Continue by propagating terminal outcomes through the existing caller rule and
+applying the multiple-supplier path to
+the actual constructor/setter/quoting consumer. Following-service applicability,
+lifetimes, native admission and every remaining G1–G7 exit remain required.
+
+### Checked initializer composition — 2026-09-21
+
+Current continuation: the engine now checks normal-return initialization spans
+against actual writes on both sides, and transports those checked facts into
+caller-private byte storage. Void services and register-passed supplier arguments
+are supported through the existing public checker. A small canonical initializer
+and its complete caller pass without the initializer body; an actual compatible
+C edit reuses the caller with zero caller model/compiler/solver work. A locally
+checked weaker initialization contract cannot justify reading the remaining
+bytes. Evidence binding rejects changed claims and models. This is a controlled
+prerequisite experiment, not a completed Hello constructor or terminal-service
+rule. Thirteen affected Nix shards pass 83 tests without skips, and six
+repository/SDK gates pass in 381.865s. The read-only audit replays current supplier
+and caller evidence, including actual edit reuse, and binds all terminal reports
+in `initialization-composition/validation.json`. No pilot rebuild, native link or
+Wine execution occurred.
+
+The prior quoting checkpoint below is historical for its recorded producer.
+A fresh read-only replay rejected it with `caller inputs or engine changed` after
+the object-model changes. Refresh its evidence before claiming validation against
+the current engine. The next real consumer still requires the constructor's
+style-10 abort path, both callers and the following service's applicability;
+all G1–G7 remain active.
+
+The controlled public workflow is retained in
+`build/hello-quoting-state-2026-09-21/initialization-composition/workflow-validation-v2.json`.
+The initializer takes 8.451s to check; its complete symbolic-stack caller takes
+4.944s. Phase records separate preparation, compiler, model and solver work.
+Changing the source loop into explicit writes preserves the checked contract and
+reuses the caller with rendering and tool execution forbidden. A checked weaker
+initialization contract invalidates the cached proof, is rechecked, and fails on
+the subsequent original read; wrong caller C and altered claims/models reject.
+These fixture source checks use the host compiler in both compiler slots and do
+not provide PE32 portability evidence. Measurements ran alongside Nix checks.
+
+The actual constructor now has a retained exact slice of all six owned original
+transfers and an authored ordinary-C implementation with the style-10 abort call
+before all writes. Actual host and PE32 compilation pass in 2.450s total
+preparation. `initialization-composition/real-constructor/preparation.json` records
+the inputs, exact abort event and outstanding outcome obligation. Compilation is
+not an equivalence result. The terminal service rule, full constructor comparison,
+both real consumers and following-service/native admission remain open.
+
+The second real caller also needs constructor and setter evidence together.
+At this checkpoint the finite caller accepted one checked `supplier`/`service_id`.
+The later multiple-supplier checkpoint above extends that input and dependency
+path. Carry the actual suppliers' outcome, initialization and lifetime guarantees
+through the real caller after closing the constructor proof. Proving the
+constructor alone will not close the connected-network acceptance requirement.
+
+### Public typed local-object caller — 2026-09-21
+
+The complete `_quotearg_char_mem` operation now passes through the ordinary public
+caller checker with current checked setter evidence, an ordinary 48-byte C array,
+both actual service calls and the original return. The original stack address,
+input bytes and other admitted state remain symbolic. Typed private storage and
+local-view declarations replace the retained experiment's hand-assembled checker
+bindings. Exact-slice preparation stops at declared summary entries, preserves
+the call edges and continuations, and contains neither callee body.
+
+The complete partitioned check takes 232.096s, including 0.224s input preparation,
+0.032s model rendering, 0.741s compiler subprocesses and 230.267s checking. All
+77 timed partition records are satisfied; 79 checker processes include discovery
+and the independent nonempty-entry witness. The complete public evidence reader
+replays current inputs, producer, tools and raw query products in 5.375s with
+subprocess execution forbidden. Earlier 60-second backing-range failures remain
+retained; separating storage arrays and making each bounds obligation explicit
+does not remove checks or restrict this positive input domain.
+
+The result remains non-authorizing with `runtime_compatibility: unverified`.
+The following quoting service still assumes normal return, its footprint and
+frame, and no local-view escape. Following-service applicability, the second
+constructor caller and native admission remain required. The smaller public regression fixes the stack address
+explicitly and supplies supplier facts as test premises; it must not be confused
+with the real symbolic-domain proof or a fresh edited-supplier qualification.
+
+An actual compatible setter edit now passes local source/original checking in
+59.063s, including actual host and PE32 source compilation. The ordinary C uses
+an explicit conditional bit update, growing from 1,601 to 1,699 bytes. Current
+checked facts and the consumed contract remain identical while implementation
+and evidence identities change. The full symbolic-domain caller reuses its proof
+in 5.461s with caller rendering and subprocesses forbidden: zero model/compiler/
+solver work, identical caller proof key, GOTO model and all retained proof bytes.
+This is a real edited supplier, unlike the narrower receipt-change unit fixture.
+
+Wrong edited C passes the source-frame checks but fails actual original result
+equivalence; supplying it to the caller is rejected before proof work. A freshly
+checked weaker contract with the same C signature also passes its local check
+but invalidates the caller with the exact missing guarantee
+`state.ebx==initial.ebx`. Its caller rejection likewise performs no model/compiler/
+solver work. These conditional checks do not establish native admission.
+
+Evidence: `build/hello-quoting-state-2026-09-21/public-object-caller/validation.json`,
+including the reproducible `edit_reuse.py` cases. The first integrated validation
+attempt stopped on a stale generated format registry; its terminal failure and
+cancelled checks remain in `gates.json`. After adding the three new fixture
+references, all sixteen targeted Nix shards pass 119 tests without skips, and
+six repository/SDK gates pass in 433.533s. No pilot rebuild, native link or Wine
+execution occurred for this checkpoint. All G1–G7 stay active.
+
+The next real consumer is `_quotearg_n_style_colon` at `0x559e`. Inspection of the
+retained original confirms that its constructor at `0x3620` writes all 48 options
+bytes on normal return, and calls `msvcrt.dll!abort` before those writes when the
+style equals exactly 10. Other 32-bit style values pass this constructor's test;
+do not silently replace that domain with `style < 10`. These are inspected facts,
+not a checked initialization summary. Compose checked definite initialization
+and both outcomes, then establish the common following service's applicability.
+Its pointer-containing options and returned storage still need lifetime and
+representation relations before this network can authorize a portable replacement.
+
+The earlier checkpoint below records the separate adapter experiment; its public
+integration restriction is superseded by the typed local-object result above.
+
+### Generated local byte views and complete conditional caller — 2026-09-21
+
+The real `_quotearg_char_mem` consumer now uses the generated V5 interface and
+`portable-component-local-bytes.h`, with an ordinary 48-byte C array. Both actual
+calls and the return are checked without either setter body. The complete
+conditional proof passes in 276.651s, including the compiled assertion inventory,
+language safety and loop checks. The earlier grouped bounds timeout is resolved
+by the existing narrower partitions; no required property is omitted. Incorrect
+initial copying and corruption before the second call produce counterexamples.
+The complete-call admission witness is reachable. Exact inputs, current supplier
+facts and 39 retained query products replay successfully.
+
+The shared byte-view helper supports slices, permission narrowing and generations
+while its owner and storage remain alive. The checker verifies real current bytes,
+metadata and backing storage at each call. It does not establish escaping-borrow
+lifetimes, following-service behavior or native object authority. The following
+quoting service still has an explicit unverified normal-return/no-escape contract.
+The public finite caller-definition reader still rejects this state/local-object
+shape; using the generated C surface in a retained experiment does not close that
+operator integration gap.
+
+Evidence: `build/hello-quoting-state-2026-09-21/local-view-adapter/validation.json`.
+The source compiles with the actual host and PE32 compilers. Nine targeted Nix
+shards pass 58 tests without skips; six repository/SDK gates pass, in 361.269s.
+The new generated header makes earlier source-certificate inventories stale; the
+fresh setter check passes and retains the same consumed contract identity.
+There was no pilot rebuild, native link or Wine execution.
+
+Next integrate typed caller-local object declarations into public caller checking,
+then discharge the following-service and lifetime premises through both actual
+callers and demonstrate compatible-edit/neighbor reuse and admission. Allocation,
+interactions, representation changes, whole Hello and second-architecture execution
+remain open. Keep all G1–G7 active. The prior facade and timeout checkpoint below
+is retained experiment history, superseded by this conditional result.
+
+### Public shared context views — 2026-09-21
+
+Fixed live readable/read-write
+context views now use the existing finite caller definition and check path.
+`state.FIELD` names distinguish their typed physical mappings from parameters.
+The same sparse memory retains aliases and current bytes across services;
+descriptor and backing-storage checks preserve the context relation. The public
+rule still rejects lifecycle transitions, explicit initial-value claims and
+caller-local objects. The corresponding save-caller regression uses actual
+retained original code with supplier facts as explicit test premises; it must
+not be reported as a new current supplier qualification. The historical retained
+Metapad composition product currently fails its producer check and cannot provide
+that qualification without refresh. Continue the Hello local-object definition
+and following-service work rather than treating shared-state support as G4 or G7
+completion.
+
+The focused run passes 28 tests; the additional definition checks pass seven,
+including rejection of unchecked initial values and lifetime shapes. The new
+stateful save case checks current dependency-mutated length, rejects a stale
+pre-call read and descriptor corruption, and exercises zero model/compiler/solver
+reuse after supplier evidence changes under the same supplied contract. These are
+conditional fixture checks, not an actual newly checked supplier implementation
+edit. Retained validation is under
+`build/hello-quoting-state-2026-09-21/public-state-views/`.
+
+All eight selected Nix shards pass 54 tests without skips, and six repository/SDK
+gates pass in 481.933s. `validation.json` checks the authored interface/definition,
+current implementation hashes, terminal test reports and the rejected historical
+supplier product. Model/solver/link costs for a fresh supplier-backed public
+stateful walkthrough remain unmeasured; the suite elapsed time is not an operation
+proof time. No pilot rebuild, native link or Wine run occurred.
+
+For the complete quoting caller, the remaining public integration must carry
+typed original private-byte storage into the existing paired-object engine,
+instantiate the validated live-object supplier's ABI/frame/current-memory
+requirements, and bind the complete partitioned proof through the public receipt
+reader. Its ordinary C character parameter also needs the supported unsigned
+8-bit argument transport. Shared state acceptance alone does not implement these
+rules or discharge the following service's lifetime and outcome premises.
+
+### Caller-local object transport — 2026-09-21
+
+The paired-call engine now compares live caller-local bytes, including storage
+inside the otherwise private frame, and transports mutations through overlapping
+views. Actual C storage must be live and correctly aliased at every call. The
+model preserves readonly/unborrowed bytes, checks local snapshot capacity, and
+rejects changes between local and sparse storage without a representation rule.
+The existing live-object evidence reader supplies checked callee ABI/frame/view
+facts; the caller model imports neither setter body.
+
+The retained experiment now executes the complete `_quotearg_char_mem` caller and
+an ordinary C counterpart with a 48-byte local array through both actual calls
+and the return. It uses an explicit unverified normal quoting-service contract
+and a provisional source service facade. The public V5 local-view adapter,
+following-service applicability, second constructor caller, compatible-edit reuse
+and native admission are still required. No conditional result closes G4 or G6.
+
+Current evidence, complete property inventories, negative consumer edits and
+phase measurements are under
+`build/hello-quoting-state-2026-09-21/local-object-caller/`. The latest complete
+SAT partition attempt is **incomplete** after 358.202s: narrower safety partitions
+pass, but scalar call-argument correspondence times out at 60s before all remaining
+assertions run. The focused first-call byte-copy property passes in 9.606s; its
+SMT attempt times out at 60s. Wrong copied bytes and corruption before the second
+call produce concrete counterexamples, and the complete-call admission witness
+is reachable. The positive model does not use those witnesses' fixed inputs.
+
+The current four targeted Nix shards and six repository/SDK gates pass in
+388.027s. `validation.json` checks current renderer and supplier facts, exact
+compiled-model/query bindings, transitive local headers, negative observations
+and test products; it records the unresolved query and unverified service/adapter
+premises. There was no pilot rebuild, native link or Wine execution. This extends
+and measures the transport rule, not the public independent-lifting workflow.
+Preserve all G1–G7 as the goal.
+
+### Quoting state and operation-local proof markers — 2026-09-20
+
+The subsequent implementation adds the missing conditional original/C leaf rule
+for live nullable input objects. The existing public source-check product accepts
+the full seven-transfer character setter under its explicit current-memory,
+alias, private-frame and normal-return domain. All 1,690 properties pass; the
+final public command takes 55.127s. Null input, the actual caller's 48-byte object
+at callee ESP+20 and a private frame ending at the last addressable byte have
+admission witnesses. The final review corrected an overly narrow stack-end
+guard; current evidence validation rejects its earlier model. A wrong C result
+fails original
+equivalence while passing source contracts; a public wrong-memory edit preserves
+the result and source frames but fails post-memory equality in 55.481s. The five
+new local tests initially pass in 108.789s; the final Nix recheck includes the
+address-space endpoint witness. Seven targeted shards pass 37 tests without
+skips, and all six repository/SDK gates pass. The initial offline aggregate
+could not obtain a missing bootstrap dependency; the final gate run with normal
+substitution passes in 145.739s. `object-original/validation.json` audits the
+current production bytes, exact artifacts, conditional scope and negatives. See
+`build/hello-quoting-state-2026-09-20/object-original/`.
+
+The actual `_quotearg_char_mem` prefix also proves argument placement and all
+48 copied bytes at the setter call using retained Behavioral-C, in 36.093s.
+Concrete admission and incorrect-transport witnesses pass. The prefix ends at
+that call and is explicitly non-authorizing. Native `captured_stack` admission
+is tied to an ingress frame; these internal callers have no such frame, so a
+matching stack offset cannot confer that authority. Next join the leaf theorem
+to the actual caller's object creation/current-memory/lifetime rule, carry the
+result through the following quoting call and the second constructor-based
+caller, and demonstrate body absence and compatible edit/reuse through admission.
+The full SDK workflow and all G1–G7 remain open as described above.
+
+Follow-up implementation after the status review adds a local source theorem for
+fixed shared objects, nullable remaining-origin parameters and scalar results.
+The existing public `component check --source --local-contracts` command now
+checks all three real quoting operations in 25.158s, with six satisfied frame and
+input-dependence queries. Its receipt explicitly records
+`qualified_connected_summary: false`; no admission reader is broadened. This
+closes a missing source premise, not the caller-owned-object or body-free
+composition requirement. Evidence:
+`build/hello-quoting-state-2026-09-20/object-contracts/`.
+
+The model reuses sparse current memory and production reference accessors. It
+retains full nullable-origin extents, permits physical aliases, checks metadata
+frames and protects the declared shared span even if its origin is larger.
+Wrong null handling, descriptor mutation and an out-of-frame store produce
+counterexamples. Tests also check current bytes across overlapping readonly and
+writable views, generation rejection, untouched bytes and event-capacity failure.
+Unchanged local evidence reuses without compiler or solver work. This does not
+demonstrate neighboring caller reuse under the new domain. Eight targeted Nix
+shards pass 41 tests with no skips; six repository/SDK gates also pass, in
+113.510s. The first run exposed an existing jq argv-size failure in a provider
+test. Using the existing file-based reader helper fixes the harness without
+changing the independent reader. Both attempts and terminal results are retained
+in `object-contracts/gates.json` and `object-contracts/jq-argv-attempt/`.
+`object-contracts/validation.json` revalidates the public source certificate,
+scope, current implementation bytes and retained fixture identity.
+
+The preceding status-review turn added no implementation progress. The resumed
+retained-input experiment now qualifies the complete `_get_quoting_style`
+(`0x50b5`) and `_set_quoting_style` (`0x50c8`) operations. Together they own all
+five transfers, including both returns, with no unowned proof context. Ordinary
+C selects either the supplied options view or the shared default view at
+`0x4301c0`. Both contextual readers accept both satisfied regions and the complete
+provider qualification. Evidence:
+`build/hello-quoting-state-2026-09-20/validation.json`; provider:
+`/nix/store/4d5x94j4fa15da4b5awg9gq5c4nwrk8v-hello-quoting-state-portable-c-work-package-provider-v2`.
+
+The experiment first exposed a real multi-operation authoring defect: a proof
+header for one operation left its neighbor's `SPX_PROOF_BEGIN` undefined, even
+though both operations were valid ordinary C in one translation unit. Proof
+preparation now gives only the selected operation active markers. Neighboring
+markers have their production no-op behavior, while their bodies and effects
+remain compiled. Operation-local cut names can be reused with different capture
+arities. Comment/literal-aware extraction, actual CBMC checks and a wrong-neighbor
+result negative verify this scoping. This is marker isolation, not a new checked
+callee summary or permission to omit any body.
+
+A second, semantic negative caught the draft treating the nullable view's C
+descriptor pointer as nullable. The adapter always supplies a descriptor; the
+checked null reference has `base.object == 0`. The incorrect draft dereferences
+a null accessor on both operations and remains unqualified. Correcting the C
+reference test restores qualification without changing the boundary or machine
+coverage. The initial index-format failure and both failed proof attempts are
+retained separately. All sessions for the get/set baseline are terminal.
+
+The complete public check takes 179.152s. Two proof compiles sum to 0.339s, six
+inventory processes to 1.625s, and 101 proof-query processes to 243.310s (overlapped
+process sums, not wall time or solver CPU). Preparation of the original intent
+took 0.374s; source checking takes 1.846s. Three targeted Nix shards and six
+repository/SDK gates pass in 28.575s. Model generation and production compilation
+are not yet timed separately; G5 remains open. There was no pilot rebuild,
+native link or runtime execution.
+
+The scope remains essential: this retained module has seven image-object rules,
+and the admitted nonnull options therefore have image-backed authority. The
+input-memory relation permits shared-default aliases; it does not establish
+arbitrary caller stack objects or heap lifetimes. No optional source-summary
+certificate is produced for this nullable/shared-state scalar-result shape.
+There are no direct retained calls to the get/set routines. Their full replacement
+proofs are useful leaf coverage, not the required connected G4 demonstration.
+
+The actual next consumer is `_set_char_quoting` (`0x50e1`, seven transfers), called
+at `0x551c` by `_quotearg_char_mem` and at `0x55c4` by
+`_quotearg_n_style_colon`. Its authored boundary preserves the 40-byte
+style/flags/character-mask prefix and both null/default and nonnull selection.
+The real callers must prove admission and lifetime of their local options
+objects. `character-inputs.json` records the boundaries and premises. Its source
+check passes; the first focused proof attempt rejected unsorted named parameter
+bindings before solving. The corrected declaration preserves C parameter order
+and offsets; the focused recheck is now terminal in 292.029s with the selected
+character region and nonvacuity satisfied. The other two regions were deliberately
+deferred, so the diagnostic remains incomplete and authorizes no activation.
+See `character-proof-command.json` and `character-proof-stdout.json`.
+Next compose the new shared/nullable source premise with actual machine entry,
+frames and caller-owned-object
+transport through these consumers, then demonstrate body absence and edit/reuse
+through native admission. All remaining G1–G7 and the full SDK workflow remain
+mandatory.
+
+### Contract rejection, restoration and semantic cut refinement — 2026-09-20
+
+The full weaker-contract caller check is terminal: both `sync:scan` and
+`sync:left_folded` produce concrete invariant counterexamples. The supplier and
+caller C remain unchanged. The corrected constant-return C edit also produces a
+counterexample, at the return result in `sync:finish`. Both have incomplete caller
+qualifications and selections; both actual public native builds refuse the
+incomplete selection. No executable is emitted for either negative. The previous
+scripts incorrectly treated `candidate status` exit 0 as successful admission;
+that command successfully produced an **incomplete** report. The follow-up audit
+checks the report, ordinary proof/qualification/selection readers and native
+failure. Sessions `15142` and `90473` are terminal. Exact evidence:
+`scalar-contract-refinement/negative-admission-validation.json` and
+`candidate-proof-hints/negative-admission-validation.json`, under
+`build/hello-loop-header-2026-09-20/`.
+
+Restoring the public authored guarantee now restores caller qualification,
+selection and strong native admission. The earlier frozen producer cannot read
+the newer authored scalar guarantee, so this run uses the validated current
+engine. Its conservative generator identity correctly invalidates whole-proof
+reuse. All five regenerated/compiled GOTO identities match the earlier proof,
+allowing all 673 queries to reuse with zero new solver queries. Public status
+takes 31.984s and native build 53.664s. This is query reuse, not zero model work.
+Audit: `scalar-contract-refinement/restored-admission-validation.json`.
+
+The real `c_tolower` operation now demonstrates public proposal/application/check
+of a two-region split at RVA `0x934a`, followed by a merge back to one region.
+The internal cut carries the input in EAX, candidate result in EDX, offset in ECX
+and the current carry flag. Flag projections are now implemented for cut
+relations; the full runtime word is checked without masking invalid high bits.
+An incorrect carry expression fails the predecessor relation. Omitting carry
+transport leaves the predecessor valid and fails the successor's result check.
+Both valid forms pass both contextual readers with complete qualification.
+Original instruction coverage, public interface and consumed scalar guarantee
+remain identical; all three production object hashes are also identical.
+
+The split and merged suppliers each admit through the real retained candidate
+builders. Against the current restored baseline, both reuse the unchanged caller
+with zero model generation, compiler runs or solver runs, and retain all five
+GOTO identities. Their strong native receipts bind fourteen portable definitions,
+omit both original routine objects and bind the unchanged executable SHA-256
+`b702a14d496b80fb18092f85164b71ad5d1205421f30f849982c5ff202ad6920`.
+Audits: `semantic-cut-refinement/validation.json`,
+`split-admission-validation.json` and `merged-admission-validation.json`.
+Two targeted Nix shards and six repository/SDK gates pass in 28.478s.
+
+This splits proof regions inside one component. It creates no public tail API,
+changes no component ownership and establishes no new loop-progress theorem.
+The supplier authoring and candidate consumer fixtures share exact checked
+artifacts and real builders; the full SDK checked wrapper remains separately
+tested. No full pilot rebuild or runtime execution occurred. G3's broader
+ownership/refinement workflow, stateful consumers and all remaining G1–G7 exits
+remain mandatory. Advance to the actual Hello quoting/state consumers and full
+SDK workflow; do not reopen terminal scalar experiments without new evidence.
+
+### Candidate hint runtime checkpoint — 2026-09-20
+
+The actual public `candidate status/build --reuse-proof` commands now pass on the
+retained edited Hello pair. The provider validates and reuses all five complete
+regions with zero model generation, compiler runs or solver runs. The reuse step
+takes 0.389s; public status takes 26.684s and the native command 56.477s. These wall
+costs include preparation and object/assembly work, not just proof or linker time.
+The qualification and proof packet are byte-identical to the retained evidence.
+The executable remains SHA-256
+`b702a14d496b80fb18092f85164b71ad5d1205421f30f849982c5ff202ad6920`, with
+14 portable definitions and both original routine objects omitted. No pilot
+rebuild or runtime execution occurred. Audit:
+`build/hello-loop-header-2026-09-20/candidate-proof-hints/runtime-positive-validation.json`.
+
+This uses current CLI code and real provider/selection/native builders on retained
+inputs. The full SDK recursive graph and its checked candidate wrapper have
+separate tests; the retained fixture does not itself exercise that whole wrapper.
+The incorrect-edit experiment changes only disposable caller C to return equality
+for every pair, retaining the same interface and old proof hint. The first run
+ended after 1608.873s on a production compiler error: `result` was set but unused.
+Its duplicate native retry was explicitly interrupted; neither establishes
+semantic mismatch rejection. The corrected edit explicitly consumes `result`
+and passes public host/PE32 source checking in 5.203s. Its proof and native refusal
+are now terminal and audited above; session `90473` must not be restarted.
+The original session `33866` is terminal.
+Commands and PID are retained in `candidate-proof-hints/negative-commands.json`,
+with the original attempt preserved under `unused-result-attempt/`. Positive
+sessions `87925` and `31810` are terminal. All G1–G7 remain active.
+
+### Authored scalar guarantees — 2026-09-20
+
+The existing relation-intent path now supports explicitly authored scalar
+normal-return guarantees. Only the requested, source-checked facts are exported;
+qualification binds them to the complete local proof and exact request. The
+same correct scalar implementation can therefore export a weaker contract.
+Small connected tests show that the formerly valid caller zero-preservation
+property then fails. A declaration or a false requested predicate supplies no
+checked guarantee. Existing shared-view derivations remain separate.
+
+Configured V6 packages retain optional `relation.json`; review and declaration
+application normalize it and update the existing lifting-intent reference.
+Tests cover simultaneous cut/relation application, unchanged neighboring inputs,
+and atomic rejection of an intervening local relation edit. The real lowercase
+provider qualifies with the weaker `true` export in 21.626s using identical C
+implementation bytes; a false export fails in 29.010s. Both contextual readers
+accept the valid supplier. All 65 tests across seven Nix shards and six
+repository/SDK gates pass (45.123s).
+
+Evidence: `build/hello-loop-header-2026-09-20/scalar-contract-refinement/`.
+The real caller's public `compare/sync:scan` diagnostic now fails in 237.987s
+with a counterexample to `spx-bisimulation-invariant:left_folded`. Both caller
+and supplier implementation identities remain unchanged. The omitted checked
+zero-preserving guarantee changes the consumed contract; the old proof is not
+reused. The selected region executes 47 queries, with zero reused queries; the
+other four regions remain deferred. This is a concrete failed premise, not a
+timeout or supplier-equivalence failure. Audit: `consumer-validation.json`.
+
+The real public supplier `boundary propose`/`adopt --apply`/`component check`
+cycle now passes for both the weaker export and restoration of the original
+guarantee. Only the component declaration and its new relation file change;
+C, interface, binding and neighboring files remain identical. The restored
+consumed contract equals the original one. Audit: `authoring-validation.json`.
+The initial fixture used the legacy provider ID, which the CLI correctly
+rejected; the retained retry uses the SDK's `.portable-c` ID. This fixture
+correction supplies no exemption from the ordinary provider readers.
+
+Full candidate checking of the weaker contract completed in session `15142`,
+using the earlier valid complete proof as its hint. A violated diagnostic was
+correctly refused as a cache input before that run; this preliminary refusal
+is not the candidate-admission result. Full consumer rejection, native refusal
+and restored-caller admission are now audited in the later checkpoint above.
+Internal-region split/merge also passes; broader boundaries, stateful consumers
+and all remaining G1–G7 exits stay open. Session `90473` is also terminal.
+Supplier/check/audit sessions `62061`, `85038`, `93360`, `8378`, `67843` and
+`3492` are terminal; `8378` was the recorded fixture-ID failure.
+
+### Reject production compilation failures before proof — 2026-09-20
+
+The incorrect-edit experiment exposed wasted proof work before a simple compiler
+veto. Full provider checking now runs its existing host/PE32 production compilation
+and object-manifest existence check before bisimulation. This reorders the same
+compilation; it introduces no duplicate compiler stage or weaker admission rule.
+Conditional and focused diagnostic paths still emit no production objects.
+The same unused-variable failure now rejects through public candidate status in
+17.680s, before the bisimulation call, versus 1608.873s previously. This is an
+early compiler rejection, not a successful semantic negative.
+
+The current reordered provider still qualifies the weaker real supplier (22.962s)
+and rejects its false export (19.471s). Both readers accept the valid proof and
+its implementation/consumed contract remain unchanged. All 66 tests across seven
+Nix shards, plus six repository/SDK gates, pass in 34.018s. Final source identities
+and audits are in `scalar-contract-refinement/validation.json`,
+`compile-first-validation.json` and `compile-first-provider-validation.json`.
+The two full negative candidate runs used their already-frozen earlier snapshots
+and are now terminal. Do not restart sessions `15142` or `90473` for this ordering
+change; their complete admission audits are recorded above.
+
+Inspection still finds a gap between available building blocks and that workflow.
+The partition inventory supplies planning information without proof authority.
+Whole local proof reuse is now implemented for unconditional scalar body-free
+dependencies and demonstrated on the unchanged complete lowercase leaf; exact-query
+reuse remains the fallback and still generates and compiles caller models. The
+earlier four-origin comparison remained `incomplete` at a 900-second limit.
+The four-origin checked-slot-frame retry remains `incomplete`: entry and left
+metadata pass, but loop right context exceeds 300 seconds. A two-origin run
+passes the three previously expensive capture checks and then times out on
+exit control at 120 and 300 seconds. A subsequent manual epilogue cut passes
+entry and finish, but its full provider result remains `incomplete` because the
+scan region's view-reference-address check exceeds 60 seconds. The outgoing
+roundtrip address-reuse change passes 49 targeted tests across seven Nix shards
+and five repository gates. Its full provider recheck remains `incomplete`: entry
+times out on origin recording and scan on the right view's context at 60 seconds;
+finish passes. Remaining capacity obligations are not established. Correction:
+the earlier 36.456s diagnostic selected finish, not scan; it does not demonstrate
+an improvement to the timed-out loop query. Future probes select by recorded
+obligation ID rather than assuming receipt order matches directory indices.
+The corrected scan address probe also exceeds 60 seconds. The full 120-second
+retry passes entry and finish, but scan still times out on reference-address
+validation. The decoding change has not resolved that loop bottleneck.
+The larger lowercase supplier also qualifies locally without changing either
+compiled caller model byte. This closes the measured callee-growth subcheck. The
+leaf reuse and completed entry-region checks do not close G2 or G5.
+
+The mandatory [operator walkthrough](whole-target-independent-lifting.md#required-operator-walkthrough)
+connects authoring, local assurance, compatible edit/reuse, incompatible-contract
+rejection, checked split/merge and final assembly. Its recorded commands and phase
+costs must demonstrate the workflow rather than merely list available facilities.
+
+Continue with the complete comparison/lowercase pair and its public edit/reuse/
+combined-link demonstration. Treat performance changes as work toward that gate,
+retain exact inputs and phase costs, and advance through the remaining exits.
+Do not substitute more isolated diagnostics for the operator acceptance workflow.
+
+### Remaining needs, in delivery order
+
+Earlier retained evidence reviewed on 2026-09-20: the NUL-progress refinement's
+300-second retry is terminal and `incomplete`, not still running. Entry and finish
+pass, as do all three nonvacuity checks; scan still times out on cut alignment.
+The two actual supplier negative variants both produce `violated` local refinement
+results and incomplete qualifications. These reject the implementations, but do
+not yet demonstrate invalidation/reuse against a complete caller proof.
+Evidence is under `build/hello-loop-header-2026-09-20/nul-progress-cut/`
+(`retry300`, `negative-wrong-code`, and `negative-lost-guarantee`). No acceptance
+exit closes on this evidence. The later four-region result and completion-lemma
+investigation are recorded in the immediate handoff below. Continue from those
+retained results before another expensive rebuild or budget increase, then resume
+the connected operator walkthrough below.
+
+1. **Carry the connected strong workflow forward (G1/G2/G5).** The five-region
+   comparison, compatible supplier edit, valid weaker-contract invalidation,
+   restored admission and internal-cut refinement now have terminal evidence.
+   Preserve their zero-work caller reuse, negative admission and callee-growth
+   checks while extending the actual stateful consumers and SDK workflow.
+   Account for preparation, auxiliary proofs, production compilation and linking
+   separately. Qualified supplier growth now leaves both caller models byte
+   identical; the existing leaf results do not establish this connected gate.
+2. **Make that workflow practical for an operator (G3).** Connect manual boundary
+   definition, contract inspection, C work packages, checking, refinement and
+   selection through public commands. Configured `boundary propose`/`adopt` now
+   materialize and normalize canonical interface/binding/cutpoint drafts against
+   a checked baseline. `--apply` now merges ordinary configured declarations into
+   the actual SDK-discovered target indexes. Ordinary regional diagnostics now
+   work publicly without conditional runtime assumptions. Internal-region
+   split/merge now preserves checked transport, coverage and caller reuse through
+   retained native builders. Complete the full SDK operator walkthrough and
+   ownership-changing refinement, including progress and dependency invalidation.
+3. **Cover real stateful boundaries (G4/G5).** Extend checked composition through
+   actual Hello consumers with shared mutable objects, aliases, lifetime changes,
+   locale and runtime interactions. Demonstrate representation-change reuse and
+   manageable loop proofs without repeating a global heap model in each unit.
+4. **Deliver the complete artifact (G6).** Assemble all portable Hello providers,
+   close storage/runtime obligations, retain authoritative executable-bound
+   receipts, and validate x86 behavior plus second-architecture execution.
+5. **Establish transferability (G7).** Repeat connected author/edit/check/reuse on
+   a structurally different jq or DX-Ball portion and finish applicable pilot,
+   export, portability and repository validation with retained terminal evidence.
+
+These are acceptance needs, not a request for a new parallel architecture. Reuse
+the existing interfaces, engine and Nix products. Manual decomposition remains
+the priority; automated boundary recommendations and component counts are not
+completion criteria. All seven exits remain mandatory in the active goal.
+
+### Immediate implementation handoff
+
+The public `component check --reuse-proof DIR` path now passes retained ordinary
+proof evidence to the existing provider. It supports complete checking or regional
+diagnostics, rejects source/conditional/comparison mixtures and foreign or malformed
+packets, and snapshots local package members before import. Nix restores the store
+reference context so the evidence closure reaches the sandbox. Complete checks
+retain ordinary qualification validation; `--json` emits that qualification with
+exit 0 for complete and 1 for incomplete. Query reuse remains distinct from
+zero-model/compiler-work neighbor proof reuse.
+
+All 66 targeted tests in eight Nix shards and all six selected repository/SDK
+gates pass (86.170s). A real local package with symlinked members imports in 0.399s,
+preserving all 482 member files byte for byte; only the checked `left_folded`
+region offers reusable queries. Derivation inspection confirms the original
+retained package is an explicit sandbox input. This validates evidence transport,
+not the edited caller's complete proof or combined admission.
+
+The complete edited-Hello public check is terminal and passes all five regions in
+1277.017s with the ordinary 120-second query limit. The formerly deferred regions
+execute 535 queries in total; `left_folded` reuses all 138 retained query results
+and executes zero new queries. All five models are still generated/compiled.
+The prepared public candidate selection and native build pass; the exact receipt
+binds fourteen portable definitions and excludes both original routine objects.
+The binary SHA-256 is `b702a14d496b80fb18092f85164b71ad5d1205421f30f849982c5ff202ad6920`.
+This is hybrid Hello with no execution observation, not complete portable Hello.
+
+Terminal audit: `build/hello-loop-header-2026-09-20/public-complete-check/validation.json`.
+Provider: `/nix/store/0nw2s8i1rdpl71hrlbaw70zknmi9mifl-hello-public-renamed-cut-portable-c-work-package-provider-v2`.
+Native: `/nix/store/25ylldjp87z1c51x2g3mafxgvyv57xcv-hello-public-renamed-pair-native-realization-v2`.
+Sessions 11958, 86273 and audit session 39720 have finished. The run binds its
+frozen repository snapshot; candidate-hint CLI changes made while it ran are
+recorded separately. Current Python and strong JQ readers accept its complete
+proof. Three real CLI invalid-evidence cases also reject before proof realization.
+No pilot was rebuilt.
+
+The prepared admission explicitly shared its evidence input. The new generic
+`candidate status/build --reuse-proof COMPONENT=DIR` implementation now carries
+hints through the existing SDK provider graph and keeps the target-input, native
+receipt and executable-hash guards. Unknown/unselected/duplicate hints and mixed
+experimental modes reject. The current C and supplier graph are always inputs;
+old qualifications cannot select old code. All 42 affected CLI/operator tests and
+six repository/SDK gates pass (28.297s), including preservation of the checked
+candidate wrapper. Real Hello graph evaluation shows that adding the caller hint
+and then editing its C changes only its provider, while the lowercase supplier
+and all other selected providers remain unchanged. The current source-package
+input changes even when the old hint is supplied.
+
+Evidence: `build/hello-loop-header-2026-09-20/candidate-proof-hints/`.
+This evaluation executes no compiler/solver/link and does not establish runtime
+reuse. Next exercise the generic candidate-hint path through actual complete
+checking/admission and a subsequent source edit using retained inputs. Then
+implement the valid weaker-contract export/consumer invalidation and semantic
+split/merge demonstrations. Existing relation intents are the first place to
+extend authored scalar guarantees; current normal-exit checking handles shared
+view facts, while scalar zero-preserving facts are automatically discovered.
+The investigation notes remain in `public-complete-check/`. All G1–G7 remain open
+beyond these intermediate gates.
+
+Ordinary regional checking is implemented through `component check --region`, the
+existing provider/engine and contextual receipt. Diagnostic selection is explicitly
+bound; omitted regions have no compiled/execution evidence. Even selecting all
+regions cannot authorize activation. The small integrated test exercises a focused
+check followed by complete checking with exact-query reuse, plus reader negatives.
+All 65 targeted tests pass across eight Nix shards, with no skips, together with
+the SDK check and five repository gates.
+
+The retained public Hello walkthrough now continues from the applied cut rename
+through authored-C source checking and `--region compare/sync:left_folded`. Source
+checking passes. The renamed region and its nonvacuity check pass at the ordinary
+120-second query limit; the other four regions remain explicitly deferred. The
+aggregate is incomplete, activation is false, and the package contains no
+qualification, implementation choices or production objects. The public command
+takes 376.963s, with one regional compilation (0.295s), ten safety batches,
+123 assertion queries and one nonvacuity query. A cached display takes 1.186s;
+that cache hit is not a fresh proof or zero-work neighboring-proof demonstration.
+
+Evidence and current-source identities are in
+`build/hello-loop-header-2026-09-20/ordinary-regional-check/validation.json`.
+Python validates the diagnostic and both readers reject five mutations of the
+actual packet; strong JQ admission rejects the diagnostic itself. The selected
+region is available to the existing exact-query reuse reader. The new explicit
+`--reuse-proof` handoff fed that evidence into the completed full check above.
+Generic candidate-hint runtime validation and public valid-weaker-contract
+invalidation remain next, followed by all remaining G1–G7 exits. All processes for
+this diagnostic and its validation are terminal; session 75532 finished normally.
+The first real build failed before model execution because a flake copy of the
+retained module lost its symlink closure. Materializing identical package bytes
+fixed that fixture issue; no pilot was rebuilt.
+
+Configured declaration application now runs through public `boundary adopt --apply`
+on retained Hello inputs. The SDK exposes the actual authoring paths, including
+separate operator/intent roots. Application preserves neighboring entries, original
+program identity, selection, replacement groups and authored C. It rejects stale
+local interface/binding/cutpoint baselines even when the supplied package is cached.
+Caught write failures and keyboard interrupts roll back; surviving staging from a
+hard process termination blocks another application pending recovery. Source is
+explicitly not installed, and the report identifies the configured C paths.
+
+`build/hello-loop-header-2026-09-20/configured-application/` retains the actual SDK
+path discovery and public inspect/propose/apply/stale-reapply commands. Application
+takes 0.414s; stale reapplication rejects in 0.371s. Only the reviewed cutpoint file
+changes; every source and neighboring input hash is preserved. The first attempt
+exposed an incorrect equality assumption between target and program identities;
+the implementation now preserves Hello's distinct configured program identity.
+All 67 focused tests pass in six Nix shards with no skips, together with the SDK
+check and five repository gates. `configured-application/validation.json` binds
+the source identities, current shard inputs, terminal results and walkthrough.
+SDK authoring-path discovery also evaluates for jq and DX-Ball; that evaluation
+does not establish their connected lifting workflow. All validation processes
+for this application change are terminal.
+At that application checkpoint the renamed cut was unproved; the subsequent
+ordinary diagnostic above checks its selected region. Complete edited-provider
+checking and valid weakened-contract consumer invalidation remain required; do
+not count application or normalization as transport or compatibility evidence.
+
+Terminal evidence: `build/hello-loop-header-2026-09-20/single-call-regions/checked-run/`
+has a satisfied five-region proof and complete qualification for all twelve
+comparison definitions, with no exact-context remainder. All five nonvacuity
+checks pass at the ordinary 120-second query limit. Preparation takes 7.408s and
+provider execution 1,606.962s. The source read/call order and cut refinement were
+checked together; the proof includes their transport and fault-prefix obligations.
+
+The actual compatible lowercase edit also produces a complete caller qualification.
+It retains every caller GOTO identity and performs zero caller model generation,
+compilation or solver invocations. Its preparation takes 7.771s, provider work
+14.034s, and proof reuse itself 0.396s. Both Python and JQ accept both complete
+proof packets (`pair-local-audit.json`). All five compiled models contain only
+the supplier summary wrapper and adapters, with neither original nor renamed
+supplier bodies (`compiled-body-absence.json`). Both readers reject four
+mutations of the complete packet: missing lemma evidence, a wrong assertion
+site, missing policy and weakened checker arguments (`complete-reader-negatives.json`).
+
+Both actual incorrect suppliers reject before caller model preparation using the
+completed baseline (`supplier-negative-admission/result.json`). One keeps the
+consumed contract; the other loses zero preservation with the same signature.
+Both suppliers themselves fail equivalence, so this does not establish a public
+valid-contract-weakening workflow.
+
+The exact proved source and intent are adopted into the canonical Hello target.
+Ten targeted tests pass locally and in two Nix shards, including native-reference
+identity, right-read fault ordering and invocation-scope transport. Five repository
+gates pass. See `adoption-nix-outputs.json` and `adoption-tests.log`.
+
+Combined edited-pair Nix admission is terminal and passes. Its first invocation
+failed evaluation because the experiment recipe omitted the supplier's
+`proofClassification`; both caller recipes now supply `machine_overlay`. The
+corrected build rechecks the baseline in Nix, then verifies supplier-edit reuse,
+selection and linking. Its acceptance package is
+`/nix/store/azdhgazyxl0kg9whn498nykyncsr2nix-hello-compatible-comparison-pair-native-acceptance`.
+`pair-native-audit.json` checks both complete Nix proofs through Python and JQ,
+the zero caller model/compiler/solver counts, all fourteen portable definitions,
+the two omitted original routine objects, and the actual candidate/payload/map/
+registry/object hashes. The strong dispatch receipt is complete and bound to the
+linked payload. No runtime observation was performed. This hybrid pair leaves
+the rest of Hello generated and cannot satisfy G6. Session 9187 is terminal;
+no earlier proof or native process needs restarting.
+
+G3 implementation alongside that immutable Nix build: ordinary V6 packages now
+carry editable canonical interface/binding inputs and optional cutpoint intent.
+Configured `boundary inspect` exposes them; `propose` supplies writable files;
+`adopt` checks the current package baseline, rebuilds derived digests and exports
+the existing draft configuration/index formats. Each operation retains its owned
+units, context and entry/exit inventory. Foreign cuts, stale packages, mismatched
+value inventories and occupied destinations reject. This extends the existing
+seed/caller workflows without creating another proof authority.
+
+The real Hello retained-input walkthrough is in
+`build/hello-loop-header-2026-09-20/configured-workflow/`. Package generation takes
+8.005s. Public inspect/propose/adopt take 0.333s/0.405s/0.350s through a minimal
+operator flake exposing only the retained package, with no proof/activation
+products. Renaming the internal cut and source marker normalizes; a changed owner
+rejects in 0.356s. The existing Nix work-package builder also succeeds with exactly
+the same work-package identity. No pilot is rebuilt. The edited proof is not
+checked by this walkthrough; target application was added in the later experiment
+above. Actual contract invalidation, semantic split/merge proof and complete
+selection remain open. All 28 focused tests pass in four Nix shards with no skips; five
+repository gates also pass. Validation is recorded in
+`configured-workflow/validation.json` and `final-nix-outputs.json`.
+
+The completion integration and subsequent reader hardening pass 24 tests across
+five Nix shards, with no skips, plus five repository gates. Mutations of the real
+incomplete packet exposed a Python/JQ discrepancy: Python allowed a missing first
+lemma query with later dependent queries retained in an incomplete packet. It now
+requires an ordered prefix of scheduled assertions, matching JQ. Both readers
+reject missing lemma evidence, wrong assertion sites, missing policy and weakened
+backend commands; the original incomplete packet remains accepted as incomplete.
+See `checked-completion/integrated-reader-negatives.json` under the prior
+`nul-decision-cut/` experiment. No strong authority was granted by the discrepant
+incomplete result.
+
+Working-tree review (2026-09-20): optional `call_completion_lemmas` now have
+intent parsing, generated assert-before-assume helpers, a SAT query policy, and
+Python/JQ receipt-reader integration. Dedicated small tests now check complete,
+unfinished and too-few calls, wrong successors and faults, SAT-only and mixed
+SAT/SMT execution, unsupported contracts, missing queries and altered evidence.
+The completion, SMT/reuse and cutpoint Nix shards and five repository gates pass.
+Exact reports and inputs are in `nul-decision-cut/checked-completion/validation-checkpoint.json`.
+The real four-region recheck in `checked-completion/run/` is terminal and
+`incomplete`. Entry, decide and finish pass, as do all four nonvacuity checks.
+Python and JQ accept its incomplete packet. Preparation takes 7.443s and provider
+execution 1,457.353s; compatible edit/reuse and native admission correctly did
+not run because the caller baseline is incomplete.
+The new optional hint is documented in
+[the contextual proof contract](portable-c-contextual-bisimulation.md#checked-call-completion-hints).
+
+The integrated scan lemma passes in 27.911s, decision alignment in 7.978s and the
+decision invariant in 104.355s. Scan remains incomplete because the source-call
+readiness assertion `spx_proof_connected_0000_begin.assertion.2` exceeds 120 seconds.
+This checks a completed exact invocation is available for each source replay;
+it is not the input-memory assertion. SAT on the same retained query also times
+out at 60 seconds. No backend change is adopted from that negative experiment.
+
+The adopted refinement is `single-call-regions/`: add `left_converted` at
+`0x67e7`, transporting the first result from EAX's low byte and its NUL endpoint
+fact. Move the right-byte source read after the first conversion, matching the
+machine's read/call order, and check one-call completion hints on both regions.
+The public function and component ownership remain unchanged. Intent/source
+packaging and exact-slice generation succeed. The complete affected operation,
+including fault prefixes, now qualifies locally and passes combined native
+admission with the edited supplier. Continue with the public refinement workflow.
+
+The prerequisite acceptance checklist below records what the integration must
+preserve. Items 1–3 have the targeted and four-region terminal evidence described
+above; the four-region result was incomplete. The later five-region run and local
+reuse and native admission pass. Item 4's valid-contract-refinement distinction
+remains part of the public operator workflow:
+
+1. Small integrated positive and negative cases check the implication, reject a
+   wrong successor and a fault after completed calls, and show that incomplete
+   calls grant no successor fact. Reject unsupported supplier contracts, invalid
+   counts and targets outside the outgoing cuts. Omitting the hint must omit its
+   assumption; a failed hint must fail the proof rather than authorize reuse.
+2. Both Python and Nix/JQ readers reject missing, stale or altered lemma evidence,
+   assertion sites and weakened solver/unwind/slicing policies. Check old packets
+   without hints as well as the new mixed SAT/SMT path. Preserve the ordinary
+   safety, unwinding, nonvacuity and exact input/model/tool bindings.
+3. Refresh generated metadata and pass affected Nix shards and repository checks.
+   Recheck the real four-region caller using retained source/exact packages and
+   eligible query evidence; retain terminal results and separate phase costs.
+4. Only a complete caller baseline can seed the compatible supplier-edit test.
+   Demonstrate zero caller model/compiler/solver work, actual incompatible-contract
+   invalidation, and the current combined qualification/selection/native link.
+
+Successful lemma integration alone closes none of G1–G7. The active goal remains
+the complete operator workflow and all seven acceptance exits; this implementation
+handoff must not become a replacement goal.
+
+Earlier continuation: `nul-decision-cut/` manually adds `decide` at `0x67f4`, after
+both lowercase calls and before the loop decision. It carries the two low-byte
+results and explicit facts that reaching either checked NUL endpoint implies a
+zero conversion result. The predecessor must prove these facts; the decision
+region may then use them for progress. Public interfaces, ownership and runtime
+algorithm are unchanged. Source preparation and coverage planning accept four
+regions. Its full provider check in `checked-run/` is terminal and incomplete:
+entry, decide and finish pass, as do all four nonvacuity checks. Scan proves the
+new decision invariant in 58.880s, but alignment with `decide` exceeds 120 seconds.
+Preparation takes 7.381s and provider execution 1,309.684s. `checkpoint.json`
+and `command.json` retain the proposal, phase costs and exact invocation. It is
+not adopted. The queued compatible-edit check correctly did not run; the
+combined Nix provider/selection/native recipes are parsed but remain unbuilt.
+The initial invocation rejected an unavailable, misspelled solver path before
+proof; the corrected invocation reuses its retained exact package.
+
+Before this split, the unchanged scan alignment query also timed out with the SAT
+backend at 60 seconds. A diagnostic split into result-kind and target checks
+timed out on both at 60 seconds; it was not adopted. Both actual supplier negatives
+now reject through ordinary caller admission with
+`V6 connected-provider proof summary is incomplete or stale`.
+The wrong-arithmetic variant retains the same consumed zero-preserving summary;
+the zero-to-one variant loses that guarantee with the same interface/signature.
+Evidence is in `nul-progress-cut/supplier-negative-admission/`. These admission
+rejections and checked contract comparisons do not establish successful caller
+cache reuse or its incompatible-contract invalidation demonstration.
+
+The next concrete lead is a checked completion implication. In the retained
+scan model, two completed scalar supplier calls imply a normal machine successor
+at `0x67f4`. This implication times out with SMT at 60 seconds, but passes with
+SAT in 13.855s. Asserting then assuming it before source execution makes the
+formerly timed-out alignment check pass in 7.986s. Changing the claimed successor
+to `0x67f5` produces a violation in 9.941s. These are diagnostic models, not
+production receipts. Integrate any such lemma through ordinary generated
+assertions and exact query/model/tool bindings: a consumed premise must have its
+own successful checked query, with no circular assumption or domain narrowing.
+If a candidate lemma cannot be established, the ordinary model must retain no
+assumption from it. Keep the complete safety, unwinding, nonvacuity and final
+admission gates. The existing physical-frame probe machinery is supplementary
+and runs after ordinary success; it cannot by itself authorize this new use.
+
+An alternative diagnostic adds the implicit internal-call return word
+(`entry ESP - 4`) to the existing sparse-memory cache. It retains read validity,
+write mirroring and partial-overlap invalidation, but still times out at 60.026s.
+It is not adopted. Do not repeat either cache or completion probes without using
+their retained terminal evidence under `nul-decision-cut/`.
+
+The next deliverable remains the connected comparison/lowercase gate. The
+physical no-write experiments now have a deliberately restricted production
+rule: a sync's `preserved_parameter_slots` annotation checks every supported
+exact-store path for overlap and checks the stack anchor before reusing pointer
+bits at a successor with the same ESP-relative scope projection. Pointee
+contents, lifetime and native context still require
+their ordinary checks. Unsupported effects reject. The focused Nix shards and
+repository checks pass. The four-origin 300-second retry proves left metadata
+in 116.410s but still times out on right context. With two origin slots, the three
+capture checks pass in 18.136s, 28.102s and 41.492s, but the exit-control query
+times out at 120 seconds. The smaller capacity is still a checked storage claim,
+not an admitted-input restriction; its overflow and all remaining assertions
+must pass before adoption. Evidence and the current retry are under
+`build/hello-loop-header-2026-09-20/preserved-slots-provider/`. Do not infer caller
+qualification or a performance improvement from the frame fixtures alone.
+
+Adding the two projection-only argument slots to the existing stack cache left
+all three selected transport checks incomplete at 60 seconds. That cache change
+was not adopted; do not repeat it as an untested proposal.
+
+If frame facts are used to simplify transport, their implementation must bind the
+exact region and admitted states, cover every relevant write/effect path and
+partial alias, preserve read validity and lifetime requirements, and reject false
+frames through the ordinary proof readers. Then finish reference realization and
+rerun complete qualification before claiming the caller is independently assured.
+The operator deliverable is still compatible supplier edit, caller reuse and
+combined admission; a faster isolated frame check cannot replace it. Retained
+results and timing scope are recorded in
+[the performance ledger](performance-and-invalidation.md).
+
+The callee-growth experiment replaces the lowercase range test with 26 explicit
+character cases and qualifies that complete routine through the ordinary local
+provider and retained-input Nix provider/selection/native-link gates. Regenerating
+and compiling both real caller regions produces exactly
+the baseline GOTO bytes (788,066 entry; 961,953 loop). The supplier body is absent
+from both compilation commands. This establishes body-growth independence for
+this connection, without asserting a complete caller theorem or zero-work reuse
+of one. Inputs, commands and model comparisons are retained under
+`build/hello-loop-header-2026-09-20/supplier-growth/`.
+
+The two-origin retry also times out on exit control at 300 seconds. The next
+manual refinement introduces `finish` at the real epilogue (`0x6804`) while
+retaining `scan` at the byte-read header. Structured C shares its final return;
+proof markers do not introduce a production API. The first explicit-`goto`
+draft correctly rejects under the supported source-control profile. The
+structured candidate is retained in `build/hello-loop-header-2026-09-20/finish-cut-v2/`.
+Its terminal provider result passes entry and finish, with nonvacuity checks
+passing for all three regions, but scan times out on
+`__CPROVER_spx_view_address.assertion.1` at 60 seconds. The later
+`finish-roundtrip-probe/result.json` records an address assertion passing in the
+finish region, not scan. The earlier loop-improvement interpretation was wrong:
+receipt shards are sorted differently from numbered model directories. The
+focused decoder test passes and its old-renderer mutation is detected.
+Integrated validation passes 49 tests across seven Nix shards and five repository
+gates. The full `finish-cut-v2/roundtrip-run/` result is incomplete: entry origin
+recording and scan right-context checks exceed 60 seconds; finish passes and all
+three nonvacuity checks pass. Preparation takes 14.320s and provider execution
+687.473s. Later unscheduled assertions remain unestablished. The corrected scan
+probe selects the model through query evidence's `obligation_id`.
+It also times out at 60 seconds (`scan-roundtrip-probe/result.json`). The complete
+`finish-cut-v2/roundtrip-retry120/` run used a 120-second query budget,
+the same exact/source inputs and workspace paths, and the previous provider's
+successful query evidence. Its terminal result remains incomplete: entry origin
+recording passes in 72.847s and scan right context in 39.371s, but scan reference
+address exceeds 120 seconds. Entry, finish and all three nonvacuity checks pass.
+Preparation takes 8.467s and provider execution 351.724s. The compatible lowercase
+`+ 0x20` to `| 0x20` edit also requalifies with the current engine in
+`finish-cut-v2/compatible-leaf/`; caller proof reuse and combined admission remain
+pending. A retained diagnostic now investigates adjacent duplicate incoming
+reference realization without reusing addresses across other capture restoration.
+That adjacent-call diagnostic still exceeds 60 seconds and was not adopted.
+Splitting the existing address assertion into five call-specific properties then
+passes all five (16.267s, 17.407s, 20.411s, 24.671s, 39.519s), with unchanged
+validation bodies and no new assumptions. The renderer now performs that split
+for direct address calls in cut macros. Focused tests retain successful resumed
+execution and detect runtime rejection at distinct call sites. The complete
+provider recheck runs in `finish-cut-v2/callsite-run/`; entry model bytes remain
+identical and reuse their successful queries. Updated Nix validation passes 50
+tests across seven shards and five repository gates, with no skips. The full
+callsite run passes entry, finish and all five scan address checks, then rejects
+`spx-bisimulation-invariant:scan`. The counterexample has offset 67 in a 68-byte
+view whose checked NUL extent is 13; readable capacity alone admits resumed
+states already past the terminator. Preparation takes 13.710s and provider
+execution 453.752s. `address-callsite-checkpoint.json` retains the terminal result.
+
+The new `nul_extent` invariant expression exposes the existing checked NUL witness
+separately from view capacity and rejects use without a canonical NUL-view
+contract. Focused tests distinguish those bounds and reject a capacity-substitution
+mutation. `nul-progress-cut/` strengthens both offset bounds to their NUL extents
+without changing runtime views or the C algorithm. Source preparation accepts its
+proof-only marker annotation. Updated Nix validation passes 56 tests across eight
+shards and five repository gates with no skips; `nul-progress-checkpoint.json`
+retains exact source, negative controls and outputs. The full provider check and
+its 300-second retry are terminal and incomplete at scan alignment. The retry
+records 7.392s preparation and 317.125s provider execution; entry, finish and all
+three nonvacuity checks pass. Canonical adoption, caller reuse and combined admission still require
+the complete proof and integration gates.
+`roundtrip-address-checkpoint.json` retains the source identities, focused and
+negative results, and exact Nix outputs. The combined caller-provider and
+14-definition selection/native acceptance recipes are prepared in the same
+retained experiment directory; they are not yet built or admitted.
+Its complete transport, coverage/progress and provider checks must pass before
+canonical source or intent adopts it. Cross-cut frame tests include a successor
+whose changed scope offset preserves invocation scope but moves ESP; ordinary
+reads must expose its changed pointer instead of reusing the old slot.
+
+2026-09-16: the operator requested a complete manual target partition and an
+inventory-driven implementation path to independent lifting and whole-program
+assembly. The [GNU Hello inventory and implementation order](whole-target-independent-lifting.md)
+now cover all 7,849 retained original transfers with 370 proposed routine
+boundaries, preserving non-code definitions and runtime obligations. The public
+`boundary inventory` audit uses retained inputs without pilot rebuilds. Structural
+coverage is complete; checked independent routine contracts and all-portable
+program assembly are not. Next close whole-operation ownership and connect the
+real string-comparison/lowercase consumer through qualification and selection.
+Do not interpret this inventory as completion of that broader milestone.
+
+## First complete-operation checkpoint — 2026-09-16
+
+`c_tolower` now owns both original transfers, including its return. Its current
+retained-input Nix qualification proves both definitions with no exact-context
+remainder; the selected hybrid Hello executable links with the original routine
+object absent. The native receipt binds the strong portable registry and both
+selected definitions. This closes one complete replacement, not G1 or G2.
+
+Closing ownership exposed a native-link defect: the retained dispatcher still
+references omitted routine objects. The registry now supplies rejecting fallback
+functions only for wholly portable, absent generated routines, and rejects owned
+interior entries without proved adapters. It preserves qualified runtime objects
+and never restores the old body. Compiled regressions cover these rejection paths.
+
+The complete `c_strcasecmp` binding owns all twelve transfers; its connected proof
+and combined admission are still pending. Its caller model omits the supplier
+body, but SAT safety-query splitting consumed over twenty minutes. A retained
+64-property Z3 probe passed in 26.9 seconds with unchanged obligations. The SAT
+run was explicitly interrupted and retained. The supported Z3 recheck clears the
+entry-region safety properties but three capture checks (left metadata, left
+extent and right context) reach the unchanged 60-second limit. The loop-region
+check subsequently finished incomplete too, including a nonvacuity timeout. The caller remains incomplete. Next address the measured
+capture-model cost, finish that proof, then demonstrate compatible edit/caller
+reuse and incompatible-contract negatives. Backend probes are diagnostics, not
+qualification evidence.
+
+Evidence and commands: `build/hello-independent-g1-2026-09-16/`; current complete
+leaf native gate:
+`/nix/store/hl4cxfwczbcbla8l2n29ck5cqwyd9rzj-hello-whole-lowercase-native-acceptance`.
+The audit confirms the old function object's digest is absent from the link.
+All 33 focused tests and eight targeted Nix/repository checks pass. A compatible
+lowercase implementation edit also passes its local full-operation qualification;
+the caller-reuse and integrated edited-selection evidence remain outstanding.
+No runtime observation, complete portable Hello, or second-architecture execution
+is claimed by this checkpoint. All G1–G7 exits remain required.
+
+## Loop-boundary investigation — 2026-09-20
+
+The complete caller run in `build/hello-independent-g1-2026-09-16/caller-v3-z3/`
+is terminal and incomplete. Reusing a checked stack-scope fact and caching repeated
+address reads did not resolve its 60-second capture-query timeouts. A separate
+checked address-equality experiment improved one metadata query but did not prove
+the full transport. These probes supplied no new provider authority.
+
+The next retained-input experiment moves the `scan` proof cut from the loop latch
+at `0x67d6` to the actual byte-read loop header at `0x67dc`, and moves its source
+marker to the beginning of the loop. This separates initialization from the two
+supplier calls. The matching header invariant permits the current terminator
+position; the old latch invariant required a valid next position. Full operation
+ownership and C behavior remain unchanged. The canonical planner confirms both
+source and exact cycle coverage; contextual entry/step/return proofs still must
+pass before adopting the proposal. Inputs and current results are retained in
+`build/hello-loop-header-2026-09-20/`.
+
+## Checked query scheduling and retry handling — 2026-09-20
+
+The 300-second retry reused entry evidence but stopped when the loop receipt's
+nonvacuity timeout had replaced its property result. Property process files were
+present but not bound by that receipt, so the cache correctly rejected them.
+Ordinary coverage-only receipts now follow the existing conditional-cache rule:
+rerun unpublished property queries, without admitting their retained files.
+A real compiled regression exercises the failed-coverage/retry path; corrupt or
+unbound evidence in an otherwise eligible receipt still rejects.
+
+The SMT checker now packs safety IDs into bounded groups while keeping authored
+semantic assertions separate. Both Python and independent jq readers validate
+the explicit policy, exact property coverage and single-assertion shape, and keep
+legacy policies readable. The real caller's entry pointer safety passes all 7,470
+properties with unchanged compiled model bytes. Eight groups replace 80 helper
+groups; measured summed query time falls from 264.438 seconds to about 49 seconds.
+This is a safety-phase improvement, not a completed caller or overall proof speedup.
+
+The focused local suites pass; all 36 tests in the four affected Nix shards and
+five targeted repository gates pass, including the additional reader negatives.
+`build/hello-loop-header-2026-09-20/packed-policy-checkpoint.json` records matching
+model/property coverage and phase measurements. The supported `caller-packed`
+retry uses retained exact-input paths and a retained-on-error workspace. Its entry
+right-view context assertion reaches the 300-second limit. The loop region also
+finishes incomplete, with three capture timeouts and a nonvacuity timeout at 300
+seconds each; total provider wall time is 1,022 seconds. A separate experiment assumes earlier metadata,
+extent and method assertions immediately after checking them; the context query
+still exceeds 60 seconds, so no such model change was adopted. G1–G7 remain open;
+complete the caller and actual supplier-edit/reuse/combined-link gate next.
+
+## Reference-origin storage investigation — 2026-09-20
+
+Splitting the right-context relation isolates its expensive part: context identity
+and runtime/address matching pass in 3.3 and 8.3 seconds, while logical reference
+realization still exceeds 60 seconds. Caching the context predicate rather than
+evaluating it again in the following assumption also times out; neither diagnostic
+model change was adopted.
+
+The existing `reference_origin_capacity` intent field supplies a more useful
+experiment. It tightens proof storage while retaining a mandatory overflow
+assertion; it does not assume away additional origins or restrict input strings.
+Two entries make the formerly 300-second context query pass in 24.1 seconds, but
+the overflow check remains incomplete at 60 seconds under both SMT and SAT.
+That bound is not established. Four entries pass both focused checks: context in
+59.0 seconds and overflow in 17.1 seconds. These are diagnostic results, not a
+qualified caller.
+
+`build/hello-loop-header-2026-09-20/origin-capacity-investigation.json` records the
+terminal baseline, exact experiment paths and separate preparation/compiler/query
+costs. The supported `caller-capacity4` run now checks both complete regions,
+including capacity, safety, transport, progress and nonvacuity, at the same explicit
+300-second per-query limit. Its intent is still a proposal; canonical target intent
+and source markers remain unchanged pending the complete proof.
+
+The supported four-entry run has now completed every entry-region query, including
+the reference-capacity and nonvacuity checks. Its frozen timing snapshot and input
+identity are recorded in `entry-capacity4-checkpoint.json` beside the investigation.
+The loop region finished incomplete: left metadata and right context each timed
+out at 300 seconds; left extent passed in 277.1 seconds and nonvacuity passed in
+16.4 seconds. Preparation took 7.384 seconds and provider wall time was 723.572
+seconds. The terminal receipt is
+`caller-capacity4/provider/contextual-refinement-result.json` under the retained
+experiment directory. The entry success supplies neither a complete caller
+qualification nor combined native admission.
+
+The supported retry in `caller-capacity4-900/` is now terminal and incomplete.
+With the same intent/exact-input paths and an explicit 900-second query limit,
+left metadata passes in 496.3 seconds but right context still times out. Preparation
+takes 10.358 seconds and provider wall time 919.320 seconds. All 120 entry queries
+and 19 loop queries reuse prior evidence; two loop queries execute. Both caller
+models still compile, so this is not G2's zero-model/compiler/solver reuse.
+`caller-capacity4-900-checkpoint.json` records terminal evidence and phase costs.
+Do not respond with another timeout increase: address the remaining reference
+realization/model cost and the missing strong evidence-rebinding workflow.
+Canonical target intent and source markers remain unchanged pending complete proof.
+
+## Supplier edit and consumed-contract checkpoint — 2026-09-20
+
+The compatible lowercase edit (`+ 32U` to `| 32U` within the A–Z guard) now
+passes the retained-input Nix provider, selection and native-link gates. The
+selection replaces both transfers of the complete lowercase routine. This is an
+edited supplier in a hybrid executable, not combined comparison/lowercase
+admission or a complete portable Hello program.
+
+The scalar summary renderer now consumes an explicit projection of its checked
+source guarantees: interface/header identities, operation symbols, frame/context
+policy and exact postcondition predicates. Implementation and proof-process
+identities remain in the supplying certificate. The two genuinely qualified
+lowercase implementations have equal consumed contracts and adapter identities;
+their implementation and evidence identities differ. The retained incorrect
+`+ 33U` implementation still fails original-machine result equivalence.
+
+Seventeen scalar-summary tests pass, including compatible-edit/unchanged-wrapper,
+same-signature/lost-guarantee and stale/unproved-evidence cases. The corresponding
+Nix shard and five repository gates pass. This establishes a source compatibility
+premise for G2. The later whole-proof reuse checkpoint below implements the engine
+path for unchanged caller inputs and checked scalar dependencies. The actual
+edited-supplier/caller demonstration must still carry that rebound evidence through
+combined selection and native link with zero caller model/compiler/solver work.
+No activation reader or proof obligation was relaxed.
+
+Inputs, gate expressions and the non-authorizing compatibility checkpoint are in
+`build/hello-independent-g1-2026-09-16/`; focused validation logs are in
+`build/hello-loop-header-2026-09-20/scalar-contract-*.log`.
+
+## Whole local proof reuse checkpoint — 2026-09-20
+
+The existing engine now records local proof inputs and consumed scalar contracts
+separately from supplier implementation/evidence identities. A complete,
+unconditional proof with unchanged inputs can reuse its retained models and
+queries while binding current validated suppliers. Changed inputs take the normal
+checking path; corrupted artifacts reject. Legacy and incomplete receipts retain
+exact-query reuse. This does not introduce another activation path.
+
+The complete Hello lowercase leaf passes qualification again with zero paired
+model generation, compiler or solver invocations. Reuse validation/copying takes
+0.057 seconds. Provider wall time falls from 19.359 to 12.834 seconds in these
+retained runs; preparation takes 7.761/8.148 seconds. Auxiliary source checking and
+production-object compilation still run. This is an unchanged leaf, not the
+required compatible supplier-edit/caller demonstration or combined native link.
+Exact identities and phase measurements are in
+`build/hello-loop-header-2026-09-20/paired-proof-reuse-checkpoint.json`.
+
+The recorded validation passes 87 tests across ten Nix shards and five repository
+checks. A subsequent targeted SMT/metadata recheck also completes successfully,
+including the caller-header invalidation regression. Retained validation is in
+`proof-reuse-validation-checkpoint.json` and `proof-reuse-final-nix.log` in the same
+directory. These are scoped checks, not completion of repository-wide acceptance.
+
+The comparison's remaining right-context timeout still blocks the first connected
+gate. Finish that gate and demonstrate the public edit/refine/reuse workflow;
+do not interpret the new fast path, isolated compatibility tests or passing
+validation as completion of any G1–G7 exit.
+
+## Loop transport factorization experiment — 2026-09-20
+
+Follow-up: the production outgoing context check now evaluates its stateful
+reference validator once and uses that checked Boolean in the following
+assumption. Previously the assumption invoked realization a second time. The
+required context assertion and all later memory/lifetime checks remain. A compiled
+regression checks the invocation count and rejects a failed first evaluation;
+restoring the old duplicate evaluation makes the regression fail. Four Nix shards
+pass 25 tests, and metadata, registry and production-lint gates pass. This is a
+checked implementation simplification, not a claim that the caller now qualifies.
+
+Two further diagnostic attempts remain incomplete: allowing cached stack words
+before any public write/allocation/shadow effect leaves all three selected checks
+at their 60-second limits; combining the diagnostic projection substitution with
+checked capture assumptions still times out on right context. Neither was adopted.
+The implementation identities, terminal tests, mutation negative and probe models
+are indexed in
+`build/hello-loop-header-2026-09-20/context-snapshot-checkpoint.json`.
+The next substantive gate remains checked transport/reference realization followed
+by the connected supplier-edit/caller-reuse and combined native admission workflow.
+
+The remaining comparison check has two costly parts: proving the outgoing stack
+projections and realizing the corresponding logical reference. On the retained
+four-origin loop, separating the context conjunction proves descriptor identity
+in 4.6 seconds, but both address/runtime correspondence and reference realization
+exceed 60 seconds. It is therefore insufficient to attribute all cost to the
+native namespace lookup alone.
+
+A separate exact-side frame experiment proves preservation of ESP and both
+argument slots with SAT in 28.352 seconds. Its reached-loop witness passes in
+6.290 seconds; an intentionally false right-slot equality produces the expected
+counterexample in 9.995 seconds. This experiment omits source reconstruction and
+view admission. It is a candidate lemma, not an integrated replacement for the
+paired transport checks: domain coverage, memory exposure, checked reads, safety
+and exact evidence binding must be established before consuming it in production.
+
+Using those equalities as an explicitly diagnostic projection substitution makes
+left metadata pass in 46.140 seconds and left extent in 18.041 seconds, compared
+with the retained 496.326/277.1-second results. These are individual measurements,
+not a controlled end-to-end speedup. After substitution, the separate descriptor
+identity and address/runtime checks pass in 2.363/4.930 seconds. Reference
+realization still exceeds 60 seconds; the combined context check also exceeds
+180 seconds. The complete caller remains incomplete.
+
+Other measured variants—capture assumptions, lookup ordering, array encoding,
+namespace memoization, untouched-read shortcuts, arbitrary input-word encoding
+and alternative Z3 tactics—do not finish the relevant checks within their stated
+limits. Skipping the duplicate issued-origin realization also fails to resolve
+the timeout and has no checked composition authority. None was adopted.
+
+`build/hello-loop-header-2026-09-20/loop-transport-factorization-checkpoint.json`
+indexes terminal results and retained model hashes. Compiler and checker costs
+are recorded where measured; checker time includes CBMC encoding, and diagnostic
+staging/model edits were not separately timed. No pilot or native link ran, and
+canonical source/intent still match the pre-experiment snapshots.
+
+Next implement checked reuse of regional frame/transport facts through the
+existing proof machinery, beginning with the actual slot-preservation consumer
+and its uncovered domain/composition obligations. Factor the remaining reference
+transport before another full caller run. Then finish compatible supplier-edit
+reuse and combined admission. These measurements do not complete G1, G2 or G5,
+and all later G3–G7 acceptance remains mandatory.
+
+# Previous Goal: Behavior-Faithful C Component Workflow
+
+Status: completed implementation milestone, 2026-09-16. F1–F7 complete
+within their documented scopes, with terminal acceptance and repository evidence.
+The broader general-purpose lifting objective remains unfinished.
+
+Implement [the behavior-faithful workflow plan](behavior-faithful-component-workflow-plan.md)
+using the existing four-operation jq path/value network. Make boundaries easier
+to author, contracts and resource diagnostics accurate, composition manageable,
+and local editing/reuse efficient. Preserve original behavior within the declared
+scope, including known original defects; no blanket memory-safety or borrow-checker
+requirement applies. Separate behavioral differences, resource diagnostics and
+contract violations in both operator output and evidence.
+
+| Exit | Required outcome | Status |
+|---|---|---|
+| F1 | Bounded headless-Wayland/Wine sessions, cancellation, output capture and cleanup; measured public jq runtime | Complete |
+| F2 | Contract-specific resource diagnostics; detect introduced defects and preserve explicitly scoped original bugs without hiding findings | Complete within documented instrumentation scope |
+| F3 | Reusable service definitions, generated mechanical setup and controlled dependency checks; public edit/replay/reuse | Complete within documented synchronous/finite scope |
+| F4 | Explicit transitive selections, visible graph and provenance, contract/representation conflict checks and recursion handling | Complete within declared synchronous comparison scope |
+| F5 | Precise per-unit compilation and evidence invalidation, including unread headers and include shadowing | Complete within documented toolchain/preprocessor scope |
+| F6 | Consistent C scalar support and one useful focused local check with explicit premises and separate assurance labels | Complete within documented scalar/shared-view scope |
+| F7 | Fresh jq walkthrough, affected shared/DX-Ball regressions, applicable Nix/repository validation, terminal evidence and refreshed docs | Complete; final audit binds terminal results |
+
+F1 is the first bounded reliability fix; F2–F3 are the main usable checkpoint.
+Complete this goal only when every exit in the linked plan has executable evidence.
+Inspect current implementation before relying on recorded status. Preserve unrelated
+dirty-tree work, reuse retained inputs, and run every Wine application inside a
+headless Wayland desktop. No commit, push or deployment is requested.
+
+The contextual-bisimulation contract and existing strong pilot/native-link/export/
+portability obligations remain unchanged. Experimental evidence and conditional
+local checks do not authorize activation. This bounded goal does not require
+resolving every pre-existing full-target qualification blocker.
+
+## Final acceptance — 2026-09-16
+
+`build/behavior-faithful-workflow-2026-09-16/f7-final-audit-v1.json` binds the
+completed F1–F7 evidence, current implementation hashes, unchanged acceptance
+source profiles and terminal repository results. The broad run completed with
+249 passing derivations and one obsolete regression assertion. The corrected
+regression passes locally and in Nix. Confirming the same 250-derivation selection
+with only that corrected shard substituted passes offline in 0.464 seconds,
+rebuilding nothing (`f7-broad-corrected-result-v2.json`). An earlier redundant
+online confirmation was interrupted during cached resolution; its result is
+retained separately and is not counted as passing validation.
+
+The broad snapshot is supplemented by passing current header/scalar/shared and
+target-regression Nix gates. All 55 acceptance source profiles remain identical,
+and the final audit checks current implementation hashes against the revalidated
+behavioral evidence. No obligation or timeout was weakened. Earlier checkpoint
+statements below describe sequencing at that time; this section and the status
+table give the final milestone state. No commit, push or deployment was performed.
+
+## F7 behavioral acceptance checkpoint — 2026-09-16
+
+`build/behavior-faithful-workflow-2026-09-16/acceptance-workflow-v1/` now retains
+fresh public start/edit/check/divergence/replay/repair evidence with the authored
+numeric helper and current resource/service instrumentation. All 106 isolated
+cases, 26 composed getpath cases and 37 full-network cases match. The leaf edit
+recompiles one translation unit in each affected comparison; the full network
+reuses 13 objects. Unchanged neighbors, repairs against matching retained inputs,
+and the unread-header edit perform zero compiler/link/model/solver/execution work.
+The injected behavioral defect remains a mismatch on retained replay. The leaked
+reference keeps matching JSON while failing its explicit resource premise, both
+in the fresh check and replay. Refining a same-signature supplier assumption
+rejects before compilation and names both dependent get consumers.
+
+The walkthrough's older negative assay first edited an assumption without
+refreshing its derived graph and correctly received a stale-graph rejection.
+After fixing that fixture step, the intended incompatible-contract rejection was
+observed. Experimental assembly then correctly rejected isolated getpath evidence
+for the composed selected contract. The fixture now supplies the composed check.
+Both failed attempts are retained; continuations run only the corrected remaining
+steps, preserving earlier current-source comparisons rather than rebuilding them.
+
+`experimental-v2/` and `experimental-run-v2/` pass all 37 actual selected-network
+cases, retaining all 38 suite/case admissions (continuation session 23730 exit 0).
+The candidate SHA-256 is
+`9283b41a742954a8f2b2b92407e660bf1fa07c61ecd81bd8216376bcbb209f8a`.
+Evidence validation takes 115.472 seconds, candidate execution 8.128, prefix startup
+3.917 and resource validation 3.442. These ran alongside repository checks; no
+controlled runtime speedup is inferred. Every Wine invocation used headless Wayland.
+
+Additional current evidence:
+
+- `acceptance-raw-control-v1/` preserves the missed uninstrumented leak and its
+  added-reference-observation counterexample, while confirming current zero-work
+  unread-header reuse (session 50874 exit 0).
+- `dxball-lifecycle-v1/` repeats eight baseline cases, four injected wrong-message
+  mismatches, retained replay, repair, unchanged reuse and invalid-lifetime
+  diagnostics with the retained exact-C oracle (session 39571 exit 0).
+- `f7-shared-regressions-v1.log`: 15 shared-view/service, resource and compatible
+  representation tests pass (session 39042 exit 0).
+- `f7-audit-v1.json` revalidates 21 jq comparisons, the separate shared-service
+  proof workflow, DX-Ball/raw controls, runtime/report/resource hashes, exact
+  candidate binding, all case counts and 38 admissions. Source hashes and phase
+  costs are retained. Its historical pending Nix field is superseded by the
+  terminal `f7-final-audit-v1.json` aggregation.
+- `f7-rechecked-f3.json`, `f7-rechecked-f4.json`, `f7-rechecked-f5.json`: current
+  readers revalidate 41 earlier controlled-service, composition and compile-cache
+  reports, including generated bridges, callee-body absence, reuse and selected
+  experimental manifests (`f7-earlier-evidence-recheck.log`, session 13109 exit 0).
+- `f7-metadata-check-v1.log`: repository metadata is current; `git diff --check`
+  and scoped repository-configured Ruff checks pass.
+
+The first broad F6 Nix run stopped at an existing allocation-cut test's 40-second
+solver timeout under high concurrency (session 50648 exit 1). The identical shard
+passes alone: eight tests in 37.066 seconds (session 18793 exit 0). The complete
+affected set was rerun with two jobs and keep-going (`f6-nix-v2.log`,
+session 67918); no theorem or timeout was weakened. That retry found a stale
+terminated-read regression expecting 32-bit entry-register targets to be
+unsupported. Existing checked target transport already supports those registers;
+the negative now uses an unsupported partial-width register while retaining raw
+oracle, typed adapter, forged receipt and strong-predicate rejection checks.
+All 20 terminated-read/service-target tests pass locally
+(`f7-target-regressions-v1.log`), and metadata is current
+(`f7-target-refresh-v1.log`). The focused Nix correction check passes with the
+smoke, metadata, architecture and production-lint gates
+(`f7-target-nix-v1.log`, session 83932 exit 0). The broad run is terminal (exit 1,
+249 passing derivations and this single stale assertion); the corrected aggregate
+passes as recorded in final acceptance above.
+
+Remaining limits are explicit: native service/heap internals, general lifetime,
+floating arithmetic/fenv proofs, arbitrary callbacks/concurrency, checked semantic
+composition for all jq services, and whole-target original equivalence/strong
+qualification are not established. The graph declares requirements; optional
+source checks and finite comparisons do not authorize provider activation. This
+milestone leaves the broader general-purpose lifting goal unfinished.
+
+## F6 implementation checkpoint — 2026-09-16
+
+Binary32/64 interfaces now render ordinary C scalars through services and record
+results, with representation and exact native-adapter signature checks. The jq
+get/set operations use authored `numeric-index.h` and a binary64 number accessor;
+numeric normalization no longer requires native glue. Conventional outer authored
+header guards are accepted while nested conditionals and executable macros remain
+restricted. Editor guidance and comparison output distinguish source profile,
+compiled bindings, sampled behavior and optional formal rules.
+
+The practical comparison plan/SDK now exposes the existing shared-view checker
+through optional `local_shared_contract` / `localSharedContract`, using the
+existing relation and explicit model capacities. It proves conditional frame,
+input-dependence, service-trace and returned-state-alias properties for supported
+fixed-view interfaces. It supplies no original equivalence, general lifetime or
+activation authority. jq opaque values and floating service proofs remain outside
+this rule. Optional root checks are not automatically imported supplier summaries.
+
+Retained evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `float-baselines-v2/`: 106 isolated cases, 26 composed getpath cases and 37 full
+  network cases pass after migrating numeric normalization (session 69349 exit 0).
+- `float-pe32-v1/`: generated binary32/64 service/record interfaces preserve the
+  tested signed-zero, subnormal, infinity and quiet-NaN bits; authored index
+  normalization passes extremes and truncation cases. Wrong saturation executes
+  and fails at the expected case; wrong adapter/operation signatures and fast/
+  finite-math builds reject (session 75449 exit 0). No universal NaN/fenv claim.
+- `shared-workflow-v1/`: fresh public checks prove the resource-text property,
+  reuse unchanged observations and proof with zero compiler/model/solver work,
+  rerun after a changed premise, disprove a wrong alias despite matching samples,
+  repair, and report an unsupported protocol with no solver work (session 25502
+  exit 0). Exact commands, artifacts and independent scopes are retained.
+- `f6-focused-v1.log`: 14 focused tests pass. `f6-float-tests-v3.log` adds the
+  arithmetic negative to the four passing scalar tests. Header-guard tests keep
+  conditional/macro/intrinsic restrictions active inside guarded headers.
+- `f6-capability-probes.json` replaces obsolete scalar/nested-selection failure
+  expectations with current support and explicit binary16 rejection.
+
+Final review tightened header-guard recognition: compiler/proof configuration
+macros must not be mistaken for application-owned guards and removed from profile
+scanning. `f6-guard-hardening-v1.log` passes 11 header/scalar/shared-check tests,
+including a reserved-guard macro-override negative. `f6-guard-nix-v1.log` passes
+the focused Nix shards and repository gates after the change (session 25107 exit
+0); the broad run remains recorded separately. `f7-profile-recheck-v1.json` confirms
+identical current profiles for all 55 retained acceptance component checks, and
+the full F7 evidence audit passes again. No proof obligation was weakened.
+
+F6 repository checks and F7 acceptance are complete within the scopes above.
+
+## F5 compilation and invalidation checkpoint — 2026-09-16
+
+The existing comparison receipt now retains per-translation-unit compiler inputs,
+object hashes and literal include-search probes in `build/compilation.json`.
+`--reuse-comparison` reuses unaffected objects independently of observation reuse.
+Changed compiler/checker/contract/observation inputs retain their respective
+invalidation rules; an invalidated comparison relinks and executes. Provenance,
+cache misses, unread-header exclusions, phase costs and retained byte counts are
+visible in the existing operator/evidence workflow. Empty include directories
+survive snapshotting and transitive import.
+
+Evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `compile-workflow-v2/`: the 106 isolated and 37 composed cases match. The get
+  body edit recompiles exactly its own C translation unit in both supplier and
+  full-network checks. The integration reuses 13 objects, relinks once and matches
+  all 37 cases. All three isolated neighbors reuse observations with zero
+  compiler/link/model/solver/execution. An unread full-network header causes no
+  such work and no integration invalidation.
+- `unread-interpreter-v1/`: editing the specific unused `headers/interpreter.h`
+  from the original assessment reuses all 26 isolated-get cases with zero work.
+- `f5-compile-focused-v3.log`: 56 focused tests pass. `f5-cache-tests-v5.log` adds
+  current eight-test cache verification, including relative retained-report paths,
+  read-header edits, newly shadowing/optional headers, inactive-header contents,
+  computed-include fallback and checker changes with object reuse but new execution.
+- `f5-compile-nix-v2.log`: affected compiler, pure and CBMC shards plus smoke,
+  metadata, architecture and production lint pass (session 2656 terminal exit 0).
+  The first Nix attempt exposed missing public-command metadata in the new test;
+  that fixture declaration was corrected and the complete affected run passed.
+- `f5-compile-audit.json` revalidates 13 reports, exact object bytes, case counts,
+  compiler counts, invalidation and reuse. `f5-compile-measurements.json` separates
+  preparation, compiler, cache indexing/validation/retention, link, execution,
+  evidence hashing/retention, storage accounting and retained byte categories.
+
+Full-network compiler time drops from 0.640 to 0.032 seconds. The whole CLI is
+18.43 seconds versus a fresh baseline's 17.64 seconds: evidence validation and
+Wine startup/execution dominate, so no end-to-end edit speedup is claimed.
+Unchanged-neighbor CLI runs take 0.88–1.39 seconds versus roughly 13 seconds fresh.
+The first cache experiment conservatively mistook `???` in a Windows-header comment
+for a trigraph; the check now recognizes actual trigraph triples. Redundant probes
+under immutable Nix store paths were removed, reducing network cache metadata from
+9,233,805 to 434,424 bytes. Actual read header bytes remain bound.
+
+Precise reuse currently relies on the provisioned immutable Nix toolchain/store
+and understood literal preprocessing. Unsupported computed includes, time macros,
+mutable compiler loader/implicit-file mechanisms and other reported gaps recompile
+normally. Environment binding remains conservative. The cache does not grant proof
+or activation authority. F6–F7 remain mandatory before completing the goal.
+
+## F5 initial performance checkpoint — 2026-09-16
+
+Profiling the actual retained 37-case network identified repeated service-catalog
+parsing as the dominant evidence-validation cost. Service observations now reuse
+immutable parsed facts keyed by the full catalog payload, with a bounded in-process
+cache. Claimed digests alone never select cached data. Every current stream is
+still read and checked, and suite/per-case admission remains unchanged.
+
+`f5-catalog-focused-v1.log` records 26 passing tests, including changed trace
+contents, report mutation and malformed catalog contents with an unchanged claimed
+digest. `f5-catalog-nix-v1.log` records passing affected compiler/pure shards,
+smoke, metadata, architecture and production lint (session 49000 terminal exit 0).
+The first standalone lint invocation used Ruff defaults, which additionally flag
+the existing compact statement style; the repository's configured
+`F401,F811,F821` checks pass without a style-only rewrite.
+
+The same experimental manifest and candidate pass all 37 cases again in
+`catalog-runtime-v1/`, with all 38 suite/case admissions retained. Measured evidence
+validation drops from 146.184 to 93.211 seconds (36.2%); execution is 2.143 seconds.
+These are single-run observations, not a controlled claim about unrelated runtime
+variance. `f5-catalog-audit.json` binds source hashes and compares exact manifests,
+candidate binaries, case sets and admission counts. Separate profiled reader runs
+drop from 3.563 to 1.559 seconds, with identical accepted evidence.
+
+At this earlier checkpoint F5 remained incomplete. The compilation/invalidation
+checkpoint above subsequently implements and verifies its remaining exits.
+
+## F4 transitive composition checkpoint — 2026-09-16
+
+The full jq network selects composed getpath and set; getpath brings its selected
+get implementation transitively. Exported bridges and generated selection headers
+remove repeated wiring and manual flattening. The resolver stores each consistent
+body once and binds requirements to the exact interface, effects, assumptions,
+domain and representation. Operator output exposes both get consumers, getpath
+readback and setpath's internal recursive requirement. Recursion is explicitly
+synchronous with unproved progress. No synthetic production API was introduced.
+
+Evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `composition-baselines-v1/`: all 106 isolated cases, 26 composed getpath cases
+  and 37 full-network cases match, with resource/service applicability satisfied.
+- `composition-workflow-v2/`: public start/edit/check of composed getpath imports
+  its unchanged get supplier without manual flattening. Both that edit and a get
+  leaf edit pass their local checks and all 37 integration cases. Impact reports
+  name the changed unit and transitive integration consumers. The unchanged
+  composed rerun reuses observations with zero compiler/link/model/solver/execution.
+  A same-signature changed contract rejects before compilation, naming
+  `path-get/get` and `path-set/get` as consumers requiring refinement.
+- `f4-focused-v5.log`: 34 tests pass, including diamond deduplication, missing and
+  conflicting suppliers, stale graphs, mixed representations, real recursive C,
+  unsupported recursion modes and composed replacement. Existing service tests
+  additionally cover changed effects/outcomes under an unchanged signature.
+- `f4-nix-v1.log`: affected compiler/pure shards, smoke, metadata, architecture
+  boundary and production lint pass; process session 39663 terminal exit 0.
+- `composition-experimental-v1/` binds the selected comparison binary without
+  compilation; `composition-runtime-v1/` passes all 37 public experimental cases
+  under headless Wayland (session 16828 terminal exit 0). Evidence validation costs
+  146.184 seconds, execution 6.916 seconds and resource validation 3.674 seconds.
+- `f4-audit.json` revalidates 12 comparison reports, generated selection headers,
+  exact composition and experimental bindings, negative diagnostics and runtime.
+  The initial workflow attempt lost provisioned Python dependencies by replacing
+  `PYTHONPATH`; v2 preserves them and completes successfully.
+
+The graph records declared requirements, not a verified call graph or checked
+summary. Unchanged unit inputs are not a proof-reuse claim. Full input bindings
+still protect integration invalidation for undeclared fixture dependencies.
+Per-unit compilation caching and unread-header independence remain F5. F5–F7
+remain mandatory before completing the goal.
+
+## F3 shared service generation checkpoint — 2026-09-16
+
+F3 is complete within the declared synchronous service and finite comparison
+scope. All four jq operations now consume reusable `ServiceDefinition` values,
+using the existing boundary schema, lifecycle and interaction catalog. Exact
+contract identities include effects, resource roles, outcomes and protocol;
+unchanged C signatures do not hide contract changes. The comparison-package API
+and Nix SDK generate C transport wrappers, operation wiring, resource hooks,
+outcome partition checks and bound service observations. Native semantics remain
+in C adapters, with adapter-owned behavior and instrumentation gaps reported.
+Unsupported protocol/type/conversion shapes reject before compilation. The
+preparer plus new declarations/C helpers total 420 lines versus 584 previously:
+164 fewer handwritten lines (28%), excluding unchanged algorithms and drivers.
+
+Current evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `service-baselines-v4/`: 106 isolated and 37 composed jq cases match, with
+  resource and service applicability satisfied. All nine controlled-service and
+  six caller cases also pass; native get is erased on both caller sides and the
+  authored get implementation is absent from the caller binary.
+- `service-workflow-v4/`: the public edit/failure/repair/replay cycle passes with
+  generated bridges. A compatible supplier body edit passes 26 supplier and 37
+  real integration cases; the controlled caller reuses its evidence with zero
+  compiler, link, model, solver or execution work.
+- `service-resource-edit-v4/`: the standard check detects the discarded-copy leak
+  without driver changes; repair passes and retained faulty replay fails.
+- `service-focused-final.log`: 35 focused tests pass, including real generated C,
+  outcome partition failures, malformed traces, exact contract changes, unused
+  type independence and composition with an unexecuted root entry.
+- `service-nix-v5.log`: affected Nix checks, smoke, metadata and production lint
+  are terminal and pass (process 32747, exit 0). The first Nix run exposed that
+  bridge generation was only called by fixture code; it now runs through the
+  production comparison-package constructor and reader rather than an exemption.
+- `service-policy-negative.log`: omitting explicit catalog acceptance rejects
+  experimental admission. `service-runtime-v4/experimental-run.json` passes all
+  37 cases with fresh resource/service trace checking. Evidence validation costs
+  135.385s, execution 6.619s, resource validation 3.236s and startup 3.567s.
+  Repeated admission/trace decoding is now a measured F5 performance issue;
+  this result does not claim an overall runtime speedup.
+- `f3-audit.json`: current readers revalidate 16 positive/negative/reuse reports,
+  exact generated bridge and coverage bytes, body-absence evidence and runtime
+  findings. Model/solver authority remains absent from concrete comparisons.
+
+A transient Weston crash exposed a launcher/child cleanup race. The wrapper now
+waits for the whole application process group within its existing finite grace
+period, so a launcher exiting does not kill a child's Wine-session cleanup early.
+The actual headless-Wayland regression in `service-wayland-cleanup-v2.log` passes;
+`crashed-desktop-cleanup.json` records stopping the two owned retained servers
+and disposing their prefixes inside a fresh headless desktop. No unrelated Wine
+session was stopped.
+
+Remaining F3 capability limits are explicit: integer/record synchronous-return
+authoring, adapter-owned native effects/predicate semantics and record conversion,
+source transport instrumentation, and finite logical service transcripts. These
+are not checked summaries, native heap/lifetime equivalence or activation receipts.
+F4 is next: explicit transitive selections and visible resolution/invalidation;
+F5 must address both per-unit compilation and repeated evidence-validation cost.
+F6 and the complete F7 acceptance audit remain mandatory.
+
+## F3 controlled caller checkpoint — 2026-09-16
+
+The [controlled jq fixture](../tests/fixtures/jq-path-controlled/README.md)
+now checks native and authored getpath against explicit argument/state-sensitive
+get transcripts. A separate nine-case service comparison validates those outcomes
+against actual native get, including its recoverable invalid-value result. The
+six caller cases remove all 2734 bytes of native get on both sides, verify trap
+bytes before and after execution, and link no authored value-get implementation.
+They cover nested traversal, negative indexing, missing values, stopping after an
+invalid result, empty paths and invalid paths, with source resource checks enabled.
+
+Evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `f3-controlled-checks-v1/`: all nine service and six caller cases match.
+- `f3-edit-reuse-v1/`: public start/edit/check/repair/replay. Removing the
+  invalid-result stopping condition fails the controlled-call premise; repair
+  matches, and retained faulty replay fails again. Both failures are reported
+  as incomplete comparisons with the premise failure in retained stderr.
+- A compatible value-get body edit passes 26 supplier cases and all 37 real
+  integration cases. The controlled caller reuses its six-case evidence with
+  zero compiler, linker, model, solver and execution work. The first script's
+  supplier edit locator was incorrect; after correcting it, a fresh baseline
+  was collected in the new desktop environment before testing reuse.
+- `f3-premise-negative/`: an invented service output fails against native get.
+- `f3-controlled-audit.json`: current readers revalidate all these receipts,
+  and the caller binary symbol inventory excludes the authored get supplier.
+
+This earlier subexperiment is finite executable local evidence under explicit
+logical transcripts. Heap identity/alias equivalence and allocator failures are
+outside its scope; the service is not a checked summary. At this checkpoint F3
+remained incomplete: definitions,
+mechanical bridge/check/observation generation, early capability diagnostics and
+measured reduction of handwritten setup still needed implementation. The shared
+generation checkpoint above subsequently implements these. The work replaced the repeated `SERVICES`, `interface()` and `bridge()` mechanics in
+the jq preparer with shared authoring support while retaining native semantic C
+adapters. F4–F7 remain mandatory.
+
+## F2 implementation checkpoint — 2026-09-16
+
+Contract-specific boundary instrumentation now observes nested reference transfers,
+borrows, explicit retention, simultaneous aliases and token generation reuse.
+Resource diagnostics and failed premises remain separate from behavioral matching.
+The standard public jq check detects the injected discarded-copy reference without
+changing its driver. Repair passes; replay of the faulty retained inputs fails.
+Explicitly allowed defects remain visible in matching semantic fixtures. False
+premises fail comparison applicability, experimental admission and fresh candidate
+execution. Defined-C memory fixtures preserve stale logical reads, reuse and faults
+without relying on host C lifetime or bounds violations.
+
+Evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `f2-audit.json` rechecks receipts for 106 isolated and 37 composed matching jq
+  cases, the leak/repair/replay cycle, and the final 37-case experimental run.
+- `f2-trace-audit.json` checks concrete acquire/borrow/consume trace consistency
+  and simultaneous alias witnesses. The deepest case has 261 live transport
+  tokens; the declared capacity is 4096, with 256 nested frames.
+- `f2-trace-tests.log`: 41 focused tests pass. The final timing integration also
+  passes 16 admission tests in `f2-final-admission-tests.log`.
+- `f2-nix-tests-final.log`: affected Nix checks, including smoke, metadata and
+  production lint, are terminal and pass (process 40102, exit 0).
+- `resource-runtime-final/experimental-run.json`: all 37 cases pass, with
+  evidence validation 37.207s, startup 3.767s, execution 2.096s, resource
+  validation 0.505s, teardown 0.065s and prefix disposal 0.214s. Full trace
+  revalidation adds cost; these are runtime measurements, not proof timings.
+
+Coverage is instrumented reference transport, not native heap safety. Native
+object addresses are alias hints; native allocation generations, service internals
+and unselected accesses remain unobserved. Capacity exhaustion is incomplete
+instrumentation. The supported operation lifecycle consumes whole parameters and
+produces whole results; unsupported shapes reject. No checked heap summary or
+new replacement authority is claimed. F3's generated service workflow remains
+required, as do F4–F7.
+
+## F1 implementation checkpoint — 2026-09-16
+
+The runtime implementation now bounds capture, termination, cancellation and
+server/prefix teardown. Application stdio retains pipes; captured output is a
+fixed root-exit snapshot. Comparison sides have private working directories,
+temporary directories and Wine prefixes. Cases within a side deliberately share
+suite state. Absolute host paths and external services are not isolated.
+
+Evidence under `build/behavior-faithful-workflow-2026-09-16/`:
+
+- `f1-final-focused-v2.log`: 38 focused tests pass, including detached writers,
+  unread stdin, cancellation, startup/cleanup failures, private relative files,
+  prefix disposal and old-receipt readability with fresh-evidence invalidation.
+- `jq-comparison-phases-v2/comparison-result.json`: 37 real jq comparisons match;
+  preparation 0.028s, compiler 0.528s, link 0.164s, Wine startup 7.583s,
+  execution 4.717s, server teardown 0.130s and prefix disposal 0.427s.
+- `jq-runtime-final-v6/experimental-run.json`: the public 37-case suite passes;
+  validation 10.495s, Wine startup 3.567s, execution 2.032s, teardown 0.065s
+  and disposal 0.214s. Summed measured phases are 16.383s, versus 174.67s
+  in the earlier runner. These are concrete runtime costs, not proof timings.
+- `persistent-runtime-owned-v2/audit.json`: explicit persistence passes the
+  empty, negative-index and real-interpreter cases; server shutdown and prefix
+  disposal succeed. The earlier failed persistence assay remains failed evidence.
+- `f1-wayland-final.log`: the Nix desktop check passes, including an application
+  that ignores TERM, bounded forced termination, partial output and directory
+  cleanup. All Wine commands above ran inside that headless desktop.
+- `f1-audit.json` binds the phase reports and records the collected runtime
+  source snapshot; comparison receipts also bind their own engine versions. Both final
+  jq runs leave no Wine prefix; replay inputs, binaries and logs remain retained.
+
+Integrated affected validation is terminal and passes: `f1-nix-tests-v6.log`
+records the smoke/metadata/lint gates and nine affected compiler, pure-Python and
+CBMC shards. The initial failures exposed an omitted shared-primitive inventory
+entry and historical audit-file references that were ambiguous in source-only
+Nix shards; both are fixed without weakening the checks. The final isolated
+prefix-disposal change also passes nine lifecycle tests in
+`f1-isolated-disposal-tests.log`. No validation job remains active.
+F1 is complete within the observation/state scope above. F2–F7 remain required
+before goal completion; resource diagnostics and reusable service definitions
+are the next implementation checkpoint.
+
+The process cleanup allowance is two 2-second grace periods. Each server stop/
+wait command has a maximum 2-second execution deadline plus process cleanup;
+prefix deletion has a 10-second deadline plus cleanup. Failed server shutdown
+retains its prefix and reports an error. The desktop allows up to 60 seconds for
+application cleanup, then bounded escalation/helper shutdown; its launch wait is
+30 seconds. Late asynchronous output after root exit is outside the observation
+scope. None of these checks establishes unrestricted host-state isolation or
+strong replacement authority.
+
+## Completed predecessor: Practical Independent Component Lifting
+
+The remaining ledger is historical G1–G6/caller-milestone evidence. Its earlier
+sequencing statements apply to those completed milestones; the active F1–F7 plan
+above governs the next implementation work.
+
+Status: G1–G6 practical-workflow milestone complete on 2026-09-16.
+The retained demonstrations and current validation establish the bounded operator
+workflow below. Hello, jq, DX-Ball and native-module strong qualification remain
+incomplete and retain their existing activation, link, export and portability
+requirements. Their incomplete results are recorded separately in the final audit.
+The previous reusable caller milestone is
+complete and retained below as historical evidence, with its original scope.
+
+Deliver an operator workflow that establishes a hand-defined boundary, authors
+supported ordinary C, compares actual original and replacement implementations,
+replays and repairs a mismatch, reuses neighboring evidence correctly, and runs
+an explicitly selected experimental configuration. Demonstrate it on a real jq
+component network and exercise the same infrastructure on a real DX-Ball consumer.
+
+The [practical design](practical-independent-lifting-design.md) and
+[workbench review](practical-lifting-workbench-review.md) supply the design and
+worked examples. This section is the executable plan and completion checklist.
+Prefer its bounded implementation sequence over earlier broad roadmaps. Preserve
+the existing contextual-bisimulation authority and pilot, qualified native-link,
+repository-validation, export and portability obligations.
+
+The [completion audit](practical-lifting-validation.md) maps each exit to retained
+evidence, current validation and remaining qualification obligations. Implementation
+checkpoints below preserve their historical statuses; final acceptance is recorded
+at the top and end of that audit.
+
+## Acceptance and remaining qualification obligations
+
+The installed-CLI walkthrough (`installed-cli-v1`, 22 public commands and 16
+comparisons), same-desktop zero-work reuse, negative controls and current gates
+are reconciled in the final audit. All Wine launches use a headless Wayland
+desktop. No validation build remains active, and no commit, push or deployment
+was performed for this milestone.
+
+The retained Hello comparator recheck is terminal. Its `esp + 28` correction
+passes ten focused tests locally and in Nix. The provider remains incomplete:
+its final query sets contain 15 timeouts and no violated queries; nonvacuity
+passes in both regions. The entry right-view capture passes, while the other
+capture checks remain unresolved. Strong qualification still rejects it.
+
+Qualified Hello builds still require the comparator, callback bridge and checked
+memory-comparison caller composition. Qualified native-module builds still need
+checked interface storage, contents and lifetime composition. jq and DX-Ball
+retain their recorded incomplete strong proofs. These requirements continue to
+block their corresponding qualified activation, linkage, export and portability
+claims. G1–G6 delivers the separately admitted experimental component workflow
+specified by the accepted design; its comparisons supply no replacement proof
+authority. Reuse retained models when pursuing these remaining obligations.
+
+The milestone is a usable hand-defined component workflow, including ergonomic
+support for the documented restricted C dialect. Automatic boundary discovery and
+universal proof coverage are subsequent work, not prerequisites for this loop.
+
+### 2026-09-16 validation checkpoint
+
+Declared continuations now enter the common proof-context inventory while
+remaining outside deployment ownership. Twenty focused tests pass locally and
+in Nix; retained jq exact-C preparation includes the actual continuation. The
+Nix provider dependency predicate now also supplies the required linked-module
+facts. The jq output imports now have explicit native call-through effect
+contracts composed with the retained header ABI through a shared SDK constructor.
+ABI declarations alone still supply no effects. Six focused tests pass locally
+and in Nix, including physical disagreement and same-signature effect changes;
+the SDK, metadata, lint and 37 repository checks pass. The semantic-contract
+path and overlay now share compiler-checked hidden-return normalization. Complete
+word-record arguments and result projections are checked; incomplete records,
+single-word substitutes and stale ABI geometry fail closed. Forty focused tests
+pass locally and in Nix. Retained real jq semantic preparation, including image
+metadata, is satisfied in 1.872s with no compiler/model/solver/link/execution work.
+The integrated jq CaDiCaL recheck completed with an incomplete provider: 41 safety
+attempts time out at 300 seconds each, while nonvacuity passes. The query timeline
+is 3,313s; summed parallel safety work is 12,322s. A retained-input Z3 experiment
+with 30-second queries is incomplete: nonvacuity passes, but singleton language
+safety queries time out. Compilation takes 0.308s; changing solver alone has not
+established a solution. Exact models and query inventories are retained for the
+next diagnosis. Metadata, lint, format-registry and 33 repository-boundary checks pass.
+
+Native validation exposed nested-load fault erasure in the shared Behavioral-C
+renderer: a later successful read could clear a preceding read fault. Generated
+loads now check their fault immediately, before evaluating dependent nodes.
+The compiled regression fails against the old renderer; all 47 focused tests
+pass locally and in Nix. The native recheck still rejects qualification, now
+with an interface object overlapping the private stack. This remaining
+counterexample needs a consistent checked interface-storage/ownership rule on
+both sides. Native interface registration now enforces the existing declared
+image/stack separation for both object and vtable before issuing registrations.
+Seventeen focused tests pass locally and in Nix, including an erased-guard
+counterexample. Native-ingress and PE32 project gates pass under headless Wayland,
+as do metadata, lint and 37 repository/semantic-boundary tests. These storage
+checks do not yet establish the proof-side interface contents/lifetime relation;
+the native-module qualification gate remains incomplete. Exact traces,
+commands and results are retained in `validation-v2` under the audit's build root.
+
+The Hello regression exposed a stale hard-coded loader-service digest. Its scale
+check now verifies the selected resolved contract and expected dynamic-resolution
+behavior, retaining exact import inventory, replay and performance checks. The
+corrected check passes from retained inputs (4.848s) and in Nix. The first combined
+run cancelled DX-Ball after this Hello failure. A new `--keep-going` Hello/DX-Ball
+run allowed independent validation to finish even when another gate failed.
+That run exposed a missing captured view in bounded-string-length cutpoint
+preparation and an incomplete startup-callback native selection. Their exact
+inputs are retained for further diagnosis; Hello acceptance remains open.
+
+The bounded-string-length scan now captures a full `bytes_view`, using `ebx`
+for its base and the captured `ecx` maximum for its extent. Three regression
+tests pass locally and in Nix, including rejection of the former bare-pointer
+capture. The retained provider correctly rejects the old exact-C slice after
+this intent change; the recheck regenerates only that slice from the retained
+transfer plan. That provider proves the loop region but finds an entry-to-cut
+counterexample: `PUSH EBX` lowers `esp` by four, so current `esp` cannot replace
+the invocation's private-frame anchor. The scan now transports the scope with the
+existing checked `esp + 4` projection. Nine view/scope tests pass locally and in
+Nix, including the retained counterexample. The bounded-string-length provider is complete,
+both entry and scan obligations are satisfied, and the Python complete-local
+reader plus all four existing strong jq predicates accept its artifacts. This
+is component-level qualification; the full string-pointer native linkage and
+Hello acceptance remain open. Callback diagnosis
+identifies CBMC's generated `no-body` property for
+`spx_native_code_bridge_address`. The backend now reports missing-body-only
+failures as incomplete models, preserving explicit mismatch failures. Twenty-three
+focused tests pass locally and in Nix with no skips, including both checker JSON
+layouts and negative controls. This diagnostic correction does not implement
+callback composition or qualify the startup-callback provider.
+The Hello run also rejects program-name selection because its
+memory-comparison dependency lacks checked callee-entry and machine-state
+premises. This is an unresolved composition obligation, not permission to restore
+unchecked replay.
+
+The jq performance investigation also found a strong-reader gap: command metadata
+containing CBMC's potentially unsound `--full-slice` transformation could pass the
+jq strong-proof predicate. That predicate now rejects the flag in assertion,
+entry, safety discovery/checking and nonvacuity commands. Six focused tests pass
+locally and in Nix; an erased-guard control admits the altered retained Hello
+receipt, while current readers reject it and still accept the unmodified proof.
+Metadata, lint and format-registry gates pass. No experimental slicer or byte-log
+optimization has been added to the authorizing engine.
+
+The DX-Ball provider in that validation run has finished. Its
+DirectDraw-init proof remains incomplete: nonvacuity passes, while 43 safety
+attempts time out. The bound model contains 72 selected units, 11 call slots and
+seven cached stack accesses (28 bytes). The diagnostic checkpoint still expected
+the older 27-slot, uncached model and a single unpartitioned timeout. It now
+checks the actual four terminal safety-query identities and explicitly requires
+their incomplete status. All four checkpoint predicates pass against the retained
+provider locally and in Nix; six altered-result controls reject, and strong
+qualification still rejects this provider. No compiler, solver or pilot rebuild
+was needed for that checkpoint recheck. This closes the stale DX-Ball diagnostic
+expectation, not its formal proof or activation obligations. Hello validation and
+the previously recorded native/jq composition and proof gaps remain open.
+
+Baseline attribution now uses an isolated archive of commit `8640cfe` and retained
+real inputs. Both baseline and current code reject the identical Hello
+memory-comparison caller input for missing checked entry/machine-state premises;
+the rejecting module and relevant authored interface/binding/source are unchanged.
+Baseline native-interface preparation, with its exact C regenerated by that
+baseline, reproduces the noncanonical-unit error fixed in this tree. Baseline jq
+exact-C preparation rejects the declared continuation context; current preparation
+succeeds on identical input hashes in 1.228s. These reproduce specific pre-existing
+failures; they are not historical full-target rebuilds or a waiver of strong gates.
+The native interface counterexample and jq timeout remain unresolved.
+
+Native test runners now keep Wine boot, application execution and wineserver
+shutdown inside one headless Wayland session. Native-ingress, PE32 project,
+headless-desktop, metadata and lint gates pass. The native-module runner separately
+passes actual-desktop checks with command stand-ins for application failure and
+boot failure, preserving status/trace and cleaning up the desktop. Its qualified
+native-module gate still depends on the unresolved interface proof.
+
+Strong-admission review now passes the native-realization gate (12 tests) and
+semantic-provider gate (22 tests), covering checked export identities, exact
+portable dispatch receipts, explicit selection modes and stale evidence. The
+qualified-platform gate passes with its existing declared holes; this does not
+establish target portability. The public experimental regression now rejects its
+successful-run manifest at qualification and implementation-selection readers as
+well as the native-realization reader shared by suite and per-case admission.
+All five experimental tests pass locally and in Nix without skips. Three retained
+real jq network manifests remain valid experimentally and reject at all three
+strong readers, with no compiler, solver, link or Wine execution work. Metadata,
+lint and format-registry checks pass after refreshing the test dependency index.
+
+The combined Hello/DX-Ball run is now terminal (exit 1). The final Hello
+ascii-string-compare provider is incomplete in both entry and scan regions;
+nonvacuity passes for both. Its entry-region evidence contains actual left/right
+capture-extent counterexamples as well as timeouts, so this is not a timeout-only
+result. The current Python reader validates the retained incomplete receipt.
+`hello-completed-gate-audit.json` binds the provider, exact failing query outputs
+and per-region costs. The old run also contains the already-corrected
+bounded-string-length intent failure and stale DX-Ball checkpoint expectation.
+Their separate retained-input rechecks remain the current evidence for those
+fixes. Full Hello/native qualification is still open; no validation job is active.
+
+The subsequent comparator investigation confirms the exact prologue lowers ESP
+by 28 bytes: three register saves and 16 bytes of locals. One retained capture
+counterexample crosses the minimum admitted stack pointer (1051 to 1023); the
+other shifts the private frame into the excluded image range (4412429 to
+4412401). The scan now uses the existing `esp + 28` scope projection. A compiled
+regression exercises both views at both geometries and retains rejection of
+altered extents and nonzero terminators. All ten view/scope tests pass locally
+and in Nix with zero skips; metadata, lint and registry gates pass. Exact traces,
+source and test-result hashes are bound in `hello-ascii-scope-audit.json`.
+The retained-input provider recheck is active in session 53503; it rebuilds only
+the exact-C slice and component provider. An initial preparation attempt omitted
+the neighboring binding from the diagnostic Nix expression and correctly failed
+the stale-binding gate before proof. The corrected expression supplies that
+binding through the existing dependency input. No qualification result is yet
+claimed for this corrected comparator.
+
+The native-interface follow-up now has five compiled helper-level cases. The
+current native and proof helpers agree on a valid instance, but the proof helper
+also accepts stale generations, wrong class tags, expired instances and
+noncanonical nulls rejected by the native helper. Both function bodies match
+baseline `8640cfe`. `interface-resource-model-audit.json` binds the current
+functions, exact C, commands and raw checker output hashes. This pre-existing
+gap needs checked per-world class/instance/lifetime state and publication/failure
+transport through the existing service rules; the storage-domain guard alone
+cannot establish that composition. No provider qualification follows from these
+diagnostic cases. The retained comparator recheck remains the only active build.
+
+## Implementation sequence and required exits
+
+### G1. Establish retained inputs and a supported authoring profile
+
+- Inspect current implementations, retained artifacts and dirty-tree ownership
+  before changes. Record the baseline and existing failures; old statuses alone
+  are insufficient evidence. Reuse small Metapad fixtures for fast regression.
+- Select and record a real jq operation with a loop, mutable shared values and
+  multiple dependency operations/caller contexts. Record exact original inputs,
+  entries/exits, original-side oracle, boundary, relevant object aliases/lifetimes,
+  executable adapters and unresolved assumptions. Do not select a trivial renamed
+  fixture merely to avoid the intended interaction shape.
+- Start from the current restricted standard-C profile. Document the supported
+  subset and provide generated headers/helpers, compiler/editor configuration,
+  examples and source-located actionable diagnostics. Make allocation/state/service
+  helpers available only with implemented executable meanings.
+- Separate dialect conformance, executable transport, practical comparison and
+  proof-rule applicability. Demonstrate valid supported C that remains locally
+  testable although the required formal composition rule is unavailable.
+
+### G2. Deliver the public edit, compare and replay loop
+
+- Extend existing component/boundary commands, SDK and work packages to prepare
+  one concrete driver invoking original and authored implementations. Pinned real
+  dependencies are acceptable initially; bind and display their exact versions.
+- Construct independent original/source states preserving logical aliases,
+  relevant contents and lifetimes. Compare declared outcomes, memory and service
+  observations at the relevant interaction points. Record unavailable observation
+  capabilities and the distinction between recovered-C and native-original oracles.
+- On the real jq consumer, introduce a meaningful bug, retain a replayable case,
+  show the first divergence, repair ordinary C and rerun through public tools.
+  Exercise shared-value and error/failure cases. No routine manual digest editing,
+  handwritten generated-model edits or per-component production Python/Nix phase.
+  Explicit reusable test fixture C is permitted.
+
+### G3. Demonstrate dependency isolation and accurate invalidation
+
+- Replace one significant real dependency with controlled responses that validate
+  arguments and relevant current state before supplying outcomes and writes.
+  Establish absence of its body from that local execution and generated harness.
+- Edit that supplier under unchanged contract meaning. Reuse unchanged isolated
+  consumer evidence with zero consumer execution/model/compiler/solver work;
+  independently check the supplier and rerun affected real-dependency integration.
+  Comparisons which executed its old body must become stale. Report actual work.
+- Refine a consumed boundary without changing its signature and invalidate the
+  affected checks. Retain excluded counterexamples when narrowing a domain.
+  Deliberately violate a dependency assumption and expose the applicability or
+  integration failure. Reuse an existing supported formal proof alongside the
+  practical results without conflating their authority.
+
+### G4. Build and run the experimental configuration
+
+- Introduce a distinct typed experimental execution manifest/policy and share
+  existing build/link/runner operations beneath the admission boundaries. Account
+  for both outer suite and per-case native-realization gates. Do not fabricate
+  qualification fields or reinterpret existing strong receipts.
+- Bind selected implementations, adapters, runtime, accepted assumptions, required
+  checks and actual linked binary. Check executable transport, symbol/ownership
+  consistency and representation compatibility. Persist experimental assumptions
+  in project policy so normal edits do not require repeated confirmation.
+- Run the selected real jq component network. An unsupported proof and bounded
+  proof timeout must not block an otherwise eligible experimental run. A known
+  mismatch remains a failure; diagnostic replay is not passing readiness.
+- Reject stale binary/input bindings and reject experimental manifests at all
+  affected strong-authority entry points. Label the executed scope precisely;
+  a component-network driver is not full jq or portable application completion.
+
+### G5. Check generalization with a second real interaction shape
+
+- Apply the same public workflow to a retained DX-Ball lifecycle consumer with a
+  real failure/cleanup sequence or a supported callback schedule. Name the actual
+  sequence, observation scope and remaining unsupported behaviors.
+- Use shared fixture/adapter capabilities instead of copying target-specific
+  orchestration. Demonstrate one bounded private representation change on either
+  network, compare its logical observations, and reject an incompatible mixed
+  selection. Preserve the distinction between components and replacement groups.
+- Keep this a concrete generalization check. General concurrency, arbitrary
+  callback capture and a universal Win32/heap model are not prerequisites.
+
+### G6. Validate and publish reproducible completion evidence locally
+
+- Exercise negative controls for broken alias cloning, missing observations,
+  wrong service arguments/order, lifetime errors, invalid or empty setup,
+  boundary exclusions, stale evidence and false qualification. Separate harness
+  failures, behavioral mismatches, violated assumptions and unavailable checks.
+- Record preparation, compilation, model, solver, execution, evidence validation
+  and linking costs separately, including reuse/skips. Grow unrelated fixture code
+  while holding an isolated check constant and confirm it does not enter the local
+  dependency set. Use retained preparations before expensive pilot rebuilds.
+- Run appropriate targeted/public/native and repository validation using existing
+  Nix infrastructure. Refresh generated registries when their inputs change;
+  report pre-existing failures separately and introduce no unexplained regression.
+- Provide a fresh-operator walkthrough and retained evidence mapping every G1–G6
+  exit to exact commands, inputs, results and limits. Preserve unrelated changes.
+  Completion requires executable demonstrations, not documentation or mocked UI.
+
+## Scope and working discipline
+
+G1–G4 are the first usable end-to-end checkpoint; G5 and G6 are required before
+this goal is complete. Resolve concrete operation/helper/schema choices during
+implementation against retained examples. Do not postpone the operator loop for
+another broad design review or a collection of isolated proof primitives.
+
+Reuse current component identities, interfaces, relations, semantic engines, work
+packages, testkit and Nix storage. Add artifact boundaries only where semantics or
+measured invalidation require them. Preserve proof regions versus production
+components: internal cuts must preserve coverage/progress without synthetic APIs.
+Tests and reviewed assumptions are not checked summaries or strong qualification.
+
+A new GUI, automatic boundary recommendations, all oracle backends, hundreds of
+components and full Hello/jq/DX-Ball lifting are outside this bounded milestone.
+No commit, push or deployment is required by this plan.
+All subsequent Wine launches must use an isolated headless Wayland desktop, as
+requested by the operator on 2026-09-15.
+
+## Execution ledger
+
+| Exit | Status | Required retained evidence |
+|---|---|---|
+| G1 | Accepted: real jq supported-C/unavailable-rule execution; five generated editor commands compile; eight source-feedback/Metapad tests pass in Nix with zero skips | Current baseline, exact operation selection, supported dialect and proof-unavailable executable case |
+| G2 | Accepted: public jq edit/replay/repair and controlled append cases; public-command and first-divergence evidence revalidated in `practical-exit-evidence.json` | Public jq prepare/edit/mismatch/replay/repair transcript and bound comparison results |
+| G3 | Accepted: supplier edit/isolation/invalidation, same-signature refinement, retained exclusions, false assumptions and two reused source proofs; actual binary symbols rechecked | Supplier edit, body-absence inventory, reuse counters, refinement and assumption-failure results |
+| G4 | Accepted: bound jq unavailable-rule and host-fixture proof-reuse/forced-timeout runs; public disproof veto, seven real-jq stale-input controls and three strong-reader rejections | Experimental selected build/run, actual binary binding and strong-reader rejection results |
+| G5 | Accepted: DX-Ball lifecycle and jq representation observations; six experimental cases match logical observations and exact binary/report bindings; mixed selections reject | DX-Ball interaction and bounded representation-change demonstrations |
+| G6 | Accepted: 16 current-engine walkthrough receipts; 37 practical, eight source/Metapad and 33 repository tests; eight final repository/admission/native/platform gates pass; terminal pilot diagnostics and baseline attributions reconciled separately | Negative controls, phase costs, current validation and fresh-operator completion audit |
+
+Initial implementation checkpoint (2026-09-15): `jv_array_concat` at libjq RVA
+`0x288b3` is selected. Rebuilt only the missing original jq distribution and its
+Oniguruma dependency; `jq.exe` matches the target SHA-256. The real concat loop has
+array-addition, path-construction and library-search caller contexts. The new
+[`jq-array-concat` fixture](../tests/fixtures/jq-array-concat/README.md) uses existing
+V5 interface/header generation, ordinary C and an explicit native test adapter.
+Six PE32 cases compare equal against the actual original DLL, including aliased,
+nested-shared, sliced and uniquely owned arrays. A wrong loop bound is detected
+in all five nonempty cases. The existing host/PE32 source checker passes without
+CBMC. No shared-jv proof, controlled isolation or experimental manifest is claimed.
+
+`component start --output` now adds editor/compiler configuration and authoring
+guidance to writable drafts; source-profile diagnostics explain supported
+alternatives without changing the proof profile. Nine targeted tests pass both
+locally and in two Nix shards. The Nix aggregate is
+`/nix/store/7q02x3gpisazs1xlnsnwsch4g8jx8y39-spaghetti-extractor-test-suite-affected`.
+Registry metadata was refreshed; full repository/native integration exits remain
+pending. Inputs, preservation baseline, observations and timings are retained in
+`build/practical-lifting-2026-09-15/`. The initial two combined compile/link calls
+take 0.294 seconds; 24 separate Wine invocations take 108.027 seconds, including
+prefix/server startup. These are experiment timings, not public edit latency.
+The next checkpoint below supersedes that investigation-only workflow status.
+
+Public comparison checkpoint (2026-09-15): shared `sdk.lifting.comparisonPackage`
+now prepares the jq array-concat package from existing source/interface products.
+`component start --comparison-package ... --output ...` creates an editable draft
+with generated APIs and editor guidance. `component check --comparison-package
+... --output ... [--case ID]` compiles, links and runs actual original/source cases,
+retains exact inputs and exposes first-difference/replay diagnostics. These outputs
+remain non-authorizing; no qualified reader or experimental activation gate is
+bypassed. New executable-fixture plan and concrete-result formats do not duplicate
+the component interface or supply a semantic summary.
+
+The SDK artifact `/nix/store/a118lqdzbzi8jkas76xnidl8l5zj3nry-spaghetti-extractor-jq-practical-array-concat-comparison-package`
+was built and consumed by the public commands. `sdk-check-v1` passes six real PE32
+cases. `public-wrong-v1` detects the wrong loop bound, `public-wrong-v1-replay`
+reproduces case 1 from retained inputs after draft repair, and `public-repaired-v1`
+passes six cases again. The result reader checks retained bytes, case coverage and
+observation classifications. Missing observations, empty cases, stale originals,
+profile failures, altered binaries and rehashed case omissions reject; a process
+timeout remains inconclusive. Seventeen focused tests pass locally and through
+three Nix shards, with zero skips. The current aggregate is
+`/nix/store/rxmd3ddfn0dg1zdz2s29gz0wyim5709x-spaghetti-extractor-test-suite-affected`.
+The SDK package was rebuilt with current metadata and resolves to the same output.
+`public-workflow-audit-v1.json` revalidates the four public result directories with
+the current reader and records their exact identities. Full repository/native
+validation and the remaining G1–G6 exits are still pending.
+
+`public-check-v3` records 0.047 seconds compilation, 0.164 seconds linking and
+7.768 seconds for twelve Wine invocations. File-based process capture avoids the
+initial experiment's pipe-lifetime overhead; original/source prefixes and fixture
+objects remain separate. At that checkpoint each requested check recompiled and
+reran. The following checkpoint supersedes that reuse/interception status.
+
+Controlled interaction and reuse checkpoint (2026-09-15): the shared SDK package
+now supplies fourteen jq cases: six real-dependency cases, six controlled-append
+cases and two injected invalid append outcomes. The pinned original concat body
+executes in all original-side cases. A shared PE32 fixture hook redirects the
+append export, checking its entry bytes before mutation and restoring it afterward.
+The response fixture checks current logical destination contents and the next
+item, records arguments/reference counts/outcomes, and uses real array_set for
+successful writes. Invalid outcomes are conditional dependency tests; they do
+not claim that actual jq allocation failure returns a recoverable invalid value.
+
+`controlled-check-v2` passes all fourteen cases. Independent ordinary-C mutations
+are detected: `controlled-wrong-item-v1` and
+`controlled-continue-after-failure-v1` report dependency-assumption failures;
+`controlled-missing-release-v1` reports retained right reference count 1 versus 2.
+The public command now displays failed-process stderr with the replay command.
+The native hook regression checks wrong entry/missing module rejection, counts
+actual supplier-body executions across interception, and verifies restoration.
+
+`component check --reuse-comparison DIR` now revalidates and retains unchanged
+concrete evidence, reporting changed inputs when reuse is invalidated. It binds
+comparison code, current generated inputs, environment digest, tools and actual
+compiler-read files. A known mismatch never supplies passing reuse. This is reuse
+of past observations, not a claim of fresh execution against external state or
+an inferred compatibility theorem. `controlled-reused-v1` reuses fourteen cases
+with zero compiler/link/execution/model/solver calls. Recorded preparation,
+validation and retention phases total 0.0312 seconds; the fresh check records
+0.1792 seconds compiler, 0.1636 seconds link and 8.9855 seconds execution. These
+phase sums are not a complete CLI wall-clock benchmark.
+
+Twenty-one targeted tests pass locally; those plus the PE32 native hook regression
+pass in four Nix shards with zero skips. The aggregate is
+`/nix/store/dcr6yv6h0qp8bcp87b5svy53wjlq1cbj-spaghetti-extractor-test-suite-affected`.
+The updated SDK package is
+`/nix/store/nawv6pfzj5b2zrn672i9yb5hg8h9rmmj-spaghetti-extractor-jq-practical-array-concat-comparison-package`.
+`controlled-workflow-audit-v1.json` retains current-reader result identities,
+negative controls, native entry evidence, work counters and validation references.
+
+At that checkpoint the next step was an actual supplier implementation edit with separate isolated
+consumer reuse and affected real-dependency integration, then checked refinement
+and experimental selection. The full DLL is still a consumed input; interception
+bypasses its append body but does not remove it from the retained image. Merely
+adding an unconsumed neighboring file in a regression does not complete the real
+supplier-edit milestone. G3's full dependency/invalidation demonstration, G4/G5
+and the complete G6 validation/audit remain required.
+
+Real supplier network checkpoint (2026-09-15): shared comparison packaging now
+selects separately authored dependencies, using each component's existing V5
+interface, source profile and generated headers. C translation units and editor
+commands receive the owning component's include paths. The public
+`--dependency-package COMPONENT=DIR` option selects edited source under exact
+interface, operation-symbol and assumption equality. It rejects changed contract
+meaning rather than treating an unchanged signature as compatibility. The
+supplier's local driver is excluded from the consumer package; the integration
+owns its explicit fixture bridge.
+
+The [append supplier walkthrough](../tests/fixtures/jq-array-append/README.md)
+demonstrates actual PE32 original append and concat operations. The supplier passes
+five local cases, the isolated consumer eight controlled cases and the integration
+six real-dependency cases. A compatible ordinary-C supplier edit invalidates only
+the supplier check and the integration that consumed its source. The isolated
+consumer reuses all eight cases with zero compiler/link/execution/model/solver
+calls. The independent binary inventory finds `_lifted_array_append` only in the
+integrated executable. During isolated component calls, the complete pinned
+original append range `[0x287bd,0x288b3)` is replaced by a redirect and trap bytes;
+unexpected interior entries cannot run the old body. Setup/observation and the
+retained original DLL remain explicitly outside that body-removal claim.
+
+A wrong set index fails supplier and integration comparisons while isolated
+evidence remains conditional and reusable. Repair restores both comparisons;
+`integrated-network-wrong-replay-v3` still reproduces the selected supplier bug
+from retained inputs after repair. These results and exact body/input inventories
+are bound in `supplier-network-audit-v3.json`. The current walkthrough requires
+no digest edits or target-specific production Python/Nix phase.
+
+G3 still requires checked domain refinement/excluded-counterexample handling and
+reuse of supported formal evidence alongside the practical surface. G4/G5 and the
+full G6 obligation remain open. The current operator workflows module was already
+over its repository size ceiling; moving CLI option definitions to
+`commands/workflow_options.py` preserves its handlers and reduces it below the
+ceiling. Other pre-existing production/test size violations remain separately
+recorded; no size-rule exception was introduced.
+
+Current checkpoint validation: 25 targeted tests pass locally, and those plus the
+native hook/body-removal regression pass in five Nix shards, 26 tests with zero
+skips. The aggregate is
+`/nix/store/s2299k540mz7ih37b0s3m5szn6mq3n06-spaghetti-extractor-test-suite-affected`.
+Repository boundary validation passes 31 of 33 tests. The two remaining failures
+are the pre-existing production/test size checks, now excluding workflows.py;
+the exact remaining files are recorded in
+`supplier-network-repository-validation-v3.json`. The audit validates twelve
+retained result directories using the current reader. Isolated reuse records
+0.0220 seconds across preparation/validation/retention phases, with zero proof or
+execution work; this remains a phase sum rather than full CLI latency.
+
+Experimental execution checkpoint (2026-09-15): public `candidate build
+--experimental-comparison` and `candidate test --experimental-package` now admit
+the selected concat/append network under its explicit fixture policy. The
+integration and supplier results bind source/header bytes, interface meaning,
+operation maps, adapters, compiler-read inputs, runtime and accepted assumptions.
+The manifest inventories both linked operation definitions and reuses the actual
+comparison binary; it does not compile or link another pilot.
+
+`build/practical-lifting-2026-09-15/experimental-network-v3` binds binary SHA-256
+`75358460fa018f12e3ad442be7db843f686bc574a7ead2f75c638758eee348ee`.
+Its build phase measurements total 0.129 seconds with zero compiler, model,
+solver, link and component-execution invocations. The shared candidate runner's
+six selected-source cases pass in `experimental-network-run-v3`; measured case
+and runtime-teardown phases total 31.806 seconds. This includes Wine startup and
+inherited-pipe waiting and is not solver time or an isolated component benchmark.
+The selected run retains real libjq dependencies and is a component-network
+regression, not full jq execution or portable completion.
+
+`experimental-network-audit-v3.json` records rejection of the wrong integration,
+an old supplier check and a partial replay. `NativeRealizationV2`, used by both
+qualified Nix admission gates and project completion, rejects the experimental
+manifest. Targeted tests also reject stale binaries and runtime copies, changed
+headers, altered case environments and missing checks. The public walkthrough is
+in [`jq-array-append/README.md`](../tests/fixtures/jq-array-append/README.md).
+
+Thirty tests pass without skips in Nix aggregate
+`/nix/store/57329d3mkj6m6qsdbvfaadrvp5mqqqvm-spaghetti-extractor-test-suite-affected`.
+The qualified candidate suite's existing PE32/Wine and stale-realization checks
+also pass at
+`/nix/store/wyny6cz4xx6w7d94j3dn35l8rih8vn4j-spaghetti-extractor-candidate-test-suite-check`.
+Repository boundary checks remain 31/33 with the same two pre-existing size
+failures, retained in `experimental-repository-validation-v3.log`.
+
+G4 is not complete: current comparison results report formal checking as
+`not-requested`; policy allowances for unavailable/timeout results are not
+executed demonstrations of those outcomes. G3's checked refinement and formal
+reuse, G5's DX-Ball/representation checks and full G6 validation also remain open.
+
+Optional contract checkpoint (2026-09-15): concrete `component check` now accepts
+`--local-contracts`, using the existing read-only/mutable source-contract engine.
+The real jq integration's six cases pass while that engine reports its stateful
+value interface as unsupported, with zero formal compiler/model/solver work.
+`experimental-network-optional-v1` admits this exact result and the selected
+network passes again in `experimental-network-optional-run-v1`.
+
+The existing fixed memory-view rule is separately exercised in
+`build/practical-lifting-2026-09-15/optional-memory-contracts-v2`. `baseline`
+contains two matching concrete cases and completed frame/input-dependence proofs;
+`reused` retains both kinds of evidence with zero native/compiler/link/execution
+work and zero formal compiler/model/solver work. The current proof reader checks
+source, interface, model, tools and query outputs before reuse. This extends the
+existing memory-consumer reuse path to unchanged leaf contracts, without another
+proof engine or qualification format.
+
+`timeout` records two actual CBMC attempts terminated at the requested 0.0001
+second query deadline, retaining compiled models, process output and termination
+records. The fractional deadline is exercised through the Python API; the CLI's
+`--query-timeout` remains integer seconds. Both concrete cases match, experimental
+admission succeeds and `timeout-run` passes. This demonstrates the shared timeout
+path on the memory fixture, not a timed-out jq heap proof. `reused-run` also passes.
+
+`counterexample` introduces division by zero for symbolic count zero while both
+sampled count-four cases still match. The optional check exposes the source
+location and experimental admission rejects it. A reuse request carries optional
+checks forward, so omitting their flag cannot erase that failure. Exhausting an
+unwinding bound is classified as incomplete proof rather than behavioral disproof;
+the selected policy rejects that incomplete result. Stale proof artifacts and
+counterexamples relabeled as timeouts are negative controls. Copying reused host
+binaries now preserves their executable permission, as verified by an actual run.
+
+Fifty-four targeted tests pass without skips in Nix aggregate
+`/nix/store/r7gl1cxxp1jsg5afy3g4gv9nwpzq6jdd-spaghetti-extractor-test-suite-affected`,
+including existing read-only and shared-dependency proof regressions. Repository
+boundary checks remain 31/33, with the same two production/test size failures in
+`optional-contracts-repository-validation.log`. `optional-contracts-audit.json`
+binds the retained results and validation. This checkpoint supplies scoped formal
+reuse and optional-proof outcomes; checked domain refinement/excluded cases,
+DX-Ball/representation generalization and the complete G1–G6 exit audit remain.
+
+Domain-refinement checkpoint (2026-09-15): retained evidence in
+`build/practical-lifting-2026-09-15/domain-refinement-v1/audit.json` records the
+real jq supplier and integration experiment. Narrowing the append input domain
+preserves four previous counterexamples and reports exclusions explicitly. The
+unchanged integration selection rejects the changed contract; explicitly adopting
+it exposes five actual caller-assumption violations. Replaying an excluded case
+still reproduces the original mismatch. Repairing the implementation and restoring
+the broad domain yields five matching supplier cases, six matching integration
+cases and a passing experimental component-network run.
+
+This is interval checking over fixture-reported inputs with concrete caller
+reassessment, not a universal caller or heap-summary proof. The audit records
+unchanged supplier interfaces and the exact domain-only input changes. The latest
+retained repository validation remains 31/33, with the same two size-check failures
+in `domain-refinement-v1/repository-validation.log`.
+
+Next implementation priority: complete G6's negative controls, fresh-operator
+walkthrough and obligation audit, resolving required validation failures.
+G1–G5 evidence must be audited
+against every exit before those exits are marked complete. The active goal covers
+all six exits; further isolated proof or diagnostic work should be driven by a
+concrete missing exit in these demonstrations.
+
+DX-Ball lifecycle checkpoint (2026-09-15): the existing DirectDraw-init source and
+V5 interface now use the same comparison SDK and public component commands as jq.
+The retained machine-derived C oracle executes two real early failure paths from
+RVA `0xcd5c`: DirectDraw-create failure and cooperative-level failure, each through
+hide-window, message-box, destroy-window and return. Eight cases check positive
+and negative nonzero HRESULTs, distinct window identities, all eight state words,
+service arguments/order, window lifetime and surviving DirectDraw ownership. The
+fixture checks the return frame and rejects unknown machine accesses/calls. The
+preceding window-creation code, actual Win32 services and GUI execution remain
+excluded; this is retained-C evidence under explicit frame/service assumptions.
+
+Evidence in `build/practical-lifting-2026-09-15/dxball-lifecycle-v1/` retains the
+public start/edit/check/replay/repair transcript. A wrong cooperative error message
+produces four mismatches. A premature destroy produces a lifetime fixture failure.
+An unchanged repaired check reuses all eight cases with zero compiler, execution,
+model, solver and link work. Independent expected-observation checks also validate
+the original and source results. The Nix SDK package
+`/nix/store/a0jslm8q1rba7rl7hic8k0v7cmb40fmi-spaghetti-extractor-dxball-lifecycle-directdraw-init-comparison-package`
+builds successfully and its freshly prepared oracle passes all eight comparisons.
+The [fixture walkthrough](../tests/fixtures/dxball-directdraw-lifecycle/README.md)
+documents scope, preparation, editing and replay. Twenty comparison/dependency/CLI
+regression tests pass locally. G5 still requires the private representation-change
+and mixed-selection demonstration; the full G6 audit remains open.
+
+The SDK Nix check passes at
+`/nix/store/ahdh2f65bj9xzq38zd6r7yvmxjbns6vy-spaghetti-extractor-target-sdk-check`.
+The corpus-boundary check initially exposed pre-existing direct imports of shared
+jq validators in Hello, jq and DX-Ball. Those references now use
+`sdk.validation.jqModules`, preserving the same validator contents. The corpus
+gate passes at
+`/nix/store/d4ixbki5k9izsjr63jbdc8kq23cz4kra-spaghetti-extractor-target-corpus-boundary`.
+Repository validation remains 31/33 with the same two file-size failures, retained
+in `dxball-lifecycle-v1/repository-validation.log`; no threshold was relaxed.
+
+Private representation checkpoint (2026-09-15): concat and append now share a
+portable-value bridge. Their authored C and V5 interface inputs are identical in
+the raw and handle-based selections. The alternative representation uses a tagged
+slot and generation into one shared table owning actual jq references. It checks
+ownership transfer, expiration and unreleased entries while retaining native jq
+contents, aliases and copy-on-write behavior. This is a bounded fixture runtime,
+not a replacement for jq's heap implementation or a heap-equivalence theorem.
+
+Existing comparison plans now accept explicit representation metadata using the
+structural lifting group's existing definition shape. Selected members must agree
+on group meaning, revision and exact shared input bytes. Incomplete groups can be
+checked locally, but experimental admission requires complete membership and
+explicit representation acceptance in policy. Mixed selections reject before
+compilation; merely relabeling the raw supplier with the handle revision still
+rejects differing shared inputs. These checks establish selection consistency,
+not universal contract compatibility or inferred application-wide reader coverage.
+
+`build/practical-lifting-2026-09-15/representation-v2/audit.json` binds five append
+and six network cases for both representations with identical logical observations,
+including shared/nested values, slices, retained aliases and an in-place destination.
+The public workflow demonstrates actual expired-token and leaked-value failures,
+repair, zero-work comparison reuse and a passing selected experimental run. The
+binary SHA-256 is
+`17c80a9e80427223a5b5b091805d39c42965b9c7d4f1a61cef5572154eee4819`.
+Its symbol inventory confirms one shared handle table and value runtime. Thirty-five
+targeted Nix tests pass without skips at
+`/nix/store/lzgi5kmpizbsbr5lk9ar4bb1y38z8nn2-spaghetti-extractor-test-suite-affected`.
+The [representation walkthrough](../tests/fixtures/jq-value-transport/README.md)
+documents public SDK preparation, local checks, selection policy and execution.
+G5's demonstrations are now retained; G6 and the requirement-by-requirement exit
+audit remain required before completion.
+Repository checks remain 31/33 with the same production/test file-size failures
+in `representation-v2/repository-validation.log`. The generated registry and
+repository metadata are current; no validation threshold has been relaxed.
+
+## Historical completed milestone: reusable caller composition
+
+Subsequent design direction (2026-09-15): the operator agreed to make practical
+component authoring, local comparison and explicitly experimental execution the
+main workflow, with formal proof used selectively. The
+[practical independent lifting design](practical-independent-lifting-design.md)
+elaborates this direction, its implementation sequence and its separate execution
+policy. At that historical checkpoint it was proposed work; implementation progress
+is recorded above. The completed milestone's formal evidence retains its original
+scope.
+
+The completed milestone replaces the save/UI-specific caller boundary renderers with
+reusable checked definitions, exposes the workflow through existing commands,
+and demonstrates an additional real component without component-specific engine
+changes. Preserve actual original/C execution, local proof independence,
+selective contract invalidation, runtime-assurance distinctions and all retained
+integration obligations. Automated boundary recommendations are outside this goal.
+
+The investigation and structurally prepared resource-error-notice candidate are
+retained under `build/independent-lifting/boundary-rule-investigation-2026-09-14/`.
+The candidate owns `0x12c0` and `0x12ce`, calls resource text with ID 97 and then
+MessageBoxA, and continues at `0x12dc`.
+
+Current acceptance checkpoint (2026-09-15): save/UI and selective frame refinement
+pass with current supplier evidence. After recording the hashes of 783 production
+files, the reserved ID-97 operation was authored and checked through the public
+SDK, source checker and boundary work package without changing those files.
+Wrong source and missing stack-slot edits fail; repairs and a compatible supplier
+implementation change reuse exact consumer proof keys and files with zero consumer
+model/compiler/solver work. The caption contract was then widened from 1 to 500
+bytes with unchanged ordinary C and C signature types: the checker correctly
+required a new proof. NUL termination and runtime applicability remain unverified.
+All 151 targeted tests across 20 Nix shards, ten native tests and five integration
+gates pass with current inputs. The repository shard retains exactly its two known
+size failures; its other 31 tests pass. The final requirement and integration audit is in
+[the reusable caller milestone record](baselines/2026-09-15-reusable-caller-composition.md).
+The paragraphs below retain earlier checkpoints and their then-outstanding work;
+the acceptance record takes precedence over those historical statuses.
+
+Following-service workflow (2026-09-15): the already exercised ID-31 caller now
+owns `0x5646` and `0x5654`, passes the returned resource view and the current window
+to MessageBoxA at `0x565c`, and continues at `0x5662`. Actual original C and ordinary
+portable C compare successfully. Initialization of private slots comes from actual
+native writes: the future window argument may reuse the earlier CALL return word,
+while initialized caller values remain protected from child writes. Stale window
+reads, forged views, wrong flags and missing native accesses are rejected.
+
+The canonical plan binding is now exercised through the public work package.
+Both retained resource supplier comparisons were rechecked against that identity,
+reusing checked portable objects and identical original C files. Four public source
+cases and nine boundary/work-package actions pass their expected outcomes. A wrong
+source ID and a missing stack-slot declaration fail; repair and compatible supplier
+changes preserve consumer keys/models/files with zero model/compiler/solver work.
+Current evidence readers validate these cases without rendering or processes.
+The model contains 63 bodies, excludes the resource helper, and is 773,845 bytes.
+Measured input validation/model/compiler/entry-witness/correctness costs are
+0.136/0.011/0.210/0.392/4.374 seconds, excluding dependency scans and public CLI cost.
+
+Validation passes 62 tests across ten Nix shards with current input hashes, plus
+five repository/SDK gates. The repository shard retains its two known file-size
+failures (31 of 33 tests pass). Evidence is under `following-service-*`,
+`following-public-*`, `following-work-package-*` and `canonical-resource-v1`.
+This remains conditional local evidence; MessageBox applicability, string
+termination, reentrancy and activation are unverified.
+
+Fresh save/UI public validation exposed a stale cleanup-supplier producer binding:
+the earlier borrowed-domain refactor changed `bisimulation_call_domain.py`, which
+is transitively included in cleanup's producer graph. The reader rejects the old
+receipts. Refresh from retained preparations now passes under
+`current-cleanup-suppliers-v1`; all three regional models are byte-identical.
+Entry/loop/tail refreshes take 52/21/175 seconds and composition takes 23 seconds.
+The tail's 60-second timeout is retained; its successful retry uses a 240-second
+wall limit. The compatible neighbor imports the current tail and composition
+with zero model/compiler/solver work, as does the EDI-withdrawal composition.
+Ten native PE32/Wine consumer tests pass with current input hashes. Fresh save/UI
+public checks completed under `freeze-workflow3-*`: 24 actions and 12 checks,
+including expected rejection cases. Current EDI withdrawal reuses save, identifies
+UI's missing fact and rejects an underdeclared UI contract. The earlier public
+refresh failures, timeout and cancelled redundant neighbor solve remain recorded. No
+equality or producer check was waived, and no pilot rebuild was used.
+
+Borrowed supplier integration (2026-09-15): the common finite caller checker now
+consumes the existing validated borrowed-image transition as well as cleanup
+summaries. It derives the fixed result alias, shared state-view mappings, native
+result/return frame and private ranges from those checked inputs. No public field
+can supply the supplier's result guarantee. Runtime requirements and exact original
+body/runtime bytes remain bound. Selected register facts control invalidation;
+normalization copies its input so later edits cannot change an earlier fact set.
+
+The already used ID-31 caller at `0x5646` now executes its actual original slice
+and ordinary C returning the borrowed view. Exit checks preserve the caption,
+flags and argument slots for continuation at `0x5654`. Actual invocation checks
+keep child writes and the CALL return word away from live caller slots and public
+views. Returned views retain their complete descriptor and live backing storage;
+current bytes come from the sparse world. There is no inferred NUL guarantee.
+Empty incoming-value inventories are supported without synthetic caller fields.
+The internal storage checks also cover view-valued operation results.
+
+Four public SDK/CLI cases pass with current supplier evidence: baseline, expected
+wrong-ID rejection, repair and compatible supplier change. Both reuse cases keep
+identical consumer keys/models/files with zero model/compiler/solver work, and
+current readers validate all four without processes or consumer rendering. The
+model is 327,966 bytes; its compiler inventory excludes the resource helper body.
+Public wall times are 12.67s baseline, 11.37s wrong edit, 6.81s repair and 6.78s
+neighbor in this run. An earlier local consumer check took 2.51s with ordinary
+source preparation already retained; a compatible neighbor check took 0.85s.
+No supplier or pilot rebuild was needed. These measurements are not a comparison
+with whole-operation or native qualification costs.
+
+Validation of the corrected producer passes 52 tests across eight targeted Nix
+shards, with every declared source input checked against the current worktree.
+Five repository/SDK gates pass. The repository shard retains only its two known
+size failures (31 of 33 tests pass). The GOTO inventory has 62 bodies and excludes
+the supplier implementation. Baseline input/evidence preparation takes 0.132s,
+model generation 0.007s, compilation 0.105s, entry witness 0.140s and correctness
+query 1.365s. These are individual phase measurements, not end-to-end activation.
+Both save/UI harnesses remain byte-identical to their prior workflow baseline.
+
+Evidence is recorded under `borrowed-integration-*` and `borrowed-public-*`. The
+first integrated run exposed a shared-dictionary invalidation bug, now fixed with
+a copying normalizer and a regression test. All four public cases bind the current
+producer and current validated inputs. Earlier
+save/UI and adapter checkpoint receipts remain historical where their producer
+identity differs; the goal does not claim current native activation from them.
+
+That pre-freeze sequence is now complete: fresh save/UI evidence, canonical work
+packages, the rule freeze and the previously untouched third consumer all have
+retained checks. Final validation and the requirement audit complete this milestone
+within its conditional finite-caller scope.
+
+Real public work-package workflow (2026-09-15): save and UI now use the existing
+SDK and commands with retained real linked semantics and exact slices. The 24
+public actions include inspection, writable preparation/proposal, ordinary-C
+edits, declaration adoption, local checks, repair and compatible supplier changes.
+Twelve proof checks produce eight successes and four expected wrong-source or
+wrong-boundary violations. Six repair/neighbor cases reuse identical consumer
+keys, models and proof files with zero model/compiler/solver work. Current evidence
+readers validate all twelve without rendering or starting processes. The audit
+binds all 683 production source files at this checkpoint.
+
+The V6 package accepts an exact slice and caller definition without a handwritten
+machine binding. It derives only owned units/transfers and the entry from the
+actual plan: two save units and five UI units. This bookkeeping is explicitly
+incomplete with `caller_definition_requires_local_check`; it establishes no native
+parameter or exit projection. Package hashes and exact-slice source files are
+checked, and the package remains non-authorizing. Interface/source/work-package
+construction uses existing public SDK functions. Local checking accepts the
+canonical `components/ID.c` source path emitted by `component start`.
+
+`boundary inspect` exposes requested facts and named unverified assumptions.
+`boundary propose` materializes the same package as `component start`; `boundary
+adopt` checks its editing baseline and scope before exporting the declaration.
+Adoption is not a compatibility proof or activation permission. Actual real
+consumer checks now demonstrate this full route, including rejected edits and
+repairs. Boundary and supplier edits share the same ordinary source preparation.
+No supplier or pilot rebuild was needed.
+
+Validation passes 102 tests across eight targeted Nix shards and five repository/
+SDK gates. The retained GOTO inventories contain 61/63 bodies and exclude both
+neighboring supplier implementations. Models are 500,222/961,484 bytes. All compiler
+input bytes match the earlier SDK baseline; the authored source filename changes
+to the canonical nested path. This is not a solver-performance comparison.
+Fresh baseline input/evidence preparation takes 6.87/6.61 seconds, model generation
+0.013/0.015, compilation 0.149/0.161, entry witness 0.158/0.234, and correctness
+queries 18.698/7.764. Public reuse still takes about 19 seconds, including evidence
+loading and command/evaluation overhead despite zero consumer proof work. These
+single runs overlapped validation. Work-package construction probes take 6.3/6.4
+seconds. Evidence uses `real-workflow-*-v1` and `real-work-package-*-v1` under the
+investigation directory.
+
+Initial setup failures (Nix lambda syntax and absolute linked-input symlinks) and
+one read-only temporary test-file failure were corrected before the passing runs.
+The repository shard retains its two pre-existing size failures; command wiring
+adds 18 lines to already oversized workflows.py, and the six other offending files
+remain unchanged. No new native/link qualification is claimed.
+
+Next implement checked returned-view service transport using already exercised
+consumers, then freeze the shared rule and use the untouched reserved third
+consumer. The complete native/link/export/portability and requirement audit remains
+open. The rule currently supports one checked supplier family and scalar service
+results. The goal is active; no third-consumer implementation has begun.
+
+Earlier definition and SDK checkpoints:
+
+Public caller definitions (2026-09-15): save/UI now consume
+`finite-paired-caller-v1` JSON definitions through the common checker. The two
+production definition builders, target profile dispatch and fixed interface
+hash selection are retired. The checker validates exact owned scope, supported
+stateless interfaces, current supplier facts and explicit runtime assumptions.
+Supplier guarantees are derived; caller-authored guarantees fail closed. At each
+actual supplier call, assertions check the supplier entry premises against current
+memory, physical view mappings and private-stack separation. Dropping entry
+admission therefore cannot erase the call obligation. Fixed interface view extents
+are also checked against actual descriptors.
+
+The definition checkpoint passed 80 tests across ten targeted Nix shards, 16
+public baseline/edit/repair/neighbor/refinement and malformed-definition cases,
+and four repository gates. The two pre-existing repository-size failures remain.
+Repairs and compatible neighbor edits reuse identical keys/models/files with zero
+consumer model/compiler/solver work; EDI withdrawal reuses save and stops UI for
+the missing fact. The public underdeclaration still fails the actual proof.
+Evidence uses `definition-*-v1` in the investigation directory. Later SDK wiring
+and target-asset changes are validated separately; these counts describe the
+definition checkpoint, not every subsequent worktree state.
+
+Fresh serial recompilation matches both public model digests. GOTO inventories
+contain 61/63 bodies and exclude both neighboring supplier implementations. Models
+are 508,713/960,164 bytes (save/UI), up from 484,240/941,777 with the added
+call-premise and fixed-extent assertions. One serial old/new comparison measures
+17.145/16.959 seconds for save and 5.998/7.599 seconds for UI. Clause counts rise
+603,106 to 617,451 and 182,189 to 192,041. Generation takes 0.013/0.018 seconds and
+compilation 0.139/0.190 seconds. This is not evidence of a speedup; UI has a measured
+regression in this run. No supplier or pilot rebuild was needed, and supplier loop
+proofs, authored C and native adapters are unchanged.
+
+SDK integration now exposes this comparison through the existing SDK
+`lifting.sourceCheck` and bundle `callerCompositions` configuration. Preparation
+is derived and shared with ordinary source checking. The definition is a tracked
+target asset; malformed options and mixed checking modes are rejected. Public
+SDK validation passes all eight baseline/broken/repair/neighbor cases. Current
+readers validate them without model generation or subprocesses, and the audit
+binds all 683 production source files. Baseline keys and compiled models match
+the definition checkpoint. Each component uses one identical preparation output
+across boundary edits and supplier changes; repairs and compatible changes reuse
+proofs with zero model/compiler/solver work. Forty-four targeted SDK/architecture/
+asset tests across three shards and five repository/SDK gates pass. The separate
+repository shard still has the same two size failures on seven unchanged files.
+Evidence is retained under `sdk-*-v1`. Work-package editing is still outstanding.
+
+Next complete writable definition preparation/editing through existing work
+packages, implement checked returned-view service transport, then freeze the rule
+and try the untouched third consumer. Existing runtime import projections remain
+explicit conditional assumptions; they do not qualify concrete Win32 marshalling.
+One checked supplier family is supported, not arbitrary multi-supplier composition.
+The complete milestone and its native/link/export/portability audit remain open.
+
+Historical supplier-fact checkpoint (before public definitions):
+
+Checked supplier-fact normalization (2026-09-15): the caller no longer requires
+one whole supplier-contract core hash. `bisimulation_supplier_facts.py` imports the
+supported cleanup summary only after its existing evidence reader validates it,
+then checks and normalizes entry relations, selected normal frames, native view
+mappings, return/fault transport and memory/observation semantics. Unsupported
+legacy predicates and semantic forms fail explicitly. Recognized prose markers
+identify implemented producer semantics; they do not independently establish a
+proof. Named runtime assumptions remain exact, visible and unverified. Their
+changes conservatively invalidate the consumer theorem. This is a closed reader
+for the existing summary producer, not arbitrary contract implication.
+
+Save/UI definitions now use the normalized facts, including current image-view
+addresses/extents, private-frame bounds and excluded normal results. Their
+consumed portable service contracts are compared in full, including types and
+fixed native view extents. Normal-frame withdrawal still selects only the facts
+needed by each caller. The supplier's loop proof and evidence reader are unchanged.
+The supported caller interface hashes and profile-based scope selection remain;
+normalizing the supplier is only one part of removing those restrictions.
+
+Final targeted Nix validation passes all 44 tests across seven shards, with exact
+current source inventories checked. The first run found one obsolete UI test
+expectation for the old hash-mismatch diagnostic; after correcting that assertion,
+the final UI shard passes. The separate repository-size shard still fails the same
+two pre-existing tests on seven unchanged files. Four explicit repository gates
+pass. Eight fresh public baseline/broken/repair/neighbor cases and two EDI-withdrawal
+cases have their expected outcomes. Current readers validate all ten without
+processes or model generation, and the public audit binds all 682 production
+source files. Both repairs and both compatible neighbor edits reuse identical
+keys/models/proof files with zero consumer model/compiler/solver work. EDI
+withdrawal reuses save and stops UI before generation with its missing guarantee.
+
+The freshly compiled baseline models are byte-identical to the preceding
+`boundary-v2` checkpoint, preserving its admitted inputs and compiler/body
+inventories. Fresh evidence keys bind the changed normalization engine. Model
+sizes remain 484,240/941,777 bytes for save/UI. A separate normalization measurement
+is 0.0052/0.0056s, while current supplier validation takes 6.77/6.64s. Public baseline
+model generation is 0.010/0.013s, compilation 0.140/0.207s, entry witness
+0.154/0.226s, and correctness queries 19.075/6.317s. These single runs overlap
+other validation and do not establish a solver speedup or regression; the formulas
+are unchanged. Retained evidence and scripts use the `facts-*-v1` prefix in the
+investigation directory. No supplier or pilot rebuild was needed. Native adapters
+and authored application C are unchanged; no fresh native/link qualification is
+claimed for this increment.
+
+Next replace caller profile/interface selection with validated public boundary
+definitions, including checked scope and explicit supplier/service dependencies,
+and connect preparation/editing to the existing SDK/work packages. Supported
+service adapters still return scalars; returned-view transport needs an implemented
+rule before it can be claimed. Keep the reserved third consumer untouched until
+the rule is frozen. The full milestone remains active.
+
+Common outer caller model (2026-09-15): both consumers now execute through
+`bisimulation_caller_boundary.py`. The save/UI modules contain typed definitions,
+not separate C model renderers. Those definitions describe incoming values,
+guarded admission, physical views, service ordering, explicit exits and
+continuation observations. Calls receive fresh outcomes per actual invocation.
+The original transfers and authored C still supply the computation. Every run
+must match exactly one declared outcome. A separately bound SAT witness proves
+nonempty entry admission; the correctness query requires all properties to pass.
+Contradictory admission stops before the full caller query, and missing outcome
+coverage fails the actual proof. Neither check establishes external reachability.
+
+The migration review reproduced an accepted backing-context mutation: changing
+the notice view's physical address left its descriptor and hook pointers equal.
+The common engine now checks the complete consumed mapping through the backing
+context, runtime hooks and memory domain before abstract service calls and at
+the source exit. Separate snapshots prevent the comparison from following a
+substituted pointer chain. The same real mutation now fails
+`spx-source-view-storage`. This repairs a correspondence gap; it does not prove
+arbitrary heap lifetime or concrete Win32 service applicability.
+
+All 37 targeted Nix tests pass with exact current source inventories. Eight fresh
+public baseline/broken/repair/neighbor cases and two EDI-withdrawal cases retain
+the expected behavior. Repairs and compatible supplier edits reuse both query
+records, with identical keys/models/files and zero model/compiler/solver work.
+EDI withdrawal reuses save and stops UI with its missing guarantee. Current
+readers validate all ten products without processes; the public audit binds all
+681 production source files. The separate repository-size shard still fails the
+same two pre-existing tests. The reserved third consumer remains untouched.
+
+One serial comparison with the preceding adapter checkpoint measures save at
+10.160s to 17.922s and UI at 5.021s to 6.179s. Nonempty-entry queries add
+0.141/0.238s. Save grows from 499,843 to 603,106 clauses, with solver time increasing
+from 7.490s to 14.646s; symbolic execution rises from 2.446s to 3.017s. UI grows
+from 177,774 to 182,189 clauses. Models grow from 435,582 to 484,240 bytes for save
+and 905,238 to 941,777 bytes for UI. Generation is 0.010/0.012s and compilation
+0.131/0.183s. This is a measured regression, not a performance improvement.
+Retained `boundary-*-v2` evidence covers the corrected storage checks; v1 evidence
+predates that correction and is historical. No pilot rebuild was needed.
+
+At that checkpoint, the next step was to remove profile-based scope/interface
+selection and the whole supplier-contract pin, then expose definition preparation
+and editing through the existing SDK/work packages. Supplier normalization above
+now removes the whole-contract pin; the other steps remain. Ownership still
+comes from the checked profile/exact-slice binding rather than a general public
+definition. The public experiments still use manually configured existing Nix
+phases. Native production adapters and authored C are unchanged; no fresh native
+qualification is claimed here. Freeze the rule only after these remaining
+migrations, then validate an untouched real consumer. The full goal remains active.
+
+Previous native and portable call adapters (2026-09-14): both real callers share the
+native event/argument/return dispatcher and interface-derived portable service
+adapters. Checked supplier facts or named runtime contracts determine native
+projections and normal return guarantees. Fault returns leave the frame arbitrary.
+Indexed private arguments retain address and initialization assertions, with a
+general lookup fallback. Portable adapters derive signatures from the compiled
+interface, lower typed scalar/view projections, and compare complete descriptors
+and hooks against independent snapshots. The common invocation checks the whole
+source context and view descriptors after execution. Public feedback binds the
+derived `native_calls` and `source_services`; they are not freely editable facts.
+
+All 31 targeted Nix tests pass, including actual original/C consumer negatives for
+view generation and access-hook mutation. Exact declared inputs match the current
+tree. Eight fresh public baseline/broken/repair/neighbor cases pass their expected
+outcomes. Both repairs and both compatible neighbor changes retain identical
+consumer keys/models/proof files with zero model/compiler/solver work. Fresh
+public EDI withdrawal reuses save and stops UI before model generation with the
+missing EDI guarantee. Current readers validate all ten products without executing
+processes; the eight-case audit binds all 680 production source files. The Nix
+selection still fails its separate repository-boundary shard on the same two
+pre-existing file-size tests. This is not a claim that the whole repository passes.
+
+Relative to the preceding memory checkpoint, model size increases 1.67% for save
+and 0.94% for UI. One serial comparison measures 8.172s to 10.634s for save and
+5.203s to 4.971s for UI. Save's symbolic execution increases from 0.800s to 2.445s,
+while its clause count changes from 499,095 to 499,843; the extra cost is not a
+large SAT-formula expansion. UI clauses decrease from 182,496 to 177,774. Model
+generation takes 0.011/0.013s and compilation 0.108/0.152s. The measured models
+match the fresh public models exactly, and both supplier bodies are absent from
+their actual function inventories. Evidence and scripts use the `interface-`
+prefix in the investigation directory. Native production adapters and ordinary C
+are unchanged; this checkpoint does not claim a fresh native qualification run.
+
+At that checkpoint, the next work was to replace specialized entry/view mappings and continuation
+observers, normalize supported supplier facts without the whole-contract pin,
+and expose complete definitions through the existing SDK/work packages. Freeze
+the rule only after these migrations, then test the reserved untouched consumer.
+The current public experiments still use manually configured Nix phases. The
+full milestone remains active.
+
+Previous native access checkpoint (2026-09-14): both real callers use a common native
+memory adapter driven by typed, editable `native_memory` inventories. The
+existing public caller contract and feedback carry these definitions; no source
+algorithm or synthetic API is introduced. Native reads/writes must be covered,
+public aliases use current shared bytes, and private slots require initialization,
+separation from public views/other slots, and containment in the enclosing private
+frame. Full view/context, conditional supplier and continuation checks remain.
+See [the caller workflow](components.md) for the supported inventory subset.
+
+Final targeted Nix validation passes 26 tests: six typed-relation, six native
+memory, eight save and six UI tests. All declared source inventories match the
+current files (`memory-test-inputs-v1.json`). Eight fresh public cases cover
+baseline, missing-push boundary error, repaired/reordered definition and a real
+neighbor implementation change for each caller. Both bad definitions are
+rejected; all four repair/neighbor cases retain identical keys/models/proof files
+with zero consumer model/compiler/solver work. No supplier or pilot rebuild was
+needed. The retained public packages still use manually configured existing Nix
+phases; this is not completion of the full SDK definition-authoring workflow.
+
+The native adapter adds 5.73%/2.51% GOTO size for save/UI relative to the preceding
+shared-call checkpoint. A serial one-run comparison measures 7.313s to 7.759s for
+save and 2.753s to 4.970s for UI. UI's formula grows from 139,268 to 182,496 clauses,
+with most additional time in SAT solving; its general slot lookup and transport
+checks remain a performance cost to address when call bindings become explicit.
+Model generation is about 0.009s and compilation 0.102s/0.159s. Exact inputs,
+compiler/query evidence and scripts are retained as `memory-model-performance-v1.json`
+and `memory-public-results-v1.json` in the investigation directory.
+
+At that checkpoint, the next semantic work was the checked call/continuation and
+interface binding layer. The shared call adapters above advance that migration;
+source view instantiation, entry guards and continuation observers still remain
+specialized. All original milestone exits remain required.
+
+Earlier shared-call checkpoint (2026-09-14): save and UI use the same ordered
+paired-call adapter over sparse current memory. Actual original/source execution
+selects the trace, including optional calls. The adapter checks service identity,
+arguments, current public bytes, fault prefixes and complete trace coverage before
+exporting corresponding outcomes and effects. Repeated invocations receive distinct
+post-memory functions. Full view/context checks and conditional private-frame
+admission remain in the surrounding boundaries; the adapter grants none itself.
+
+All 18 targeted Nix tests pass (seven adapter, six save, five UI), with current
+declared-input inventories verified. Fresh public `component check --source
+--local-contracts` baseline and neighbor runs pass for both callers using the
+retained, currently validated supplier evidence. Both neighboring implementation
+changes reuse identical consumer keys, models and complete proof-file inventories
+with zero consumer model/compiler/solver work. Current readers reimport all four
+public artifacts with process/model/header generation forbidden; all 677 source
+files match the public snapshot. This replays existing manually prepared work
+packages; it does not satisfy the new definition-authoring acceptance criterion.
+
+Relative to the preceding typed-predicate models, the adapter adds 1.47%/1.08% GOTO
+size for save/UI. Isolated one-run solver comparisons are 5.514s to 7.128s and
+2.417s to 2.704s. Save's clause count grows only 0.24%, with the additional time
+in SAT solving; UI's clause count grows 56.7%, with additional trace obligations.
+These measurements establish a modest absolute regression, not a speedup or a
+scaling result. Model generation remains about 0.005s and compilation about
+0.097s/0.141s. The compiler inputs and resulting models match the public proofs.
+Evidence and reproducible audit/measurement scripts are retained as
+`paired-test-inputs-v1.json`, `paired-public-audit-v1.json` and
+`paired-model-performance-v1.json` in the investigation directory.
+
+That checkpoint left boundary instantiation and observation specialized. The
+native access migration above advances one part; full view/service/continuation
+definitions, the additional definition-only component and renderer retirement
+remain outstanding.
+
+Initial implementation (2026-09-14): save/UI now lower their reviewed supplier
+entry predicates through typed relation IR with explicit, path-sensitive
+definedness. A closed compatibility reader rejects unrecognized legacy predicate
+text. The common lowerer handles unsigned bitvectors and current-byte access;
+it grants no memory/lifetime premise or activation authority. The original
+profile/core-contract pins and specialized renderers remain until the complete
+boundary migration supplies equivalent checks. Six focused local tests pass,
+including CBMC equivalence of all 15 normalized predicates for arbitrary inputs,
+inactive invalid-pointer branches, unsigned wraparound and wide-offset rejection.
+Fresh integrated Nix validation passes all 17 targeted tests: six typed-relation,
+six save and five UI tests. Retained input hashes match the current production
+and test files. The aggregate still reports the two known repository size-check
+failures; metadata, format registry, production lint and retired-architecture
+gates pass. Evidence is retained as `typed-test-inputs-v1.json`,
+`typed-consumers-nix-v1.log` and `gates-v1.log` in the investigation directory.
+Measured GOTO model growth is approximately 2.95% for save and 0.45% for UI;
+compiler times were 0.106s and 0.142s respectively. These measurements do not
+establish an end-to-end performance improvement. The reusable boundary migration,
+additional definition-only consumer and fresh public workflow remain outstanding;
+the milestone remains active.
+
+## Previous completed milestone: independent component demonstration
 
 The small hand-defined Metapad network milestone is complete under its explicit
 trusted runtime contracts. The [requirement-by-requirement audit](baselines/2026-09-14-independent-component-milestone.md)
