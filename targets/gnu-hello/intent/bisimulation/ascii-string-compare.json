@@ -1,1 +1,819 @@
-{"component_id":"ascii-string-compare","format":"spaghetti-extractor-component-bisimulation-intent-v1","intent_sha256":"3897da96ee1697a975100c1686e22345a141fbcae205589491ebb37c0636f3ad","operations":[{"operation_id":"compare","syncs":[{"captures":[{"decoding":null,"encoding":{"name":"left","op":"bytes_address"},"id":"left","kind":"parameter","mode":"machine_codec","projection":{"at":"entry","base":{"at":"entry","kind":"stack","offset":32,"width":32},"extent_id":null,"kind":"bytes_view"}},{"decoding":null,"encoding":{"name":"right","op":"bytes_address"},"id":"right","kind":"parameter","mode":"machine_codec","projection":{"at":"entry","base":{"at":"entry","kind":"stack","offset":36,"width":32},"extent_id":null,"kind":"bytes_view"}},{"decoding":{"args":[{"op":"projected_value"},{"name":"left","op":"bytes_address"}],"op":"sub32"},"encoding":{"args":[{"name":"left","op":"bytes_address"},{"name":"offset","op":"state_input"}],"op":"add32"},"id":"offset","kind":"source_state","mode":"machine_codec","projection":{"at":"entry","kind":"register","register":"edi","width":32}},{"decoding":null,"encoding":{"op":"const","value":0,"width":32},"id":"result","kind":"source_state","mode":"logical_definition","projection":null}],"derived":[{"expression":{"args":[{"name":"right","op":"bytes_address"},{"name":"offset","op":"state_input"}],"op":"add32"},"id":"right_cursor","projection":{"at":"entry","kind":"register","register":"esi","width":32}}],"exact_unit_id":"semantic-transfer:original-cutpoint-000067d6-000067dc","id":"scan","invariant":{"args":[{"args":[{"name":"offset","op":"loop_variable"},{"name":"left","op":"byte_extent"}],"op":"ult32"},{"args":[{"args":[{"name":"offset","op":"loop_variable"},{"op":"const","value":1,"width":32}],"op":"add32"},{"name":"left","op":"byte_extent"}],"op":"ult32"},{"args":[{"name":"offset","op":"loop_variable"},{"name":"right","op":"byte_extent"}],"op":"ult32"},{"args":[{"args":[{"name":"offset","op":"loop_variable"},{"op":"const","value":1,"width":32}],"op":"add32"},{"name":"right","op":"byte_extent"}],"op":"ult32"},{"args":[{"name":"result","op":"loop_variable"},{"op":"const","value":0,"width":32}],"op":"eq"}],"op":"and"}}]}]}
+{
+  "format": "spaghetti-extractor-component-bisimulation-intent-v1",
+  "component_id": "ascii-string-compare",
+  "operations": [
+    {
+      "operation_id": "compare",
+      "syncs": [
+        {
+          "id": "scan",
+          "exact_unit_id": "semantic-transfer:original-cutpoint-000067dc-000067e7",
+          "invariant": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "left"
+                  }
+                ]
+              },
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "right"
+                  }
+                ]
+              }
+            ]
+          },
+          "captures": [
+            {
+              "kind": "parameter",
+              "id": "left",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 32,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "left"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "parameter",
+              "id": "right",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 36,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "right"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "offset",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "edi",
+                "width": 32
+              },
+              "encoding": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              },
+              "decoding": {
+                "op": "sub32",
+                "args": [
+                  {
+                    "op": "projected_value"
+                  },
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "source_state",
+              "id": "result",
+              "mode": "logical_definition",
+              "projection": null,
+              "encoding": {
+                "op": "const",
+                "value": 0,
+                "width": 32
+              },
+              "decoding": null
+            }
+          ],
+          "derived": [
+            {
+              "id": "right_cursor",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "esi",
+                "width": 32
+              },
+              "expression": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "right"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              }
+            }
+          ],
+          "private_stack_scope": {
+            "register": "esp",
+            "offset": 28
+          },
+          "preserved_parameter_slots": [
+            "left",
+            "right"
+          ]
+        },
+        {
+          "id": "left_converted",
+          "exact_unit_id": "semantic-transfer:original-cutpoint-000067e7-000067f4",
+          "invariant": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "left"
+                  }
+                ]
+              },
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "right"
+                  }
+                ]
+              },
+              {
+                "op": "ule32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "left_lower"
+                  },
+                  {
+                    "op": "const",
+                    "value": 255,
+                    "width": 32
+                  }
+                ]
+              },
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "op": "add32",
+                            "args": [
+                              {
+                                "op": "state_input",
+                                "name": "offset"
+                              },
+                              {
+                                "op": "const",
+                                "value": 1,
+                                "width": 32
+                              }
+                            ]
+                          },
+                          {
+                            "op": "nul_extent",
+                            "name": "left"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "state_input",
+                        "name": "left_lower"
+                      },
+                      {
+                        "op": "const",
+                        "value": 0,
+                        "width": 32
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "captures": [
+            {
+              "kind": "parameter",
+              "id": "left",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 32,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "left"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "parameter",
+              "id": "right",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 36,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "right"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "offset",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "edi",
+                "width": 32
+              },
+              "encoding": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              },
+              "decoding": {
+                "op": "sub32",
+                "args": [
+                  {
+                    "op": "projected_value"
+                  },
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "source_state",
+              "id": "result",
+              "mode": "logical_definition",
+              "projection": null,
+              "encoding": {
+                "op": "const",
+                "value": 0,
+                "width": 32
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "left_lower",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "eax",
+                "width": 8
+              },
+              "encoding": {
+                "op": "state_input",
+                "name": "left_lower"
+              },
+              "decoding": {
+                "op": "projected_value"
+              }
+            }
+          ],
+          "derived": [
+            {
+              "id": "right_cursor",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "esi",
+                "width": 32
+              },
+              "expression": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "right"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              }
+            }
+          ],
+          "private_stack_scope": {
+            "register": "esp",
+            "offset": 28
+          },
+          "preserved_parameter_slots": [
+            "left",
+            "right"
+          ]
+        },
+        {
+          "id": "decide",
+          "exact_unit_id": "semantic-transfer:original-cutpoint-000067f4-000067f8",
+          "invariant": {
+            "op": "and",
+            "args": [
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "left"
+                  }
+                ]
+              },
+              {
+                "op": "ult32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  },
+                  {
+                    "op": "nul_extent",
+                    "name": "right"
+                  }
+                ]
+              },
+              {
+                "op": "ule32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "left_lower"
+                  },
+                  {
+                    "op": "const",
+                    "value": 255,
+                    "width": 32
+                  }
+                ]
+              },
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "op": "add32",
+                            "args": [
+                              {
+                                "op": "state_input",
+                                "name": "offset"
+                              },
+                              {
+                                "op": "const",
+                                "value": 1,
+                                "width": 32
+                              }
+                            ]
+                          },
+                          {
+                            "op": "nul_extent",
+                            "name": "left"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "state_input",
+                        "name": "left_lower"
+                      },
+                      {
+                        "op": "const",
+                        "value": 0,
+                        "width": 32
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "ule32",
+                "args": [
+                  {
+                    "op": "state_input",
+                    "name": "right_lower"
+                  },
+                  {
+                    "op": "const",
+                    "value": 255,
+                    "width": 32
+                  }
+                ]
+              },
+              {
+                "op": "or",
+                "args": [
+                  {
+                    "op": "not",
+                    "args": [
+                      {
+                        "op": "eq",
+                        "args": [
+                          {
+                            "op": "add32",
+                            "args": [
+                              {
+                                "op": "state_input",
+                                "name": "offset"
+                              },
+                              {
+                                "op": "const",
+                                "value": 1,
+                                "width": 32
+                              }
+                            ]
+                          },
+                          {
+                            "op": "nul_extent",
+                            "name": "right"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "eq",
+                    "args": [
+                      {
+                        "op": "state_input",
+                        "name": "right_lower"
+                      },
+                      {
+                        "op": "const",
+                        "value": 0,
+                        "width": 32
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "captures": [
+            {
+              "kind": "parameter",
+              "id": "left",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 32,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "left"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "parameter",
+              "id": "right",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 36,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "right"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "offset",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "edi",
+                "width": 32
+              },
+              "encoding": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              },
+              "decoding": {
+                "op": "sub32",
+                "args": [
+                  {
+                    "op": "projected_value"
+                  },
+                  {
+                    "op": "bytes_address",
+                    "name": "left"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "source_state",
+              "id": "result",
+              "mode": "logical_definition",
+              "projection": null,
+              "encoding": {
+                "op": "const",
+                "value": 0,
+                "width": 32
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "left_lower",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "ebx",
+                "width": 8
+              },
+              "encoding": {
+                "op": "state_input",
+                "name": "left_lower"
+              },
+              "decoding": {
+                "op": "projected_value"
+              }
+            },
+            {
+              "kind": "source_state",
+              "id": "right_lower",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "eax",
+                "width": 8
+              },
+              "encoding": {
+                "op": "state_input",
+                "name": "right_lower"
+              },
+              "decoding": {
+                "op": "projected_value"
+              }
+            }
+          ],
+          "derived": [
+            {
+              "id": "right_cursor",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "esi",
+                "width": 32
+              },
+              "expression": {
+                "op": "add32",
+                "args": [
+                  {
+                    "op": "bytes_address",
+                    "name": "right"
+                  },
+                  {
+                    "op": "state_input",
+                    "name": "offset"
+                  }
+                ]
+              }
+            }
+          ],
+          "private_stack_scope": {
+            "register": "esp",
+            "offset": 28
+          },
+          "preserved_parameter_slots": [
+            "left",
+            "right"
+          ]
+        },
+        {
+          "id": "finish",
+          "exact_unit_id": "semantic-transfer:original-cutpoint-00006804-0000680a",
+          "invariant": {
+            "op": "true"
+          },
+          "captures": [
+            {
+              "kind": "parameter",
+              "id": "left",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 32,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "left"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "parameter",
+              "id": "right",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "base": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 36,
+                  "width": 32
+                },
+                "extent_id": null,
+                "kind": "bytes_view"
+              },
+              "encoding": {
+                "op": "bytes_address",
+                "name": "right"
+              },
+              "decoding": null
+            },
+            {
+              "kind": "source_state",
+              "id": "result",
+              "mode": "machine_codec",
+              "projection": {
+                "at": "entry",
+                "kind": "register",
+                "register": "eax",
+                "width": 32
+              },
+              "encoding": {
+                "op": "state_input",
+                "name": "result"
+              },
+              "decoding": {
+                "op": "projected_value"
+              }
+            }
+          ],
+          "derived": [],
+          "private_stack_scope": {
+            "register": "esp",
+            "offset": 28
+          }
+        }
+      ],
+      "reference_origin_capacity": 2,
+      "call_completion_lemmas": [
+        {
+          "id": "left_call",
+          "start_sync": "scan",
+          "target_sync": "left_converted",
+          "component_id": "ascii-to-lower",
+          "operation_id": "convert",
+          "completed_calls": 1
+        },
+        {
+          "id": "right_call",
+          "start_sync": "left_converted",
+          "target_sync": "decide",
+          "component_id": "ascii-to-lower",
+          "operation_id": "convert",
+          "completed_calls": 1
+        }
+      ]
+    }
+  ],
+  "intent_sha256": "aa3b2572c97c38878ada1d56ed31e88f7eb1ac6ee1f164ee97b05133d3d2e8b0"
+}

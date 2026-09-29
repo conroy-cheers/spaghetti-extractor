@@ -1,0 +1,408 @@
+[
+  {
+    "operation": "kind",
+    "name": "jv_get_kind",
+    "result": "jv_kind",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "kind",
+    "entry_rva": 158688,
+    "end_rva": 158703
+  },
+  {
+    "operation": "kind_name",
+    "name": "jv_kind_name",
+    "result": "const char *",
+    "parameters": "jv_kind kind",
+    "arguments": "kind",
+    "field": "text",
+    "entry_rva": 159662,
+    "end_rva": 159714
+  },
+  {
+    "operation": "true",
+    "name": "jv_true",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 159714,
+    "end_rva": 159739
+  },
+  {
+    "operation": "false",
+    "name": "jv_false",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 159739,
+    "end_rva": 159764
+  },
+  {
+    "operation": "null",
+    "name": "jv_null",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 159764,
+    "end_rva": 159789
+  },
+  {
+    "operation": "boolean",
+    "name": "jv_bool",
+    "result": "jv",
+    "parameters": "int count",
+    "arguments": "count",
+    "field": "value",
+    "entry_rva": 159789,
+    "end_rva": 159835
+  },
+  {
+    "operation": "invalid",
+    "name": "jv_invalid",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 159946,
+    "end_rva": 159971
+  },
+  {
+    "operation": "invalid_message",
+    "name": "jv_invalid_with_msg",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 159835,
+    "end_rva": 159946
+  },
+  {
+    "operation": "invalid_get_message",
+    "name": "jv_invalid_get_msg",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 163661,
+    "end_rva": 163835
+  },
+  {
+    "operation": "invalid_has_message",
+    "name": "jv_invalid_has_msg",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 163835,
+    "end_rva": 163926
+  },
+  {
+    "operation": "invalid_release",
+    "name": "jvp_invalid_free",
+    "result": "void",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": null,
+    "entry_rva": 178729,
+    "end_rva": 178853
+  },
+  {
+    "operation": "array",
+    "name": "jv_array",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 161826,
+    "end_rva": 161857
+  },
+  {
+    "operation": "array_append",
+    "name": "jv_array_append",
+    "result": "jv",
+    "parameters": "jv first, jv second",
+    "arguments": "first,second",
+    "field": "value",
+    "entry_rva": 165821,
+    "end_rva": 166067
+  },
+  {
+    "operation": "array_concat",
+    "name": "jv_array_concat",
+    "result": "jv",
+    "parameters": "jv first, jv second",
+    "arguments": "first,second",
+    "field": "value",
+    "entry_rva": 166067,
+    "end_rva": 166657
+  },
+  {
+    "operation": "string_sized",
+    "name": "jv_string_sized",
+    "result": "jv",
+    "parameters": "const char *text, int count",
+    "arguments": "text,count",
+    "field": "value",
+    "entry_rva": 162256,
+    "end_rva": 162332
+  },
+  {
+    "operation": "string_empty",
+    "name": "jv_string_empty",
+    "result": "jv",
+    "parameters": "int count",
+    "arguments": "count",
+    "field": "value",
+    "entry_rva": 161857,
+    "end_rva": 161883
+  },
+  {
+    "operation": "string",
+    "name": "jv_string",
+    "result": "jv",
+    "parameters": "const char *text",
+    "arguments": "text",
+    "field": "value",
+    "entry_rva": 161883,
+    "end_rva": 161930
+  },
+  {
+    "operation": "string_repeat",
+    "name": "jv_string_repeat",
+    "result": "jv",
+    "parameters": "jv first, int count",
+    "arguments": "first,count",
+    "field": "value",
+    "entry_rva": 169356,
+    "end_rva": 170255
+  },
+  {
+    "operation": "string_explode",
+    "name": "jv_string_explode",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 170255,
+    "end_rva": 170724
+  },
+  {
+    "operation": "string_implode",
+    "name": "jv_string_implode",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 170724,
+    "end_rva": 171384
+  },
+  {
+    "operation": "string_hash",
+    "name": "jv_string_hash",
+    "result": "unsigned long",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "hash",
+    "entry_rva": 171384,
+    "end_rva": 171530
+  },
+  {
+    "operation": "string_value",
+    "name": "jv_string_value",
+    "result": "const char *",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "text",
+    "entry_rva": 162332,
+    "end_rva": 162425
+  },
+  {
+    "operation": "string_concat",
+    "name": "jv_string_concat",
+    "result": "jv",
+    "parameters": "jv first, jv second",
+    "arguments": "first,second",
+    "field": "value",
+    "entry_rva": 172357,
+    "end_rva": 172649
+  },
+  {
+    "operation": "string_append_buf",
+    "name": "jv_string_append_buf",
+    "result": "jv",
+    "parameters": "jv first, const char *text, int count",
+    "arguments": "first,text,count",
+    "field": "value",
+    "entry_rva": 172649,
+    "end_rva": 172950
+  },
+  {
+    "operation": "string_append_codepoint",
+    "name": "jv_string_append_codepoint",
+    "result": "jv",
+    "parameters": "jv first, uint32_t codepoint",
+    "arguments": "first,codepoint",
+    "field": "value",
+    "entry_rva": 169210,
+    "end_rva": 169356
+  },
+  {
+    "operation": "string_append_str",
+    "name": "jv_string_append_str",
+    "result": "jv",
+    "parameters": "jv first, const char *text",
+    "arguments": "first,text",
+    "field": "value",
+    "entry_rva": 172950,
+    "end_rva": 173029
+  },
+  {
+    "operation": "format",
+    "name": "jv_string_vfmt",
+    "result": "jv",
+    "parameters": "const char *text, va_list args",
+    "arguments": "text,args",
+    "field": "value",
+    "entry_rva": 162425,
+    "end_rva": 162546
+  },
+  {
+    "operation": "format",
+    "name": "jv_string_fmt",
+    "result": "jv",
+    "parameters": "const char *text, ...",
+    "arguments": "text,args",
+    "field": "value",
+    "entry_rva": 162546,
+    "end_rva": 162585
+  },
+  {
+    "operation": "string_release",
+    "name": "jvp_string_free",
+    "result": "void",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": null,
+    "entry_rva": 155681,
+    "end_rva": 155751
+  },
+  {
+    "operation": "object",
+    "name": "jv_object",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "entry_rva": 162585,
+    "end_rva": 162612
+  },
+  {
+    "operation": "object_has",
+    "name": "jv_object_has",
+    "result": "int",
+    "parameters": "jv first, jv second",
+    "arguments": "first,second",
+    "field": "integer",
+    "entry_rva": 173401,
+    "end_rva": 173718
+  },
+  {
+    "operation": "object_set",
+    "name": "jv_object_set",
+    "result": "jv",
+    "parameters": "jv first, jv second, jv third",
+    "arguments": "first,second,third",
+    "field": "value",
+    "entry_rva": 175602,
+    "end_rva": 176082
+  },
+  {
+    "operation": "object_length",
+    "name": "jv_object_length",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 176867,
+    "end_rva": 176984
+  },
+  {
+    "operation": "object_iter",
+    "name": "jv_object_iter",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 162924,
+    "end_rva": 163022
+  },
+  {
+    "operation": "object_iter_valid",
+    "name": "jv_object_iter_valid",
+    "result": "int",
+    "parameters": "jv first, int count",
+    "arguments": "first,count",
+    "field": "integer",
+    "entry_rva": 162612,
+    "end_rva": 162629
+  },
+  {
+    "operation": "object_iter_next",
+    "name": "jv_object_iter_next",
+    "result": "int",
+    "parameters": "jv first, int count",
+    "arguments": "first,count",
+    "field": "integer",
+    "entry_rva": 162629,
+    "end_rva": 162924
+  },
+  {
+    "operation": "object_iter_key",
+    "name": "jv_object_iter_key",
+    "result": "jv",
+    "parameters": "jv first, int count",
+    "arguments": "first,count",
+    "field": "value",
+    "entry_rva": 163111,
+    "end_rva": 163286
+  },
+  {
+    "operation": "object_iter_value",
+    "name": "jv_object_iter_value",
+    "result": "jv",
+    "parameters": "jv first, int count",
+    "arguments": "first,count",
+    "field": "value",
+    "entry_rva": 163286,
+    "end_rva": 163407
+  },
+  {
+    "operation": "reference_count",
+    "name": "jv_get_refcnt",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 178853,
+    "end_rva": 178880
+  },
+  {
+    "operation": "release",
+    "name": "jv_free",
+    "result": "void",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": null,
+    "entry_rva": 163407,
+    "end_rva": 163661
+  },
+  {
+    "name": "parse_slice",
+    "operation": "slice_bounds",
+    "entry_rva": 186390,
+    "end_rva": 188177
+  }
+]

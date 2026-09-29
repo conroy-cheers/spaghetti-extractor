@@ -1,0 +1,16 @@
+#define jvp_utf8_backtrack portable_jvp_utf8_backtrack
+#define jvp_utf8_next portable_jvp_utf8_next
+#define jvp_utf8_is_valid portable_jvp_utf8_is_valid
+#define jvp_utf8_decode_length portable_jvp_utf8_decode_length
+#define jvp_utf8_encode_length portable_jvp_utf8_encode_length
+#define jvp_utf8_encode portable_jvp_utf8_encode
+#define jvp_codepoint_is_whitespace portable_jvp_codepoint_is_whitespace
+#define opcode_describe portable_opcode_describe
+#define bytecode_operation_length portable_bytecode_operation_length
+#define dump_disassembly portable_dump_disassembly
+#define dump_operation portable_dump_operation
+#define bytecode_free portable_bytecode_free
+#define locfile_init portable_locfile_init
+#define locfile_retain portable_locfile_retain
+#define locfile_free portable_locfile_free
+#define locfile_get_line portable_locfile_get_line

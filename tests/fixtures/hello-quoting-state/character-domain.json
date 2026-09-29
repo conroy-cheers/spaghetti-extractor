@@ -1,0 +1,1 @@
+{"clobbers":["cf","ecx","edx","eflags","of","pf","sf","zf"],"image_base":4194304,"private_accesses":[{"bytes":20,"offset":-4}],"private_writes":[{"bytes":4,"offset":-4}],"stack_delta":4}

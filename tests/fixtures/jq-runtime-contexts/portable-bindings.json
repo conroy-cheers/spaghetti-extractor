@@ -1,0 +1,73 @@
+{
+  "runtime-contexts": {
+    "assembly": {
+      "entries": {
+        "jv_tsd_dec_ctx_init": [
+          "decimal_initialize"
+        ],
+        "jv_tsd_dec_ctx_fini": [
+          "decimal_finalize"
+        ],
+        "tsd_dec_ctx_get": [
+          "decimal_get"
+        ],
+        "jv_tsd_dtoa_ctx_init": [
+          "dtoa_initialize"
+        ],
+        "jv_tsd_dtoa_ctx_fini": [
+          "dtoa_finalize"
+        ],
+        "tsd_dtoa_context_get": [
+          "dtoa_get"
+        ],
+        "jvp_hash_seed": [
+          "hash_seed"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c",
+        "runtime.c": "portable-runtime.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_tsd_dec_ctx_init"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_tsd_dec_ctx_fini"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "tsd_dec_ctx_get"
+        },
+        {
+          "file": "src/jv_dtoa_tsd.c",
+          "symbol": "jv_tsd_dtoa_ctx_init"
+        },
+        {
+          "file": "src/jv_dtoa_tsd.c",
+          "symbol": "jv_tsd_dtoa_ctx_fini"
+        },
+        {
+          "file": "src/jv_dtoa_tsd.c",
+          "symbol": "tsd_dtoa_context_get"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_hash_seed"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_hash_seed_init"
+        },
+        {
+          "file": "src/jv_dtoa_tsd.c",
+          "symbol": "tsd_dtoa_ctx_dtor"
+        }
+      ],
+      "lifetime": "One module owner manages decimal/dtoa per-thread contexts and once-initialized seed. Returned contexts borrow live state until finalization/thread exit; every consuming component uses the same provider and allocation identity."
+    }
+  }
+}

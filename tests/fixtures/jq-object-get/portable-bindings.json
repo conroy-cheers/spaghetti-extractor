@@ -1,0 +1,7 @@
+{
+  "object-get": {
+    "native_symbol": "jv_object_get",
+    "backend_file": "src/jv.c",
+    "headers": {"object-native.h": "object-native.h"}
+  }
+}

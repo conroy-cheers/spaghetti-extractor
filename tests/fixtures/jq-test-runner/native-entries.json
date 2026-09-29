@@ -1,0 +1,13 @@
+[
+  {
+    "name": "jq_testsuite",
+    "entry_rva": 153728,
+    "end_rva": 154112,
+    "additional_ranges": [
+      [
+        132640,
+        153728
+      ]
+    ]
+  }
+]

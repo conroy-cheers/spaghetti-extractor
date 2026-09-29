@@ -1,0 +1,85 @@
+{
+  "input-stream": {
+    "assembly": {
+      "entries": {
+        "jq_util_input_init": [
+          "create"
+        ],
+        "jq_util_input_set_parser": [
+          "parser"
+        ],
+        "jq_util_input_free": [
+          "destroy"
+        ],
+        "jq_util_input_add_input": [
+          "add"
+        ],
+        "jq_util_input_errors": [
+          "errors"
+        ],
+        "jq_util_input_get_position": [
+          "position"
+        ],
+        "jq_util_input_get_current_filename": [
+          "filename"
+        ],
+        "jq_util_input_get_current_line": [
+          "line"
+        ],
+        "jq_util_input_next_input": [
+          "next"
+        ],
+        "jq_util_input_next_input_cb": [
+          "next"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_init"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_set_parser"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_free"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_add_input"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_errors"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_get_position"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_get_current_filename"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_get_current_line"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_next_input"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_util_input_next_input_cb"
+        }
+      ],
+      "lifetime": "Owns jq input state, parser, copied filenames, decoded buffers and value data. Borrows callback data and stdin. Original early-destroy FILE lifetime is preserved; Windows-profile file services come from file-input. One startup-configured stdin text/binary policy is shared by all input states."
+    }
+  }
+}

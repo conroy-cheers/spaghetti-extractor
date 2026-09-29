@@ -1,0 +1,3751 @@
+{
+  "format": "spaghetti-extractor-component-partition-intent-v1",
+  "target": "gnu-hello",
+  "pe_sha256": "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c",
+  "units": [
+    {
+      "id": "mingw-invalidparameterhandler-00001000",
+      "description": "Original routine ___mingw_invalidParameterHandler. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          4096,
+          4112
+        ]
+      ]
+    },
+    {
+      "id": "tmaincrtstartup-00001010",
+      "description": "Original routine ___tmainCRTStartup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          4112,
+          5136
+        ]
+      ]
+    },
+    {
+      "id": "winmaincrtstartup-00001410",
+      "description": "Original routine _WinMainCRTStartup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5136,
+          5152
+        ]
+      ]
+    },
+    {
+      "id": "maincrtstartup-00001420",
+      "description": "Original routine _mainCRTStartup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5152,
+          5168
+        ]
+      ]
+    },
+    {
+      "id": "atexit-00001430",
+      "description": "Original routine _atexit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5168,
+          5184
+        ]
+      ]
+    },
+    {
+      "id": "print-help-00001440",
+      "description": "Original routine _print_help. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5184,
+          5511
+        ]
+      ]
+    },
+    {
+      "id": "parse-options-00001587",
+      "description": "Original routine _parse_options. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5511,
+          5920
+        ]
+      ]
+    },
+    {
+      "id": "close-stdout-set-file-name-00001720",
+      "description": "Original routine _close_stdout_set_file_name. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5920,
+          5932
+        ]
+      ]
+    },
+    {
+      "id": "close-stdout-set-ignore-epipe-0000172c",
+      "description": "Original routine _close_stdout_set_ignore_EPIPE. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5932,
+          5944
+        ]
+      ]
+    },
+    {
+      "id": "close-stdout-00001738",
+      "description": "Original routine _close_stdout. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          5944,
+          6136
+        ]
+      ]
+    },
+    {
+      "id": "is-open-000017f8",
+      "description": "Original routine _is_open. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6136,
+          6160
+        ]
+      ]
+    },
+    {
+      "id": "flush-stdout-00001810",
+      "description": "Original routine _flush_stdout. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6160,
+          6232
+        ]
+      ]
+    },
+    {
+      "id": "print-errno-message-00001858",
+      "description": "Original routine _print_errno_message. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6232,
+          6298
+        ]
+      ]
+    },
+    {
+      "id": "error-tail-0000189a",
+      "description": "Original routine _error_tail. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6298,
+          6438
+        ]
+      ]
+    },
+    {
+      "id": "verror-00001926",
+      "description": "Original routine _verror. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6438,
+          6553
+        ]
+      ]
+    },
+    {
+      "id": "error-00001999",
+      "description": "Original routine _error. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6553,
+          6598
+        ]
+      ]
+    },
+    {
+      "id": "verror-at-line-000019c6",
+      "description": "Original routine _verror_at_line. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6598,
+          6900
+        ]
+      ]
+    },
+    {
+      "id": "error-at-line-00001af4",
+      "description": "Original routine _error_at_line. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6900,
+          6964
+        ]
+      ]
+    },
+    {
+      "id": "rpl-free-00001b34",
+      "description": "Original routine _rpl_free. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          6964,
+          7072
+        ]
+      ]
+    },
+    {
+      "id": "exchange-00001ba0",
+      "description": "Original routine _exchange. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          7072,
+          7291
+        ]
+      ]
+    },
+    {
+      "id": "getopt-initialize-00001c7b",
+      "description": "Original routine __getopt_initialize. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          7291,
+          7459
+        ]
+      ]
+    },
+    {
+      "id": "process-long-option-00001d23",
+      "description": "Original routine _process_long_option. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          7459,
+          8841
+        ]
+      ]
+    },
+    {
+      "id": "getopt-internal-r-00002289",
+      "description": "Original routine __getopt_internal_r. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          8841,
+          10084
+        ]
+      ]
+    },
+    {
+      "id": "rpl-getopt-internal-00002764",
+      "description": "Original routine _rpl_getopt_internal. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10084,
+          10217
+        ]
+      ]
+    },
+    {
+      "id": "rpl-getopt-000027e9",
+      "description": "Original routine _rpl_getopt. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10217,
+          10304
+        ]
+      ]
+    },
+    {
+      "id": "rpl-getopt-long-00002840",
+      "description": "Original routine _rpl_getopt_long. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10304,
+          10371
+        ]
+      ]
+    },
+    {
+      "id": "getopt-long-r-00002883",
+      "description": "Original routine __getopt_long_r. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10371,
+          10446
+        ]
+      ]
+    },
+    {
+      "id": "rpl-getopt-long-only-000028ce",
+      "description": "Original routine _rpl_getopt_long_only. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10446,
+          10513
+        ]
+      ]
+    },
+    {
+      "id": "getopt-long-only-r-00002911",
+      "description": "Original routine __getopt_long_only_r. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10513,
+          10588
+        ]
+      ]
+    },
+    {
+      "id": "getprogname-0000295c",
+      "description": "Original routine _getprogname. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10588,
+          10660
+        ]
+      ]
+    },
+    {
+      "id": "rpl-mbsrtowcs-000029a4",
+      "description": "Original routine _rpl_mbsrtowcs. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          10660,
+          11048
+        ],
+        [
+          83496,
+          83504
+        ]
+      ]
+    },
+    {
+      "id": "mbszero-00002b28",
+      "description": "Original routine _mbszero. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          11048,
+          11064
+        ]
+      ]
+    },
+    {
+      "id": "gl-nothrow-get-osfhandle-00002b38",
+      "description": "Original routine __gl_nothrow_get_osfhandle. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          11064,
+          11092
+        ]
+      ]
+    },
+    {
+      "id": "set-program-name-00002b54",
+      "description": "Original routine _set_program_name. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          11092,
+          11240
+        ]
+      ]
+    },
+    {
+      "id": "mbsstr-trimmed-wordbounded-00002be8",
+      "description": "Original routine _mbsstr_trimmed_wordbounded. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          11240,
+          13621
+        ],
+        [
+          83504,
+          83512
+        ]
+      ]
+    },
+    {
+      "id": "proper-name-00003535",
+      "description": "Original routine _proper_name. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          13621,
+          13626
+        ]
+      ]
+    },
+    {
+      "id": "proper-name-utf8-0000353a",
+      "description": "Original routine _proper_name_utf8. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          13626,
+          13856
+        ]
+      ]
+    },
+    {
+      "id": "quoting-options-from-style-00003620",
+      "description": "Original routine _quoting_options_from_style. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          13856,
+          13947
+        ],
+        [
+          83512,
+          83520
+        ]
+      ]
+    },
+    {
+      "id": "gettext-quote-0000367b",
+      "description": "Original routine _gettext_quote. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          13947,
+          14058
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-buffer-restyled-000036ea",
+      "description": "Original routine _quotearg_buffer_restyled. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          14058,
+          20147
+        ],
+        [
+          83520,
+          83525
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-options-00004eb3",
+      "description": "Original routine _quotearg_n_options. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20147,
+          20600
+        ],
+        [
+          83525,
+          83530
+        ]
+      ]
+    },
+    {
+      "id": "clone-quoting-options-00005078",
+      "description": "Original routine _clone_quoting_options. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20600,
+          20661
+        ]
+      ]
+    },
+    {
+      "id": "get-quoting-style-000050b5",
+      "description": "Original routine _get_quoting_style. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20661,
+          20680
+        ]
+      ]
+    },
+    {
+      "id": "set-quoting-style-000050c8",
+      "description": "Original routine _set_quoting_style. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20680,
+          20705
+        ]
+      ]
+    },
+    {
+      "id": "set-char-quoting-000050e1",
+      "description": "Original routine _set_char_quoting. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20705,
+          20769
+        ]
+      ]
+    },
+    {
+      "id": "set-quoting-flags-00005121",
+      "description": "Original routine _set_quoting_flags. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20769,
+          20800
+        ]
+      ]
+    },
+    {
+      "id": "set-custom-quoting-00005140",
+      "description": "Original routine _set_custom_quoting. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20800,
+          20865
+        ],
+        [
+          83530,
+          83536
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-buffer-00005181",
+      "description": "Original routine _quotearg_buffer. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20865,
+          20972
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-alloc-mem-000051ec",
+      "description": "Original routine _quotearg_alloc_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          20972,
+          21191
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-alloc-000052c7",
+      "description": "Original routine _quotearg_alloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21191,
+          21234
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-free-000052f2",
+      "description": "Original routine _quotearg_free. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21234,
+          21364
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-00005374",
+      "description": "Original routine _quotearg_n. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21364,
+          21390
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-mem-0000538e",
+      "description": "Original routine _quotearg_n_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21390,
+          21415
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-000053a7",
+      "description": "Original routine _quotearg. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21415,
+          21442
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-mem-000053c2",
+      "description": "Original routine _quotearg_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21442,
+          21477
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-style-000053e5",
+      "description": "Original routine _quotearg_n_style. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21477,
+          21526
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-style-mem-00005416",
+      "description": "Original routine _quotearg_n_style_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21526,
+          21574
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-style-00005446",
+      "description": "Original routine _quotearg_style. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21574,
+          21609
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-style-mem-00005469",
+      "description": "Original routine _quotearg_style_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21609,
+          21652
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-char-mem-00005494",
+      "description": "Original routine _quotearg_char_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21652,
+          21820
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-char-0000553c",
+      "description": "Original routine _quotearg_char. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21820,
+          21856
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-colon-00005560",
+      "description": "Original routine _quotearg_colon. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21856,
+          21883
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-colon-mem-0000557b",
+      "description": "Original routine _quotearg_colon_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21883,
+          21918
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-style-colon-0000559e",
+      "description": "Original routine _quotearg_n_style_colon. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21918,
+          21991
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-custom-mem-000055e7",
+      "description": "Original routine _quotearg_n_custom_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          21991,
+          22160
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-n-custom-00005690",
+      "description": "Original routine _quotearg_n_custom. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22160,
+          22211
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-custom-000056c3",
+      "description": "Original routine _quotearg_custom. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22211,
+          22254
+        ]
+      ]
+    },
+    {
+      "id": "quotearg-custom-mem-000056ee",
+      "description": "Original routine _quotearg_custom_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22254,
+          22305
+        ]
+      ]
+    },
+    {
+      "id": "quote-n-mem-00005721",
+      "description": "Original routine _quote_n_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22305,
+          22330
+        ]
+      ]
+    },
+    {
+      "id": "quote-mem-0000573a",
+      "description": "Original routine _quote_mem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22330,
+          22365
+        ]
+      ]
+    },
+    {
+      "id": "quote-n-0000575d",
+      "description": "Original routine _quote_n. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22365,
+          22400
+        ]
+      ]
+    },
+    {
+      "id": "quote-00005780",
+      "description": "Original routine _quote. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22400,
+          22432
+        ]
+      ]
+    },
+    {
+      "id": "streq-000057a0",
+      "description": "Original routine _streq. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22432,
+          22464
+        ]
+      ]
+    },
+    {
+      "id": "rpl-strerror-000057c0",
+      "description": "Original routine _rpl_strerror. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22464,
+          22652
+        ],
+        [
+          83536,
+          83544
+        ]
+      ]
+    },
+    {
+      "id": "strerror-override-0000587c",
+      "description": "Original routine _strerror_override. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          22652,
+          23064
+        ]
+      ]
+    },
+    {
+      "id": "strnlen1-00005a18",
+      "description": "Original routine _strnlen1. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          23064,
+          23120
+        ]
+      ]
+    },
+    {
+      "id": "trim2-00005a50",
+      "description": "Original routine _trim2. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          23120,
+          23968
+        ]
+      ]
+    },
+    {
+      "id": "version-etc-arn-00005da0",
+      "description": "Original routine _version_etc_arn. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          23968,
+          24754
+        ]
+      ]
+    },
+    {
+      "id": "version-etc-ar-000060b2",
+      "description": "Original routine _version_etc_ar. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          24754,
+          24848
+        ]
+      ]
+    },
+    {
+      "id": "version-etc-va-00006110",
+      "description": "Original routine _version_etc_va. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          24848,
+          24937
+        ]
+      ]
+    },
+    {
+      "id": "version-etc-00006169",
+      "description": "Original routine _version_etc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          24937,
+          24990
+        ]
+      ]
+    },
+    {
+      "id": "emit-bug-reporting-address-0000619e",
+      "description": "Original routine _emit_bug_reporting_address. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          24990,
+          25120
+        ]
+      ]
+    },
+    {
+      "id": "check-nonnull-00006220",
+      "description": "Original routine _check_nonnull. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25120,
+          25133
+        ]
+      ]
+    },
+    {
+      "id": "xmalloc-0000622d",
+      "description": "Original routine _xmalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25133,
+          25153
+        ]
+      ]
+    },
+    {
+      "id": "ximalloc-00006241",
+      "description": "Original routine _ximalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25153,
+          25173
+        ]
+      ]
+    },
+    {
+      "id": "xcharalloc-00006255",
+      "description": "Original routine _xcharalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25173,
+          25175
+        ]
+      ]
+    },
+    {
+      "id": "xrealloc-00006257",
+      "description": "Original routine _xrealloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25175,
+          25203
+        ]
+      ]
+    },
+    {
+      "id": "xirealloc-00006273",
+      "description": "Original routine _xirealloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25203,
+          25231
+        ]
+      ]
+    },
+    {
+      "id": "xreallocarray-0000628f",
+      "description": "Original routine _xreallocarray. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25231,
+          25270
+        ]
+      ]
+    },
+    {
+      "id": "xnrealloc-000062b6",
+      "description": "Original routine _xnrealloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25270,
+          25272
+        ]
+      ]
+    },
+    {
+      "id": "xireallocarray-000062b8",
+      "description": "Original routine _xireallocarray. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25272,
+          25311
+        ]
+      ]
+    },
+    {
+      "id": "xnmalloc-000062df",
+      "description": "Original routine _xnmalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25311,
+          25346
+        ]
+      ]
+    },
+    {
+      "id": "xinmalloc-00006302",
+      "description": "Original routine _xinmalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25346,
+          25381
+        ]
+      ]
+    },
+    {
+      "id": "x2nrealloc-00006325",
+      "description": "Original routine _x2nrealloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25381,
+          25481
+        ]
+      ]
+    },
+    {
+      "id": "x2realloc-00006389",
+      "description": "Original routine _x2realloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25481,
+          25516
+        ]
+      ]
+    },
+    {
+      "id": "xpalloc-000063ac",
+      "description": "Original routine _xpalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25516,
+          25698
+        ]
+      ]
+    },
+    {
+      "id": "xcalloc-00006462",
+      "description": "Original routine _xcalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25698,
+          25729
+        ]
+      ]
+    },
+    {
+      "id": "xzalloc-00006481",
+      "description": "Original routine _xzalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25729,
+          25756
+        ]
+      ]
+    },
+    {
+      "id": "xicalloc-0000649c",
+      "description": "Original routine _xicalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25756,
+          25787
+        ]
+      ]
+    },
+    {
+      "id": "xizalloc-000064bb",
+      "description": "Original routine _xizalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25787,
+          25814
+        ]
+      ]
+    },
+    {
+      "id": "xmemdup-000064d6",
+      "description": "Original routine _xmemdup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25814,
+          25861
+        ]
+      ]
+    },
+    {
+      "id": "ximemdup-00006505",
+      "description": "Original routine _ximemdup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25861,
+          25908
+        ]
+      ]
+    },
+    {
+      "id": "ximemdup0-00006534",
+      "description": "Original routine _ximemdup0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25908,
+          25958
+        ]
+      ]
+    },
+    {
+      "id": "xstrdup-00006566",
+      "description": "Original routine _xstrdup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25958,
+          25996
+        ]
+      ]
+    },
+    {
+      "id": "xalloc-die-0000658c",
+      "description": "Original routine _xalloc_die. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          25996,
+          26044
+        ]
+      ]
+    },
+    {
+      "id": "rpl-calloc-000065bc",
+      "description": "Original routine _rpl_calloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26044,
+          26152
+        ]
+      ]
+    },
+    {
+      "id": "rpl-malloc-00006628",
+      "description": "Original routine _rpl_malloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26152,
+          26240
+        ]
+      ]
+    },
+    {
+      "id": "last-component-00006680",
+      "description": "Original routine _last_component. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26240,
+          26426
+        ]
+      ]
+    },
+    {
+      "id": "base-len-0000673a",
+      "description": "Original routine _base_len. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26426,
+          26560
+        ]
+      ]
+    },
+    {
+      "id": "c-strcasecmp-000067c0",
+      "description": "Original routine _c_strcasecmp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26560,
+          26640
+        ]
+      ]
+    },
+    {
+      "id": "c32isalnum-00006810",
+      "description": "Original routine _c32isalnum. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26640,
+          26684
+        ]
+      ]
+    },
+    {
+      "id": "c32isprint-0000683c",
+      "description": "Original routine _c32isprint. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26684,
+          26728
+        ]
+      ]
+    },
+    {
+      "id": "c32isspace-00006868",
+      "description": "Original routine _c32isspace. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26728,
+          26772
+        ]
+      ]
+    },
+    {
+      "id": "close-stream-00006894",
+      "description": "Original routine _close_stream. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26772,
+          26872
+        ]
+      ]
+    },
+    {
+      "id": "fpending-000068f8",
+      "description": "Original routine ___fpending. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26872,
+          26896
+        ]
+      ]
+    },
+    {
+      "id": "gl-alloc-nomem-00006910",
+      "description": "Original routine __gl_alloc_nomem. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26896,
+          26917
+        ]
+      ]
+    },
+    {
+      "id": "imalloc-00006925",
+      "description": "Original routine _imalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26917,
+          26922
+        ]
+      ]
+    },
+    {
+      "id": "irealloc-0000692a",
+      "description": "Original routine _irealloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26922,
+          26927
+        ]
+      ]
+    },
+    {
+      "id": "icalloc-0000692f",
+      "description": "Original routine _icalloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26927,
+          26932
+        ]
+      ]
+    },
+    {
+      "id": "ireallocarray-00006934",
+      "description": "Original routine _ireallocarray. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26932,
+          26940
+        ]
+      ]
+    },
+    {
+      "id": "locale-charset-0000693c",
+      "description": "Original routine _locale_charset. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          26940,
+          27292
+        ]
+      ]
+    },
+    {
+      "id": "streq9-00006a9c",
+      "description": "Original routine _streq9. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27292,
+          27322
+        ]
+      ]
+    },
+    {
+      "id": "streq8-00006aba",
+      "description": "Original routine _streq8. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27322,
+          27350
+        ]
+      ]
+    },
+    {
+      "id": "streq7-00006ad6",
+      "description": "Original routine _streq7. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27350,
+          27383
+        ]
+      ]
+    },
+    {
+      "id": "streq6-00006af7",
+      "description": "Original routine _streq6. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27383,
+          27427
+        ]
+      ]
+    },
+    {
+      "id": "streq5-00006b23",
+      "description": "Original routine _streq5. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27427,
+          27492
+        ]
+      ]
+    },
+    {
+      "id": "streq4-00006b64",
+      "description": "Original routine _streq4. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27492,
+          27575
+        ]
+      ]
+    },
+    {
+      "id": "streq3-00006bb7",
+      "description": "Original routine _streq3. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27575,
+          27695
+        ]
+      ]
+    },
+    {
+      "id": "streq2-00006c2f",
+      "description": "Original routine _streq2. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27695,
+          27831
+        ]
+      ]
+    },
+    {
+      "id": "streq1-00006cb7",
+      "description": "Original routine _streq1. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27831,
+          27981
+        ]
+      ]
+    },
+    {
+      "id": "streq0-00006d4d",
+      "description": "Original routine _streq0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          27981,
+          28147
+        ]
+      ]
+    },
+    {
+      "id": "mbrtoc32-00006df3",
+      "description": "Original routine _mbrtoc32. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          28147,
+          29204
+        ],
+        [
+          83544,
+          83552
+        ]
+      ]
+    },
+    {
+      "id": "rpl-mbrtowc-00007214",
+      "description": "Original routine _rpl_mbrtowc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          29204,
+          29464
+        ]
+      ]
+    },
+    {
+      "id": "rpl-mbsinit-00007318",
+      "description": "Original routine _rpl_mbsinit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          29464,
+          29504
+        ]
+      ]
+    },
+    {
+      "id": "knuth-morris-pratt-00007340",
+      "description": "Original routine _knuth_morris_pratt. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          29504,
+          29847
+        ]
+      ]
+    },
+    {
+      "id": "knuth-morris-pratt-multibyte-00007497",
+      "description": "Original routine _knuth_morris_pratt_multibyte. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          29847,
+          31937
+        ],
+        [
+          83552,
+          83557
+        ]
+      ]
+    },
+    {
+      "id": "mbsstr-00007cc1",
+      "description": "Original routine _mbsstr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          31937,
+          36192
+        ],
+        [
+          83557,
+          83564
+        ]
+      ]
+    },
+    {
+      "id": "memeq-00008d60",
+      "description": "Original routine _memeq. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36192,
+          36232
+        ]
+      ]
+    },
+    {
+      "id": "gl-msvc-invalid-parameter-handler-00008d88",
+      "description": "Original routine _gl_msvc_invalid_parameter_handler. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36232,
+          36233
+        ]
+      ]
+    },
+    {
+      "id": "gl-msvc-inval-ensure-handler-00008d89",
+      "description": "Original routine _gl_msvc_inval_ensure_handler. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36233,
+          36280
+        ]
+      ]
+    },
+    {
+      "id": "rpl-realloc-00008db8",
+      "description": "Original routine _rpl_realloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36280,
+          36368
+        ]
+      ]
+    },
+    {
+      "id": "reallocarray-00008e10",
+      "description": "Original routine _reallocarray. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36368,
+          36424
+        ]
+      ]
+    },
+    {
+      "id": "bitmap-lookup-00008e48",
+      "description": "Original routine _bitmap_lookup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36424,
+          36510
+        ]
+      ]
+    },
+    {
+      "id": "uc-is-alnum-00008e9e",
+      "description": "Original routine _uc_is_alnum. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36510,
+          36532
+        ]
+      ]
+    },
+    {
+      "id": "bitmap-lookup-00008eb4",
+      "description": "Original routine _bitmap_lookup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36532,
+          36618
+        ]
+      ]
+    },
+    {
+      "id": "uc-is-print-00008f0a",
+      "description": "Original routine _uc_is_print. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36618,
+          36640
+        ]
+      ]
+    },
+    {
+      "id": "bitmap-lookup-00008f20",
+      "description": "Original routine _bitmap_lookup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36640,
+          36726
+        ]
+      ]
+    },
+    {
+      "id": "uc-is-space-00008f76",
+      "description": "Original routine _uc_is_space. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36726,
+          36748
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswalnum-00008f8c",
+      "description": "Original routine _rpl_iswalnum. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36748,
+          36794
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswalpha-00008fba",
+      "description": "Original routine _rpl_iswalpha. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36794,
+          36840
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswblank-00008fe8",
+      "description": "Original routine _rpl_iswblank. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36840,
+          36905
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswcntrl-00009029",
+      "description": "Original routine _rpl_iswcntrl. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36905,
+          36951
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswdigit-00009057",
+      "description": "Original routine _rpl_iswdigit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36951,
+          36968
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswgraph-00009068",
+      "description": "Original routine _rpl_iswgraph. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          36968,
+          37014
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswlower-00009096",
+      "description": "Original routine _rpl_iswlower. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37014,
+          37060
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswprint-000090c4",
+      "description": "Original routine _rpl_iswprint. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37060,
+          37124
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswpunct-00009104",
+      "description": "Original routine _rpl_iswpunct. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37124,
+          37170
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswspace-00009132",
+      "description": "Original routine _rpl_iswspace. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37170,
+          37216
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswupper-00009160",
+      "description": "Original routine _rpl_iswupper. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37216,
+          37262
+        ]
+      ]
+    },
+    {
+      "id": "rpl-iswxdigit-0000918e",
+      "description": "Original routine _rpl_iswxdigit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37262,
+          37316
+        ]
+      ]
+    },
+    {
+      "id": "rpl-towlower-000091c4",
+      "description": "Original routine _rpl_towlower. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37316,
+          37346
+        ]
+      ]
+    },
+    {
+      "id": "rpl-towupper-000091e2",
+      "description": "Original routine _rpl_towupper. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37346,
+          37376
+        ]
+      ]
+    },
+    {
+      "id": "c-isalnum-00009200",
+      "description": "Original routine _c_isalnum. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37376,
+          37423
+        ]
+      ]
+    },
+    {
+      "id": "c-isalpha-0000922f",
+      "description": "Original routine _c_isalpha. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37423,
+          37449
+        ]
+      ]
+    },
+    {
+      "id": "c-isascii-00009249",
+      "description": "Original routine _c_isascii. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37449,
+          37458
+        ]
+      ]
+    },
+    {
+      "id": "c-isblank-00009252",
+      "description": "Original routine _c_isblank. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37458,
+          37479
+        ]
+      ]
+    },
+    {
+      "id": "c-iscntrl-00009267",
+      "description": "Original routine _c_iscntrl. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37479,
+          37501
+        ]
+      ]
+    },
+    {
+      "id": "c-isdigit-0000927d",
+      "description": "Original routine _c_isdigit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37501,
+          37515
+        ]
+      ]
+    },
+    {
+      "id": "c-isgraph-0000928b",
+      "description": "Original routine _c_isgraph. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37515,
+          37529
+        ]
+      ]
+    },
+    {
+      "id": "c-islower-00009299",
+      "description": "Original routine _c_islower. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37529,
+          37543
+        ]
+      ]
+    },
+    {
+      "id": "c-isprint-000092a7",
+      "description": "Original routine _c_isprint. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37543,
+          37557
+        ]
+      ]
+    },
+    {
+      "id": "c-ispunct-000092b5",
+      "description": "Original routine _c_ispunct. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37557,
+          37609
+        ]
+      ]
+    },
+    {
+      "id": "c-isspace-000092e9",
+      "description": "Original routine _c_isspace. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37609,
+          37632
+        ]
+      ]
+    },
+    {
+      "id": "c-isupper-00009300",
+      "description": "Original routine _c_isupper. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37632,
+          37646
+        ]
+      ]
+    },
+    {
+      "id": "c-isxdigit-0000930e",
+      "description": "Original routine _c_isxdigit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37646,
+          37693
+        ]
+      ]
+    },
+    {
+      "id": "c-tolower-0000933d",
+      "description": "Original routine _c_tolower. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37693,
+          37714
+        ]
+      ]
+    },
+    {
+      "id": "c-toupper-00009352",
+      "description": "Original routine _c_toupper. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37714,
+          37736
+        ]
+      ]
+    },
+    {
+      "id": "mmalloca-00009368",
+      "description": "Original routine _mmalloca. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37736,
+          37796
+        ]
+      ]
+    },
+    {
+      "id": "freea-000093a4",
+      "description": "Original routine _freea. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37796,
+          37844
+        ],
+        [
+          83564,
+          83569
+        ]
+      ]
+    },
+    {
+      "id": "mb-width-aux-000093d4",
+      "description": "Original routine _mb_width_aux. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37844,
+          37891
+        ]
+      ]
+    },
+    {
+      "id": "mb-copy-00009403",
+      "description": "Original routine _mb_copy. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37891,
+          37936
+        ]
+      ]
+    },
+    {
+      "id": "mbslen-00009430",
+      "description": "Original routine _mbslen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          37936,
+          38292
+        ]
+      ]
+    },
+    {
+      "id": "c32iscntrl-00009594",
+      "description": "Original routine _c32iscntrl. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38292,
+          38336
+        ]
+      ]
+    },
+    {
+      "id": "c32width-000095c0",
+      "description": "Original routine _c32width. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38336,
+          38396
+        ]
+      ]
+    },
+    {
+      "id": "bitmap-lookup-000095fc",
+      "description": "Original routine _bitmap_lookup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38396,
+          38482
+        ]
+      ]
+    },
+    {
+      "id": "uc-is-cntrl-00009652",
+      "description": "Original routine _uc_is_cntrl. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38482,
+          38504
+        ]
+      ]
+    },
+    {
+      "id": "streq9-00009668",
+      "description": "Original routine _streq9. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38504,
+          38534
+        ]
+      ]
+    },
+    {
+      "id": "streq8-00009686",
+      "description": "Original routine _streq8. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38534,
+          38562
+        ]
+      ]
+    },
+    {
+      "id": "streq7-000096a2",
+      "description": "Original routine _streq7. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38562,
+          38595
+        ]
+      ]
+    },
+    {
+      "id": "streq6-000096c3",
+      "description": "Original routine _streq6. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38595,
+          38639
+        ]
+      ]
+    },
+    {
+      "id": "streq5-000096ef",
+      "description": "Original routine _streq5. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38639,
+          38704
+        ]
+      ]
+    },
+    {
+      "id": "streq4-00009730",
+      "description": "Original routine _streq4. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38704,
+          38787
+        ]
+      ]
+    },
+    {
+      "id": "streq3-00009783",
+      "description": "Original routine _streq3. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38787,
+          38907
+        ]
+      ]
+    },
+    {
+      "id": "streq2-000097fb",
+      "description": "Original routine _streq2. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          38907,
+          39043
+        ]
+      ]
+    },
+    {
+      "id": "streq1-00009883",
+      "description": "Original routine _streq1. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          39043,
+          39193
+        ]
+      ]
+    },
+    {
+      "id": "streq0-00009919",
+      "description": "Original routine _streq0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          39193,
+          39359
+        ]
+      ]
+    },
+    {
+      "id": "is-cjk-encoding-000099bf",
+      "description": "Original routine _is_cjk_encoding. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          39359,
+          40064
+        ]
+      ]
+    },
+    {
+      "id": "bitmap-lookup-00009c80",
+      "description": "Original routine _bitmap_lookup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40064,
+          40150
+        ]
+      ]
+    },
+    {
+      "id": "uc-width-00009cd6",
+      "description": "Original routine _uc_width. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40150,
+          40372
+        ]
+      ]
+    },
+    {
+      "id": "streq9-00009db4",
+      "description": "Original routine _streq9. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40372,
+          40402
+        ]
+      ]
+    },
+    {
+      "id": "streq8-00009dd2",
+      "description": "Original routine _streq8. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40402,
+          40430
+        ]
+      ]
+    },
+    {
+      "id": "streq7-00009dee",
+      "description": "Original routine _streq7. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40430,
+          40463
+        ]
+      ]
+    },
+    {
+      "id": "streq6-00009e0f",
+      "description": "Original routine _streq6. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40463,
+          40507
+        ]
+      ]
+    },
+    {
+      "id": "streq5-00009e3b",
+      "description": "Original routine _streq5. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40507,
+          40572
+        ]
+      ]
+    },
+    {
+      "id": "streq4-00009e7c",
+      "description": "Original routine _streq4. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40572,
+          40655
+        ]
+      ]
+    },
+    {
+      "id": "streq3-00009ecf",
+      "description": "Original routine _streq3. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40655,
+          40775
+        ]
+      ]
+    },
+    {
+      "id": "streq2-00009f47",
+      "description": "Original routine _streq2. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40775,
+          40911
+        ]
+      ]
+    },
+    {
+      "id": "streq1-00009fcf",
+      "description": "Original routine _streq1. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          40911,
+          41061
+        ]
+      ]
+    },
+    {
+      "id": "streq0-0000a065",
+      "description": "Original routine _streq0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41061,
+          41227
+        ]
+      ]
+    },
+    {
+      "id": "is-locale-utf8-0000a10b",
+      "description": "Original routine _is_locale_utf8. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41227,
+          41321
+        ]
+      ]
+    },
+    {
+      "id": "wcwidth-0000a169",
+      "description": "Original routine _wcwidth. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41321,
+          41408
+        ]
+      ]
+    },
+    {
+      "id": "do-global-dtors-0000a1c0",
+      "description": "Original routine ___do_global_dtors. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41408,
+          41472
+        ]
+      ]
+    },
+    {
+      "id": "do-global-ctors-0000a200",
+      "description": "Original routine ___do_global_ctors. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41472,
+          41584
+        ]
+      ]
+    },
+    {
+      "id": "main-0000a270",
+      "description": "Original routine ___main. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41584,
+          41616
+        ]
+      ]
+    },
+    {
+      "id": "setargv-0000a290",
+      "description": "Original routine __setargv. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41616,
+          41632
+        ]
+      ]
+    },
+    {
+      "id": "dyn-tls-dtor-12-0000a2a0",
+      "description": "Original routine ___dyn_tls_dtor@12. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41632,
+          41712
+        ]
+      ]
+    },
+    {
+      "id": "dyn-tls-init-12-0000a2f0",
+      "description": "Original routine ___dyn_tls_init@12. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41712,
+          41856
+        ]
+      ]
+    },
+    {
+      "id": "tlregdtor-0000a380",
+      "description": "Original routine ___tlregdtor. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41856,
+          41872
+        ]
+      ]
+    },
+    {
+      "id": "matherr-0000a390",
+      "description": "Original routine __matherr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          41872,
+          42000
+        ]
+      ]
+    },
+    {
+      "id": "report-error-0000a410",
+      "description": "Original routine ___report_error. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          42000,
+          42080
+        ]
+      ]
+    },
+    {
+      "id": "mark-section-writable-0000a460",
+      "description": "Original routine _mark_section_writable. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          42080,
+          42432
+        ]
+      ]
+    },
+    {
+      "id": "pei386-runtime-relocator-0000a5c0",
+      "description": "Original routine __pei386_runtime_relocator. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          42432,
+          43296
+        ]
+      ]
+    },
+    {
+      "id": "mingw-raise-matherr-0000a920",
+      "description": "Original routine ___mingw_raise_matherr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          43296,
+          43392
+        ]
+      ]
+    },
+    {
+      "id": "mingw-setusermatherr-0000a980",
+      "description": "Original routine ___mingw_setusermatherr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          43392,
+          43424
+        ]
+      ]
+    },
+    {
+      "id": "gnu-exception-handler-4-0000a9a0",
+      "description": "Original routine __gnu_exception_handler@4. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          43424,
+          43840
+        ]
+      ]
+    },
+    {
+      "id": "mingwthr-run-key-dtors.part.0-0000ab40",
+      "description": "Original routine ___mingwthr_run_key_dtors.part.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          43840,
+          43952
+        ]
+      ]
+    },
+    {
+      "id": "w64-mingwthr-add-key-dtor-0000abb0",
+      "description": "Original routine ____w64_mingwthr_add_key_dtor. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          43952,
+          44080
+        ]
+      ]
+    },
+    {
+      "id": "w64-mingwthr-remove-key-dtor-0000ac30",
+      "description": "Original routine ____w64_mingwthr_remove_key_dtor. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44080,
+          44240
+        ]
+      ]
+    },
+    {
+      "id": "mingw-tlscallback-0000acd0",
+      "description": "Original routine ___mingw_TLScallback. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44240,
+          44512
+        ]
+      ]
+    },
+    {
+      "id": "fpreset-0000ade0",
+      "description": "Original routine __fpreset, _fpreset. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44512,
+          44528
+        ]
+      ]
+    },
+    {
+      "id": "validateimagebase-0000adf0",
+      "description": "Original routine __ValidateImageBase. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44528,
+          44576
+        ]
+      ]
+    },
+    {
+      "id": "findpesection-0000ae20",
+      "description": "Original routine __FindPESection. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44576,
+          44656
+        ]
+      ]
+    },
+    {
+      "id": "findpesectionbyname-0000ae70",
+      "description": "Original routine __FindPESectionByName. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44656,
+          44816
+        ]
+      ]
+    },
+    {
+      "id": "mingw-getsectionforaddress-0000af10",
+      "description": "Original routine ___mingw_GetSectionForAddress. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44816,
+          44960
+        ]
+      ]
+    },
+    {
+      "id": "mingw-getsectioncount-0000afa0",
+      "description": "Original routine ___mingw_GetSectionCount. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          44960,
+          45024
+        ]
+      ]
+    },
+    {
+      "id": "findpesectionexec-0000afe0",
+      "description": "Original routine __FindPESectionExec. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45024,
+          45152
+        ]
+      ]
+    },
+    {
+      "id": "getpeimagebase-0000b060",
+      "description": "Original routine __GetPEImageBase. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45152,
+          45216
+        ]
+      ]
+    },
+    {
+      "id": "isnonwritableincurrentimage-0000b0a0",
+      "description": "Original routine __IsNonwritableInCurrentImage. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45216,
+          45376
+        ]
+      ]
+    },
+    {
+      "id": "mingw-enum-import-library-names-0000b140",
+      "description": "Original routine ___mingw_enum_import_library_names. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45376,
+          45584
+        ]
+      ]
+    },
+    {
+      "id": "chkstk-ms-0000b210",
+      "description": "Original routine ___chkstk_ms. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45584,
+          45632
+        ]
+      ]
+    },
+    {
+      "id": "mingw-fprintf-0000b240",
+      "description": "Original routine ___mingw_fprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45632,
+          45760
+        ]
+      ]
+    },
+    {
+      "id": "pformat-cvt-0000b2c0",
+      "description": "Original routine ___pformat_cvt. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          45760,
+          46000
+        ]
+      ]
+    },
+    {
+      "id": "pformat-putc-0000b3b0",
+      "description": "Original routine ___pformat_putc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          46000,
+          46112
+        ]
+      ]
+    },
+    {
+      "id": "pformat-wputchars-0000b420",
+      "description": "Original routine ___pformat_wputchars. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          46112,
+          46512
+        ]
+      ]
+    },
+    {
+      "id": "pformat-putchars-0000b5b0",
+      "description": "Original routine ___pformat_putchars. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          46512,
+          46880
+        ]
+      ]
+    },
+    {
+      "id": "pformat-puts-0000b720",
+      "description": "Original routine ___pformat_puts. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          46880,
+          46960
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-inf-or-nan-0000b770",
+      "description": "Original routine ___pformat_emit_inf_or_nan. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          46960,
+          47104
+        ]
+      ]
+    },
+    {
+      "id": "pformat-xint.isra.0-0000b800",
+      "description": "Original routine ___pformat_xint.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          47104,
+          48944
+        ]
+      ]
+    },
+    {
+      "id": "pformat-int.isra.0-0000bf30",
+      "description": "Original routine ___pformat_int.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          48944,
+          50000
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-radix-point-0000c350",
+      "description": "Original routine ___pformat_emit_radix_point. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          50000,
+          50352
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-float-0000c4b0",
+      "description": "Original routine ___pformat_emit_float. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          50352,
+          51472
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-efloat-0000c910",
+      "description": "Original routine ___pformat_emit_efloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          51472,
+          51712
+        ]
+      ]
+    },
+    {
+      "id": "pformat-efloat-0000ca00",
+      "description": "Original routine ___pformat_efloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          51712,
+          51856
+        ]
+      ]
+    },
+    {
+      "id": "pformat-float-0000ca90",
+      "description": "Original routine ___pformat_float. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          51856,
+          52064
+        ]
+      ]
+    },
+    {
+      "id": "pformat-gfloat-0000cb60",
+      "description": "Original routine ___pformat_gfloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          52064,
+          52448
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-xfloat.isra.0-0000cce0",
+      "description": "Original routine ___pformat_emit_xfloat.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          52448,
+          53872
+        ]
+      ]
+    },
+    {
+      "id": "mingw-pformat-0000d270",
+      "description": "Original routine ___mingw_pformat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          53872,
+          56960
+        ]
+      ]
+    },
+    {
+      "id": "mingw-printf-0000de80",
+      "description": "Original routine ___mingw_printf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          56960,
+          57072
+        ]
+      ]
+    },
+    {
+      "id": "mingw-wprintf-0000def0",
+      "description": "Original routine ___mingw_wprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57072,
+          57184
+        ]
+      ]
+    },
+    {
+      "id": "mingw-sprintf-0000df60",
+      "description": "Original routine ___mingw_sprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57184,
+          57248
+        ]
+      ]
+    },
+    {
+      "id": "mingw-vfprintf-0000dfa0",
+      "description": "Original routine ___mingw_vfprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57248,
+          57344
+        ]
+      ]
+    },
+    {
+      "id": "rv-alloc-d2a-0000e000",
+      "description": "Original routine ___rv_alloc_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57344,
+          57424
+        ]
+      ]
+    },
+    {
+      "id": "nrv-alloc-d2a-0000e050",
+      "description": "Original routine ___nrv_alloc_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57424,
+          57568
+        ]
+      ]
+    },
+    {
+      "id": "freedtoa-0000e0e0",
+      "description": "Original routine ___freedtoa. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57568,
+          57600
+        ]
+      ]
+    },
+    {
+      "id": "quorem-d2a-0000e100",
+      "description": "Original routine ___quorem_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          57600,
+          58112
+        ]
+      ]
+    },
+    {
+      "id": "gdtoa-0000e300",
+      "description": "Original routine ___gdtoa. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          58112,
+          64832
+        ]
+      ]
+    },
+    {
+      "id": "rshift-d2a-0000fd40",
+      "description": "Original routine ___rshift_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          64832,
+          65168
+        ]
+      ]
+    },
+    {
+      "id": "trailz-d2a-0000fe90",
+      "description": "Original routine ___trailz_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65168,
+          65280
+        ]
+      ]
+    },
+    {
+      "id": "dtoa-lock-0000ff00",
+      "description": "Original routine _dtoa_lock. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65280,
+          65488
+        ]
+      ]
+    },
+    {
+      "id": "dtoa-lock-cleanup-0000ffd0",
+      "description": "Original routine _dtoa_lock_cleanup. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65488,
+          65568
+        ]
+      ]
+    },
+    {
+      "id": "balloc-d2a-00010020",
+      "description": "Original routine ___Balloc_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65568,
+          65792
+        ]
+      ]
+    },
+    {
+      "id": "bfree-d2a-00010100",
+      "description": "Original routine ___Bfree_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65792,
+          65904
+        ]
+      ]
+    },
+    {
+      "id": "multadd-d2a-00010170",
+      "description": "Original routine ___multadd_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          65904,
+          66160
+        ]
+      ]
+    },
+    {
+      "id": "i2b-d2a-00010270",
+      "description": "Original routine ___i2b_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          66160,
+          66336
+        ]
+      ]
+    },
+    {
+      "id": "mult-d2a-00010320",
+      "description": "Original routine ___mult_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          66336,
+          66800
+        ]
+      ]
+    },
+    {
+      "id": "pow5mult-d2a-000104f0",
+      "description": "Original routine ___pow5mult_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          66800,
+          67168
+        ]
+      ]
+    },
+    {
+      "id": "lshift-d2a-00010660",
+      "description": "Original routine ___lshift_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          67168,
+          67536
+        ]
+      ]
+    },
+    {
+      "id": "cmp-d2a-000107d0",
+      "description": "Original routine ___cmp_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          67536,
+          67616
+        ]
+      ]
+    },
+    {
+      "id": "diff-d2a-00010820",
+      "description": "Original routine ___diff_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          67616,
+          68192
+        ]
+      ]
+    },
+    {
+      "id": "b2d-d2a-00010a60",
+      "description": "Original routine ___b2d_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          68192,
+          68528
+        ]
+      ]
+    },
+    {
+      "id": "d2b-d2a-00010bb0",
+      "description": "Original routine ___d2b_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          68528,
+          68960
+        ]
+      ]
+    },
+    {
+      "id": "strcp-d2a-00010d60",
+      "description": "Original routine ___strcp_D2A. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          68960,
+          69056
+        ]
+      ]
+    },
+    {
+      "id": "pformat-putc-00010dc0",
+      "description": "Original routine ___pformat_putc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69056,
+          69168
+        ]
+      ]
+    },
+    {
+      "id": "pformat-putchars-00010e30",
+      "description": "Original routine ___pformat_putchars. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69168,
+          69584
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-inf-or-nan-00010fd0",
+      "description": "Original routine ___pformat_emit_inf_or_nan. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69584,
+          69728
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-radix-point-00011060",
+      "description": "Original routine ___pformat_emit_radix_point. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69728,
+          69904
+        ]
+      ]
+    },
+    {
+      "id": "pformat-puts-00011110",
+      "description": "Original routine ___pformat_puts. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69904,
+          69984
+        ]
+      ]
+    },
+    {
+      "id": "pformat-cvt-00011160",
+      "description": "Original routine ___pformat_cvt. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          69984,
+          70224
+        ]
+      ]
+    },
+    {
+      "id": "pformat-wputchars-00011250",
+      "description": "Original routine ___pformat_wputchars. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          70224,
+          70688
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-float-00011420",
+      "description": "Original routine ___pformat_emit_float. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          70688,
+          71808
+        ]
+      ]
+    },
+    {
+      "id": "pformat-float-00011880",
+      "description": "Original routine ___pformat_float. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          71808,
+          72016
+        ]
+      ]
+    },
+    {
+      "id": "pformat-xint.isra.0-00011950",
+      "description": "Original routine ___pformat_xint.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          72016,
+          73792
+        ]
+      ]
+    },
+    {
+      "id": "pformat-int.isra.0-00012040",
+      "description": "Original routine ___pformat_int.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          73792,
+          74864
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-xfloat.isra.0-00012470",
+      "description": "Original routine ___pformat_emit_xfloat.isra.0. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          74864,
+          76304
+        ]
+      ]
+    },
+    {
+      "id": "pformat-emit-efloat-00012a10",
+      "description": "Original routine ___pformat_emit_efloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          76304,
+          76544
+        ]
+      ]
+    },
+    {
+      "id": "pformat-efloat-00012b00",
+      "description": "Original routine ___pformat_efloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          76544,
+          76688
+        ]
+      ]
+    },
+    {
+      "id": "pformat-gfloat-00012b90",
+      "description": "Original routine ___pformat_gfloat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          76688,
+          77072
+        ]
+      ]
+    },
+    {
+      "id": "mingw-wpformat-00012d10",
+      "description": "Original routine ___mingw_wpformat. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          77072,
+          80512
+        ]
+      ]
+    },
+    {
+      "id": "wcsnlen-00013a80",
+      "description": "Original routine _wcsnlen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          80512,
+          80560
+        ]
+      ]
+    },
+    {
+      "id": "wcrtomb-cp-00013ab0",
+      "description": "Original routine ___wcrtomb_cp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          80560,
+          80720
+        ]
+      ]
+    },
+    {
+      "id": "wcrtomb-00013b50",
+      "description": "Original routine _wcrtomb. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          80720,
+          80800
+        ]
+      ]
+    },
+    {
+      "id": "wcsrtombs-00013ba0",
+      "description": "Original routine _wcsrtombs. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          80800,
+          81104
+        ]
+      ]
+    },
+    {
+      "id": "strnlen-00013cd0",
+      "description": "Original routine _strnlen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          81104,
+          81168
+        ]
+      ]
+    },
+    {
+      "id": "mbrtowc-cp-00013d10",
+      "description": "Original routine ___mbrtowc_cp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          81168,
+          81584
+        ]
+      ]
+    },
+    {
+      "id": "mbrtowc-00013eb0",
+      "description": "Original routine _mbrtowc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          81584,
+          81696
+        ]
+      ]
+    },
+    {
+      "id": "mbsrtowcs-00013f20",
+      "description": "Original routine _mbsrtowcs. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          81696,
+          82016
+        ]
+      ]
+    },
+    {
+      "id": "mbrlen-00014060",
+      "description": "Original routine _mbrlen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82016,
+          82112
+        ]
+      ]
+    },
+    {
+      "id": "msvcrt---lc-codepage-func-000140c0",
+      "description": "Original routine _msvcrt___lc_codepage_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82112,
+          82128
+        ]
+      ]
+    },
+    {
+      "id": "setlocale-codepage-hack-000140d0",
+      "description": "Original routine _setlocale_codepage_hack. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82128,
+          82192
+        ]
+      ]
+    },
+    {
+      "id": "init-codepage-func-00014110",
+      "description": "Original routine _init_codepage_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82192,
+          82320
+        ]
+      ]
+    },
+    {
+      "id": "lc-codepage-func-00014190",
+      "description": "Original routine ____lc_codepage_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82320,
+          82336
+        ]
+      ]
+    },
+    {
+      "id": "initterm-e-000141a0",
+      "description": "Original routine __initterm_e. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82336,
+          82400
+        ]
+      ]
+    },
+    {
+      "id": "mb-cur-max-func-000141e0",
+      "description": "Original routine ____mb_cur_max_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82400,
+          82416
+        ]
+      ]
+    },
+    {
+      "id": "getmainargs-000141f0",
+      "description": "Original routine ___getmainargs. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82416,
+          82560
+        ]
+      ]
+    },
+    {
+      "id": "lock-file-00014280",
+      "description": "Original routine __lock_file. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82560,
+          82672
+        ]
+      ]
+    },
+    {
+      "id": "unlock-file-000142f0",
+      "description": "Original routine __unlock_file. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82672,
+          82784
+        ]
+      ]
+    },
+    {
+      "id": "get-invalid-parameter-handler-00014360",
+      "description": "Original routine __get_invalid_parameter_handler, _mingw_get_invalid_parameter_handler. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82784,
+          82800
+        ]
+      ]
+    },
+    {
+      "id": "set-invalid-parameter-handler-00014370",
+      "description": "Original routine __set_invalid_parameter_handler, _mingw_set_invalid_parameter_handler. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82800,
+          82816
+        ]
+      ]
+    },
+    {
+      "id": "configthreadlocale-00014380",
+      "description": "Original routine __configthreadlocale. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82816,
+          82848
+        ]
+      ]
+    },
+    {
+      "id": "acrt-iob-func-000143a0",
+      "description": "Original routine ___acrt_iob_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82848,
+          82880
+        ]
+      ]
+    },
+    {
+      "id": "ms-fwprintf-000143c0",
+      "description": "Original routine ___ms_fwprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82880,
+          82888
+        ]
+      ]
+    },
+    {
+      "id": "iob-func-000143c8",
+      "description": "Original routine ___iob_func. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82888,
+          82896
+        ]
+      ]
+    },
+    {
+      "id": "p---initenv-000143d0",
+      "description": "Original routine ___p___initenv. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82896,
+          82904
+        ]
+      ]
+    },
+    {
+      "id": "p---mb-cur-max-000143d8",
+      "description": "Original routine ___p___mb_cur_max. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82904,
+          82912
+        ]
+      ]
+    },
+    {
+      "id": "p--commode-000143e0",
+      "description": "Original routine ___p__commode. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82912,
+          82920
+        ]
+      ]
+    },
+    {
+      "id": "p--fmode-000143e8",
+      "description": "Original routine ___p__fmode. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82920,
+          82928
+        ]
+      ]
+    },
+    {
+      "id": "set-app-type-000143f0",
+      "description": "Original routine ___set_app_type. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82928,
+          82936
+        ]
+      ]
+    },
+    {
+      "id": "setusermatherr-000143f8",
+      "description": "Original routine ___setusermatherr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82936,
+          82944
+        ]
+      ]
+    },
+    {
+      "id": "amsg-exit-00014400",
+      "description": "Original routine __amsg_exit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82944,
+          82952
+        ]
+      ]
+    },
+    {
+      "id": "cexit-00014408",
+      "description": "Original routine __cexit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82952,
+          82960
+        ]
+      ]
+    },
+    {
+      "id": "errno-00014410",
+      "description": "Original routine __errno. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82960,
+          82968
+        ]
+      ]
+    },
+    {
+      "id": "exit-00014418",
+      "description": "Original routine __exit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82968,
+          82976
+        ]
+      ]
+    },
+    {
+      "id": "initterm-00014420",
+      "description": "Original routine __initterm. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82976,
+          82984
+        ]
+      ]
+    },
+    {
+      "id": "lock-00014428",
+      "description": "Original routine __lock. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82984,
+          82992
+        ]
+      ]
+    },
+    {
+      "id": "unlock-00014430",
+      "description": "Original routine __unlock. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          82992,
+          83000
+        ]
+      ]
+    },
+    {
+      "id": "crt-atexit-00014438",
+      "description": "Original routine __crt_atexit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83000,
+          83008
+        ]
+      ]
+    },
+    {
+      "id": "abort-00014440",
+      "description": "Original routine _abort. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83008,
+          83016
+        ]
+      ]
+    },
+    {
+      "id": "atoi-00014448",
+      "description": "Original routine _atoi. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83016,
+          83024
+        ]
+      ]
+    },
+    {
+      "id": "calloc-00014450",
+      "description": "Original routine _calloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83024,
+          83032
+        ]
+      ]
+    },
+    {
+      "id": "exit-00014458",
+      "description": "Original routine _exit. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83032,
+          83040
+        ]
+      ]
+    },
+    {
+      "id": "fclose-00014460",
+      "description": "Original routine _fclose. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83040,
+          83048
+        ]
+      ]
+    },
+    {
+      "id": "ferror-00014468",
+      "description": "Original routine _ferror. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83048,
+          83056
+        ]
+      ]
+    },
+    {
+      "id": "fflush-00014470",
+      "description": "Original routine _fflush. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83056,
+          83064
+        ]
+      ]
+    },
+    {
+      "id": "fprintf-00014478",
+      "description": "Original routine _fprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83064,
+          83072
+        ]
+      ]
+    },
+    {
+      "id": "fputc-00014480",
+      "description": "Original routine _fputc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83072,
+          83080
+        ]
+      ]
+    },
+    {
+      "id": "fputwc-00014488",
+      "description": "Original routine _fputwc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83080,
+          83088
+        ]
+      ]
+    },
+    {
+      "id": "free-00014490",
+      "description": "Original routine _free. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83088,
+          83096
+        ]
+      ]
+    },
+    {
+      "id": "fwrite-00014498",
+      "description": "Original routine _fwrite. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83096,
+          83104
+        ]
+      ]
+    },
+    {
+      "id": "getenv-000144a0",
+      "description": "Original routine _getenv. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83104,
+          83112
+        ]
+      ]
+    },
+    {
+      "id": "localeconv-000144a8",
+      "description": "Original routine _localeconv. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83112,
+          83120
+        ]
+      ]
+    },
+    {
+      "id": "malloc-000144b0",
+      "description": "Original routine _malloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83120,
+          83128
+        ]
+      ]
+    },
+    {
+      "id": "memchr-000144b8",
+      "description": "Original routine _memchr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83128,
+          83136
+        ]
+      ]
+    },
+    {
+      "id": "memcmp-000144c0",
+      "description": "Original routine _memcmp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83136,
+          83144
+        ]
+      ]
+    },
+    {
+      "id": "memcpy-000144c8",
+      "description": "Original routine _memcpy. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83144,
+          83152
+        ]
+      ]
+    },
+    {
+      "id": "memset-000144d0",
+      "description": "Original routine _memset. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83152,
+          83160
+        ]
+      ]
+    },
+    {
+      "id": "putc-000144d8",
+      "description": "Original routine _putc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83160,
+          83168
+        ]
+      ]
+    },
+    {
+      "id": "realloc-000144e0",
+      "description": "Original routine _realloc. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83168,
+          83176
+        ]
+      ]
+    },
+    {
+      "id": "setlocale-000144e8",
+      "description": "Original routine _setlocale. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83176,
+          83184
+        ]
+      ]
+    },
+    {
+      "id": "signal-000144f0",
+      "description": "Original routine _signal. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83184,
+          83192
+        ]
+      ]
+    },
+    {
+      "id": "strchr-000144f8",
+      "description": "Original routine _strchr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83192,
+          83200
+        ]
+      ]
+    },
+    {
+      "id": "strcmp-00014500",
+      "description": "Original routine _strcmp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83200,
+          83208
+        ]
+      ]
+    },
+    {
+      "id": "strcpy-00014508",
+      "description": "Original routine _strcpy. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83208,
+          83216
+        ]
+      ]
+    },
+    {
+      "id": "strerror-00014510",
+      "description": "Original routine _strerror. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83216,
+          83224
+        ]
+      ]
+    },
+    {
+      "id": "strlen-00014518",
+      "description": "Original routine _strlen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83224,
+          83232
+        ]
+      ]
+    },
+    {
+      "id": "strncmp-00014520",
+      "description": "Original routine _strncmp. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83232,
+          83240
+        ]
+      ]
+    },
+    {
+      "id": "strrchr-00014528",
+      "description": "Original routine _strrchr. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83240,
+          83248
+        ]
+      ]
+    },
+    {
+      "id": "vfprintf-00014530",
+      "description": "Original routine _vfprintf. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83248,
+          83256
+        ]
+      ]
+    },
+    {
+      "id": "wcslen-00014538",
+      "description": "Original routine _wcslen. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83256,
+          83264
+        ]
+      ]
+    },
+    {
+      "id": "msvcrt-getmainargs-00014540",
+      "description": "Original routine ___msvcrt_getmainargs. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83264,
+          83272
+        ]
+      ]
+    },
+    {
+      "id": "main-00014548",
+      "description": "Original routine _main. Keep its internal proof regions behind this boundary; ABI, admitted memory, effects and outcomes require canonical review.",
+      "rva_ranges": [
+        [
+          83272,
+          83496
+        ]
+      ]
+    }
+  ]
+}

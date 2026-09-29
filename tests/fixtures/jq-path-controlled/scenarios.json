@@ -1,0 +1,173 @@
+[
+  {
+    "id": "nested",
+    "root": {
+      "a": [
+        {
+          "b": 7
+        },
+        9
+      ]
+    },
+    "path": [
+      "a",
+      0,
+      "b"
+    ],
+    "steps": [
+      {
+        "root": {
+          "a": [
+            {
+              "b": 7
+            },
+            9
+          ]
+        },
+        "key": "a",
+        "outcome": {
+          "value": [
+            {
+              "b": 7
+            },
+            9
+          ]
+        }
+      },
+      {
+        "root": [
+          {
+            "b": 7
+          },
+          9
+        ],
+        "key": 0,
+        "outcome": {
+          "value": {
+            "b": 7
+          }
+        }
+      },
+      {
+        "root": {
+          "b": 7
+        },
+        "key": "b",
+        "outcome": {
+          "value": 7
+        }
+      }
+    ]
+  },
+  {
+    "id": "negative",
+    "root": [
+      [
+        1
+      ],
+      [
+        2
+      ]
+    ],
+    "path": [
+      -1,
+      0
+    ],
+    "steps": [
+      {
+        "root": [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "key": -1,
+        "outcome": {
+          "value": [
+            2
+          ]
+        }
+      },
+      {
+        "root": [
+          2
+        ],
+        "key": 0,
+        "outcome": {
+          "value": 2
+        }
+      }
+    ]
+  },
+  {
+    "id": "missing",
+    "root": {},
+    "path": [
+      "absent",
+      "next"
+    ],
+    "steps": [
+      {
+        "root": {},
+        "key": "absent",
+        "outcome": {
+          "value": null
+        }
+      },
+      {
+        "root": null,
+        "key": "next",
+        "outcome": {
+          "value": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "invalid-stops",
+    "root": {
+      "a": 3
+    },
+    "path": [
+      "a",
+      "x",
+      "never"
+    ],
+    "steps": [
+      {
+        "root": {
+          "a": 3
+        },
+        "key": "a",
+        "outcome": {
+          "value": 3
+        }
+      },
+      {
+        "root": 3,
+        "key": "x",
+        "outcome": {
+          "error": "Cannot index number with string \"x\""
+        }
+      }
+    ]
+  },
+  {
+    "id": "empty",
+    "root": {
+      "a": 1
+    },
+    "path": [],
+    "steps": []
+  },
+  {
+    "id": "bad-path",
+    "root": {
+      "a": 1
+    },
+    "path": "a",
+    "steps": []
+  }
+]

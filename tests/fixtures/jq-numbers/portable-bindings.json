@@ -1,0 +1,97 @@
+{
+  "number-values": {
+    "backend_headers": {
+      "src/jv.c": {
+        "decimal-context-backend.h": "decimal-context-backend.h"
+      }
+    },
+    "assembly": {
+      "entries": {
+        "jv_number": [
+          "create"
+        ],
+        "jv_number_with_literal": [
+          "parse"
+        ],
+        "jv_number_has_literal": [
+          "has_literal"
+        ],
+        "jv_number_get_literal": [
+          "literal"
+        ],
+        "jv_number_value": [
+          "value"
+        ],
+        "jv_is_integer": [
+          "integer"
+        ],
+        "jvp_number_is_nan": [
+          "is_nan"
+        ],
+        "jv_number_abs": [
+          "absolute"
+        ],
+        "jv_number_negate": [
+          "negate"
+        ],
+        "jvp_number_cmp": [
+          "compare"
+        ],
+        "jvp_number_free": [
+          "release"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_with_literal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_has_literal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_get_literal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_value"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_is_integer"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_number_is_nan"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_abs"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_number_negate"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_number_cmp"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_number_free"
+        }
+      ],
+      "lifetime": "Borrowed numeric reads; abs/negate allocate without consuming input; release consumes one reference. Decimal storage and literal caches share the existing allocator, layout and thread-local decimal context."
+    }
+  }
+}

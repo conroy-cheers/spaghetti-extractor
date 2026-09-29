@@ -1,0 +1,10 @@
+{
+  "string-hash": {
+    "native_symbol": "fixture_string_hash",
+    "backend_symbol": "jv_string_hash",
+    "backend_file": "src/jv.c",
+    "headers": {"hash-native.h": "hash-native.h", "hash-source.h": "hash-source.h"},
+    "backend_headers": {"src/jv.c": {"hash-seed-backend.h": "hash-seed-backend.h"}}
+  },
+  "object-get": {"service_symbols": {"hash": "object_key_hash"}}
+}

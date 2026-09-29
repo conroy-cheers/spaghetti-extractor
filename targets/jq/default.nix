@@ -43,6 +43,126 @@ let
   });
   original = unverifiedOriginal;
   originalPe = "${original}/bin/jq.exe";
+  concatFixture = ../../tests/fixtures/jq-array-concat;
+  valueFixture = ../../tests/fixtures/jq-value-transport;
+  valueRepresentation = revision: {
+    group = { id = "jq-array-values"; label = "Shared private array values"; members = [ "array-concat" "array-append" ]; };
+    inherit revision;
+    inputs = { transport = "headers/value-transport.h"; implementation = "headers/value-runtime-impl.h"; };
+  };
+  valueHeaders = implementation: {
+    "value-transport.h" = valueFixture + "/value-transport.h";
+    "value-runtime-impl.h" = valueFixture + "/${implementation}-runtime.h";
+  };
+  concatSource = sdk.lifting.sourcePackage {
+    namePrefix = "spaghetti-extractor-jq-practical";
+    componentId = "array-concat";
+    sourceRoot = concatFixture;
+    sourceIntent = {
+      files = [ "concat.c" ];
+      shared_inputs = [ ];
+      operation_symbols.run = "lifted_array_concat";
+    };
+  };
+  concatComparisonArguments = {
+    namePrefix = "spaghetti-extractor-jq-practical";
+    targetId = "jq";
+    componentId = "array-concat";
+    interfacePackage = concatFixture + "/component-interface-intent-v1.json";
+    sourcePackage = concatSource.package;
+    adapterFiles = {
+      "driver.c" = concatFixture + "/native-driver.c";
+      "value-runtime.c" = valueFixture + "/value-runtime.c";
+    };
+    representation = valueRepresentation "raw-jv-v1";
+    includeFiles."value-transport.h" = valueFixture + "/value-transport.h";
+    includeFiles."value-runtime-impl.h" = valueFixture + "/raw-runtime.h";
+    includeFiles."jv.h" = "${original}/include/jv.h";
+    includeFiles."controlled-append.h" = concatFixture + "/controlled-append.h";
+    includeFiles."pe32-entry-hook.h" = ../../tests/fixtures/native/pe32-entry-hook.h;
+    includeFiles."comparison-selection.h" = concatFixture + "/real-selection.h";
+    linkFiles."libjq.dll.a" = "${original}/lib/libjq.dll.a";
+    runtimeFiles = builtins.listToAttrs (map (name: {
+      inherit name; value = "${original}/bin/${name}";
+    }) [ "libjq-1.dll" "libonig-5.dll" "libgcc_s_sjlj-1.dll" "libmcfgthread-2.dll" "libwinpthread-1.dll" ]);
+    originalFiles = [ "runtime/libjq-1.dll" ];
+    cases = map (index: { id = toString index; arguments = [ (toString index) ]; }) (pkgs.lib.range 0 5)
+      ++ map (index: { id = "controlled-${toString index}"; arguments = [ (toString index) "controlled" ]; }) (pkgs.lib.range 0 5)
+      ++ map (mode: { id = mode; arguments = [ "1" mode ]; }) [ "fail-first" "fail-second" ];
+    observationFields = [ "input_words" "scenario" "result" "left_after" "right_after" "right_references" "outcome" "dependency_mode" "interactions" ];
+    inputDomain = { words = [ "left_length" "right_length" ]; constraints = [
+      { argument_index = 0; minimum = 0; maximum = 2147483647; }
+      { argument_index = 1; minimum = 0; maximum = 2147483647; }
+    ]; };
+    assumptions = [ "valid arrays with owned references" "single-threaded fixture; sampled state and lifetime observations"
+      "controlled append validates logical arguments and uses real array_set for writes; invalid outcomes are injected contract cases" ];
+    scope = "jq/libjq array-concat component network; actual PE32 original oracle";
+  };
+  concatComparison = sdk.lifting.comparisonPackage concatComparisonArguments;
+  appendFixture = ../../tests/fixtures/jq-array-append;
+  appendSource = sdk.lifting.sourcePackage {
+    namePrefix = "spaghetti-extractor-jq-practical";
+    componentId = "array-append";
+    sourceRoot = appendFixture;
+    sourceIntent = { files = [ "append.c" ]; shared_inputs = [ ]; operation_symbols.run = "lifted_array_append"; };
+  };
+  appendComparisonArguments = {
+    namePrefix = "spaghetti-extractor-jq-practical";
+    targetId = "jq";
+    componentId = "array-append";
+    interfacePackage = appendFixture + "/component-interface-intent-v1.json";
+    sourcePackage = appendSource.package;
+    adapterFiles = { "driver.c" = appendFixture + "/native-driver.c"; "bridge.c" = appendFixture + "/native-bridge.c";
+      "value-runtime.c" = valueFixture + "/value-runtime.c"; };
+    representation = valueRepresentation "raw-jv-v1";
+    includeFiles."value-transport.h" = valueFixture + "/value-transport.h";
+    includeFiles."value-runtime-impl.h" = valueFixture + "/raw-runtime.h";
+    includeFiles."jv.h" = "${original}/include/jv.h";
+    inherit (concatComparisonArguments) linkFiles runtimeFiles originalFiles;
+    cases = map (index: { id = toString index; arguments = [ (toString index) ]; }) (pkgs.lib.range 0 4);
+    observationFields = [ "input_words" "scenario" "result" "value_after" "item_after" ];
+    inputDomain = { words = [ "array_length" ]; constraints = [
+      { argument_index = 0; minimum = 0; maximum = 2147483646; }
+    ]; };
+    assumptions = [ "valid owned array and item; array length below INT_MAX" "single-threaded fixture; retained aliases preserve logical contents" ];
+    scope = "jq/libjq array-append; actual PE32 original oracle and generated component ABI";
+  };
+  appendComparison = sdk.lifting.comparisonPackage appendComparisonArguments;
+  concatIsolated = sdk.lifting.comparisonPackage (concatComparisonArguments // {
+    namePrefix = "spaghetti-extractor-jq-practical-isolated";
+    cases = builtins.filter (row: builtins.length row.arguments == 2) concatComparisonArguments.cases;
+    scope = "jq array-concat isolated from authored append; original append entry intercepted for every case";
+  });
+  concatIntegrated = sdk.lifting.comparisonPackage (concatComparisonArguments // {
+    namePrefix = "spaghetti-extractor-jq-practical-integrated";
+    includeFiles = concatComparisonArguments.includeFiles // {
+      "comparison-selection.h" = concatFixture + "/supplier-selection.h";
+    };
+    dependencies.array-append = {
+      package = appendComparison.derivation;
+      adapterFiles."bridge.c" = appendFixture + "/native-bridge.c";
+    };
+    cases = map (index: { id = toString index; arguments = [ (toString index) "supplier" ]; }) (pkgs.lib.range 0 5);
+    scope = "jq array-concat with selected authored array-append; original side uses real original append";
+  });
+  appendHandles = sdk.lifting.comparisonPackage (appendComparisonArguments // {
+    namePrefix = "spaghetti-extractor-jq-handles";
+    representation = valueRepresentation "owned-handles-v1";
+    includeFiles = appendComparisonArguments.includeFiles // valueHeaders "handle";
+  });
+  concatHandles = sdk.lifting.comparisonPackage (concatComparisonArguments // {
+    namePrefix = "spaghetti-extractor-jq-handles";
+    representation = valueRepresentation "owned-handles-v1";
+    includeFiles = concatComparisonArguments.includeFiles // valueHeaders "handle" // {
+      "comparison-selection.h" = concatFixture + "/supplier-selection.h";
+    };
+    dependencies.array-append = {
+      package = appendHandles.derivation;
+      adapterFiles."bridge.c" = appendFixture + "/native-bridge.c";
+    };
+    cases = map (index: { id = toString index; arguments = [ (toString index) "supplier" ]; }) (pkgs.lib.range 0 5);
+    scope = "jq concat/append replacement group using bounded owned handles; native original oracle and logical observations";
+  });
   profileSource = sdk.profiles;
   libjqPublicAbiProfile = sdk.analysis.headerMachineAbiProfile {
     id = "jq-libjq-public-abi-v1";
@@ -55,6 +175,13 @@ let
   };
   libjqPublicAbiProfilePath =
     "${libjqPublicAbiProfile}/machine-import-profile.json";
+  libjqOutputCallthroughProfile = sdk.environment.nativeCallthroughProfile {
+    abiProfile = libjqPublicAbiProfilePath;
+    effectProfile = ./intent/libjq-output-native-effects.json;
+    name = "spaghetti-extractor-jq-libjq-output-native-profile";
+  };
+  libjqOutputCallthroughProfilePath =
+    "${libjqOutputCallthroughProfile}/machine-import-profile.json";
   boundaries = sdk.lifting.boundarySchema {
     name = "spaghetti-extractor-jq-1.8.1";
     spec = ./intent/boundaries.json;
@@ -65,7 +192,7 @@ let
     profilePacks = [
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
       "${profileSource}/pe32-oniguruma-runtime-v1.json"
-      libjqPublicAbiProfilePath
+      libjqOutputCallthroughProfilePath
     ];
     interfacePacks = [ ];
     launchProfile =
@@ -219,7 +346,7 @@ let
           ([.facets[] | select(.name == "bisimulation") | .status] == ["checked"]) and
           .blockers == []
         ' "$provider/semantic-provider-qualification.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           .status == "satisfied" and
           .proof.status == "satisfied" and
@@ -230,11 +357,11 @@ let
           .proof.checker.model_bounds.maximum_exact_stack_cached_accesses == 14 and
           .proof.checker.model_bounds.maximum_exact_stack_cached_bytes == 56
         ' "$provider/contextual-refinement-result.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           spx_strong_cutpoint_plan
         ' "$provider/component-proof-plan-v1.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           spx_contextual_exact_c_slice
         ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null
@@ -419,6 +546,12 @@ sdk.target.pe32Bundle {
   targetAssets.boundary_schema = [ "intent/boundaries.json" ];
   targetAssets.boundary_source = [ "source/output-value-boundary.c" ];
   extraArtifacts.boundaries = boundaries;
+  extraArtifacts.array-concat-comparison-package = concatComparison.derivation;
+  extraArtifacts.array-append-comparison-package = appendComparison.derivation;
+  extraArtifacts.array-append-handles-comparison-package = appendHandles.derivation;
+  extraArtifacts.array-concat-handles-comparison-package = concatHandles.derivation;
+  extraArtifacts.array-concat-isolated-comparison-package = concatIsolated.derivation;
+  extraArtifacts.array-concat-integrated-comparison-package = concatIntegrated.derivation;
   extraArtifacts.output-value-pipeline-v6-provider =
     outputValuePipelineProvider.derivation;
   extraArtifacts.output-value-pipeline-contextual-bisimulation-v6 =

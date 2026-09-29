@@ -1,0 +1,11 @@
+{
+  "object-delete": {
+    "native_symbol": "jv_object_delete",
+    "backend_file": "src/jv.c",
+    "headers": {
+      "object-native.h": "../jq-object-get/object-native.h",
+      "object-mutable-native.h": "object-mutable-native.h"
+    },
+    "backend_headers": {"src/jv.c": {"object-unshare-backend.h": "object-unshare-backend.h"}}
+  }
+}

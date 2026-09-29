@@ -1,0 +1,7 @@
+{
+  "string-split": {
+    "native_symbol": "jv_string_split",
+    "backend_file": "src/jv.c",
+    "headers": {"split-native.h": "split-native.h"}
+  }
+}

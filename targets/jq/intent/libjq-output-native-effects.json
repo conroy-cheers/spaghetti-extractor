@@ -1,0 +1,58 @@
+{
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
+  "id": "jq-libjq-output-native-effects-v1",
+  "machine_import_signatures": [
+    {
+      "id": "jq-output-native:jv_copy",
+      "import": {
+        "dll": "libjq-1.dll",
+        "symbol": "jv_copy"
+      },
+      "override": true,
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {
+        "kind": "fixed",
+        "words": 5
+      },
+      "disposition": "returns",
+      "result_register_relations": [],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough"
+    },
+    {
+      "id": "jq-output-native:jv_dumpf",
+      "import": {
+        "dll": "libjq-1.dll",
+        "symbol": "jv_dumpf"
+      },
+      "override": true,
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {
+        "kind": "fixed",
+        "words": 6
+      },
+      "disposition": "returns",
+      "result_register_relations": [],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough"
+    }
+  ]
+}

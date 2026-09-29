@@ -1,0 +1,1083 @@
+{
+  "value-get": [
+    {
+      "id": "object",
+      "arguments": [
+        "{\"a\":1,\"other\":[2]}",
+        "\"a\"",
+        "{\"x\":2}",
+        "retained"
+      ]
+    },
+    {
+      "id": "missing",
+      "arguments": [
+        "{}",
+        "\"missing\"",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "array",
+      "arguments": [
+        "[10,20,30]",
+        "1",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "negative",
+      "arguments": [
+        "[10,20,30]",
+        "-1",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "fraction",
+      "arguments": [
+        "[10,20,30]",
+        "1.9",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "too-negative",
+      "arguments": [
+        "[10,20,30]",
+        "-9",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "grow",
+      "arguments": [
+        "[10]",
+        "4",
+        "9",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-object",
+      "arguments": [
+        "null",
+        "\"x\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-array",
+      "arguments": [
+        "null",
+        "2",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "type-error",
+      "arguments": [
+        "42",
+        "\"x\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "long-key-error",
+      "arguments": [
+        "42",
+        "\"abcdefghijklmnopqrstuvwxyz123456789\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "bad-key",
+      "arguments": [
+        "[]",
+        "true",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "nan-index",
+      "arguments": [
+        "[1,2]",
+        "@nan",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-grow",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":2}",
+        "[8,9,10]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-shrink",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":3}",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-equal",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":3}",
+        "[8,9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-negative",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":-3,\"end\":-1}",
+        "[8]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-default",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":null,\"end\":null}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-fraction",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1.1,\"end\":2.1}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-missing",
+      "arguments": [
+        "[0,1]",
+        "{}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-bad-bound",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":\"x\",\"end\":1}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-bad-item",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":0,\"end\":1}",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "string-slice",
+      "arguments": [
+        "\"h\\u00e9\\ud83d\\ude42llo\"",
+        "{\"start\":1,\"end\":3}",
+        "\"x\"",
+        "retained"
+      ]
+    },
+    {
+      "id": "indexes",
+      "arguments": [
+        "[1,2,1,2,3]",
+        "[1,2]",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "shared-item",
+      "arguments": [
+        "[1,2]",
+        "0",
+        "null",
+        "alias-item"
+      ]
+    },
+    {
+      "id": "unique-array",
+      "arguments": [
+        "[1,2]",
+        "1",
+        "9",
+        "unique"
+      ]
+    }
+  ],
+  "value-set": [
+    {
+      "id": "object",
+      "arguments": [
+        "{\"a\":1,\"other\":[2]}",
+        "\"a\"",
+        "{\"x\":2}",
+        "retained"
+      ]
+    },
+    {
+      "id": "missing",
+      "arguments": [
+        "{}",
+        "\"missing\"",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "array",
+      "arguments": [
+        "[10,20,30]",
+        "1",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "negative",
+      "arguments": [
+        "[10,20,30]",
+        "-1",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "fraction",
+      "arguments": [
+        "[10,20,30]",
+        "1.9",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "too-negative",
+      "arguments": [
+        "[10,20,30]",
+        "-9",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "grow",
+      "arguments": [
+        "[10]",
+        "4",
+        "9",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-object",
+      "arguments": [
+        "null",
+        "\"x\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-array",
+      "arguments": [
+        "null",
+        "2",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "type-error",
+      "arguments": [
+        "42",
+        "\"x\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "long-key-error",
+      "arguments": [
+        "42",
+        "\"abcdefghijklmnopqrstuvwxyz123456789\"",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "bad-key",
+      "arguments": [
+        "[]",
+        "true",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "nan-index",
+      "arguments": [
+        "[1,2]",
+        "@nan",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "nan-owned-array-item",
+      "arguments": [
+        "[1,2]",
+        "@nan",
+        "[[3],[4]]",
+        "retained"
+      ]
+    },
+    {
+      "id": "nan-aliased-item",
+      "arguments": [
+        "[1,2]",
+        "@nan",
+        "4",
+        "alias-item"
+      ]
+    },
+    {
+      "id": "slice-grow",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":2}",
+        "[8,9,10]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-shrink",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":3}",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-equal",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1,\"end\":3}",
+        "[8,9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-negative",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":-3,\"end\":-1}",
+        "[8]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-default",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":null,\"end\":null}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-fraction",
+      "arguments": [
+        "[0,1,2,3]",
+        "{\"start\":1.1,\"end\":2.1}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-missing",
+      "arguments": [
+        "[0,1]",
+        "{}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-bad-bound",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":\"x\",\"end\":1}",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-bad-item",
+      "arguments": [
+        "[0,1]",
+        "{\"start\":0,\"end\":1}",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "string-slice",
+      "arguments": [
+        "\"h\\u00e9\\ud83d\\ude42llo\"",
+        "{\"start\":1,\"end\":3}",
+        "\"x\"",
+        "retained"
+      ]
+    },
+    {
+      "id": "indexes",
+      "arguments": [
+        "[1,2,1,2,3]",
+        "[1,2]",
+        "4",
+        "retained"
+      ]
+    },
+    {
+      "id": "invalid-item",
+      "arguments": [
+        "[1,2]",
+        "1",
+        "@invalid",
+        "retained"
+      ]
+    },
+    {
+      "id": "shared-item",
+      "arguments": [
+        "[1,2]",
+        "0",
+        "null",
+        "alias-item"
+      ]
+    },
+    {
+      "id": "unique-array",
+      "arguments": [
+        "[1,2]",
+        "1",
+        "9",
+        "unique"
+      ]
+    }
+  ],
+  "path-get": [
+    {
+      "id": "nested",
+      "arguments": [
+        "{\"a\":[{\"b\":7}],\"other\":3}",
+        "[\"a\",0,\"b\"]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "empty",
+      "arguments": [
+        "{\"a\":1}",
+        "[]",
+        "[4,5]",
+        "retained"
+      ]
+    },
+    {
+      "id": "missing",
+      "arguments": [
+        "{}",
+        "[\"a\",2,\"b\"]",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-root",
+      "arguments": [
+        "null",
+        "[\"a\",0]",
+        "{\"v\":8}",
+        "retained"
+      ]
+    },
+    {
+      "id": "negative",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",-1]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "fraction",
+      "arguments": [
+        "[[1,2],[3,4]]",
+        "[1.8,0.9]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "too-negative",
+      "arguments": [
+        "[1,2]",
+        "[-9]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "wrong-container",
+      "arguments": [
+        "{\"a\":3}",
+        "[\"a\",\"b\"]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "bad-key",
+      "arguments": [
+        "{}",
+        "[true]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "not-path",
+      "arguments": [
+        "{}",
+        "\"a\"",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "not-path-invalid-root",
+      "arguments": [
+        "@invalid",
+        "null",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "invalid-root",
+      "arguments": [
+        "@invalid",
+        "[]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "deep-rejected",
+      "arguments": [
+        "null",
+        "@deep",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-grow",
+      "arguments": [
+        "{\"a\":[0,1,2,3]}",
+        "[\"a\",{\"start\":1,\"end\":2}]",
+        "[8,9,10]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-shrink",
+      "arguments": [
+        "{\"a\":[0,1,2,3]}",
+        "[\"a\",{\"start\":1,\"end\":3}]",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-nested",
+      "arguments": [
+        "{\"a\":[{\"b\":0},{\"b\":1},{\"b\":2}]}",
+        "[\"a\",{\"start\":1,\"end\":3},0,\"b\"]",
+        "9",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-invalid",
+      "arguments": [
+        "[1,2]",
+        "[{\"start\":\"x\",\"end\":2}]",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "string-slice",
+      "arguments": [
+        "{\"a\":\"h\\u00e9\\ud83d\\ude42llo\"}",
+        "[\"a\",{\"start\":1,\"end\":3}]",
+        "\"x\"",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-slice",
+      "arguments": [
+        "null",
+        "[{\"start\":null,\"end\":null}]",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "alias-item",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",0]",
+        "null",
+        "alias-item"
+      ]
+    },
+    {
+      "id": "siblings",
+      "arguments": [
+        "{\"nested\":[1,2]}",
+        "[\"a\",\"nested\",0]",
+        "7",
+        "siblings"
+      ]
+    },
+    {
+      "id": "unique",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",1]",
+        "9",
+        "unique"
+      ]
+    },
+    {
+      "id": "wide-16",
+      "arguments": [
+        "{\"rows\":[{\"value\":0,\"other\":[0,1]},{\"value\":1,\"other\":[1,2]},{\"value\":2,\"other\":[2,3]},{\"value\":3,\"other\":[3,4]},{\"value\":4,\"other\":[4,5]},{\"value\":5,\"other\":[5,6]},{\"value\":6,\"other\":[6,7]},{\"value\":7,\"other\":[7,8]},{\"value\":8,\"other\":[8,9]},{\"value\":9,\"other\":[9,10]},{\"value\":10,\"other\":[10,11]},{\"value\":11,\"other\":[11,12]},{\"value\":12,\"other\":[12,13]},{\"value\":13,\"other\":[13,14]},{\"value\":14,\"other\":[14,15]},{\"value\":15,\"other\":[15,16]}]}",
+        "[\"rows\",15,\"value\"]",
+        "999",
+        "unique"
+      ]
+    },
+    {
+      "id": "wide-128",
+      "arguments": [
+        "{\"rows\":[{\"value\":0,\"other\":[0,1]},{\"value\":1,\"other\":[1,2]},{\"value\":2,\"other\":[2,3]},{\"value\":3,\"other\":[3,4]},{\"value\":4,\"other\":[4,5]},{\"value\":5,\"other\":[5,6]},{\"value\":6,\"other\":[6,7]},{\"value\":7,\"other\":[7,8]},{\"value\":8,\"other\":[8,9]},{\"value\":9,\"other\":[9,10]},{\"value\":10,\"other\":[10,11]},{\"value\":11,\"other\":[11,12]},{\"value\":12,\"other\":[12,13]},{\"value\":13,\"other\":[13,14]},{\"value\":14,\"other\":[14,15]},{\"value\":15,\"other\":[15,16]},{\"value\":16,\"other\":[16,17]},{\"value\":17,\"other\":[17,18]},{\"value\":18,\"other\":[18,19]},{\"value\":19,\"other\":[19,20]},{\"value\":20,\"other\":[20,21]},{\"value\":21,\"other\":[21,22]},{\"value\":22,\"other\":[22,23]},{\"value\":23,\"other\":[23,24]},{\"value\":24,\"other\":[24,25]},{\"value\":25,\"other\":[25,26]},{\"value\":26,\"other\":[26,27]},{\"value\":27,\"other\":[27,28]},{\"value\":28,\"other\":[28,29]},{\"value\":29,\"other\":[29,30]},{\"value\":30,\"other\":[30,31]},{\"value\":31,\"other\":[31,32]},{\"value\":32,\"other\":[32,33]},{\"value\":33,\"other\":[33,34]},{\"value\":34,\"other\":[34,35]},{\"value\":35,\"other\":[35,36]},{\"value\":36,\"other\":[36,37]},{\"value\":37,\"other\":[37,38]},{\"value\":38,\"other\":[38,39]},{\"value\":39,\"other\":[39,40]},{\"value\":40,\"other\":[40,41]},{\"value\":41,\"other\":[41,42]},{\"value\":42,\"other\":[42,43]},{\"value\":43,\"other\":[43,44]},{\"value\":44,\"other\":[44,45]},{\"value\":45,\"other\":[45,46]},{\"value\":46,\"other\":[46,47]},{\"value\":47,\"other\":[47,48]},{\"value\":48,\"other\":[48,49]},{\"value\":49,\"other\":[49,50]},{\"value\":50,\"other\":[50,51]},{\"value\":51,\"other\":[51,52]},{\"value\":52,\"other\":[52,53]},{\"value\":53,\"other\":[53,54]},{\"value\":54,\"other\":[54,55]},{\"value\":55,\"other\":[55,56]},{\"value\":56,\"other\":[56,57]},{\"value\":57,\"other\":[57,58]},{\"value\":58,\"other\":[58,59]},{\"value\":59,\"other\":[59,60]},{\"value\":60,\"other\":[60,61]},{\"value\":61,\"other\":[61,62]},{\"value\":62,\"other\":[62,63]},{\"value\":63,\"other\":[63,64]},{\"value\":64,\"other\":[64,65]},{\"value\":65,\"other\":[65,66]},{\"value\":66,\"other\":[66,67]},{\"value\":67,\"other\":[67,68]},{\"value\":68,\"other\":[68,69]},{\"value\":69,\"other\":[69,70]},{\"value\":70,\"other\":[70,71]},{\"value\":71,\"other\":[71,72]},{\"value\":72,\"other\":[72,73]},{\"value\":73,\"other\":[73,74]},{\"value\":74,\"other\":[74,75]},{\"value\":75,\"other\":[75,76]},{\"value\":76,\"other\":[76,77]},{\"value\":77,\"other\":[77,78]},{\"value\":78,\"other\":[78,79]},{\"value\":79,\"other\":[79,80]},{\"value\":80,\"other\":[80,81]},{\"value\":81,\"other\":[81,82]},{\"value\":82,\"other\":[82,83]},{\"value\":83,\"other\":[83,84]},{\"value\":84,\"other\":[84,85]},{\"value\":85,\"other\":[85,86]},{\"value\":86,\"other\":[86,87]},{\"value\":87,\"other\":[87,88]},{\"value\":88,\"other\":[88,89]},{\"value\":89,\"other\":[89,90]},{\"value\":90,\"other\":[90,91]},{\"value\":91,\"other\":[91,92]},{\"value\":92,\"other\":[92,93]},{\"value\":93,\"other\":[93,94]},{\"value\":94,\"other\":[94,95]},{\"value\":95,\"other\":[95,96]},{\"value\":96,\"other\":[96,97]},{\"value\":97,\"other\":[97,98]},{\"value\":98,\"other\":[98,99]},{\"value\":99,\"other\":[99,100]},{\"value\":100,\"other\":[100,101]},{\"value\":101,\"other\":[101,102]},{\"value\":102,\"other\":[102,103]},{\"value\":103,\"other\":[103,104]},{\"value\":104,\"other\":[104,105]},{\"value\":105,\"other\":[105,106]},{\"value\":106,\"other\":[106,107]},{\"value\":107,\"other\":[107,108]},{\"value\":108,\"other\":[108,109]},{\"value\":109,\"other\":[109,110]},{\"value\":110,\"other\":[110,111]},{\"value\":111,\"other\":[111,112]},{\"value\":112,\"other\":[112,113]},{\"value\":113,\"other\":[113,114]},{\"value\":114,\"other\":[114,115]},{\"value\":115,\"other\":[115,116]},{\"value\":116,\"other\":[116,117]},{\"value\":117,\"other\":[117,118]},{\"value\":118,\"other\":[118,119]},{\"value\":119,\"other\":[119,120]},{\"value\":120,\"other\":[120,121]},{\"value\":121,\"other\":[121,122]},{\"value\":122,\"other\":[122,123]},{\"value\":123,\"other\":[123,124]},{\"value\":124,\"other\":[124,125]},{\"value\":125,\"other\":[125,126]},{\"value\":126,\"other\":[126,127]},{\"value\":127,\"other\":[127,128]}]}",
+        "[\"rows\",127,\"value\"]",
+        "999",
+        "unique"
+      ]
+    },
+    {
+      "id": "depth-32",
+      "arguments": [
+        "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "7",
+        "unique"
+      ]
+    },
+    {
+      "id": "depth-128",
+      "arguments": [
+        "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "7",
+        "unique"
+      ]
+    }
+  ],
+  "path-set": [
+    {
+      "id": "nested",
+      "arguments": [
+        "{\"a\":[{\"b\":7}],\"other\":3}",
+        "[\"a\",0,\"b\"]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "empty",
+      "arguments": [
+        "{\"a\":1}",
+        "[]",
+        "[4,5]",
+        "retained"
+      ]
+    },
+    {
+      "id": "missing",
+      "arguments": [
+        "{}",
+        "[\"a\",2,\"b\"]",
+        "7",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-root",
+      "arguments": [
+        "null",
+        "[\"a\",0]",
+        "{\"v\":8}",
+        "retained"
+      ]
+    },
+    {
+      "id": "negative",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",-1]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "fraction",
+      "arguments": [
+        "[[1,2],[3,4]]",
+        "[1.8,0.9]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "too-negative",
+      "arguments": [
+        "[1,2]",
+        "[-9]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "wrong-container",
+      "arguments": [
+        "{\"a\":3}",
+        "[\"a\",\"b\"]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "bad-key",
+      "arguments": [
+        "{}",
+        "[true]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "not-path",
+      "arguments": [
+        "{}",
+        "\"a\"",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "not-path-invalid-root",
+      "arguments": [
+        "@invalid",
+        "null",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "invalid-root",
+      "arguments": [
+        "@invalid",
+        "[]",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "deep-rejected",
+      "arguments": [
+        "null",
+        "@deep",
+        "8",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-grow",
+      "arguments": [
+        "{\"a\":[0,1,2,3]}",
+        "[\"a\",{\"start\":1,\"end\":2}]",
+        "[8,9,10]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-shrink",
+      "arguments": [
+        "{\"a\":[0,1,2,3]}",
+        "[\"a\",{\"start\":1,\"end\":3}]",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-nested",
+      "arguments": [
+        "{\"a\":[{\"b\":0},{\"b\":1},{\"b\":2}]}",
+        "[\"a\",{\"start\":1,\"end\":3},0,\"b\"]",
+        "9",
+        "retained"
+      ]
+    },
+    {
+      "id": "slice-invalid",
+      "arguments": [
+        "[1,2]",
+        "[{\"start\":\"x\",\"end\":2}]",
+        "[]",
+        "retained"
+      ]
+    },
+    {
+      "id": "string-slice",
+      "arguments": [
+        "{\"a\":\"h\\u00e9\\ud83d\\ude42llo\"}",
+        "[\"a\",{\"start\":1,\"end\":3}]",
+        "\"x\"",
+        "retained"
+      ]
+    },
+    {
+      "id": "null-slice",
+      "arguments": [
+        "null",
+        "[{\"start\":null,\"end\":null}]",
+        "[9]",
+        "retained"
+      ]
+    },
+    {
+      "id": "alias-item",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",0]",
+        "null",
+        "alias-item"
+      ]
+    },
+    {
+      "id": "siblings",
+      "arguments": [
+        "{\"nested\":[1,2]}",
+        "[\"a\",\"nested\",0]",
+        "7",
+        "siblings"
+      ]
+    },
+    {
+      "id": "unique",
+      "arguments": [
+        "{\"a\":[1,2]}",
+        "[\"a\",1]",
+        "9",
+        "unique"
+      ]
+    },
+    {
+      "id": "invalid-item",
+      "arguments": [
+        "{\"a\":1}",
+        "[\"a\"]",
+        "@invalid",
+        "retained"
+      ]
+    },
+    {
+      "id": "wide-16",
+      "arguments": [
+        "{\"rows\":[{\"value\":0,\"other\":[0,1]},{\"value\":1,\"other\":[1,2]},{\"value\":2,\"other\":[2,3]},{\"value\":3,\"other\":[3,4]},{\"value\":4,\"other\":[4,5]},{\"value\":5,\"other\":[5,6]},{\"value\":6,\"other\":[6,7]},{\"value\":7,\"other\":[7,8]},{\"value\":8,\"other\":[8,9]},{\"value\":9,\"other\":[9,10]},{\"value\":10,\"other\":[10,11]},{\"value\":11,\"other\":[11,12]},{\"value\":12,\"other\":[12,13]},{\"value\":13,\"other\":[13,14]},{\"value\":14,\"other\":[14,15]},{\"value\":15,\"other\":[15,16]}]}",
+        "[\"rows\",15,\"value\"]",
+        "999",
+        "unique"
+      ]
+    },
+    {
+      "id": "wide-128",
+      "arguments": [
+        "{\"rows\":[{\"value\":0,\"other\":[0,1]},{\"value\":1,\"other\":[1,2]},{\"value\":2,\"other\":[2,3]},{\"value\":3,\"other\":[3,4]},{\"value\":4,\"other\":[4,5]},{\"value\":5,\"other\":[5,6]},{\"value\":6,\"other\":[6,7]},{\"value\":7,\"other\":[7,8]},{\"value\":8,\"other\":[8,9]},{\"value\":9,\"other\":[9,10]},{\"value\":10,\"other\":[10,11]},{\"value\":11,\"other\":[11,12]},{\"value\":12,\"other\":[12,13]},{\"value\":13,\"other\":[13,14]},{\"value\":14,\"other\":[14,15]},{\"value\":15,\"other\":[15,16]},{\"value\":16,\"other\":[16,17]},{\"value\":17,\"other\":[17,18]},{\"value\":18,\"other\":[18,19]},{\"value\":19,\"other\":[19,20]},{\"value\":20,\"other\":[20,21]},{\"value\":21,\"other\":[21,22]},{\"value\":22,\"other\":[22,23]},{\"value\":23,\"other\":[23,24]},{\"value\":24,\"other\":[24,25]},{\"value\":25,\"other\":[25,26]},{\"value\":26,\"other\":[26,27]},{\"value\":27,\"other\":[27,28]},{\"value\":28,\"other\":[28,29]},{\"value\":29,\"other\":[29,30]},{\"value\":30,\"other\":[30,31]},{\"value\":31,\"other\":[31,32]},{\"value\":32,\"other\":[32,33]},{\"value\":33,\"other\":[33,34]},{\"value\":34,\"other\":[34,35]},{\"value\":35,\"other\":[35,36]},{\"value\":36,\"other\":[36,37]},{\"value\":37,\"other\":[37,38]},{\"value\":38,\"other\":[38,39]},{\"value\":39,\"other\":[39,40]},{\"value\":40,\"other\":[40,41]},{\"value\":41,\"other\":[41,42]},{\"value\":42,\"other\":[42,43]},{\"value\":43,\"other\":[43,44]},{\"value\":44,\"other\":[44,45]},{\"value\":45,\"other\":[45,46]},{\"value\":46,\"other\":[46,47]},{\"value\":47,\"other\":[47,48]},{\"value\":48,\"other\":[48,49]},{\"value\":49,\"other\":[49,50]},{\"value\":50,\"other\":[50,51]},{\"value\":51,\"other\":[51,52]},{\"value\":52,\"other\":[52,53]},{\"value\":53,\"other\":[53,54]},{\"value\":54,\"other\":[54,55]},{\"value\":55,\"other\":[55,56]},{\"value\":56,\"other\":[56,57]},{\"value\":57,\"other\":[57,58]},{\"value\":58,\"other\":[58,59]},{\"value\":59,\"other\":[59,60]},{\"value\":60,\"other\":[60,61]},{\"value\":61,\"other\":[61,62]},{\"value\":62,\"other\":[62,63]},{\"value\":63,\"other\":[63,64]},{\"value\":64,\"other\":[64,65]},{\"value\":65,\"other\":[65,66]},{\"value\":66,\"other\":[66,67]},{\"value\":67,\"other\":[67,68]},{\"value\":68,\"other\":[68,69]},{\"value\":69,\"other\":[69,70]},{\"value\":70,\"other\":[70,71]},{\"value\":71,\"other\":[71,72]},{\"value\":72,\"other\":[72,73]},{\"value\":73,\"other\":[73,74]},{\"value\":74,\"other\":[74,75]},{\"value\":75,\"other\":[75,76]},{\"value\":76,\"other\":[76,77]},{\"value\":77,\"other\":[77,78]},{\"value\":78,\"other\":[78,79]},{\"value\":79,\"other\":[79,80]},{\"value\":80,\"other\":[80,81]},{\"value\":81,\"other\":[81,82]},{\"value\":82,\"other\":[82,83]},{\"value\":83,\"other\":[83,84]},{\"value\":84,\"other\":[84,85]},{\"value\":85,\"other\":[85,86]},{\"value\":86,\"other\":[86,87]},{\"value\":87,\"other\":[87,88]},{\"value\":88,\"other\":[88,89]},{\"value\":89,\"other\":[89,90]},{\"value\":90,\"other\":[90,91]},{\"value\":91,\"other\":[91,92]},{\"value\":92,\"other\":[92,93]},{\"value\":93,\"other\":[93,94]},{\"value\":94,\"other\":[94,95]},{\"value\":95,\"other\":[95,96]},{\"value\":96,\"other\":[96,97]},{\"value\":97,\"other\":[97,98]},{\"value\":98,\"other\":[98,99]},{\"value\":99,\"other\":[99,100]},{\"value\":100,\"other\":[100,101]},{\"value\":101,\"other\":[101,102]},{\"value\":102,\"other\":[102,103]},{\"value\":103,\"other\":[103,104]},{\"value\":104,\"other\":[104,105]},{\"value\":105,\"other\":[105,106]},{\"value\":106,\"other\":[106,107]},{\"value\":107,\"other\":[107,108]},{\"value\":108,\"other\":[108,109]},{\"value\":109,\"other\":[109,110]},{\"value\":110,\"other\":[110,111]},{\"value\":111,\"other\":[111,112]},{\"value\":112,\"other\":[112,113]},{\"value\":113,\"other\":[113,114]},{\"value\":114,\"other\":[114,115]},{\"value\":115,\"other\":[115,116]},{\"value\":116,\"other\":[116,117]},{\"value\":117,\"other\":[117,118]},{\"value\":118,\"other\":[118,119]},{\"value\":119,\"other\":[119,120]},{\"value\":120,\"other\":[120,121]},{\"value\":121,\"other\":[121,122]},{\"value\":122,\"other\":[122,123]},{\"value\":123,\"other\":[123,124]},{\"value\":124,\"other\":[124,125]},{\"value\":125,\"other\":[125,126]},{\"value\":126,\"other\":[126,127]},{\"value\":127,\"other\":[127,128]}]}",
+        "[\"rows\",127,\"value\"]",
+        "999",
+        "unique"
+      ]
+    },
+    {
+      "id": "depth-32",
+      "arguments": [
+        "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "7",
+        "unique"
+      ]
+    },
+    {
+      "id": "depth-128",
+      "arguments": [
+        "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "7",
+        "unique"
+      ]
+    }
+  ],
+  "program": [
+    {
+      "id": "program-builtins",
+      "arguments": [
+        "setpath([\"a\",1,\"x\"];9) | [.,getpath([\"a\",1,\"x\"])]",
+        "{\"a\":[{\"x\":1},{\"x\":2}]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-assignment",
+      "arguments": [
+        ".a[1].x |= (. + 10)",
+        "{\"a\":[{\"x\":1},{\"x\":2}]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-slice",
+      "arguments": [
+        ".a[1:3] = [8,9,10]",
+        "{\"a\":[0,1,2,3]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-reduce",
+      "arguments": [
+        "reduce range(0;64) as $i ({}; setpath([\"rows\",$i,\"value\"]; $i)) | [.rows|length, .[63].value]",
+        "null",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-paths",
+      "arguments": [
+        "[paths(scalars) as $p | {p:$p,v:getpath($p)}]",
+        "{\"a\":[1,{\"b\":2}],\"c\":3}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-shared",
+      "arguments": [
+        "[., setpath([\"a\",0];9), getpath([\"a\",0])]",
+        "{\"a\":[1,2]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-catch",
+      "arguments": [
+        "try getpath([\"a\",\"x\"]) catch .",
+        "{\"a\":3}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-multi-output",
+      "arguments": [
+        ".rows[] | setpath([\"score\"];(.score+1))",
+        "{\"rows\":[{\"score\":1},{\"score\":2}]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-negative",
+      "arguments": [
+        "setpath([\"a\",-1];9) | getpath([\"a\",-1])",
+        "{\"a\":[1,2,3]}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-unicode",
+      "arguments": [
+        "getpath([\"text\",{\"start\":1,\"end\":3}])",
+        "{\"text\":\"h\\u00e9\\ud83d\\ude42llo\"}",
+        "null",
+        "program"
+      ]
+    },
+    {
+      "id": "program-nan-index",
+      "arguments": [
+        "setpath([nan]; {\"kept\":[1,2]})",
+        "[]",
+        "null",
+        "program"
+      ]
+    }
+  ]
+}

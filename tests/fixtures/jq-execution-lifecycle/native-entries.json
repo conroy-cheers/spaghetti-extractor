@@ -1,0 +1,470 @@
+[
+  {
+    "name": "jq_init",
+    "result": "jq_state *",
+    "arguments": [],
+    "entry_rva": 129637,
+    "end_rva": 130068
+  },
+  {
+    "name": "jq_set_error_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb",
+        "callback"
+      ],
+      [
+        "void *",
+        "data"
+      ]
+    ],
+    "entry_rva": 130068,
+    "end_rva": 130140
+  },
+  {
+    "name": "jq_get_error_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb *",
+        "callback"
+      ],
+      [
+        "void **",
+        "data"
+      ]
+    ],
+    "entry_rva": 130140,
+    "end_rva": 130169
+  },
+  {
+    "name": "jq_set_nomem_handler",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "spx_nomem_handler",
+        "handler"
+      ],
+      [
+        "void *",
+        "data"
+      ]
+    ],
+    "entry_rva": 130169,
+    "end_rva": 130219
+  },
+  {
+    "name": "jq_format_error",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "value"
+      ]
+    ],
+    "entry_rva": 128494,
+    "end_rva": 129464
+  },
+  {
+    "name": "jq_report_error",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "value"
+      ]
+    ],
+    "entry_rva": 114198,
+    "end_rva": 114253
+  },
+  {
+    "name": "jq_compile",
+    "result": "int",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "const char *",
+        "program"
+      ]
+    ],
+    "entry_rva": 131132,
+    "end_rva": 131203
+  },
+  {
+    "name": "jq_compile_args",
+    "result": "int",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "const char *",
+        "program"
+      ],
+      [
+        "jv",
+        "arguments"
+      ]
+    ],
+    "entry_rva": 130537,
+    "end_rva": 131132
+  },
+  {
+    "name": "jq_dump_disassembly",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "int",
+        "indent"
+      ]
+    ],
+    "entry_rva": 132116,
+    "end_rva": 132140
+  },
+  {
+    "name": "jq_start",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "value"
+      ],
+      [
+        "int",
+        "flags"
+      ]
+    ],
+    "entry_rva": 130219,
+    "end_rva": 130428
+  },
+  {
+    "name": "jq_teardown",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state **",
+        "owner"
+      ]
+    ],
+    "entry_rva": 130428,
+    "end_rva": 130537
+  },
+  {
+    "name": "jq_halt",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "exit_code"
+      ],
+      [
+        "jv",
+        "message"
+      ]
+    ],
+    "entry_rva": 132332,
+    "end_rva": 132492
+  },
+  {
+    "name": "jq_halted",
+    "result": "int",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 132492,
+    "end_rva": 132500
+  },
+  {
+    "name": "jq_get_exit_code",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 132500,
+    "end_rva": 132563
+  },
+  {
+    "name": "jq_get_error_message",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 132563,
+    "end_rva": 132640
+  },
+  {
+    "name": "jq_set_input_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_input_cb",
+        "callback"
+      ],
+      [
+        "void *",
+        "data"
+      ]
+    ],
+    "entry_rva": 132140,
+    "end_rva": 132169
+  },
+  {
+    "name": "jq_get_input_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_input_cb *",
+        "callback"
+      ],
+      [
+        "void **",
+        "data"
+      ]
+    ],
+    "entry_rva": 132169,
+    "end_rva": 132204
+  },
+  {
+    "name": "jq_set_debug_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb",
+        "callback"
+      ],
+      [
+        "void *",
+        "data"
+      ]
+    ],
+    "entry_rva": 132204,
+    "end_rva": 132233
+  },
+  {
+    "name": "jq_get_debug_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb *",
+        "callback"
+      ],
+      [
+        "void **",
+        "data"
+      ]
+    ],
+    "entry_rva": 132233,
+    "end_rva": 132268
+  },
+  {
+    "name": "jq_set_stderr_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb",
+        "callback"
+      ],
+      [
+        "void *",
+        "data"
+      ]
+    ],
+    "entry_rva": 132268,
+    "end_rva": 132297
+  },
+  {
+    "name": "jq_get_stderr_cb",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jq_msg_cb *",
+        "callback"
+      ],
+      [
+        "void **",
+        "data"
+      ]
+    ],
+    "entry_rva": 132297,
+    "end_rva": 132332
+  },
+  {
+    "name": "jq_set_attrs",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "attributes"
+      ]
+    ],
+    "entry_rva": 131203,
+    "end_rva": 131398
+  },
+  {
+    "name": "jq_get_jq_origin",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 131777,
+    "end_rva": 131860
+  },
+  {
+    "name": "jq_get_prog_origin",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 131860,
+    "end_rva": 131943
+  },
+  {
+    "name": "jq_get_lib_dirs",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ]
+    ],
+    "entry_rva": 131943,
+    "end_rva": 132116
+  },
+  {
+    "name": "jq_set_attr",
+    "result": "void",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "key"
+      ],
+      [
+        "jv",
+        "value"
+      ]
+    ],
+    "entry_rva": 131398,
+    "end_rva": 131598
+  },
+  {
+    "name": "jq_get_attr",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "key"
+      ]
+    ],
+    "entry_rva": 131598,
+    "end_rva": 131777
+  },
+  {
+    "name": "_jq_path_append",
+    "result": "jv",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "jv",
+        "value"
+      ],
+      [
+        "jv",
+        "path"
+      ],
+      [
+        "jv",
+        "value_at_path"
+      ]
+    ],
+    "entry_rva": 112411,
+    "end_rva": 113124,
+    "operation": "path_append"
+  }
+]

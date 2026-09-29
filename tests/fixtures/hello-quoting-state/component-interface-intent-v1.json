@@ -1,0 +1,563 @@
+{
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "status": "complete",
+  "id": "quoting-style",
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "component.quoting-style",
+    "types": [
+      {
+        "id": "bytes",
+        "kind": "pointer",
+        "pointee_type_id": "u8",
+        "qualifiers": []
+      },
+      {
+        "id": "get.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "set.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "u32"
+        ],
+        "result_type_id": "unit",
+        "variadic": false
+      },
+      {
+        "id": "set_character.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "u32",
+          "u32"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "u32",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "u8",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 8
+      },
+      {
+        "id": "unit",
+        "kind": "void"
+      }
+    ],
+    "signatures": [
+      {
+        "id": "get",
+        "function_type_id": "get.fn",
+        "parameters": [
+          {
+            "id": "options",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": true,
+            "access": "read",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "style",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "set",
+        "function_type_id": "set.fn",
+        "parameters": [
+          {
+            "id": "options",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": true,
+            "access": "read_write",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "style",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": []
+      },
+      {
+        "id": "set_character",
+        "function_type_id": "set_character.fn",
+        "parameters": [
+          {
+            "id": "options",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": true,
+            "access": "read_write",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "character",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "setting",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "previous",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "kind": "none",
+              "bytes": null,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      }
+    ],
+    "schema_sha256": "45a4f22ab121368779bab2368e4d386418522a0ed91f822e5f98eb82ed7bf55b"
+  },
+  "state": [
+    {
+      "initial": null,
+      "value": {
+        "id": "defaults",
+        "type_id": "bytes",
+        "interpretation": "view",
+        "access": "read_write",
+        "extent": {
+          "kind": "fixed",
+          "bytes": 40,
+          "value_id": null
+        },
+        "nullable": false,
+        "resource_kind": null,
+        "provider_domain": null
+      }
+    }
+  ],
+  "operations": [
+    {
+      "allowed_service_ids": [],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "get",
+      "lifecycle_additional_roots": {
+        "state": [
+          {
+            "id": "defaults",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "access": "read_write",
+            "extent": {
+              "kind": "fixed",
+              "bytes": 40,
+              "value_id": null
+            },
+            "nullable": false,
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      "lifecycle_bindings": [
+        {
+          "id": "parameter.options",
+          "path": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          },
+          "transition": "borrow_shared",
+          "resource_kind": "memory-view",
+          "provider_domain": "component-environment.quoting-style",
+          "service_id": null,
+          "interaction_contract_id": null,
+          "condition": null
+        }
+      ],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "options",
+          "target": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "style",
+          "target": {
+            "root": "result",
+            "value_id": "style",
+            "fields": []
+          }
+        }
+      ],
+      "signature_id": "get",
+      "source_values": [
+        {
+          "id": "options",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "access": "read",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "nullable": true,
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "style",
+          "type_id": "u32",
+          "interpretation": "value",
+          "access": "none",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "nullable": false,
+          "resource_kind": null,
+          "provider_domain": null
+        }
+      ]
+    },
+    {
+      "allowed_service_ids": [],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "set",
+      "lifecycle_additional_roots": {
+        "state": [
+          {
+            "id": "defaults",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "access": "read_write",
+            "extent": {
+              "kind": "fixed",
+              "bytes": 40,
+              "value_id": null
+            },
+            "nullable": false,
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      "lifecycle_bindings": [
+        {
+          "id": "parameter.options",
+          "path": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          },
+          "transition": "borrow_shared",
+          "resource_kind": "memory-view",
+          "provider_domain": "component-environment.quoting-style",
+          "service_id": null,
+          "interaction_contract_id": null,
+          "condition": null
+        }
+      ],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "options",
+          "target": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "style",
+          "target": {
+            "root": "parameter",
+            "value_id": "style",
+            "fields": []
+          }
+        }
+      ],
+      "signature_id": "set",
+      "source_values": [
+        {
+          "id": "options",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "access": "read_write",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "nullable": true,
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "style",
+          "type_id": "u32",
+          "interpretation": "value",
+          "access": "none",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "nullable": false,
+          "resource_kind": null,
+          "provider_domain": null
+        }
+      ]
+    },
+    {
+      "allowed_service_ids": [],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "set_character",
+      "lifecycle_additional_roots": {
+        "state": [
+          {
+            "id": "defaults",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "access": "read_write",
+            "extent": {
+              "kind": "fixed",
+              "bytes": 40,
+              "value_id": null
+            },
+            "nullable": false,
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      "lifecycle_bindings": [
+        {
+          "id": "parameter.options",
+          "path": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          },
+          "transition": "borrow_shared",
+          "resource_kind": "memory-view",
+          "provider_domain": "component-environment.quoting-style",
+          "service_id": null,
+          "interaction_contract_id": null,
+          "condition": null
+        }
+      ],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "options",
+          "target": {
+            "root": "parameter",
+            "value_id": "options",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "character",
+          "target": {
+            "root": "parameter",
+            "value_id": "character",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "setting",
+          "target": {
+            "root": "parameter",
+            "value_id": "setting",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "previous",
+          "target": {
+            "root": "result",
+            "value_id": "previous",
+            "fields": []
+          }
+        }
+      ],
+      "signature_id": "set_character",
+      "source_values": [
+        {
+          "id": "options",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "nullable": true,
+          "access": "read_write",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "character",
+          "type_id": "u32",
+          "interpretation": "value",
+          "nullable": false,
+          "access": "none",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "setting",
+          "type_id": "u32",
+          "interpretation": "value",
+          "nullable": false,
+          "access": "none",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "previous",
+          "type_id": "u32",
+          "interpretation": "value",
+          "nullable": false,
+          "access": "none",
+          "extent": {
+            "kind": "none",
+            "bytes": null,
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        }
+      ]
+    }
+  ],
+  "effects": [],
+  "services": [],
+  "protocol": {
+    "states": [
+      "ready"
+    ],
+    "initial_state": "ready"
+  },
+  "intent_sha256": "c5339bb06c640e271c6412165909fc0f5de2fd740bf3beaba98edca5e1413c67"
+}

@@ -1,0 +1,194 @@
+[
+  {
+    "name": "binop_plus",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 72502,
+    "end_rva": 73710
+  },
+  {
+    "name": "binop_minus",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 73927,
+    "end_rva": 75505
+  },
+  {
+    "name": "binop_multiply",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 75722,
+    "end_rva": 76707
+  },
+  {
+    "name": "binop_divide",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 76924,
+    "end_rva": 77634
+  },
+  {
+    "name": "binop_mod",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 77851,
+    "end_rva": 78734
+  },
+  {
+    "name": "binop_equal",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 78951,
+    "end_rva": 79046
+  },
+  {
+    "name": "binop_notequal",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 79263,
+    "end_rva": 79366
+  },
+  {
+    "name": "binop_less",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 79583,
+    "end_rva": 79677
+  },
+  {
+    "name": "binop_lesseq",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 80205,
+    "end_rva": 80299
+  },
+  {
+    "name": "binop_greater",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 79894,
+    "end_rva": 79988
+  },
+  {
+    "name": "binop_greatereq",
+    "result": "jv",
+    "arguments": [
+      [
+        "jv",
+        "left"
+      ],
+      [
+        "jv",
+        "right"
+      ]
+    ],
+    "entry_rva": 80516,
+    "end_rva": 80610
+  },
+  {
+    "name": "builtins_bind",
+    "result": "int",
+    "arguments": [
+      [
+        "jq_state *",
+        "state"
+      ],
+      [
+        "block *",
+        "program"
+      ]
+    ],
+    "entry_rva": 80827,
+    "end_rva": 81056
+  }
+]

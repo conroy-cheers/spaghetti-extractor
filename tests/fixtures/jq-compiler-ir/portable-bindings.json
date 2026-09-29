@@ -1,0 +1,521 @@
+{
+  "compiler-ir": {
+    "assembly": {
+      "entries": {
+        "block_append": [
+          "block_append"
+        ],
+        "block_bind_library": [
+          "block_bind_library"
+        ],
+        "block_bind_referenced": [
+          "block_bind_referenced"
+        ],
+        "block_bind_self": [
+          "block_bind_self"
+        ],
+        "block_const": [
+          "block_const"
+        ],
+        "block_const_kind": [
+          "block_const_kind"
+        ],
+        "block_drop_unreferenced": [
+          "block_drop_unreferenced"
+        ],
+        "block_free": [
+          "block_free"
+        ],
+        "block_has_main": [
+          "block_has_main"
+        ],
+        "block_has_only_binders": [
+          "block_has_only_binders"
+        ],
+        "block_has_only_binders_and_imports": [
+          "block_has_only_binders_and_imports"
+        ],
+        "block_is_const": [
+          "block_is_const"
+        ],
+        "block_is_funcdef": [
+          "block_is_funcdef"
+        ],
+        "block_is_noop": [
+          "block_is_noop"
+        ],
+        "block_is_single": [
+          "block_is_single"
+        ],
+        "block_join": [
+          "block_join"
+        ],
+        "block_list_funcs": [
+          "block_list_funcs"
+        ],
+        "block_module_meta": [
+          "block_module_meta"
+        ],
+        "block_take_imports": [
+          "block_take_imports"
+        ],
+        "gen_and": [
+          "gen_and"
+        ],
+        "gen_array_matcher": [
+          "gen_array_matcher"
+        ],
+        "gen_both": [
+          "gen_both"
+        ],
+        "gen_call": [
+          "gen_call"
+        ],
+        "gen_cbinding": [
+          "gen_cbinding"
+        ],
+        "gen_collect": [
+          "gen_collect"
+        ],
+        "gen_cond": [
+          "gen_cond"
+        ],
+        "gen_condbranch": [
+          "gen_condbranch"
+        ],
+        "gen_const": [
+          "gen_const"
+        ],
+        "gen_const_global": [
+          "gen_const_global"
+        ],
+        "gen_const_object": [
+          "gen_const_object"
+        ],
+        "gen_definedor": [
+          "gen_definedor"
+        ],
+        "gen_destructure": [
+          "gen_destructure"
+        ],
+        "gen_destructure_alt": [
+          "gen_destructure_alt"
+        ],
+        "gen_dictpair": [
+          "gen_dictpair"
+        ],
+        "gen_error": [
+          "gen_error"
+        ],
+        "gen_foreach": [
+          "gen_foreach"
+        ],
+        "gen_function": [
+          "gen_function"
+        ],
+        "gen_import": [
+          "gen_import"
+        ],
+        "gen_import_meta": [
+          "gen_import_meta"
+        ],
+        "gen_label": [
+          "gen_label"
+        ],
+        "gen_lambda": [
+          "gen_lambda"
+        ],
+        "gen_location": [
+          "gen_location"
+        ],
+        "gen_module": [
+          "gen_module"
+        ],
+        "gen_noop": [
+          "gen_noop"
+        ],
+        "gen_object_matcher": [
+          "gen_object_matcher"
+        ],
+        "gen_op_bound": [
+          "gen_op_bound"
+        ],
+        "gen_op_pushk_under": [
+          "gen_op_pushk_under"
+        ],
+        "gen_op_simple": [
+          "gen_op_simple"
+        ],
+        "gen_op_target": [
+          "gen_op_target"
+        ],
+        "gen_op_unbound": [
+          "gen_op_unbound"
+        ],
+        "gen_op_var_fresh": [
+          "gen_op_var_fresh"
+        ],
+        "gen_or": [
+          "gen_or"
+        ],
+        "gen_param": [
+          "gen_param"
+        ],
+        "gen_param_regular": [
+          "gen_param_regular"
+        ],
+        "gen_reduce": [
+          "gen_reduce"
+        ],
+        "gen_subexp": [
+          "gen_subexp"
+        ],
+        "gen_try": [
+          "gen_try"
+        ],
+        "gen_var_binding": [
+          "gen_var_binding"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_new"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_free"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_block"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_is_single"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_take"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_location"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_noop"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_is_noop"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_simple"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_error"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_const"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_const_global"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_pushk_under"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_is_const"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_const_kind"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_const"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_target"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_targetlater"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_set_target"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_unbound"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_var_fresh"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_op_bound"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_dictpair"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_join"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_append"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_join"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_has_only_binders_and_imports"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "inst_is_binder"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_has_only_binders"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_count_actuals"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_subblock_inner"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_subblock"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_each"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_library"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_take_last"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_referenced"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_bind_self"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_mark_referenced"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_drop_unreferenced"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_take_imports"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_list_funcs"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_module"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_module_meta"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_import"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_import_meta"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_function"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_param_regular"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_param"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_lambda"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_call"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_subexp"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_both"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_const_object"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_const_array"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_collect"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "bind_matcher"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_get_unbound_vars"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "bind_alternation_matchers"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_reduce"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_foreach"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_definedor"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_has_main"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_is_funcdef"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_condbranch"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_and"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_or"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_destructure_alt"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_var_binding"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_array_matcher"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_object_matcher"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_destructure"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_wildvar_binding"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_cond"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_try"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_label"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "gen_cbinding"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "nesting_level"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "count_cfunctions"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "make_env"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "expand_call_arglist"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "compile"
+        },
+        {
+          "file": "src/compile.c",
+          "symbol": "block_free"
+        }
+      ],
+      "lifetime": "Owns and mutates linked instruction graphs, nested blocks, constants, symbols and retained source locations. Explicit borrowing/consumption per compile.h operation; callback descriptors remain borrowed through compilation. Same retained instruction layout as bytecode-compiler; no process state."
+    }
+  }
+}

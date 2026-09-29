@@ -1,0 +1,99 @@
+{
+  "builtin-library": {
+    "assembly": {
+      "entries": {
+        "binop_plus": [
+          "binop_plus"
+        ],
+        "binop_minus": [
+          "binop_minus"
+        ],
+        "binop_multiply": [
+          "binop_multiply"
+        ],
+        "binop_divide": [
+          "binop_divide"
+        ],
+        "binop_mod": [
+          "binop_mod"
+        ],
+        "binop_equal": [
+          "binop_equal"
+        ],
+        "binop_notequal": [
+          "binop_notequal"
+        ],
+        "binop_less": [
+          "binop_less"
+        ],
+        "binop_lesseq": [
+          "binop_lesseq"
+        ],
+        "binop_greater": [
+          "binop_greater"
+        ],
+        "binop_greatereq": [
+          "binop_greatereq"
+        ],
+        "builtins_bind": [
+          "builtins_bind"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_plus"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_minus"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_multiply"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_divide"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_mod"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_equal"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_notequal"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_less"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_lesseq"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_greater"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "binop_greatereq"
+        },
+        {
+          "file": "src/builtin.c",
+          "symbol": "builtins_bind"
+        }
+      ],
+      "lifetime": "Builtin callback table has module lifetime; compiled bytecode borrows callback addresses until its jq state is destroyed. Values follow the existing consuming jv API."
+    }
+  }
+}

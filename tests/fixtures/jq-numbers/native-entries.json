@@ -1,0 +1,112 @@
+[
+  {
+    "operation": "create",
+    "name": "jv_number",
+    "result": "jv",
+    "parameters": "double number",
+    "arguments": "number",
+    "field": "value",
+    "entry_rva": 160099,
+    "end_rva": 160124
+  },
+  {
+    "operation": "parse",
+    "name": "jv_number_with_literal",
+    "result": "jv",
+    "parameters": "const char *text",
+    "arguments": "text",
+    "field": "value",
+    "entry_rva": 160318,
+    "end_rva": 160344
+  },
+  {
+    "operation": "has_literal",
+    "name": "jv_number_has_literal",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 159971,
+    "end_rva": 160032
+  },
+  {
+    "operation": "literal",
+    "name": "jv_number_get_literal",
+    "result": "const char *",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "text",
+    "entry_rva": 160032,
+    "end_rva": 160099
+  },
+  {
+    "operation": "value",
+    "name": "jv_number_value",
+    "result": "double",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "number",
+    "entry_rva": 160344,
+    "end_rva": 160525
+  },
+  {
+    "operation": "integer",
+    "name": "jv_is_integer",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 160525,
+    "end_rva": 160634
+  },
+  {
+    "operation": "is_nan",
+    "name": "jvp_number_is_nan",
+    "result": "int",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "integer",
+    "entry_rva": 160634,
+    "end_rva": 160772
+  },
+  {
+    "operation": "absolute",
+    "name": "jv_number_abs",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 160772,
+    "end_rva": 161023
+  },
+  {
+    "operation": "negate",
+    "name": "jv_number_negate",
+    "result": "jv",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": "value",
+    "entry_rva": 161023,
+    "end_rva": 161274
+  },
+  {
+    "operation": "compare",
+    "name": "jvp_number_cmp",
+    "result": "int",
+    "parameters": "jv first, jv second",
+    "arguments": "first,second",
+    "field": "integer",
+    "entry_rva": 161274,
+    "end_rva": 161717
+  },
+  {
+    "operation": "release",
+    "name": "jvp_number_free",
+    "result": "void",
+    "parameters": "jv first",
+    "arguments": "first",
+    "field": null,
+    "entry_rva": 155751,
+    "end_rva": 155921
+  }
+]

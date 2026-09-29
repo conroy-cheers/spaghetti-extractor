@@ -1,0 +1,14 @@
+{
+  "array-indexes": {
+    "native_symbol": "jv_array_indexes",
+    "backend_file": "src/jv.c",
+    "headers": {
+      "array-indexes-native.h": "array-indexes-native.h"
+    }
+  },
+  "value-get": {
+    "service_symbols": {
+      "indexes": "jv_array_indexes"
+    }
+  }
+}

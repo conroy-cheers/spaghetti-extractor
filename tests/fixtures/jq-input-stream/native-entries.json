@@ -1,0 +1,122 @@
+[
+  [
+    "init",
+    "create",
+    "jq_util_input_state *",
+    "jq_util_msg_cb cb,void *data",
+    "jq_util_msg_cb,void *",
+    "cb,data",
+    ".error_callback=cb,.error_data=data",
+    "return output.state;",
+    283657,
+    283824
+  ],
+  [
+    "set_parser",
+    "parser",
+    "void",
+    "jq_util_input_state *state,jv_parser *parser,int slurp",
+    "jq_util_input_state *,jv_parser *,int",
+    "state,parser,slurp",
+    ".state=state,.parser=parser,.slurp=slurp",
+    "",
+    283824,
+    284009
+  ],
+  [
+    "free",
+    "destroy",
+    "void",
+    "jq_util_input_state **owner",
+    "jq_util_input_state **",
+    "owner",
+    ".owner=owner",
+    "",
+    284009,
+    284189
+  ],
+  [
+    "add_input",
+    "add",
+    "void",
+    "jq_util_input_state *state,const char *filename",
+    "jq_util_input_state *,const char *",
+    "state,filename",
+    ".state=state,.filename=filename",
+    "",
+    284189,
+    284262
+  ],
+  [
+    "errors",
+    "errors",
+    "int",
+    "jq_util_input_state *state",
+    "jq_util_input_state *",
+    "state",
+    ".state=state",
+    "return output.errors;",
+    284262,
+    284270
+  ],
+  [
+    "get_position",
+    "position",
+    "jv",
+    "jq_state *jq",
+    "jq_state *",
+    "jq",
+    ".jq=jq",
+    "return output.value;",
+    284270,
+    284574
+  ],
+  [
+    "get_current_filename",
+    "filename",
+    "jv",
+    "jq_state *jq",
+    "jq_state *",
+    "jq",
+    ".jq=jq",
+    "return output.value;",
+    284574,
+    284801
+  ],
+  [
+    "get_current_line",
+    "line",
+    "jv",
+    "jq_state *jq",
+    "jq_state *",
+    "jq",
+    ".jq=jq",
+    "return output.value;",
+    284801,
+    285008
+  ],
+  [
+    "next_input",
+    "next",
+    "jv",
+    "jq_util_input_state *state",
+    "jq_util_input_state *",
+    "state",
+    ".state=state",
+    "return output.value;",
+    285008,
+    286271
+  ],
+  [
+    "next_input_cb",
+    "next",
+    "jv",
+    "jq_state *jq,void *data",
+    "jq_state *,void *",
+    "jq,data",
+    ".state=data",
+    "(void)jq;return output.value;",
+    286271,
+    286302
+  ]
+]

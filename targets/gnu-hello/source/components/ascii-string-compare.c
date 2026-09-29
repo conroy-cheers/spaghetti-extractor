@@ -16,7 +16,7 @@ int32_t gnu_hello_ascii_string_compare(
     const spx_bytes_view_v2 *left,
     const spx_bytes_view_v2 *right) {
   uint32_t offset = 0U;
-  int32_t result = 0;
+  uint32_t result = 0U;
   uint8_t left_byte = 0U;
   uint8_t right_byte = 0U;
   uint32_t left_lower;
@@ -24,25 +24,43 @@ int32_t gnu_hello_ascii_string_compare(
   int64_t base_difference;
 
   SPX_PROOF_BEGIN(compare);
-  if (spx_ref_difference(left->base, right->base, &base_difference) == SPX_REF_OK &&
-      base_difference == INT64_C(0))
-    return 0;
+  if (spx_ref_difference(left->base, right->base, &base_difference) != SPX_REF_OK ||
+      base_difference != INT64_C(0)) {
   for (;;) {
-    if (left->read_u8(left->context, offset, &left_byte) != 0U ||
-        right->read_u8(right->context, offset, &right_byte) != 0U)
-      return 0;
-    left_lower = context->services->lower_ascii(
-        context->services->context, (uint32_t)left_byte) & UINT32_C(255);
-    right_lower = context->services->lower_ascii(
-        context->services->context, (uint32_t)right_byte) & UINT32_C(255);
-    if (left_lower == 0U || left_lower != right_lower) {
-      result = gnu_hello_ascii_string_compare_difference(left_lower, right_lower);
-      return result;
-    }
     SPX_PROOF_SYNC(
         scan,
-        offset < left->extent && offset < right->extent,
+        offset < SPX_PROOF_NUL_EXTENT(left) && offset < SPX_PROOF_NUL_EXTENT(right),
         left, right, offset, result);
+    if (left->read_u8(left->context, offset, &left_byte) != 0U)
+      break;
+    left_lower = context->services->lower_ascii(
+        context->services->context, (uint32_t)left_byte) & UINT32_C(255);
+    SPX_PROOF_SYNC(
+        left_converted,
+        offset < SPX_PROOF_NUL_EXTENT(left) &&
+            offset < SPX_PROOF_NUL_EXTENT(right) &&
+            left_lower <= UINT32_C(255) &&
+            (offset + 1U != SPX_PROOF_NUL_EXTENT(left) || left_lower == 0U),
+        left, right, offset, result, left_lower);
+    if (right->read_u8(right->context, offset, &right_byte) != 0U)
+      break;
+    right_lower = context->services->lower_ascii(
+        context->services->context, (uint32_t)right_byte) & UINT32_C(255);
+    SPX_PROOF_SYNC(
+        decide,
+        offset < SPX_PROOF_NUL_EXTENT(left) &&
+            offset < SPX_PROOF_NUL_EXTENT(right) &&
+            left_lower <= UINT32_C(255) && right_lower <= UINT32_C(255) &&
+            (offset + 1U != SPX_PROOF_NUL_EXTENT(left) || left_lower == 0U) &&
+            (offset + 1U != SPX_PROOF_NUL_EXTENT(right) || right_lower == 0U),
+        left, right, offset, result, left_lower, right_lower);
+    if (left_lower == 0U || left_lower != right_lower) {
+      result = left_lower - right_lower;
+      break;
+    }
     offset += 1U;
   }
+  }
+  SPX_PROOF_SYNC(finish, 1, left, right, result);
+  return gnu_hello_ascii_string_compare_difference(result, 0U);
 }

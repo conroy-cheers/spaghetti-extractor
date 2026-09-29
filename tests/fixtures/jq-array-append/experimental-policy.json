@@ -1,0 +1,84 @@
+{
+  "accepted_assumptions": {
+    "array-append": [
+      "valid owned array and item; array length below INT_MAX",
+      "single-threaded fixture; retained aliases preserve logical contents"
+    ],
+    "array-concat": [
+      "valid arrays with owned references",
+      "single-threaded fixture; sampled state and lifetime observations",
+      "controlled append validates logical arguments and uses real array_set for writes; invalid outcomes are injected contract cases"
+    ]
+  },
+  "accepted_input_domains": {
+    "array-append": {
+      "constraints": [
+        {
+          "argument_index": 0,
+          "maximum": 2147483646,
+          "minimum": 0
+        }
+      ],
+      "words": [
+        "array_length"
+      ]
+    },
+    "array-concat": {
+      "constraints": [
+        {
+          "argument_index": 0,
+          "maximum": 2147483647,
+          "minimum": 0
+        },
+        {
+          "argument_index": 1,
+          "maximum": 2147483647,
+          "minimum": 0
+        }
+      ],
+      "words": [
+        "left_length",
+        "right_length"
+      ]
+    }
+  },
+  "accepted_representations": {
+    "array-append": {
+      "group": {
+        "id": "jq-array-values",
+        "label": "Shared private array values",
+        "members": [
+          "array-concat",
+          "array-append"
+        ]
+      },
+      "revision": "raw-jv-v1"
+    },
+    "array-concat": {
+      "group": {
+        "id": "jq-array-values",
+        "label": "Shared private array values",
+        "members": [
+          "array-concat",
+          "array-append"
+        ]
+      },
+      "revision": "raw-jv-v1"
+    }
+  },
+  "allow_original_runtime_dependencies": true,
+  "allowed_formal_statuses": [
+    "not-requested",
+    "unavailable",
+    "timeout",
+    "proved"
+  ],
+  "configuration_id": "array-value-network",
+  "format": "spaghetti-extractor-experimental-component-policy-v1",
+  "required_components": [
+    "array-concat",
+    "array-append"
+  ],
+  "scope": "component-network",
+  "target_id": "jq"
+}

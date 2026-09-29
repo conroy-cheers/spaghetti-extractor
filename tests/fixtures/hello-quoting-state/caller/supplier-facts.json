@@ -1,0 +1,931 @@
+{
+  "rule": "checked-live-object-paired-call-v1",
+  "component_id": "quoting-style",
+  "operation_id": "set_character",
+  "entry_rva": 20705,
+  "arguments": [
+    {
+      "id": "options",
+      "interpretation": "view",
+      "minimum_extent": 40,
+      "nullable": true,
+      "permissions": 3,
+      "entry_stack_offset": 4
+    },
+    {
+      "id": "character",
+      "interpretation": "value",
+      "entry_stack_offset": 8
+    },
+    {
+      "id": "setting",
+      "interpretation": "value",
+      "entry_stack_offset": 12
+    }
+  ],
+  "shared_views": {
+    "defaults": {
+      "address": 4391360,
+      "extent": 40,
+      "permissions": 3
+    }
+  },
+  "results": [
+    {
+      "id": "previous",
+      "projection": {
+        "at": "exit",
+        "kind": "register",
+        "register": "eax",
+        "width": 32
+      }
+    }
+  ],
+  "private_accesses": [
+    [
+      -4,
+      20
+    ]
+  ],
+  "private_writes": [
+    [
+      -4,
+      4
+    ]
+  ],
+  "clobbers": [
+    "cf",
+    "ecx",
+    "edx",
+    "eflags",
+    "of",
+    "pf",
+    "sf",
+    "zf"
+  ],
+  "stack_delta": 4,
+  "image_base": 4194304,
+  "runtime_contract": {
+    "id": "live-object-original-source-domain",
+    "inputs": "Related current bytes, logical origins, aliases and nullable byte views; fixed shared views.",
+    "lifetime": "Incoming objects remain live throughout the operation; caller ownership, creation, expiration and escape are separate composition premises.",
+    "memory": "Successful little-endian one-to-four-byte accesses in declared readable/writable views or private callee ranges.",
+    "outcomes": "Normal return with checked target, stack delta, result and undeclared architectural clobbers; no services, callbacks or nonlocal exits.",
+    "private": "Nonwrapping callee stack ranges disjoint from every visible view; arbitrary initial private bytes with exact entry arguments and return word.",
+    "progress": "Every safety, frame and unwinding assertion must pass; finite model capacities are asserted, never input assumptions.",
+    "revision": 1
+  },
+  "interface_intent": {
+    "effects": [],
+    "format": "spaghetti-extractor-component-interface-intent-v1",
+    "id": "quoting-style",
+    "intent_sha256": "c5339bb06c640e271c6412165909fc0f5de2fd740bf3beaba98edca5e1413c67",
+    "operations": [
+      {
+        "allowed_service_ids": [],
+        "checked_interaction_contract_ids": [],
+        "effect_ids": [],
+        "id": "get",
+        "lifecycle_additional_roots": {
+          "state": [
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": 40,
+                "kind": "fixed",
+                "value_id": null
+              },
+              "id": "defaults",
+              "interpretation": "view",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            }
+          ]
+        },
+        "lifecycle_bindings": [
+          {
+            "condition": null,
+            "id": "parameter.options",
+            "interaction_contract_id": null,
+            "path": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            },
+            "provider_domain": "component-environment.quoting-style",
+            "resource_kind": "memory-view",
+            "service_id": null,
+            "transition": "borrow_shared"
+          }
+        ],
+        "post_states": [
+          "ready"
+        ],
+        "pre_states": [
+          "ready"
+        ],
+        "projection_entries": [
+          {
+            "source_id": "options",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            }
+          },
+          {
+            "source_id": "style",
+            "target": {
+              "fields": [],
+              "root": "result",
+              "value_id": "style"
+            }
+          }
+        ],
+        "signature_id": "get",
+        "source_values": [
+          {
+            "access": "read",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "options",
+            "interpretation": "view",
+            "nullable": true,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "bytes"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "style",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "u32"
+          }
+        ]
+      },
+      {
+        "allowed_service_ids": [],
+        "checked_interaction_contract_ids": [],
+        "effect_ids": [],
+        "id": "set",
+        "lifecycle_additional_roots": {
+          "state": [
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": 40,
+                "kind": "fixed",
+                "value_id": null
+              },
+              "id": "defaults",
+              "interpretation": "view",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            }
+          ]
+        },
+        "lifecycle_bindings": [
+          {
+            "condition": null,
+            "id": "parameter.options",
+            "interaction_contract_id": null,
+            "path": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            },
+            "provider_domain": "component-environment.quoting-style",
+            "resource_kind": "memory-view",
+            "service_id": null,
+            "transition": "borrow_shared"
+          }
+        ],
+        "post_states": [
+          "ready"
+        ],
+        "pre_states": [
+          "ready"
+        ],
+        "projection_entries": [
+          {
+            "source_id": "options",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            }
+          },
+          {
+            "source_id": "style",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "style"
+            }
+          }
+        ],
+        "signature_id": "set",
+        "source_values": [
+          {
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "options",
+            "interpretation": "view",
+            "nullable": true,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "bytes"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "style",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "u32"
+          }
+        ]
+      },
+      {
+        "allowed_service_ids": [],
+        "checked_interaction_contract_ids": [],
+        "effect_ids": [],
+        "id": "set_character",
+        "lifecycle_additional_roots": {
+          "state": [
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": 40,
+                "kind": "fixed",
+                "value_id": null
+              },
+              "id": "defaults",
+              "interpretation": "view",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            }
+          ]
+        },
+        "lifecycle_bindings": [
+          {
+            "condition": null,
+            "id": "parameter.options",
+            "interaction_contract_id": null,
+            "path": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            },
+            "provider_domain": "component-environment.quoting-style",
+            "resource_kind": "memory-view",
+            "service_id": null,
+            "transition": "borrow_shared"
+          }
+        ],
+        "post_states": [
+          "ready"
+        ],
+        "pre_states": [
+          "ready"
+        ],
+        "projection_entries": [
+          {
+            "source_id": "options",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "options"
+            }
+          },
+          {
+            "source_id": "character",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "character"
+            }
+          },
+          {
+            "source_id": "setting",
+            "target": {
+              "fields": [],
+              "root": "parameter",
+              "value_id": "setting"
+            }
+          },
+          {
+            "source_id": "previous",
+            "target": {
+              "fields": [],
+              "root": "result",
+              "value_id": "previous"
+            }
+          }
+        ],
+        "signature_id": "set_character",
+        "source_values": [
+          {
+            "access": "read_write",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "options",
+            "interpretation": "view",
+            "nullable": true,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "bytes"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "character",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "u32"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "setting",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "u32"
+          },
+          {
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "id": "previous",
+            "interpretation": "value",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "u32"
+          }
+        ]
+      }
+    ],
+    "protocol": {
+      "initial_state": "ready",
+      "states": [
+        "ready"
+      ]
+    },
+    "schema": {
+      "format": "spaghetti-extractor-boundary-schema-v1",
+      "schema_id": "component.quoting-style",
+      "schema_sha256": "45a4f22ab121368779bab2368e4d386418522a0ed91f822e5f98eb82ed7bf55b",
+      "signatures": [
+        {
+          "function_type_id": "get.fn",
+          "id": "get",
+          "parameters": [
+            {
+              "access": "read",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "options",
+              "interpretation": "view",
+              "nullable": true,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            }
+          ],
+          "results": [
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "style",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            }
+          ]
+        },
+        {
+          "function_type_id": "set.fn",
+          "id": "set",
+          "parameters": [
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "options",
+              "interpretation": "view",
+              "nullable": true,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            },
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "style",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            }
+          ],
+          "results": []
+        },
+        {
+          "function_type_id": "set_character.fn",
+          "id": "set_character",
+          "parameters": [
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "options",
+              "interpretation": "view",
+              "nullable": true,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            },
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "character",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            },
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "setting",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            }
+          ],
+          "results": [
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "previous",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            }
+          ]
+        }
+      ],
+      "types": [
+        {
+          "id": "bytes",
+          "kind": "pointer",
+          "pointee_type_id": "u8",
+          "qualifiers": []
+        },
+        {
+          "calling_convention": "cdecl",
+          "id": "get.fn",
+          "kind": "function",
+          "parameter_type_ids": [
+            "bytes"
+          ],
+          "result_type_id": "u32",
+          "variadic": false
+        },
+        {
+          "calling_convention": "cdecl",
+          "id": "set.fn",
+          "kind": "function",
+          "parameter_type_ids": [
+            "bytes",
+            "u32"
+          ],
+          "result_type_id": "unit",
+          "variadic": false
+        },
+        {
+          "calling_convention": "cdecl",
+          "id": "set_character.fn",
+          "kind": "function",
+          "parameter_type_ids": [
+            "bytes",
+            "u32",
+            "u32"
+          ],
+          "result_type_id": "u32",
+          "variadic": false
+        },
+        {
+          "id": "u32",
+          "kind": "integer",
+          "signed": false,
+          "width_bits": 32
+        },
+        {
+          "id": "u8",
+          "kind": "integer",
+          "signed": false,
+          "width_bits": 8
+        },
+        {
+          "id": "unit",
+          "kind": "void"
+        }
+      ]
+    },
+    "services": [],
+    "state": [
+      {
+        "initial": null,
+        "value": {
+          "access": "read_write",
+          "extent": {
+            "bytes": 40,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "id": "defaults",
+          "interpretation": "view",
+          "nullable": false,
+          "provider_domain": null,
+          "resource_kind": null,
+          "type_id": "bytes"
+        }
+      }
+    ],
+    "status": "complete"
+  },
+  "binding_intent": {
+    "blockers": [],
+    "component_id": "quoting-style",
+    "format": "spaghetti-extractor-component-machine-binding-intent-v1",
+    "intent_sha256": "1b7f9f1cab24132b2a320583db80a899d9dfe38a1cf438187774fa6b63898490",
+    "operations": [
+      {
+        "callback_ids": [],
+        "effect_ids": [],
+        "entry_rvas": [
+          20705
+        ],
+        "id": "set_character",
+        "induction_evidence_sha256": null,
+        "kind": "operation",
+        "machine_projection": {
+          "operation": {
+            "callback_operation_ids": [],
+            "continuation_unit_ids": [],
+            "effects": [],
+            "entry_unit_ids": [
+              "semantic-transfer:original-cutpoint-000050e1-000050ef"
+            ],
+            "exit_unit_ids": [
+              "semantic-transfer:original-cutpoint-00005120-00005121"
+            ],
+            "operation_id": "set_character",
+            "parameters": [
+              {
+                "id": "character",
+                "projection": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 8,
+                  "width": 32
+                }
+              },
+              {
+                "id": "options",
+                "projection": {
+                  "at": "entry",
+                  "authority": {
+                    "id": "options",
+                    "kind": "external",
+                    "lifetime": "invocation"
+                  },
+                  "base": {
+                    "at": "entry",
+                    "kind": "stack",
+                    "offset": 4,
+                    "width": 32
+                  },
+                  "extent": {
+                    "kind": "origin_remainder"
+                  },
+                  "kind": "view",
+                  "requested_extent": {
+                    "kind": "constant",
+                    "value": 40,
+                    "width": 32
+                  }
+                }
+              },
+              {
+                "id": "setting",
+                "projection": {
+                  "at": "entry",
+                  "kind": "stack",
+                  "offset": 12,
+                  "width": 32
+                }
+              }
+            ],
+            "preserved_state_ids": [],
+            "results": [
+              {
+                "id": "previous",
+                "projection": {
+                  "at": "exit",
+                  "kind": "register",
+                  "register": "eax",
+                  "width": 32
+                }
+              }
+            ],
+            "state": [
+              {
+                "entry": {
+                  "at": "entry",
+                  "authority": {
+                    "id": "defaults",
+                    "kind": "image",
+                    "lifetime": "image"
+                  },
+                  "base": {
+                    "kind": "constant",
+                    "value": 4391360,
+                    "width": 32
+                  },
+                  "extent": {
+                    "kind": "constant",
+                    "value": 40,
+                    "width": 32
+                  },
+                  "kind": "view",
+                  "requested_extent": {
+                    "kind": "constant",
+                    "value": 40,
+                    "width": 32
+                  }
+                },
+                "exit": {
+                  "at": "exit",
+                  "authority": {
+                    "id": "defaults",
+                    "kind": "image",
+                    "lifetime": "image"
+                  },
+                  "base": {
+                    "kind": "constant",
+                    "value": 4391360,
+                    "width": 32
+                  },
+                  "extent": {
+                    "kind": "constant",
+                    "value": 40,
+                    "width": 32
+                  },
+                  "kind": "view",
+                  "requested_extent": {
+                    "kind": "constant",
+                    "value": 40,
+                    "width": 32
+                  }
+                },
+                "id": "defaults"
+              }
+            ]
+          },
+          "preserved_unit_inventory": [
+            "semantic-transfer:original-cutpoint-000050e1-000050ef",
+            "semantic-transfer:original-cutpoint-000050ef-000050f9",
+            "semantic-transfer:original-cutpoint-000050f9-00005107",
+            "semantic-transfer:original-cutpoint-00005107-00005111",
+            "semantic-transfer:original-cutpoint-00005111-00005119",
+            "semantic-transfer:original-cutpoint-00005119-00005120",
+            "semantic-transfer:original-cutpoint-00005120-00005121"
+          ],
+          "service_bindings": []
+        },
+        "object_authority_selectors": [
+          {
+            "authority_id": "defaults",
+            "rule_id": "image:hello.exe:section:3"
+          }
+        ],
+        "outcome_protocol_ids": [
+          "normal"
+        ],
+        "pointer_views": [],
+        "relation_receipt_sha256s": [],
+        "service_ids": [],
+        "transfer_ids": [
+          "semantic-transfer:original-cutpoint-000050e1-000050ef",
+          "semantic-transfer:original-cutpoint-000050ef-000050f9",
+          "semantic-transfer:original-cutpoint-000050f9-00005107",
+          "semantic-transfer:original-cutpoint-00005107-00005111",
+          "semantic-transfer:original-cutpoint-00005111-00005119",
+          "semantic-transfer:original-cutpoint-00005119-00005120",
+          "semantic-transfer:original-cutpoint-00005120-00005121"
+        ],
+        "unit_ids": [
+          "semantic-transfer:original-cutpoint-000050e1-000050ef",
+          "semantic-transfer:original-cutpoint-000050ef-000050f9",
+          "semantic-transfer:original-cutpoint-000050f9-00005107",
+          "semantic-transfer:original-cutpoint-00005107-00005111",
+          "semantic-transfer:original-cutpoint-00005111-00005119",
+          "semantic-transfer:original-cutpoint-00005119-00005120",
+          "semantic-transfer:original-cutpoint-00005120-00005121"
+        ]
+      }
+    ],
+    "status": "complete"
+  },
+  "signature": {
+    "id": "set_character",
+    "function_type_id": "set_character.fn",
+    "parameters": [
+      {
+        "id": "options",
+        "type_id": "bytes",
+        "interpretation": "view",
+        "nullable": true,
+        "access": "read_write",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "resource_kind": null,
+        "provider_domain": null
+      },
+      {
+        "id": "character",
+        "type_id": "u32",
+        "interpretation": "value",
+        "nullable": false,
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "resource_kind": null,
+        "provider_domain": null
+      },
+      {
+        "id": "setting",
+        "type_id": "u32",
+        "interpretation": "value",
+        "nullable": false,
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "resource_kind": null,
+        "provider_domain": null
+      }
+    ],
+    "results": [
+      {
+        "id": "previous",
+        "type_id": "u32",
+        "interpretation": "value",
+        "nullable": false,
+        "access": "none",
+        "extent": {
+          "bytes": null,
+          "kind": "none",
+          "value_id": null
+        },
+        "resource_kind": null,
+        "provider_domain": null
+      }
+    ]
+  },
+  "original_entry_rva": 20705,
+  "original_transfer_plan_sha256": "7be11fac9ce1488cc893f7ac30ba9fde00e23a2fa92cf8f2e2c882965b77be11",
+  "original_files": {
+    "behavioral-fn-000050e1.c": "bf6b5a81ce9834fdd3526255f0f14645614214b7db3f7d38bbf87ed80cbc9f44",
+    "behavioral-support.c": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca",
+    "state-machine-runtime.h": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+  },
+  "native_projection": {
+    "image_views": {
+      "defaults": {
+        "address": 4391360,
+        "extent": 40,
+        "permissions": 3
+      }
+    },
+    "call_entry_stack_delta": -4
+  },
+  "normal_return": {
+    "result_field": "eax",
+    "stack_delta": 0,
+    "preserved_fields": [
+      "df",
+      "ebp",
+      "ebx",
+      "edi",
+      "esi",
+      "fs_base",
+      "x87_code_selector",
+      "x87_control",
+      "x87_data_pointer",
+      "x87_data_selector",
+      "x87_instruction_pointer",
+      "x87_last_opcode",
+      "x87_pending_exception",
+      "x87_stack[continuation_slot].empty",
+      "x87_stack[continuation_slot].tag",
+      "x87_stack[continuation_slot].value_bytes[continuation_byte]",
+      "x87_status"
+    ]
+  },
+  "entry_relations": [],
+  "normal_excludes": []
+}

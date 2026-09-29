@@ -1,0 +1,71 @@
+{
+  "test-runner": {
+    "assembly": {
+      "entries": {
+        "jq_testsuite": [
+          "run"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c",
+        "runtime.c": "portable-runtime.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jq_test.c",
+          "symbol": "jq_testsuite"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "skipline"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "checkerrormsg"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "checkfail"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "test_err_cb"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "run_jq_tests"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "test_start_state"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "test_jq_start_resets_state"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "run_jq_start_state_tests"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "test_pthread_jq_parse"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "test_pthread_run"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "run_jq_pthread_tests"
+        },
+        {
+          "file": "src/jq_test.c",
+          "symbol": "jv_test"
+        }
+      ],
+      "lifetime": "Consumes library directories; borrows argument strings. Uses the shared input decoder, output policy and live jq services. Three pthread workers own independent jq/parser instances and join before returning. Original FILE lifetime until process exit is preserved."
+    }
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "id": "runtime.windows-path-parts",
+    "scope": "module-instance",
+    "sources": [
+      "windows-path-parts.c"
+    ],
+    "thread_state": "none",
+    "reset": "process-restart",
+    "lifetime": "dirname owns a reusable fallback buffer for prefixes needing an extra character. Results borrow either the caller buffer, a literal, or that buffer until the next dirname call. Initialization is lazy; storage has original module/process lifetime. Calls sharing the fallback buffer must not race."
+  }
+]

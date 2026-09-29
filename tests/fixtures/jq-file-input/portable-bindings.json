@@ -1,0 +1,22 @@
+{
+  "file-input": {
+    "assembly": {
+      "entries": {
+        "jv_load_file": [
+          "load"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv_file.c",
+          "symbol": "jv_load_file"
+        }
+      ],
+      "lifetime": "Borrows filename for one call; owns stream, parser and returned jv. Also supplies one shared windows-files C library; all input consumers use that same provider. ASCII case-folded namespace and Windows text-input profile; no arbitrary Win32 filesystem emulation."
+    }
+  }
+}

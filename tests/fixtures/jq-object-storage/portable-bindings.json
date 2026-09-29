@@ -1,0 +1,20 @@
+{
+  "object-create": {
+    "native_symbol": "fixture_object_create",
+    "backend_symbol": "jvp_object_new",
+    "backend_file": "src/jv.c",
+    "headers": {"object-storage-native.h": "object-storage-native.h", "object-runtime.h": "object-runtime.h", "create-binding.h": "create-binding.h"}
+  },
+  "object-release": {
+    "native_symbol": "fixture_object_release",
+    "backend_symbol": "jvp_object_free",
+    "backend_file": "src/jv.c",
+    "headers": {"object-storage-native.h": "object-storage-native.h", "object-runtime.h": "object-runtime.h", "release-binding.h": "release-binding.h"}
+  },
+  "object-unshare": {
+    "native_symbol": "fixture_object_unshare",
+    "backend_symbol": "jvp_object_unshare",
+    "backend_file": "src/jv.c",
+    "headers": {"object-storage-native.h": "object-storage-native.h", "object-runtime.h": "object-runtime.h", "unshare-binding.h": "unshare-binding.h"}
+  }
+}

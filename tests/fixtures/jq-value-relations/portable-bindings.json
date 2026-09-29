@@ -1,0 +1,70 @@
+{
+  "value-relations": {
+    "assembly": {
+      "entries": {
+        "jv_equal": [
+          "equal"
+        ],
+        "jv_identical": [
+          "identical"
+        ],
+        "jv_contains": [
+          "contains"
+        ],
+        "jv_object_merge": [
+          "merge"
+        ],
+        "jv_object_merge_recursive": [
+          "merge_recursive"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_equal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_identical"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_contains"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_merge"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_merge_recursive"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_number_equal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_array_equal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_array_contains"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_object_equal"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_object_contains"
+        }
+      ],
+      "lifetime": "Consumes value references; preserves aliases and copy-on-write through shared accessors. The pinned handle identity/equality fast paths are explicit; no private heap-layout duplication."
+    }
+  }
+}

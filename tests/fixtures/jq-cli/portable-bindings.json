@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "assembly": {
+      "entries": { "main": ["run"] },
+      "sources": {
+        "entry.c": "portable-entry.c",
+        "runtime.c": "portable-runtime.c"
+      },
+      "headers": {
+        "original-configuration.h": "original-configuration.h",
+        "windows-output.h": "../portable-runtime/windows-output.h"
+      },
+      "replacements": [
+        { "file": "src/main.c", "symbol": "main" },
+        { "file": "src/main.c", "symbol": "usage" },
+        { "file": "src/main.c", "symbol": "die" },
+        { "file": "src/main.c", "symbol": "isoption" },
+        { "file": "src/main.c", "symbol": "isoptish" },
+        { "file": "src/main.c", "symbol": "process" },
+        { "file": "src/main.c", "symbol": "debug_cb" },
+        { "file": "src/main.c", "symbol": "stderr_cb" }
+      ],
+      "lifetime": "One UTF-8 argv entry per process, owning jq/input contexts and borrowing callback stack until teardown. Runtime owns standard-stream policy; process exit is nonreturning. Native Windows startup and reusable libraries are explicit dependencies."
+    }
+  }
+}

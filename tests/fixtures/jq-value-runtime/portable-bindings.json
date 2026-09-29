@@ -1,0 +1,309 @@
+{
+  "value-runtime": {
+    "backend_headers": {
+      "src/jv.c": {
+        "hash-seed-backend.h": "hash-seed-backend.h"
+      }
+    },
+    "assembly": {
+      "entries": {
+        "jv_get_kind": [
+          "kind"
+        ],
+        "jv_kind_name": [
+          "kind_name"
+        ],
+        "jv_true": [
+          "true"
+        ],
+        "jv_false": [
+          "false"
+        ],
+        "jv_null": [
+          "null"
+        ],
+        "jv_bool": [
+          "boolean"
+        ],
+        "jv_invalid": [
+          "invalid"
+        ],
+        "jv_invalid_with_msg": [
+          "invalid_message"
+        ],
+        "jv_invalid_get_msg": [
+          "invalid_get_message"
+        ],
+        "jv_invalid_has_msg": [
+          "invalid_has_message"
+        ],
+        "jvp_invalid_free": [
+          "invalid_release"
+        ],
+        "jv_array": [
+          "array"
+        ],
+        "jv_array_append": [
+          "array_append"
+        ],
+        "jv_array_concat": [
+          "array_concat"
+        ],
+        "jv_string_sized": [
+          "string_sized"
+        ],
+        "jv_string_empty": [
+          "string_empty"
+        ],
+        "jv_string": [
+          "string"
+        ],
+        "jv_string_repeat": [
+          "string_repeat"
+        ],
+        "jv_string_explode": [
+          "string_explode"
+        ],
+        "jv_string_implode": [
+          "string_implode"
+        ],
+        "jv_string_hash": [
+          "string_hash"
+        ],
+        "jv_string_value": [
+          "string_value"
+        ],
+        "jv_string_concat": [
+          "string_concat"
+        ],
+        "jv_string_append_buf": [
+          "string_append_buf"
+        ],
+        "jv_string_append_codepoint": [
+          "string_append_codepoint"
+        ],
+        "jv_string_append_str": [
+          "string_append_str"
+        ],
+        "jv_string_vfmt": [
+          "format"
+        ],
+        "jv_string_fmt": [
+          "format"
+        ],
+        "jvp_string_free": [
+          "string_release"
+        ],
+        "jv_object": [
+          "object"
+        ],
+        "jv_object_has": [
+          "object_has"
+        ],
+        "jv_object_set": [
+          "object_set"
+        ],
+        "jv_object_length": [
+          "object_length"
+        ],
+        "jv_object_iter": [
+          "object_iter"
+        ],
+        "jv_object_iter_valid": [
+          "object_iter_valid"
+        ],
+        "jv_object_iter_next": [
+          "object_iter_next"
+        ],
+        "jv_object_iter_key": [
+          "object_iter_key"
+        ],
+        "jv_object_iter_value": [
+          "object_iter_value"
+        ],
+        "jv_get_refcnt": [
+          "reference_count"
+        ],
+        "backend_free": [
+          "release"
+        ],
+        "parse_slice": [
+          "slice_bounds"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {
+        "portable-entries.h": "portable-entries.h"
+      },
+      "replacements": [
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_get_kind"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_kind_name"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_true"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_false"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_null"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_bool"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_invalid"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_invalid_with_msg"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_invalid_get_msg"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_invalid_has_msg"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_invalid_free"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_array"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_array_append"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_array_concat"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_sized"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_empty"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_repeat"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_explode"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_implode"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_hash"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_value"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_concat"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_append_buf"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_append_codepoint"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_append_str"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_vfmt"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_string_fmt"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jvp_string_free"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_has"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_set"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_length"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_iter"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_iter_valid"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_iter_next"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_iter_key"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_object_iter_value"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "jv_get_refcnt"
+        },
+        {
+          "file": "src/jv.c",
+          "symbol": "backend_free"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "parse_slice"
+        }
+      ],
+      "lifetime": "Consuming jv operations preserve shared payloads and copy-on-write. Kind, reference count, string bytes and object iteration borrow. Seed state, number values, array storage and object allocation/unsharing/release are shared dependencies. Release dispatch consumes one reference; the existing array-storage boundary retains public jv_free and calls this dispatcher only for non-arrays. Slice ranges consume the value and slice descriptor; output indices commit only on success and may alias."
+    }
+  }
+}

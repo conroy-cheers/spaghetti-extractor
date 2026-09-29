@@ -1,0 +1,12 @@
+/* Keep authored internal calls inside this component. */
+#define jv_number portable_jv_number
+#define jv_number_with_literal portable_jv_number_with_literal
+#define jv_number_has_literal portable_jv_number_has_literal
+#define jv_number_get_literal portable_jv_number_get_literal
+#define jv_number_value portable_jv_number_value
+#define jv_is_integer portable_jv_is_integer
+#define jvp_number_is_nan portable_jvp_number_is_nan
+#define jv_number_abs portable_jv_number_abs
+#define jv_number_negate portable_jv_number_negate
+#define jvp_number_cmp portable_jvp_number_cmp
+#define jvp_number_free portable_jvp_number_free

@@ -1,0 +1,171 @@
+{
+  "program-support": {
+    "assembly": {
+      "entries": {
+        "jvp_utf8_backtrack": [
+          "utf8_backtrack"
+        ],
+        "jvp_utf8_next": [
+          "utf8_next"
+        ],
+        "jvp_utf8_is_valid": [
+          "utf8_is_valid"
+        ],
+        "jvp_utf8_decode_length": [
+          "utf8_decode_length"
+        ],
+        "jvp_utf8_encode_length": [
+          "utf8_encode_length"
+        ],
+        "jvp_utf8_encode": [
+          "utf8_encode"
+        ],
+        "jvp_codepoint_is_whitespace": [
+          "codepoint_is_whitespace"
+        ],
+        "opcode_describe": [
+          "opcode_describe"
+        ],
+        "bytecode_operation_length": [
+          "bytecode_operation_length"
+        ],
+        "dump_disassembly": [
+          "dump_disassembly"
+        ],
+        "dump_operation": [
+          "dump_operation"
+        ],
+        "bytecode_free": [
+          "bytecode_free"
+        ],
+        "locfile_init": [
+          "locfile_init"
+        ],
+        "locfile_retain": [
+          "locfile_retain"
+        ],
+        "locfile_free": [
+          "locfile_free"
+        ],
+        "locfile_get_line": [
+          "locfile_get_line"
+        ],
+        "locfile_locate": [
+          "locfile_locate"
+        ],
+        "get_home": [
+          "get_home"
+        ],
+        "expand_path": [
+          "expand_path"
+        ],
+        "_jq_memmem": [
+          "memory_search"
+        ],
+        "jq_realpath": [
+          "canonical_path"
+        ],
+        "dirname": [
+          "path_dirname"
+        ],
+        "basename": [
+          "path_basename"
+        ],
+        "__xpg_basename": [
+          "path_basename"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_backtrack"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_next"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_is_valid"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_decode_length"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_encode_length"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_utf8_encode"
+        },
+        {
+          "file": "src/jv_unicode.c",
+          "symbol": "jvp_codepoint_is_whitespace"
+        },
+        {
+          "file": "src/bytecode.c",
+          "symbol": "opcode_describe"
+        },
+        {
+          "file": "src/bytecode.c",
+          "symbol": "bytecode_operation_length"
+        },
+        {
+          "file": "src/bytecode.c",
+          "symbol": "dump_disassembly"
+        },
+        {
+          "file": "src/bytecode.c",
+          "symbol": "dump_operation"
+        },
+        {
+          "file": "src/bytecode.c",
+          "symbol": "bytecode_free"
+        },
+        {
+          "file": "src/locfile.c",
+          "symbol": "locfile_init"
+        },
+        {
+          "file": "src/locfile.c",
+          "symbol": "locfile_retain"
+        },
+        {
+          "file": "src/locfile.c",
+          "symbol": "locfile_free"
+        },
+        {
+          "file": "src/locfile.c",
+          "symbol": "locfile_get_line"
+        },
+        {
+          "file": "src/locfile.c",
+          "symbol": "locfile_locate"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "get_home"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "expand_path"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "_jq_memmem"
+        },
+        {
+          "file": "src/util.c",
+          "symbol": "jq_realpath"
+        }
+      ],
+      "lifetime": "UTF-8 buffers are borrowed with exact bounds and output effects. Source files own copied bytes and a shared reference count. Bytecode graphs retain parent/global aliases; root destruction owns shared symbol storage. Immutable opcode descriptors have process lifetime; identities are stable within one implementation. Home strings copy process environment values using the original Windows precedence. Expansion consumes its path. Memory search borrows exact byte spans and returns an interior pointer without mutation. Path canonicalization consumes its input, preserves it on expansion failure, and keeps the PE32 260-byte capacity. Path parts borrow writable strings and may use one declared module-lifetime buffer. Shared path syntax and host namespace services use the same environment provider."
+    }
+  }
+}

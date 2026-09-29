@@ -1,0 +1,889 @@
+[
+  {
+    "name": "block_append",
+    "result": "void",
+    "arguments": [
+      [
+        "block *",
+        "b"
+      ],
+      [
+        "block",
+        "b2"
+      ]
+    ],
+    "entry_rva": 88256,
+    "end_rva": 88320
+  },
+  {
+    "name": "block_bind_library",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "binder"
+      ],
+      [
+        "block",
+        "body"
+      ],
+      [
+        "int",
+        "bindflags"
+      ],
+      [
+        "const char *",
+        "libname"
+      ]
+    ],
+    "entry_rva": 89053,
+    "end_rva": 89466
+  },
+  {
+    "name": "block_bind_referenced",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "binder"
+      ],
+      [
+        "block",
+        "body"
+      ],
+      [
+        "int",
+        "bindflags"
+      ]
+    ],
+    "entry_rva": 93594,
+    "end_rva": 93814
+  },
+  {
+    "name": "block_bind_self",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "binder"
+      ],
+      [
+        "int",
+        "bindflags"
+      ]
+    ],
+    "entry_rva": 89466,
+    "end_rva": 89647
+  },
+  {
+    "name": "block_const",
+    "result": "jv",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 87552,
+    "end_rva": 87658
+  },
+  {
+    "name": "block_const_kind",
+    "result": "jv_kind",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 87458,
+    "end_rva": 87552
+  },
+  {
+    "name": "block_drop_unreferenced",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 93965,
+    "end_rva": 94076
+  },
+  {
+    "name": "block_free",
+    "result": "void",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 93562,
+    "end_rva": 93594
+  },
+  {
+    "name": "block_has_main",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "top"
+      ]
+    ],
+    "entry_rva": 91999,
+    "end_rva": 92038
+  },
+  {
+    "name": "block_has_only_binders",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "binders"
+      ],
+      [
+        "int",
+        "bindflags"
+      ]
+    ],
+    "entry_rva": 88606,
+    "end_rva": 88690
+  },
+  {
+    "name": "block_has_only_binders_and_imports",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "binders"
+      ],
+      [
+        "int",
+        "bindflags"
+      ]
+    ],
+    "entry_rva": 88523,
+    "end_rva": 88606
+  },
+  {
+    "name": "block_is_const",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 87413,
+    "end_rva": 87458
+  },
+  {
+    "name": "block_is_funcdef",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 92038,
+    "end_rva": 92060
+  },
+  {
+    "name": "block_is_noop",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 86770,
+    "end_rva": 86801
+  },
+  {
+    "name": "block_is_single",
+    "result": "int",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 85775,
+    "end_rva": 85797
+  },
+  {
+    "name": "block_join",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 88320,
+    "end_rva": 88379
+  },
+  {
+    "name": "block_list_funcs",
+    "result": "jv",
+    "arguments": [
+      [
+        "block",
+        "body"
+      ],
+      [
+        "int",
+        "omit_underscores"
+      ]
+    ],
+    "entry_rva": 89647,
+    "end_rva": 90022
+  },
+  {
+    "name": "block_module_meta",
+    "result": "jv",
+    "arguments": [
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 90022,
+    "end_rva": 90103
+  },
+  {
+    "name": "block_take_imports",
+    "result": "jv",
+    "arguments": [
+      [
+        "block *",
+        "body"
+      ]
+    ],
+    "entry_rva": 94076,
+    "end_rva": 94379
+  },
+  {
+    "name": "gen_and",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 92221,
+    "end_rva": 92634
+  },
+  {
+    "name": "gen_array_matcher",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "left"
+      ],
+      [
+        "block",
+        "curr"
+      ]
+    ],
+    "entry_rva": 95415,
+    "end_rva": 95925
+  },
+  {
+    "name": "gen_both",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 90911,
+    "end_rva": 91074
+  },
+  {
+    "name": "gen_call",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "name"
+      ],
+      [
+        "block",
+        "args"
+      ]
+    ],
+    "entry_rva": 90850,
+    "end_rva": 90911
+  },
+  {
+    "name": "gen_cbinding",
+    "result": "block",
+    "arguments": [
+      [
+        "const struct cfunction *",
+        "cfunctions"
+      ],
+      [
+        "int",
+        "ncfunctions"
+      ],
+      [
+        "block",
+        "code"
+      ]
+    ],
+    "entry_rva": 93427,
+    "end_rva": 93562
+  },
+  {
+    "name": "gen_collect",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "expr"
+      ]
+    ],
+    "entry_rva": 99689,
+    "end_rva": 100085
+  },
+  {
+    "name": "gen_cond",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "cond"
+      ],
+      [
+        "block",
+        "iftrue"
+      ],
+      [
+        "block",
+        "iffalse"
+      ]
+    ],
+    "entry_rva": 96084,
+    "end_rva": 96361
+  },
+  {
+    "name": "gen_condbranch",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "iftrue"
+      ],
+      [
+        "block",
+        "iffalse"
+      ]
+    ],
+    "entry_rva": 92060,
+    "end_rva": 92221
+  },
+  {
+    "name": "gen_const",
+    "result": "block",
+    "arguments": [
+      [
+        "jv",
+        "constant"
+      ]
+    ],
+    "entry_rva": 86996,
+    "end_rva": 87121
+  },
+  {
+    "name": "gen_const_global",
+    "result": "block",
+    "arguments": [
+      [
+        "jv",
+        "constant"
+      ],
+      [
+        "const char *",
+        "name"
+      ]
+    ],
+    "entry_rva": 87121,
+    "end_rva": 87285
+  },
+  {
+    "name": "gen_const_object",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "expr"
+      ]
+    ],
+    "entry_rva": 98210,
+    "end_rva": 99051
+  },
+  {
+    "name": "gen_definedor",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 91074,
+    "end_rva": 91999
+  },
+  {
+    "name": "gen_destructure",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "var"
+      ],
+      [
+        "block",
+        "matchers"
+      ],
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 102136,
+    "end_rva": 102446
+  },
+  {
+    "name": "gen_destructure_alt",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "matcher"
+      ]
+    ],
+    "entry_rva": 93047,
+    "end_rva": 93133
+  },
+  {
+    "name": "gen_dictpair",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "k"
+      ],
+      [
+        "block",
+        "v"
+      ]
+    ],
+    "entry_rva": 95276,
+    "end_rva": 95415
+  },
+  {
+    "name": "gen_error",
+    "result": "block",
+    "arguments": [
+      [
+        "jv",
+        "constant"
+      ]
+    ],
+    "entry_rva": 86868,
+    "end_rva": 86996
+  },
+  {
+    "name": "gen_foreach",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "source"
+      ],
+      [
+        "block",
+        "matcher"
+      ],
+      [
+        "block",
+        "init"
+      ],
+      [
+        "block",
+        "update"
+      ],
+      [
+        "block",
+        "extract"
+      ]
+    ],
+    "entry_rva": 101641,
+    "end_rva": 102136
+  },
+  {
+    "name": "gen_function",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "name"
+      ],
+      [
+        "block",
+        "formals"
+      ],
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 102521,
+    "end_rva": 102823
+  },
+  {
+    "name": "gen_import",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "name"
+      ],
+      [
+        "const char *",
+        "as"
+      ],
+      [
+        "int",
+        "is_data"
+      ]
+    ],
+    "entry_rva": 90103,
+    "end_rva": 90796
+  },
+  {
+    "name": "gen_import_meta",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "import"
+      ],
+      [
+        "block",
+        "metadata"
+      ]
+    ],
+    "entry_rva": 94754,
+    "end_rva": 95050
+  },
+  {
+    "name": "gen_label",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "label"
+      ],
+      [
+        "block",
+        "exp"
+      ]
+    ],
+    "entry_rva": 102875,
+    "end_rva": 103176
+  },
+  {
+    "name": "gen_lambda",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 102823,
+    "end_rva": 102875
+  },
+  {
+    "name": "gen_location",
+    "result": "block",
+    "arguments": [
+      [
+        "location",
+        "loc"
+      ],
+      [
+        "struct locfile *",
+        "l"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 86515,
+    "end_rva": 86626
+  },
+  {
+    "name": "gen_module",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "metadata"
+      ]
+    ],
+    "entry_rva": 94379,
+    "end_rva": 94754
+  },
+  {
+    "name": "gen_noop",
+    "result": "block",
+    "arguments": [],
+    "entry_rva": 86626,
+    "end_rva": 86631
+  },
+  {
+    "name": "gen_object_matcher",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "name"
+      ],
+      [
+        "block",
+        "curr"
+      ]
+    ],
+    "entry_rva": 95925,
+    "end_rva": 96084
+  },
+  {
+    "name": "gen_op_bound",
+    "result": "block",
+    "arguments": [
+      [
+        "opcode",
+        "op"
+      ],
+      [
+        "block",
+        "binder"
+      ]
+    ],
+    "entry_rva": 88165,
+    "end_rva": 88256
+  },
+  {
+    "name": "gen_op_pushk_under",
+    "result": "block",
+    "arguments": [
+      [
+        "jv",
+        "constant"
+      ]
+    ],
+    "entry_rva": 87285,
+    "end_rva": 87413
+  },
+  {
+    "name": "gen_op_simple",
+    "result": "block",
+    "arguments": [
+      [
+        "opcode",
+        "op"
+      ]
+    ],
+    "entry_rva": 86801,
+    "end_rva": 86868
+  },
+  {
+    "name": "gen_op_target",
+    "result": "block",
+    "arguments": [
+      [
+        "opcode",
+        "op"
+      ],
+      [
+        "block",
+        "target"
+      ]
+    ],
+    "entry_rva": 87658,
+    "end_rva": 87767
+  },
+  {
+    "name": "gen_op_unbound",
+    "result": "block",
+    "arguments": [
+      [
+        "opcode",
+        "op"
+      ],
+      [
+        "const char *",
+        "name"
+      ]
+    ],
+    "entry_rva": 87993,
+    "end_rva": 88088
+  },
+  {
+    "name": "gen_op_var_fresh",
+    "result": "block",
+    "arguments": [
+      [
+        "opcode",
+        "op"
+      ],
+      [
+        "const char *",
+        "name"
+      ]
+    ],
+    "entry_rva": 88088,
+    "end_rva": 88165
+  },
+  {
+    "name": "gen_or",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ],
+      [
+        "block",
+        "b"
+      ]
+    ],
+    "entry_rva": 92634,
+    "end_rva": 93047
+  },
+  {
+    "name": "gen_param",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "name"
+      ]
+    ],
+    "entry_rva": 90823,
+    "end_rva": 90850
+  },
+  {
+    "name": "gen_param_regular",
+    "result": "block",
+    "arguments": [
+      [
+        "const char *",
+        "name"
+      ]
+    ],
+    "entry_rva": 90796,
+    "end_rva": 90823
+  },
+  {
+    "name": "gen_reduce",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "source"
+      ],
+      [
+        "block",
+        "matcher"
+      ],
+      [
+        "block",
+        "init"
+      ],
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 101088,
+    "end_rva": 101641
+  },
+  {
+    "name": "gen_subexp",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "a"
+      ]
+    ],
+    "entry_rva": 95050,
+    "end_rva": 95276
+  },
+  {
+    "name": "gen_try",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "exp"
+      ],
+      [
+        "block",
+        "handler"
+      ]
+    ],
+    "entry_rva": 93133,
+    "end_rva": 93427
+  },
+  {
+    "name": "gen_var_binding",
+    "result": "block",
+    "arguments": [
+      [
+        "block",
+        "var"
+      ],
+      [
+        "const char *",
+        "name"
+      ],
+      [
+        "block",
+        "body"
+      ]
+    ],
+    "entry_rva": 102446,
+    "end_rva": 102521
+  }
+]

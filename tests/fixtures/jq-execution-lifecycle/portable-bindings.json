@@ -1,0 +1,303 @@
+{
+  "execution-lifecycle": {
+    "assembly": {
+      "entries": {
+        "jq_init": [
+          "jq_init"
+        ],
+        "jq_set_error_cb": [
+          "jq_set_error_cb"
+        ],
+        "jq_get_error_cb": [
+          "jq_get_error_cb"
+        ],
+        "jq_set_nomem_handler": [
+          "jq_set_nomem_handler"
+        ],
+        "jq_format_error": [
+          "jq_format_error"
+        ],
+        "jq_report_error": [
+          "jq_report_error"
+        ],
+        "jq_compile": [
+          "jq_compile"
+        ],
+        "jq_compile_args": [
+          "jq_compile_args"
+        ],
+        "jq_dump_disassembly": [
+          "jq_dump_disassembly"
+        ],
+        "jq_start": [
+          "jq_start"
+        ],
+        "jq_teardown": [
+          "jq_teardown"
+        ],
+        "jq_halt": [
+          "jq_halt"
+        ],
+        "jq_halted": [
+          "jq_halted"
+        ],
+        "jq_get_exit_code": [
+          "jq_get_exit_code"
+        ],
+        "jq_get_error_message": [
+          "jq_get_error_message"
+        ],
+        "jq_set_input_cb": [
+          "jq_set_input_cb"
+        ],
+        "jq_get_input_cb": [
+          "jq_get_input_cb"
+        ],
+        "jq_set_debug_cb": [
+          "jq_set_debug_cb"
+        ],
+        "jq_get_debug_cb": [
+          "jq_get_debug_cb"
+        ],
+        "jq_set_stderr_cb": [
+          "jq_set_stderr_cb"
+        ],
+        "jq_get_stderr_cb": [
+          "jq_get_stderr_cb"
+        ],
+        "jq_set_attrs": [
+          "jq_set_attrs"
+        ],
+        "jq_get_jq_origin": [
+          "jq_get_jq_origin"
+        ],
+        "jq_get_prog_origin": [
+          "jq_get_prog_origin"
+        ],
+        "jq_get_lib_dirs": [
+          "jq_get_lib_dirs"
+        ],
+        "jq_set_attr": [
+          "jq_set_attr"
+        ],
+        "jq_get_attr": [
+          "jq_get_attr"
+        ],
+        "_jq_path_append": [
+          "path_append"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_size"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_current"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_get_level"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_local_var"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "make_closure"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_push"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "frame_pop"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_push"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_pop"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_popn"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_get_pos"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_save"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "path_intact"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "path_append"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "_jq_path_append"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "stack_restore"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_reset"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_report_error"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "set_error"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_format_error"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "default_err_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_init"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_error_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_error_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_nomem_handler"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_start"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_teardown"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "ret_follows"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "tail_call_analyze"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "optimize_code"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "optimize"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "args2obj"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_compile_args"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_compile"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_jq_origin"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_prog_origin"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_lib_dirs"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_attrs"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_attr"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_attr"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_dump_disassembly"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_input_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_input_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_debug_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_debug_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_set_stderr_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_stderr_cb"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_halt"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_halted"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_exit_code"
+        },
+        {
+          "file": "src/execute.c",
+          "symbol": "jq_get_error_message"
+        }
+      ],
+      "lifetime": "Owns jq state, compiled bytecode, execution stack, values and attributes. Callbacks and their data remain borrowed; returned owned values and nulling teardown retain jq.h semantics. Same state/frame layout as vm-next."
+    }
+  }
+}

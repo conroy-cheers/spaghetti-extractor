@@ -53,10 +53,10 @@ let
           -o "$out/bin/hello-derived-registration.exe"
         image_base="$(${mingw.buildPackages.binutils}/bin/i686-w64-mingw32-objdump \
           -p "$out/bin/hello-derived-registration.exe" \
-          | awk '$1 == "ImageBase" { print $2; exit }')"
+          | awk '$1 == "ImageBase" && !found { print $2; found = 1 }')"
         destructor_va="$(${mingw.buildPackages.binutils}/bin/i686-w64-mingw32-nm \
           "$out/bin/hello-derived-registration.exe" \
-          | awk '$3 == "_registered_destructor" { print $1; exit }')"
+          | awk '$3 == "_registered_destructor" && !found { print $1; found = 1 }')"
         test -n "$image_base"
         test -n "$destructor_va"
         printf '{"registered_destructor_rva":%d}\n' \
@@ -461,6 +461,7 @@ let
           ${workflow.semanticObject.artifact} \
           ${workflow.transferPlan.plan} \
           "$out" <<'PY'
+        import hashlib
         import json
         import pathlib
         import resource
@@ -539,6 +540,26 @@ let
             symbol["declaration"]["declaration_role"] == "loader_service"
             for symbol in static_semantic_imports
         ) == 2
+        environment = json.loads(
+            (package_root / "resolved-external-environment.json").read_text()
+        )
+        dynamic_loaders = [
+            row for row in environment["loader_service_contracts"]
+            if any(import_identity(entry["identity"]) == (
+                "msvcrt.dll", "___lc_codepage_func", None
+            ) for entry in row.get("resolution_catalog", []))
+        ]
+        assert len(dynamic_loaders) == 1
+        assert dynamic_loaders[0]["contract"]["payload"]["loader_service"] == {
+            "kind": "dynamic_export_resolution",
+            "module_handle_argument": 0,
+            "export_name_argument": 1,
+        }
+        # Bind the exact selected contract, including its checked ABI and read
+        # footprint. A literal digest goes stale after unrelated profile edits.
+        loader_digest = hashlib.sha256(json.dumps(
+            dynamic_loaders[0], sort_keys=True, separators=(",", ":")
+        ).encode()).hexdigest()
         assert [
             {
                 key: symbol["declaration"][key]
@@ -553,10 +574,7 @@ let
             "symbol": "___lc_codepage_func",
             "ordinal": None,
             "declaration_role": "loader_service",
-            "loader_service_contract_sha256": (
-                "7f5dfd7aff2df8422fb6cf222362d5df"
-                "a08ac4ee1aff13ef10160e4d922b38c9"
-            ),
+            "loader_service_contract_sha256": loader_digest,
         }]
         exception_transitions = [
             symbol for symbol in semantic["symbols"]
@@ -1173,7 +1191,8 @@ let
           .format == "spaghetti-extractor-semantic-provider-qualification-v2" and
           .status == "complete" and
           .provider_kind == "qualified_portable_c" and
-          (.definition_materializations | length) == 1 and
+          (.definition_materializations | length) == 2 and
+          (has("exact_context") | not) and
           ([.facets[].status] | unique) == ["checked"] and
           .blockers == []
         ' "$qualification" >/dev/null
@@ -1187,7 +1206,7 @@ let
           .status == "complete" and
           .mode == "hybrid" and
           ([.definition_selections[] | select(
-            .provider_kind == "qualified_portable_c")] | length) == 1 and
+            .provider_kind == "qualified_portable_c")] | length) == 2 and
           .blockers == []
         ' "$selection" >/dev/null
         jq -e '
@@ -1195,7 +1214,7 @@ let
           .status == "complete" and
           .ready_for_observation == true and
           ([.definitions[] | select(
-            .provider_kind == "qualified_portable_c")] | length) == 1 and
+            .provider_kind == "qualified_portable_c")] | length) == 2 and
           .blockers == []
         ' "$realization" >/dev/null
         test -s ${asciiToLowerV6Realization.candidate}
@@ -1349,7 +1368,7 @@ let
             ([.facets[] | select(.name == "bisimulation") | .status] == ["checked"]) and
             .blockers == []
           ' "$provider/semantic-provider-qualification.json" >/dev/null
-          jq -L ${../../nix/jq} -e '
+          jq -L ${sdk.validation.jqModules} -e '
             include "strong-contextual-proof";
             .status == "satisfied" and
             .proof.status == "satisfied" and
@@ -1358,11 +1377,11 @@ let
             ([.proof.shards[].nonvacuity.status] | all(. == "satisfied")) and
             .policy == {cbmc_required: true, tests_authorize: false}
           ' "$provider/contextual-refinement-result.json" >/dev/null
-          jq -L ${../../nix/jq} -e '
+          jq -L ${sdk.validation.jqModules} -e '
             include "strong-contextual-proof";
             spx_strong_cutpoint_plan
           ' "$provider/component-proof-plan-v1.json" >/dev/null
-          jq -L ${../../nix/jq} -e '
+          jq -L ${sdk.validation.jqModules} -e '
             include "strong-contextual-proof";
             spx_contextual_exact_c_slice
           ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null

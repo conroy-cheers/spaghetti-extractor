@@ -1,0 +1,220 @@
+[
+  {
+    "name": "jvp_utf8_backtrack",
+    "operation": "utf8_backtrack",
+    "entry_rva": 261216,
+    "end_rva": 261369,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_utf8_next",
+    "operation": "utf8_next",
+    "entry_rva": 261369,
+    "end_rva": 261685,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_utf8_is_valid",
+    "operation": "utf8_is_valid",
+    "entry_rva": 261685,
+    "end_rva": 261750,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_utf8_decode_length",
+    "operation": "utf8_decode_length",
+    "entry_rva": 261750,
+    "end_rva": 261811,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_utf8_encode_length",
+    "operation": "utf8_encode_length",
+    "entry_rva": 261811,
+    "end_rva": 261855,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_utf8_encode",
+    "operation": "utf8_encode",
+    "entry_rva": 261855,
+    "end_rva": 262094,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_codepoint_is_whitespace",
+    "operation": "codepoint_is_whitespace",
+    "entry_rva": 262094,
+    "end_rva": 262208,
+    "source": "jv_unicode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "opcode_describe",
+    "operation": "opcode_describe",
+    "entry_rva": 81168,
+    "end_rva": 81198,
+    "source": "bytecode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "bytecode_operation_length",
+    "operation": "bytecode_operation_length",
+    "entry_rva": 81198,
+    "end_rva": 81251,
+    "source": "bytecode.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "dump_disassembly",
+    "operation": "dump_disassembly",
+    "entry_rva": 83008,
+    "end_rva": 83915,
+    "source": "bytecode.c",
+    "additional_ranges": [
+      [
+        82895,
+        83008
+      ]
+    ]
+  },
+  {
+    "name": "dump_operation",
+    "operation": "dump_operation",
+    "entry_rva": 81251,
+    "end_rva": 82895,
+    "source": "bytecode.c",
+    "additional_ranges": [
+      [
+        81056,
+        81105
+      ]
+    ]
+  },
+  {
+    "name": "bytecode_free",
+    "operation": "bytecode_free",
+    "entry_rva": 83915,
+    "end_rva": 84096,
+    "source": "bytecode.c",
+    "additional_ranges": [
+      [
+        81105,
+        81168
+      ]
+    ]
+  },
+  {
+    "name": "locfile_init",
+    "operation": "locfile_init",
+    "entry_rva": 279274,
+    "end_rva": 279568,
+    "source": "locfile.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "locfile_retain",
+    "operation": "locfile_retain",
+    "entry_rva": 279568,
+    "end_rva": 279577,
+    "source": "locfile.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "locfile_free",
+    "operation": "locfile_free",
+    "entry_rva": 279577,
+    "end_rva": 279664,
+    "source": "locfile.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "locfile_get_line",
+    "operation": "locfile_get_line",
+    "entry_rva": 279664,
+    "end_rva": 279797,
+    "source": "locfile.c",
+    "additional_ranges": []
+  },
+  {
+    "name": "locfile_locate",
+    "operation": "locfile_locate",
+    "entry_rva": 279797,
+    "end_rva": 280640,
+    "source": "locfile.c",
+    "additional_ranges": [
+      [
+        279168,
+        279223
+      ]
+    ]
+  },
+  {
+    "name": "get_home",
+    "operation": "get_home",
+    "result": "jv",
+    "parameters": "void",
+    "arguments": "",
+    "field": "value",
+    "source": "util.c",
+    "entry_rva": 282438,
+    "end_rva": 282646,
+    "additional_ranges": []
+  },
+  {
+    "name": "expand_path",
+    "operation": "expand_path",
+    "result": "jv",
+    "parameters": "jv path",
+    "arguments": "path",
+    "field": "value",
+    "source": "util.c",
+    "entry_rva": 282646,
+    "end_rva": 283310,
+    "additional_ranges": []
+  },
+  {
+    "name": "_jq_memmem",
+    "operation": "memory_search",
+    "result": "const void *",
+    "parameters": "const void *haystack, size_t length, const void *needle, size_t needle_length",
+    "arguments": "haystack, length, needle, needle_length",
+    "field": "cursor",
+    "source": "util.c",
+    "entry_rva": 283535,
+    "end_rva": 283657,
+    "additional_ranges": []
+  },
+  {
+    "name": "jq_realpath",
+    "operation": "canonical_path",
+    "entry_rva": 283310,
+    "end_rva": 283535,
+    "additional_ranges": []
+  },
+  {
+    "name": "dirname",
+    "operation": "path_dirname",
+    "entry_rva": 368272,
+    "end_rva": 368560,
+    "additional_ranges": [
+      [
+        367712,
+        368272
+      ]
+    ]
+  },
+  {
+    "name": "basename",
+    "operation": "path_basename",
+    "entry_rva": 368560,
+    "end_rva": 368672,
+    "additional_ranges": []
+  }
+]

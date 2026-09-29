@@ -1,0 +1,23 @@
+[
+  {
+    "file": "windows-paths.c",
+    "upstream": "https://raw.githubusercontent.com/wine-mirror/wine/wine-11.0/dlls/ntdll/path.c",
+    "upstream_sha256": "68a32af39efaf08c54636d5b8f000025587ef2bd8f730bfe44ad2980523f9dd5",
+    "license": "LGPL-2.1-or-later",
+    "adaptation": "Namespaced portable C; UTF-8 and single-byte path syntax with a separate environment provider."
+  },
+  {
+    "file": "windows-path-parts.c",
+    "upstream": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/v13.0.0/mingw-w64-crt/misc/dirname.c",
+    "upstream_sha256": "d27722edca62ec7d7ede9470dce5558afcd121b941c7ae13ee661ca043c86c70",
+    "license": "public-domain",
+    "adaptation": "Namespaced portable C; UTF-8 and single-byte path syntax with a separate environment provider."
+  },
+  {
+    "file": "windows-paths.c",
+    "upstream": "https://raw.githubusercontent.com/wine-mirror/wine/wine-11.0/dlls/kernelbase/path.c",
+    "upstream_sha256": "5ab6715af29660476cabc10ead698e53b91bc9e6d757b73299c17fe6c4784c05",
+    "license": "LGPL-2.1-or-later",
+    "adaptation": "PathIsRelativeA classification for the selected non-DBCS byte profile."
+  }
+]

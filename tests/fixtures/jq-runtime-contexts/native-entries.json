@@ -1,0 +1,75 @@
+[
+  {
+    "name": "jv_tsd_dec_ctx_init",
+    "operation": "decimal_initialize",
+    "result": "void",
+    "parameters": "void",
+    "entry_rva": 155972,
+    "end_rva": 156067,
+    "additional_ranges": []
+  },
+  {
+    "name": "jv_tsd_dec_ctx_fini",
+    "operation": "decimal_finalize",
+    "result": "void",
+    "parameters": "void",
+    "entry_rva": 155921,
+    "end_rva": 155972,
+    "additional_ranges": []
+  },
+  {
+    "name": "tsd_dec_ctx_get",
+    "operation": "decimal_get",
+    "result": "decContext *",
+    "parameters": "void *key",
+    "entry_rva": 157088,
+    "end_rva": 157302,
+    "additional_ranges": []
+  },
+  {
+    "name": "jv_tsd_dtoa_ctx_init",
+    "operation": "dtoa_initialize",
+    "result": "void",
+    "parameters": "void",
+    "entry_rva": 290416,
+    "end_rva": 290511,
+    "additional_ranges": [
+      [
+        290320,
+        290365
+      ]
+    ]
+  },
+  {
+    "name": "jv_tsd_dtoa_ctx_fini",
+    "operation": "dtoa_finalize",
+    "result": "void",
+    "parameters": "void",
+    "entry_rva": 290365,
+    "end_rva": 290416,
+    "additional_ranges": []
+  },
+  {
+    "name": "tsd_dtoa_context_get",
+    "operation": "dtoa_get",
+    "result": "struct dtoa_context *",
+    "parameters": "void",
+    "entry_rva": 290511,
+    "end_rva": 290672,
+    "additional_ranges": []
+  },
+  {
+    "name": "jvp_hash_seed",
+    "operation": "hash_seed",
+    "result": "uint32_t",
+    "parameters": "void",
+    "entry_rva": 156283,
+    "end_rva": 156315,
+    "additional_ranges": [
+      [
+        157702,
+        157854
+      ]
+    ]
+  }
+]

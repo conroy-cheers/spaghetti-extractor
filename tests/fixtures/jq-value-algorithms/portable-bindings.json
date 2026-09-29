@@ -1,0 +1,99 @@
+{
+  "value-algorithms": {
+    "assembly": {
+      "entries": {
+        "jv_has": [
+          "has"
+        ],
+        "jv_delpaths": [
+          "delete"
+        ],
+        "jv_keys": [
+          "keys"
+        ],
+        "jv_keys_unsorted": [
+          "keys_unsorted"
+        ],
+        "jv_cmp": [
+          "compare"
+        ],
+        "jv_sort": [
+          "sort"
+        ],
+        "jv_group": [
+          "group"
+        ],
+        "jv_unique": [
+          "unique"
+        ]
+      },
+      "sources": {
+        "entry.c": "portable-entry.c"
+      },
+      "headers": {},
+      "replacements": [
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_has"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_delpaths"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_keys"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_keys_unsorted"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_cmp"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_sort"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_group"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_unique"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_number_get_value_and_consume"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "parse_slice"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "jv_dels"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "delpaths_sorted"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "string_cmp"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "sort_cmp"
+        },
+        {
+          "file": "src/jv_aux.c",
+          "symbol": "sort_items"
+        }
+      ],
+      "lifetime": "Consumes owned jv references; retained aliases survive. Internal sort buffers and path recursion are private. Uses existing shared value/number/allocation providers, including decimal-number semantics. No process state or new heap representation."
+    }
+  }
+}

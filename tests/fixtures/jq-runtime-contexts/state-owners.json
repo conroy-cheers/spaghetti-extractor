@@ -1,0 +1,10 @@
+[
+  {
+    "id": "jq.numeric-contexts-and-seed",
+    "scope": "module-instance",
+    "sources": ["contexts.c"],
+    "thread_state": "runtime-managed",
+    "reset": "process-restart",
+    "lifetime": "One decimal key, dtoa key and seed once-state per selected jq runtime. All callers on a thread borrow the same live contexts and their mutable caches/status. Worker exit destroys that thread's objects; explicit finalization and atexit clear and release the current thread's objects. Seed initialization is shared across threads. pthread keys and once objects are never copied or reset by adapters."
+  }
+]
