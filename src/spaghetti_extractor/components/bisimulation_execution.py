@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from . import bisimulation_completion as completion
 from .bisimulation_support import (
     BisimulationRefinementError,
     strings as _strings,
     property_entry_function as _property_entry_function,
     property_query_order as _property_query_order,
     safety_property_groups,
-    ASSERTION_BATCH_STRATEGY, ASSERTION_SINGLE_STRATEGY, ASSERTION_QUERY_STRATEGIES, PACKED_SAFETY_STRATEGY, CUT_CONTROL_FIRST_STRATEGY,
+    SINGLE_ASSERTION_STRATEGIES, PACKED_SINGLE_STRATEGY, ASSERTION_QUERY_STRATEGIES, PACKED_SAFETY_STRATEGY, CUT_CONTROL_FIRST_STRATEGY,
 )
 from .bisimulation_diagnostics import ProofQueryTimings, timed_query
 from .bisimulation_query_evidence import CbmcQueryEvidence
@@ -231,6 +232,10 @@ def _run_partitioned_properties(
         from .cbmc_backend import validate_smt_solver_binding
         validate_smt_solver_binding(command["smt_solver"])
         expected_fields.add("smt_solver")
+    if "completion_assertion_arguments" in command:
+        expected_fields.add("completion_assertion_arguments")
+        if command["completion_assertion_arguments"] != completion.sat_arguments(command["assertion_arguments"]):
+            raise BisimulationRefinementError("completion lemma backend command differs")
     discovery_arguments = command.get("discovery_arguments")
     language_safety_discovery_arguments = command.get(
         "language_safety_discovery_arguments"
@@ -380,11 +385,16 @@ def _run_partitioned_properties(
             "output_sha256": str(inventory.get("output_sha256", "")),
         }
     queries: list[tuple[str, str | None, str, list[str]]] = []
+    if any(row["description"].startswith(completion.PREFIX) for row in assertion_inventory) and \
+            "completion_assertion_arguments" not in command:
+        raise BisimulationRefinementError("completion assertion omits its checked backend policy")
     scheduled_assertions = sorted(assertion_inventory,
         key=lambda assertion: _property_query_order(assertion, strategy=command["strategy"]))
     for assertion in scheduled_assertions:
         property_id = str(assertion["property_id"])
         entry_function = str(assertion["entry_function"])
+        selected_arguments = (command["completion_assertion_arguments"]
+            if assertion["description"].startswith(completion.PREFIX) else assertion_arguments)
         queries.append(
             (
                 "authored_assertion",
@@ -399,7 +409,7 @@ def _run_partitioned_properties(
                         else entry_function
                         if item == "$PROPERTY_FUNCTION"
                         else item
-                        for item in assertion_arguments
+                        for item in selected_arguments
                     ),
                 ],
             )
@@ -638,9 +648,11 @@ def _run_partitioned_properties(
                               row.get("status") == "satisfied" for row in receipts):
         queries = [(kind, requested, entry, [str(cbmc), str(goto_model), *[
             requested if item == "$PROPERTY_ID" else entry if item == "$PROPERTY_FUNCTION" else item
-            for item in entry_assertion_arguments]]) if entry == proof_function else
+            for item in (completion.sat_arguments(entry_assertion_arguments)
+                if any(row["property_id"] == requested and row["description"].startswith(completion.PREFIX)
+                       for row in assertion_inventory) else entry_assertion_arguments)]]) if entry == proof_function else
             (kind, requested, entry, query) for kind, requested, entry, query in queries]
-    batching = command['strategy'] in ASSERTION_QUERY_STRATEGIES and command['strategy'] != ASSERTION_SINGLE_STRATEGY
+    batching = command['strategy'] in ASSERTION_QUERY_STRATEGIES and command['strategy'] not in SINGLE_ASSERTION_STRATEGIES
     queries = _assertion_query_batches(queries, assertion_inventory, enabled=batching)
     offset = 0
     while failed is None and offset < len(queries):
@@ -1127,11 +1139,13 @@ def source_unwind_arguments(limit):
 
 
 def property_checker_command(authority_unwind_arguments, *, source_unwind_limit=None, smt_solver=None,
-                             application_first=False):
+                             application_first=False, completion_lemmas=False):
     """One command policy for production and retained regional checks."""
     from .cbmc_backend import solver_arguments
     if type(application_first) is not bool:
         raise BisimulationRefinementError("application-first scheduling must be Boolean")
+    if type(completion_lemmas) is not bool:
+        raise BisimulationRefinementError("completion-lemma scheduling must be Boolean")
     unwind, progress_arguments = source_unwind_arguments(source_unwind_limit)
     property_common_arguments = [
         "--json-ui",
@@ -1175,9 +1189,9 @@ def property_checker_command(authority_unwind_arguments, *, source_unwind_limit=
         "backend": "cbmc",
         "goto_model_role": "shared_partitioned_property_queries",
         # Word-level memory equalities can be cheap separately while their
-        # disjunction overwhelms SMT. Keep the already checked single-query
-        # strategy for this backend; SAT retains bounded authored batches.
-        "strategy": (ASSERTION_SINGLE_STRATEGY if smt_solver is not None else
+        # disjunction overwhelms SMT. Keep authored goals separate while
+        # packing safety IDs across helpers; SAT retains authored batches.
+        "strategy": (PACKED_SINGLE_STRATEGY if smt_solver is not None else
                      CUT_CONTROL_FIRST_STRATEGY if application_first else PACKED_SAFETY_STRATEGY),
         "maximum_parallel_queries": 4,
         "discovery_arguments": [
@@ -1289,4 +1303,7 @@ def property_checker_command(authority_unwind_arguments, *, source_unwind_limit=
             },
         ],
     }
+    if completion_lemmas:
+        property_checker_command["completion_assertion_arguments"] = completion.sat_arguments(
+            property_checker_command["assertion_arguments"])
     return property_checker_command

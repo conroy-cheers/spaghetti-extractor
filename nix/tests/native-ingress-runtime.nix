@@ -10,7 +10,7 @@ pkgs.runCommand "spaghetti-extractor-native-ingress-runtime-check" {
     context.pythonEnv
     compiler
     pkgs.wineWow64Packages.stableFull
-    pkgs.xvfb-run
+    context.tools.headlessWayland
   ];
   __contentAddressed = true;
 } ''
@@ -27,13 +27,19 @@ pkgs.runCommand "spaghetti-extractor-native-ingress-runtime-check" {
   export WINEPREFIX="$TMPDIR/wine-prefix"
   export WINEDEBUG=-all
   export WINEDLLOVERRIDES="mscoree,mshtml="
-  xvfb-run -a wineboot -u >/dev/null 2>&1
-  timeout 90 xvfb-run -a wine ./native-ingress-runtime.exe >runtime.log 2>&1 || {
+  spaghetti-headless-wayland ${pkgs.bash}/bin/bash -eu -c '
+    wineboot -u >/dev/null 2>&1
+    set +e
+    timeout 90 wine ./native-ingress-runtime.exe
+    status=$?
+    set -e
+    wineserver -w >/dev/null 2>&1 || true
+    exit "$status"
+  ' >runtime.log 2>&1 || {
     status=$?
     cat runtime.log >&2
     exit "$status"
   }
-  wineserver -w >/dev/null 2>&1 || true
   grep -F 'native ingress runtime acceptance: pass' runtime.log
   mkdir -p "$out"
   cp runtime.log "$out/"

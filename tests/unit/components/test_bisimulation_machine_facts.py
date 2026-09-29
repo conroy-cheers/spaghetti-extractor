@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -176,7 +176,7 @@ void main(void) {
             if mutation != 'none':
                 with self.subTest(reader='python', mutation=mutation), self.assertRaises(ValueError):
                     validate_machine_fact_model(plan, segment)
-            result = subprocess.run([shutil.which('jq'), '-e', program+'\nspx_cut_capture_codecs'],
+            result = run_jq_reader([shutil.which('jq'), '-e', program+'\nspx_cut_capture_codecs'],
                 input=json.dumps(value), text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0 if mutation == 'none' else 1, (mutation, result.stderr))
 
@@ -219,6 +219,6 @@ void main(void) {
             elif mutation != "none":
                 name = "spx-bisimulation-derived:cut:target" if mutation == "fact" else "spx-bisimulation-exact-" + mutation
                 segment["required_assertion_descriptions"].remove(name)
-            result = subprocess.run([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
+            result = run_jq_reader([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
                 input=json.dumps(value), text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0 if mutation == "none" else 1, (mutation, result.stderr))

@@ -19,14 +19,8 @@ def require(condition, detail):
         raise ValueError('caller contract: ' + detail)
 
 
-def checked_call_domain(transition, projection, contract):
-    """Return model inputs only after the supplying transition was validated."""
-    require(set(contract) == {'region_index', 'entry_rva', 'instruction_rva', 'return_rva',
-            'stack_delta', 'stack_words', 'private_stack', 'service_id', 'result_reference'}, 'fields differ')
-    for key in ('region_index', 'entry_rva', 'instruction_rva', 'return_rva'):
-        require(type(contract[key]) is int and 0 <= contract[key] < 2**32, 'invalid ' + key)
-    require(projection['service_id'] == contract['service_id'] and len(projection['arguments']) == 1,
-            'source service/argument binding differs')
+def checked_borrowed_domain(transition):
+    """Interpret an already validated fixed-image transition for either caller rule."""
     require(transition['authorizing'] is False and transition['runtime_compatibility'] == 'unverified'
             and transition['domain_sha256'] == canonical_sha256_v3(transition['domain']), 'unbound conditional transition')
     domain = transition['domain']
@@ -51,7 +45,24 @@ def checked_call_domain(transition, projection, contract):
     md = domain['machine_domain']
     accesses, writes = parse_stack_writes(md['private_accesses']), parse_stack_writes(md['private_writes'])
     clobbers = parse_clobbers(md['clobbers'])
+    return {'bundle':bundle,'operation':operation,'views':views,'alias':alias,
+            'address':address,'extent':extent,'accesses':accesses,'writes':writes,'clobbers':clobbers}
+
+
+def checked_call_domain(transition, projection, contract):
+    """Return model inputs only after the supplying transition was validated."""
+    require(set(contract) == {'region_index', 'entry_rva', 'instruction_rva', 'return_rva',
+            'stack_delta', 'stack_words', 'private_stack', 'service_id', 'result_reference'}, 'fields differ')
+    for key in ('region_index', 'entry_rva', 'instruction_rva', 'return_rva'):
+        require(type(contract[key]) is int and 0 <= contract[key] < 2**32, 'invalid ' + key)
+    require(projection['service_id'] == contract['service_id'] and len(projection['arguments']) == 1,
+            'source service/argument binding differs')
+    shared = checked_borrowed_domain(transition)
+    operation,views = shared['operation'],shared['views']
+    address,extent = shared['address'],shared['extent']
+    accesses,writes,clobbers = shared['accesses'],shared['writes'],shared['clobbers']
     require(set(clobbers) <= {'cf','df','ecx','edx','eflags','of','pf','sf','zf'}, 'supplier destroys caller continuation storage')
+    md = transition['domain']['machine_domain']
     delta = contract['stack_delta']
     require(type(delta) is int and -256 <= delta <= 0, 'invalid caller stack delta')
     words = contract['stack_words']

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import json
 import os
@@ -32,7 +33,7 @@ def safe_package_file(root: Path, relative: object, context: str) -> Path:
 def component_start_plan(
     *, component_id: str, package: Mapping[str, Any], target_path: str,
 ) -> dict[str, Any]:
-    return {
+    plan = {
         "authority": False,
         "kind": "component-start-plan-v1",
         "component_id": component_id,
@@ -55,6 +56,31 @@ def component_start_plan(
             "before the default component check"
         ),
     }
+    editing_inputs = package.get('requirements', {}).get('editing_inputs')
+    if editing_inputs is not None:
+        plan['editing_inputs'] = sorted(name + '.json' for name in editing_inputs)
+        plan['next_action'] = (
+            'edit the canonical interface/binding/cutpoint inputs and ordinary C; '
+            'boundary adopt --input DIR --output DIR normalizes a draft, or --apply updates configured declarations; '
+            'install reviewed C in the reported target source files; '
+            'check changed contracts and state transport before qualification')
+    definition = package.get("requirements", {}).get("caller_definition")
+    if definition is not None:
+        plan["caller_definition"] = {
+            "package_path": "caller-contract.json",
+            "status": "declared",
+            **({"suppliers": copy.deepcopy(definition['suppliers'])} if 'suppliers' in definition else {
+                "supplier_service_id": definition["service_id"],
+                "requested_frame_facts": definition["required_frame"]}),
+            "runtime_assumptions": definition["runtime_contracts"],
+            "authorizes_activation": False,
+        }
+        plan["next_action"] = (
+            "edit caller-contract.json and ordinary C; retain the declared scope and "
+            "review supplier facts and runtime assumptions, then run component check "
+            "--source --local-contracts; local success does not authorize activation"
+        )
+    return plan
 
 
 def copy_component_start_package(
@@ -80,6 +106,9 @@ def copy_component_start_package(
     (output / "component-start-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    from ..operator.source_guidance import write_authoring_guidance
+
+    write_authoring_guidance(output)
     for path in [output, *output.rglob("*")]:
         mode = path.stat().st_mode
         path.chmod(mode | stat.S_IWUSR | (stat.S_IXUSR if path.is_dir() else 0))
@@ -112,6 +141,25 @@ def component_authoring_paths(
     if source_path.exists() and not source_path.is_dir():
         raise ValueError(f"component source root is not a directory: {source_path}")
     return bundle, intent_path, source_path
+
+
+def adopt_caller_definition(*, draft: Path, package: Mapping[str, Any], output: Path) -> None:
+    """Export edited declaration data against the current package, without proof."""
+    from ..components.work_package_v6 import ComponentWorkPackageV6, caller_definition_text
+
+    baseline = ComponentWorkPackageV6.parse(json.loads(safe_package_file(
+        draft, "component-work-package-v6.json", "caller editing baseline").read_text()))
+    if baseline.identity != package["work_package_sha256"]:
+        raise ValueError("caller editing baseline is stale; propose a current work package before adopting")
+    candidate = copy.deepcopy(dict(package))
+    candidate["requirements"]["caller_definition"] = json.loads(safe_package_file(
+        draft, "caller-contract.json", "edited caller definition").read_text())
+    text = caller_definition_text(candidate)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".caller-adopt-", dir=output.parent) as temporary:
+        staged = Path(temporary) / "caller-contract.json"
+        staged.write_text(text, encoding="utf-8")
+        os.replace(staged, output)
 
 
 def _started_component_intent(

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +20,7 @@ TESTKIT = {"fixtures": ("cbmc", "compiler", "jq"),
            "resources": ("nix/jq/strong-contextual-proof.jq",)}
 
 
-def _cut_intent() -> ComponentBisimulationIntentV1:
+def _cut_intent(*, flag=False) -> ComponentBisimulationIntentV1:
     return ComponentBisimulationIntentV1.create(
         component_id="counter",
         operations=[{
@@ -35,7 +35,12 @@ def _cut_intent() -> ComponentBisimulationIntentV1:
                     "encoding": {"op": "state_input", "name": "n"},
                     "decoding": {"op": "projected_value"},
                 }],
-                "derived": [],
+                "derived": ([{'id': 'carry', 'projection': {'kind': 'flag', 'flag': 'cf', 'at': 'entry'},
+                    'expression': {'op': 'ite', 'args': [
+                        {'op': 'eq', 'args': [{'op': 'state_input', 'name': 'n'},
+                                             {'op': 'const', 'width': 32, 'value': 42}]},
+                        {'op': 'const', 'width': 32, 'value': 1},
+                        {'op': 'const', 'width': 32, 'value': 0}]}}] if flag else []),
             }],
         }],
     )
@@ -43,7 +48,7 @@ def _cut_intent() -> ComponentBisimulationIntentV1:
 
 class CutpointMemoryTests(unittest.TestCase):
     def _check(self, writes: str, *, connected_match: bool = True,
-               erase_allocation_guard: bool = False) -> dict[str, object]:
+               erase_allocation_guard: bool = False, flag=False) -> dict[str, object]:
         cbmc = shutil.which("cbmc")
         if cbmc is None:
             self.skipTest("CBMC is unavailable")
@@ -52,7 +57,7 @@ class CutpointMemoryTests(unittest.TestCase):
             _write_cbmc_stdint(root / "stdint.h")
             (root / "state-machine-runtime.h").write_text(exact_runtime_header())
             header = _render_proof_header(
-                authored=_cut_intent().operations[0], image_base=0x400000,
+                authored=_cut_intent(flag=flag).operations[0], image_base=0x400000,
                 active_target_sync_ids={"cut"},
             )
             if erase_allocation_guard:
@@ -128,6 +133,26 @@ void main(void) {
         self.assertIn("spx-bisimulation-world-connected-calls:cut", descriptions)
         self.assertIn("spx-bisimulation-allocation-cut-admission:cut", descriptions)
 
+    def test_condition_flag_transport_is_checked_without_masking_bad_bits(self):
+        for value, expected in ((1, 'satisfied'), (0, 'violated'), (3, 'violated')):
+            with self.subTest(value=value):
+                result = self._check(f'spx_proof_exact_output.cf = {value}U;', flag=True)
+                self.assertEqual(result['status'], expected, result)
+                if expected == 'violated':
+                    self.assertEqual(result['detail'], 'spx-bisimulation-derived:cut:carry')
+        descriptions = _required_assertion_descriptions(
+            authored=_cut_intent(flag=True).operations[0], proof_function='check_entry',
+            active_start_sync_id=None, next_sync_ids={'cut'},
+            logical_projection={'results': [], 'state': []}, continuous_acyclic=False,
+            typed_call_positions=())
+        self.assertIn('spx-bisimulation-derived:cut:carry', descriptions)
+
+    def test_flag_projection_rejects_unknown_flags_widths_and_phases(self):
+        from spaghetti_extractor.components.machine_binding import MachineProjectionV1
+        for change in ({'flag': 'af'}, {'flag': 'eax'}, {'width': 1}, {'at': 'before'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                MachineProjectionV1.parse({'kind': 'flag', 'flag': 'cf', 'at': 'entry', **change})
+
     def test_equal_live_or_retired_histories_cannot_be_erased_by_a_cut(self) -> None:
         for released in (False, True):
             body = ""
@@ -176,6 +201,6 @@ void main(void) {
         for present in (True, False):
             if not present:
                 model["required_assertion_descriptions"].remove("spx-bisimulation-allocation-cut-admission:cut")
-            result = subprocess.run([jq, "-e", program + "\nspx_cut_capture_codecs"],
+            result = run_jq_reader([jq, "-e", program + "\nspx_cut_capture_codecs"],
                 input=json.dumps(payload), capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0 if present else 1, result.stderr)

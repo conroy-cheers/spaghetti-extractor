@@ -65,6 +65,7 @@ OPERATOR_COMMANDS = (
     "component start",
     "component check",
     "boundary status",
+    "boundary inventory",
     "boundary inspect",
     "boundary propose",
     "boundary adopt",
@@ -75,60 +76,14 @@ OPERATOR_COMMANDS = (
     "library check",
     "candidate list",
     "candidate status",
+    "candidate policy",
     "candidate build",
+    "candidate export",
     "candidate test",
 )
 
 
-def _operator_status(
-    subject: str,
-    *,
-    state: str = "complete",
-    authority: str = "not-applicable",
-    blockers: list[dict[str, object]] | None = None,
-) -> dict[str, object]:
-    groups = [] if blockers is None else blockers
-    count = sum(int(row["count"]) for row in groups)
-    return {
-        "format": "spaghetti-extractor-operator-work-status-v2",
-        "target_id": "gnu-hello",
-        "scope": "test",
-        "status": state,
-        "counts": {
-            "subjects": 1,
-            "complete": int(state == "complete"),
-            "incomplete": int(state == "incomplete"),
-            "violated": int(state == "violated"),
-            "authority_held": int(authority == "held"),
-            "blockers": count,
-        },
-        "subjects": [{
-            "subject": subject,
-            "kind": subject.split(":", 1)[0],
-            "state": state,
-            "authority": authority,
-            "stage": None,
-            "sources": [],
-            "blockers": {"count": count, "groups": groups},
-            "next_action": None,
-        }],
-    }
-
-
-def _subcommands(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
-    return next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-
-
-def _command_parser(
-    parser: argparse.ArgumentParser, command: str
-) -> argparse.ArgumentParser:
-    namespace, name = command.split(" ", 1)
-    return _subcommands(_subcommands(parser).choices[namespace]).choices[name]
-
+from .public_command_fixture import _operator_status, _subcommands, _command_parser
 
 class PublicCliTests(unittest.TestCase):
     def test_cli_index_keeps_role_roots_out_of_dispatcher_closure(self) -> None:
@@ -397,6 +352,37 @@ raise SystemExit("eager domain codecs: " + repr(loaded) if loaded else 0)
         self.assertEqual(
             realize.call_args.args[1], 'components.units."leaf".qualification'
         )
+
+    def test_complete_check_reuses_evidence_without_a_region_selection(self) -> None:
+        index = {'components': {'units': {'leaf': {'products': ['proofCheckFor']}}}}
+        qualification = SimpleNamespace(provider_id='fixture.leaf.portable-c',
+                                        payload={'status': 'complete', 'blockers': []})
+        retained = '/nix/store/' + 'a'*32 + '-proof'
+        arguments = ['component', 'check', 'fixture', 'leaf', '--reuse-proof', '/retained',
+                     '--query-timeout', '30', '--json']
+        with patch('spaghetti_extractor.commands.workflows._operator_index', return_value=index), patch(
+                'spaghetti_extractor.operator.proof_check.retain_component_proof', return_value=retained) as retain, patch(
+                'spaghetti_extractor.commands.workflows._realize_artifact',
+                return_value=(Path('/tmp/qualification.json'), {})) as realize, patch(
+                'spaghetti_extractor.semantic_providers.qualification_v2.SemanticProviderQualificationV2.parse',
+                return_value=qualification):
+            for status, expected in [('complete', 0), ('incomplete', 1)]:
+                qualification.payload['status'] = status
+                with self.subTest(status=status), contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(main(arguments), expected)
+                    self.assertEqual(json.loads(output.getvalue())['status'], status)
+                self.assertEqual(realize.call_args.args[2], 'semantic-provider-qualification.json')
+                self.assertEqual(realize.call_args.kwargs['apply_arguments'], {
+                    'obligations': None, 'queryTimeoutSeconds': 30, 'previousQueryEvidencePath': retained})
+                self.assertEqual(retain.call_args.kwargs['component_id'], 'leaf')
+            qualification.provider_id = 'fixture.foreign.portable-c'
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(arguments), 2)
+        for flags in (['--source'], ['--conditional'], ['--local-contracts'], ['--comparison-package', '/fixture']):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()), patch(
+                    'spaghetti_extractor.commands.workflows._operator_index') as discover:
+                self.assertEqual(main(arguments + flags), 2)
+                discover.assert_not_called()
 
     def test_boundary_adopt_directs_components_to_component_start(self) -> None:
         with patch(
@@ -802,120 +788,6 @@ raise SystemExit("eager domain codecs: " + repr(loaded) if loaded else 0)
             with self.assertRaisesRegex(SystemExit, "2"):
                 main(["component", "build", "fixture"])
 
-    def test_candidate_test_without_declared_suites_is_a_usage_error(self) -> None:
-        index = {
-            "defaultConfiguration": "default",
-            "candidate": {"configurations": {"default": {}}, "testSuites": {}},
-        }
-        with patch(
-            "spaghetti_extractor.commands.workflows._operator_index",
-            return_value=index,
-        ), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["candidate", "test", "gnu-hello"]), 2)
-
-    def test_candidate_list_reports_configurations_and_test_suites(self) -> None:
-        index = {
-            "defaultConfiguration": "default",
-            "candidate": {
-                "configurations": {
-                    "default": {"mode": "hybrid"},
-                    "minimal": {"mode": "portable"},
-                },
-                "testSuites": {
-                    "public": {"configurationId": "default"},
-                },
-            },
-        }
-        output = io.StringIO()
-        with patch(
-            "spaghetti_extractor.commands.workflows._operator_index",
-            return_value=index,
-        ), contextlib.redirect_stdout(output):
-            self.assertEqual(main(["candidate", "list", "gnu-hello"]), 0)
-        self.assertIn("default", output.getvalue())
-        self.assertIn("tests=public", output.getvalue())
-        self.assertIn("minimal", output.getvalue())
-
-    def test_candidate_status_selects_one_configuration_progress_report(self) -> None:
-        report = _operator_status("configuration:gnu-hello:minimal")
-        index = {
-            "defaultConfiguration": "default",
-            "candidate": {
-                "configurations": {
-                    "default": {"mode": "hybrid"},
-                    "minimal": {"mode": "portable"},
-                },
-            },
-        }
-        output = io.StringIO()
-        with patch(
-            "spaghetti_extractor.commands.workflows._operator_index",
-            return_value=index,
-        ), patch(
-            "spaghetti_extractor.commands.workflows._realize_artifact",
-            return_value=(Path("/tmp/selection"), {"ready_for_realization": True}),
-        ) as realize, contextlib.redirect_stdout(output):
-            with patch(
-                "spaghetti_extractor.commands.workflows.project_candidate_selection",
-                return_value=({
-                    **report,
-                    "provider_coverage": {
-                        "portable_progress": "partial",
-                        "fallback_free": False,
-                        "definitions": {
-                            "selected": 3,
-                            "by_kind": {
-                                "qualified_portable_c": 1,
-                                "generated_behavioral_c": 2,
-                                "external_environment": 0,
-                                "qualified_runtime": 0,
-                                "pinned_binary": 0,
-                            },
-                        },
-                    },
-                }, []),
-            ):
-                self.assertEqual(
-                    main([
-                        "candidate", "status", "gnu-hello",
-                        "--configuration", "minimal",
-                    ]),
-                    0,
-                )
-        self.assertEqual(
-            realize.call_args.args[1],
-            'candidate.configurations."minimal".selection',
-        )
-        self.assertEqual(realize.call_args.args[2], "implementation-selection.json")
-        self.assertIn("realization-ready=true", output.getvalue())
-        self.assertIn("exact-selection=complete", output.getvalue())
-        self.assertIn("portable-progress=partial", output.getvalue())
-        self.assertIn("fallback-free=false", output.getvalue())
-        self.assertIn("portable-c=1", output.getvalue())
-        self.assertIn("generated-c=2", output.getvalue())
-
-    def test_candidate_status_uses_the_indexed_default_selection(self) -> None:
-        report = _operator_status("configuration:gnu-hello:default")
-        index = {
-            "defaultConfiguration": "default",
-            "candidate": {"configurations": {"default": {"mode": "hybrid"}}},
-        }
-        with patch(
-            "spaghetti_extractor.commands.workflows._operator_index",
-            return_value=index,
-        ), patch(
-            "spaghetti_extractor.commands.workflows._realize_artifact",
-            return_value=(Path("/tmp/selection"), {"ready_for_realization": True}),
-        ) as realize, contextlib.redirect_stdout(io.StringIO()):
-            with patch(
-                "spaghetti_extractor.commands.workflows.project_candidate_selection",
-                return_value=(report, []),
-            ):
-                self.assertEqual(main(["candidate", "status", "gnu-hello"]), 0)
-        self.assertEqual(
-            realize.call_args.args[1],
-            'candidate.configurations."default".selection',
-        )
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
         index = {

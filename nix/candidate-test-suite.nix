@@ -20,6 +20,7 @@ let
   suiteId = suitePayload.suite_id or null;
   caseIds = map (row: row.id) suitePayload.cases;
   wine = pkgs.wineWow64Packages.stableFull;
+  headlessWayland = import ./headless-wayland.nix { inherit pkgs; };
   executionGate = import ./ca-json-receipt-gate.nix {
     inherit pkgs pythonEnv;
     name = "${namePrefix}-${id}-native-realization-execution-gate";
@@ -63,7 +64,7 @@ let
   '';
   runner = pkgs.writeShellApplication {
     name = "spaghetti-extractor-headless-wine-candidate";
-    runtimeInputs = [ wine pkgs.xvfb-run pkgs.coreutils pkgs.bash ];
+    runtimeInputs = [ wine headlessWayland pkgs.coreutils pkgs.bash ];
     text = ''
       set -euo pipefail
       export HOME="$TMPDIR/home"
@@ -76,7 +77,7 @@ let
       chmod -R u+w "$work"
       cd "$work"
       # shellcheck disable=SC2016
-      exec xvfb-run -a -s '-screen 0 1280x720x24' ${pkgs.bash}/bin/bash -eu -c '
+      exec spaghetti-headless-wayland ${pkgs.bash}/bin/bash -eu -c '
         wineboot -u >/dev/null 2>&1
         set +e
         wine "$1" "''${@:2}"

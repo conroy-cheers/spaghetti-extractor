@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -122,6 +122,6 @@ class TerminatedWriteTests(unittest.TestCase):
                         checked_terminated_write(payload, argument_words=4)
                     with self.assertRaises(ValueError):
                         _proof_call_specs([{**binding(), 'external_effect_contract': payload}])
-                result = subprocess.run([shutil.which('jq'), program_text + '\nspx_terminated_write_effect(4)'],
+                result = run_jq_reader([shutil.which('jq'), program_text + '\nspx_terminated_write_effect(4)'],
                     input=json.dumps(payload), text=True, capture_output=True, check=True, timeout=10)
                 self.assertEqual(json.loads(result.stdout), mutation is None)

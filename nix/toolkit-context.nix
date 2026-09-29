@@ -130,13 +130,14 @@ let
     bochsRunner =
       "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
   };
+  headlessWayland = import ./headless-wayland.nix { inherit pkgs; };
   headlessWine = pkgs.writeShellApplication {
     name = "spaghetti-headless-wine";
-    runtimeInputs = [ pkgs.wineWow64Packages.stableFull pkgs.xvfb-run ];
+    runtimeInputs = [ pkgs.wineWow64Packages.stableFull headlessWayland ];
     text = ''
       export WINEPREFIX="''${WINEPREFIX:-$TMPDIR/spaghetti-wine}"
       export WINEDEBUG="''${WINEDEBUG:--all}"
-      exec xvfb-run -a -s '-screen 0 1024x768x24' wine "$@"
+      exec spaghetti-headless-wayland wine "$@"
     '';
   };
   minimalImportCall = pkgs.runCommand "spaghetti-pe32-minimal-import-call" {
@@ -177,7 +178,8 @@ let
     };
     headless-wine = {
       path = headlessWine;
-      nativeBuildInputs = [ headlessWine ];
+      # Runtime lifecycle tests own several private prefixes inside one desktop.
+      nativeBuildInputs = [ headlessWine headlessWayland pkgs.wineWow64Packages.stableFull ];
     };
     jq = {
       path = pkgs.jq;
@@ -194,6 +196,22 @@ let
     };
     pe32-minimal-import-call = {
       path = minimalImportCall;
+    };
+    terminal-screen = {
+      path = pkgs.stdenv.mkDerivation {
+        pname = "spaghetti-terminal-screen";
+        version = "1";
+        dontUnpack = true;
+        buildInputs = [ pkgs.libvterm-neovim ];
+        buildPhase = ''
+          $CC -std=c11 -O2 -Wall -Wextra -Werror \
+            ${../tests/fixtures/portable-runtime/terminal-screen.c} -lvterm -o terminal-screen
+        '';
+        installPhase = ''
+          mkdir -p "$out/bin"
+          cp terminal-screen "$out/bin/terminal-screen"
+        '';
+      };
     };
     z3 = {
       path = pkgs.z3;
@@ -228,7 +246,7 @@ in
     inherit qualifiedPlatform;
   };
   tools = {
-    inherit bochsConformance headlessWine minimalImportCall;
+    inherit bochsConformance headlessWine headlessWayland minimalImportCall;
     bochsRunner = "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
   };
 }

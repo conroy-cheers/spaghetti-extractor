@@ -36,6 +36,25 @@ effect metadata, but those remain separate from its physical profile.
 `catalogPack.abiDeclarationSpec` is the concise authored input; Nix converts it
 to the canonical declaration set in its own content-addressed derivation.
 
+Header-derived machine-import profiles contain physical declarations only.
+`sdk.environment.nativeCallthroughProfile { abiProfile = ...; effectProfile = ...; }`
+combines them with an explicitly authored static machine-import profile V2 using
+the existing `exact_native_dll_callthrough_v1` rule. Each selected effect entry
+must agree with the header's calling convention, physical word arity and result
+register relations. The composition preserves and rechecks the canonical boundary,
+including hidden aggregate return transport, and binds both input profiles.
+Unselected imports remain ABI-only. Changing an effect contract changes the
+resulting binding even when the C signature is unchanged.
+
+This constructor does not infer effects from pointer types or prove a DLL body.
+The call-through contract explicitly requires the same pinned DLL implementation,
+exact machine arguments and direct use of the candidate address space; ordinary
+provider/native admission must still establish those prerequisites. The jq
+output pilot uses this path for `jv_copy` and `jv_dumpf`. The original DLL retains
+their heap, resource and output behavior; the authored component calls those
+services and transports the returned value. This is neither a portable libjq
+implementation nor a checked summary of libjq's internal heap algorithms.
+
 ## Function and call-site boundaries
 
 Machine units are not presumed to be procedures. A linked-library function

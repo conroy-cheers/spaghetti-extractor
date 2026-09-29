@@ -1,8 +1,8 @@
 """Body-free current-memory export, replay and current lifetime consumers."""
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,7 +45,7 @@ class SharedCurrentMemorySummaryTests(unittest.TestCase):
                 if mutation == 'read-only':
                     next(s for s in interface['state'] if s['value']['id'] == 'buffer')['value']['access'] = 'read'
                 payload = {'interface':interface, 'binding':bound, 'expression':expression if memory else expression['args'][0]}
-                p = subprocess.run([shutil.which('jq'), '-L', 'nix/jq',
+                p = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq',
                     'include "strong-contextual-proof"; . as $input | .expression | spx_shared_result_binding($input.interface; $input.binding)'],
                     input=json.dumps(payload), capture_output=True, text=True, check=True, timeout=10)
                 with self.subTest(memory=memory, mutation=mutation):

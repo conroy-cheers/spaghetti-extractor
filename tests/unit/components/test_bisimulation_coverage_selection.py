@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -49,7 +50,7 @@ class CoverageSelectionTests(unittest.TestCase):
                     args[index + 1] += ",spx_proof_authority_unknown.0:99"
                 elif mutation == "changed_capacity":
                     operation["maximum_input_allocations"] += 1
-                result = subprocess.run([shutil.which("jq"), "-e",
+                result = run_jq_reader([shutil.which("jq"), "-e",
                     module.read_text() + "\nspx_reference_unwind_commands"],
                     input=json.dumps(changed), capture_output=True, text=True, timeout=30)
                 with self.subTest(calls=calls, inputs=inputs, mutation=mutation):
@@ -119,7 +120,7 @@ int main(void) {
             elif mutation == "unselected":
                 changed["witness_functions"].append("absent")
             proof = {"models": {"operation_models": [{"obligation_models": [changed]}]}}
-            result = subprocess.run([shutil.which("jq"), "-e",
+            result = run_jq_reader([shutil.which("jq"), "-e",
                 module.read_text() + "\nspx_nonvacuity_goal_selection"],
                 input=json.dumps(proof), capture_output=True, text=True, timeout=30)
             with self.subTest(mutation=mutation):

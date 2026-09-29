@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ from spaghetti_extractor.components.bisimulation_execution import (
 )
 from spaghetti_extractor.components.bisimulation_support import (
     ASSERTION_BATCH_STRATEGY, ASSERTION_SINGLE_STRATEGY, PACKED_SAFETY_STRATEGY, APPLICATION_FIRST_STRATEGY, assertion_policy_option,
-    CUT_CONTROL_FIRST_STRATEGY, authored_query_ids, property_query_order,
+    CUT_CONTROL_FIRST_STRATEGY, PACKED_SINGLE_STRATEGY, SINGLE_ASSERTION_STRATEGIES, authored_query_ids, property_query_order,
 )
 from spaghetti_extractor.components.cbmc_backend import run_cbmc_properties
 from spaghetti_extractor.components.bisimulation_refinement import check_bisimulation_refinement
@@ -32,7 +33,7 @@ TESTKIT = {'fixtures': ('cbmc', 'compiler', 'jq'),
 class AssertionBatchTests(unittest.TestCase):
     def reader(self, evidence, expression='spx_selected_authored_queries'):
         module = Path(__file__).resolve().parents[3] / TESTKIT['resources'][0]
-        result = subprocess.run([shutil.which('jq'), '-e', module.read_text() + '\n' + expression],
+        result = run_jq_reader([shutil.which('jq'), '-e', module.read_text() + '\n' + expression],
             input=json.dumps(evidence), text=True, capture_output=True, timeout=10)
         self.assertIn(result.returncode, (0, 1), result.stderr)
         return result.returncode == 0
@@ -72,7 +73,7 @@ class AssertionBatchTests(unittest.TestCase):
                        'source_function': identity.split('.')[0], 'entry_function': 'proof'}
                       for identity, description in pairs]
         for strategy in (ASSERTION_SINGLE_STRATEGY, ASSERTION_BATCH_STRATEGY,
-                         PACKED_SAFETY_STRATEGY, APPLICATION_FIRST_STRATEGY):
+                         PACKED_SAFETY_STRATEGY, APPLICATION_FIRST_STRATEGY, PACKED_SINGLE_STRATEGY):
             ordered = sorted(assertions, key=lambda row: property_query_order(row, strategy=strategy))
             first = 'proof.assertion.1' if strategy == APPLICATION_FIRST_STRATEGY else 'cleanup.assertion.1'
             self.assertEqual(ordered[0]['property_id'], first)
@@ -80,7 +81,7 @@ class AssertionBatchTests(unittest.TestCase):
             for row in ordered:
                 query = {'kind': 'authored_assertion', 'entry_function': 'proof', 'status': 'satisfied',
                          'code': 'cbmc_properties_satisfied', 'properties': 1, 'output_sha256': 'a' * 64}
-                query.update({'property_id': row['property_id']} if strategy == ASSERTION_SINGLE_STRATEGY
+                query.update({'property_id': row['property_id']} if strategy in SINGLE_ASSERTION_STRATEGIES
                              else {'property_ids': [row['property_id']]})
                 queries.append(query)
             evidence = {'strategy': strategy, 'assertions': assertions, 'queries': queries}
@@ -221,7 +222,7 @@ class AssertionBatchTests(unittest.TestCase):
             {a['property_id']: a for a in assertions}) for row in legacy['queries']))
 
     def test_policy_is_uniform_and_keeps_legacy_receipts_valid(self):
-        for strategies in ([ASSERTION_SINGLE_STRATEGY], [ASSERTION_BATCH_STRATEGY], [PACKED_SAFETY_STRATEGY], [APPLICATION_FIRST_STRATEGY], [CUT_CONTROL_FIRST_STRATEGY],
+        for strategies in ([PACKED_SINGLE_STRATEGY], [PACKED_SINGLE_STRATEGY, ASSERTION_SINGLE_STRATEGY], [ASSERTION_SINGLE_STRATEGY], [ASSERTION_BATCH_STRATEGY], [PACKED_SAFETY_STRATEGY], [APPLICATION_FIRST_STRATEGY], [CUT_CONTROL_FIRST_STRATEGY],
                            [ASSERTION_BATCH_STRATEGY, PACKED_SAFETY_STRATEGY],
                            [ASSERTION_SINGLE_STRATEGY, ASSERTION_BATCH_STRATEGY], ['unknown'], []):
             models = {'operation_models': [{'obligation_models': [
@@ -230,6 +231,31 @@ class AssertionBatchTests(unittest.TestCase):
             self.assertEqual(option is not None, len(strategies) == 1 and strategies[0] != 'unknown')
             self.assertTrue(self.reader({'models': models, 'expected': option},
                                        'spx_assertion_option == .expected'))
+
+    def test_packed_safety_single_assertions_reject_forged_selection(self):
+        assertions = [{'property_id': f'body.assertion.{i}', 'description': f'goal {i}',
+                       'source_function': 'body', 'entry_function': 'paired'} for i in range(2)]
+        evidence = {'strategy': PACKED_SINGLE_STRATEGY, 'assertions': assertions,
+                    'queries': [{'kind': 'authored_assertion', 'property_id': row['property_id'],
+                                 'entry_function': 'paired', 'status': 'satisfied',
+                                 'code': 'cbmc_properties_satisfied', 'properties': 1,
+                                 'output_sha256': 'a' * 64} for row in assertions]}
+        for mutation in (None, 'omit', 'duplicate', 'foreign', 'entry', 'count', 'batch'):
+            changed = copy.deepcopy(evidence)
+            queries = changed['queries']
+            if mutation == 'omit': queries.pop()
+            elif mutation == 'duplicate': queries.append(copy.deepcopy(queries[0]))
+            elif mutation == 'foreign': queries[0]['property_id'] = 'foreign.assertion.1'
+            elif mutation == 'entry': queries[0]['entry_function'] = 'other'
+            elif mutation == 'count': queries[0]['properties'] = 2
+            elif mutation == 'batch': queries[0]['property_ids'] = [queries[0].pop('property_id')]
+            index = {row['property_id']: row for row in assertions}
+            selected = [authored_query_ids(row, PACKED_SINGLE_STRATEGY, index) for row in queries]
+            accepted = (all(row is not None for row in selected) and
+                        [identity for row in selected for identity in row] == list(index))
+            with self.subTest(mutation=mutation):
+                self.assertEqual(accepted, mutation is None)
+                self.assertEqual(self.reader(changed), mutation is None)
 
     def test_real_grouped_checker_covers_all_goals_and_rejects_wrong_source(self):
         for case in ('valid', 'wrong_source', 'omitted_result'):

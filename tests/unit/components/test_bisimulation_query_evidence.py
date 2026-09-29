@@ -366,6 +366,40 @@ void other(void) { __CPROVER_assert(0, "other"); }
 
 
 class ProofWorkspaceTests(unittest.TestCase):
+    def test_incomplete_nonvacuity_reruns_unpublished_property_processes(self):
+        from spaghetti_extractor.components.bisimulation_refinement import check_bisimulation_refinement
+        from spaghetti_extractor.components.bisimulation_query_evidence import previous_proof_queries
+        from tests.unit.components import test_bisimulation_normal_exits as fixture
+
+        captured = {}
+        def check(**kwargs):
+            captured.update(kwargs)
+            return check_bisimulation_refinement(**kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # Compile and check real properties, but model a coverage timeout.
+            # The ordinary receipt publishes coverage only in this case.
+            with patch.object(fixture, 'check_bisimulation_refinement', side_effect=check), patch(
+                    'spaghetti_extractor.components.bisimulation_execution.run_cbmc_cover',
+                    return_value={'status': 'incomplete', 'code': 'cbmc_nonvacuity_timeout',
+                                  'output_sha256': 'a' * 64}):
+                result = fixture.check_normal_exit(root, cbmc=Path(shutil.which('cbmc')))
+            self.assertEqual(result['status'], 'incomplete')
+            previous = previous_proof_queries(root)
+            self.assertTrue(previous)
+            self.assertTrue(all(row['coverage_only'] for row in previous.values()))
+            retained = list((root / 'diagnostics').rglob('query.json'))
+            self.assertTrue(retained, 'completed but unpublished processes must exist')
+
+            rerun = check_bisimulation_refinement(**{**captured,
+                'previous_query_evidence': root, 'diagnostic_root': root / 'retried'})
+            self.assertEqual(rerun['status'], 'satisfied', rerun['issues'])
+            counters = [json.loads(p.read_text()) for p in (root / 'retried').rglob('reuse.json')]
+            self.assertTrue(counters)
+            self.assertTrue(all(row['reused_queries'] == 0 and row['executed_queries'] > 0
+                                for row in counters))
+
     def test_high_level_generation_binds_contracts_and_all_auxiliary_compilation(self):
         cbmc = shutil.which("cbmc")
         if cbmc is None or shutil.which("goto-cc") is None:

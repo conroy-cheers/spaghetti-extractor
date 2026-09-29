@@ -10,9 +10,12 @@ def spx_application_first_strategy:
 def spx_cut_control_first_strategy:
   "inventory_bounded_safety_groups_with_cut_control_first_authored_batches_v15";
 
+def spx_packed_single_strategy:
+  "inventory_bounded_safety_groups_with_single_authored_assertions_v16";
+
 def spx_assertion_option:
   [.models.operation_models[].obligation_models[].property_checker_command.strategy] | unique |
-  if . == [spx_assertion_single_strategy] then "authored-assertions=per-property-formula-sliced"
+  if . == [spx_assertion_single_strategy] or . == [spx_packed_single_strategy] then "authored-assertions=per-property-formula-sliced"
   elif . == [spx_assertion_batch_strategy] or . == [spx_packed_safety_strategy] or . == [spx_application_first_strategy] or . == [spx_cut_control_first_strategy] then "authored-assertions=bounded-groups-formula-sliced"
   else null end;
 
@@ -49,7 +52,8 @@ def spx_solver_binding_and_commands:
   ) catch false;
 
 def spx_authored_query_order_for($strategy):
-  (if $strategy == spx_cut_control_first_strategy and (.description | startswith("spx-bisimulation-sync-alignment:")) then -1
+  (if (.description | startswith("spx-bisimulation-call-completion:")) then -2
+   elif $strategy == spx_cut_control_first_strategy and (.description | startswith("spx-bisimulation-sync-alignment:")) then -1
    elif $strategy == spx_application_first_strategy or $strategy == spx_cut_control_first_strategy then
      if .description | startswith("spx-bisimulation-exit-control:") then 0
      elif .description | test("^spx-bisimulation-exit-(target|value):") then 1
@@ -74,7 +78,7 @@ def spx_selected_authored_queries:
     (["kind", $field, "entry_function", "status", "code", "properties", "output_sha256"] | sort) as $keys |
     ([$queries[] | if $batched then .property_ids[] else .property_id end]) as $selected |
     ($evidence.assertions | sort_by(spx_authored_query_order_for($evidence.strategy)) | map(.property_id)) as $expected |
-    ($evidence.strategy == spx_assertion_single_strategy or $batched) and
+    ($evidence.strategy == spx_assertion_single_strategy or $evidence.strategy == spx_packed_single_strategy or $batched) and
     all($evidence.queries[]; .kind == "language_safety" or .kind == "authored_assertion") and
     all($queries[];
       . as $query | (if $batched then .property_ids else [.property_id] end) as $ids |
@@ -122,6 +126,18 @@ def spx_entry_unwinding_commands:
     ([$command.assertion_arguments[] | select(. == "--no-unwinding-assertions")] | length) == 0 and
     $command.entry_assertion_arguments == [$command.assertion_arguments[] |
       if . == "--unwinding-assertions" then "--no-unwinding-assertions" else . end]);
+
+def spx_supported_slicing_commands:
+  # CBMC 6.9 warns that full slicing may be unsound. Diagnostic experiments
+  # using it cannot enter strong qualification, including discovery/cover paths.
+  all(.models.operation_models[].obligation_models[];
+    all((.property_checker_command.assertion_arguments,
+         .property_checker_command.entry_assertion_arguments,
+         .property_checker_command.language_safety_discovery_arguments,
+         .property_checker_command.language_safety_baseline_discovery_arguments,
+         .property_checker_command.language_safety_queries[].arguments,
+         .nonvacuity_checker_command.queries[].arguments);
+      type == "array" and index("--full-slice") == null));
 
 def spx_reference_unwind_commands:
   (.models.reference_authority.rules // []) as $rules |
@@ -249,7 +265,7 @@ def spx_safety_query_groups:
      else
        [$evidence.language_safety_inventory[] |
          select(.class as $class | ($partition.classes | index($class)) != null)] as $rows |
-       if $evidence.strategy == spx_packed_safety_strategy or $evidence.strategy == spx_application_first_strategy or $evidence.strategy == spx_cut_control_first_strategy then
+       if $evidence.strategy == spx_packed_single_strategy or $evidence.strategy == spx_packed_safety_strategy or $evidence.strategy == spx_application_first_strategy or $evidence.strategy == spx_cut_control_first_strategy then
          ($rows | map(.property_id) | sort) as $ids |
          [range(0; ($ids | length); 1024) as $offset | $ids[$offset:($offset + 1024)]]
        elif ($rows | length) > 1024 then
@@ -367,6 +383,25 @@ def spx_private_stack_scope_model($planned):
   if ($scopes | length) == 0 then (has("private_stack_scope_policy") | not)
   else .private_stack_scope_policy == "checked-invocation-private-stack-scope-v1" end;
 
+def spx_parameter_slot_frame_model($planned):
+  . as $model |
+  [$planned.source.syncs[] | select(has("preserved_parameter_slots"))] as $syncs |
+  all($syncs[]; . as $sync |
+    .private_stack_scope.register == "esp" and
+    (.preserved_parameter_slots | type == "array" and length > 0 and . == (sort | unique)) and
+    all(.preserved_parameter_slots[]; . as $name |
+      type == "string" and
+      ([$sync.captures[] | select(.id == $name)] | length) == 1 and
+      any($sync.captures[]; .id == $name and .kind == "parameter" and .mode == "machine_codec" and
+        (.projection.kind == "view" or .projection.kind == "bytes_view") and
+        .projection.base.kind == "stack" and .projection.base.width == 32 and
+        (.projection.base.offset | type == "number" and . == floor and . % 4 == 0 and . >= -1024 and . <= 4092))) and
+    (if $model.obligation_id == ("sync:" + $sync.id) then
+      ($model.required_assertion_descriptions | index("spx-bisimulation-preserved-parameter-slot-writes:" + $sync.id)) != null
+     else true end)) and
+  (if ($syncs | length) == 0 then (has("parameter_slot_frame_policy") | not)
+   else .parameter_slot_frame_policy == "checked-preserved-parameter-slots-v1" end);
+
 def spx_local_view_model($planned):
   [$planned.source.syncs[].captures[] | select(.mode == "native_view")] as $views |
   all($views[];
@@ -421,6 +456,7 @@ def spx_cut_capture_codecs:
     ($operations[] | select(.operation_id == $operation_model.operation_id)) as $planned |
     spx_machine_fact_model($planned; $operation_model.machine_image) and
     spx_private_stack_scope_model($planned) and
+    spx_parameter_slot_frame_model($planned) and
     spx_allocation_history_model($planned) and
     spx_memory_fact_model($planned) and
     spx_local_view_model($planned) and
@@ -445,6 +481,7 @@ def spx_cut_capture_codecs:
         else true end) and
       spx_machine_fact_model($planned; $operation_model.machine_image) and
       spx_private_stack_scope_model($planned) and
+      spx_parameter_slot_frame_model($planned) and
       spx_allocation_history_model($planned) and
       spx_memory_fact_model($planned) and
       spx_local_view_model($planned) and
@@ -644,11 +681,19 @@ def spx_terminated_write_effect($words):
   else true end;
 
 def spx_typed_external_target_supported:
-  if .provider_kind != "external_call" or .captured_target_projection == null then true
+  if has("target_sampling") and
+      (.provider_kind != "external_call" or .captured_target_projection == null or
+       (.target_sampling | IN("service_call", "operation_entry") | not)) then false
+  elif .provider_kind != "external_call" or .captured_target_projection == null then true
   else .captured_target_projection |
-    type == "object" and keys == ["at", "kind", "rva", "width"] and
-    .kind == "static_slot" and .at == "entry" and .width == 32 and
-    (.rva | type == "number" and floor == . and . >= 0 and . <= 4294967292)
+    type == "object" and .at == "entry" and .width == 32 and
+    (if .kind == "static_slot" then
+      keys == ["at", "kind", "rva", "width"] and
+      (.rva | type == "number" and floor == . and . >= 0 and . <= 4294967292)
+    elif .kind == "register" then
+      keys == ["at", "kind", "register", "width"] and
+      (.register | IN("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"))
+    else false end)
   end;
 
 def spx_typed_adapter_renderer_inventory:
@@ -1708,13 +1753,100 @@ def spx_declared_external_range_effects($models):
     (all(.proof_call_specs[]; .external_effect_contract == $effect)) end)
   end;
 
+def spx_consumed_scalar_dependency:
+  {component_id, binding_intent_sha256, summary_strategy, machine_overlay_sha256,
+   proof_overlay_sha256, trusted_adapter_lowering_receipt_sha256, machine_overlay_entries_sha256,
+   source_contract: (.source_summary_certificate |
+     {strategy, interface_sha256, headers_sha256, operation_symbols,
+      postconditions: [.postconditions[] | {operation_id, id, signature, expression}]})};
+
+def spx_reusable_proof_inputs($checker):
+  . as $models |
+  if has("reusable_inputs") then
+    .reusable_inputs as $record |
+    ($record | type == "object" and keys == ["artifacts", "input_sha256", "inputs", "policy"]) and
+    $record.policy == "unchanged-local-inputs-scalar-contract-proof-reuse-v1" and
+    ($record.input_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    ($record.inputs | type == "object" and keys == ["caller", "dependencies", "extra", "generator_sha256"]) and
+    ($record.inputs.generator_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    ($record.inputs.extra | type == "object") and
+    (all(["cbmc_sha256", "goto_cc_sha256", "smt_solver"][]; . as $key |
+      $record.inputs.extra[$key] == $checker[$key])) and
+    $record.inputs.caller == ($models | {interface_sha256, semantic_contract_sha256,
+      source_profile_sha256, implementation_sha256, bisimulation_intent_sha256,
+      exact_c_slice_sha256, machine_overlay_sha256, proof_overlay_sha256,
+      trusted_adapter_lowering, reference_authority}) and
+    (all($models.connected_components[]; .summary_strategy == "scalar-body-free-v1" and
+      .entry_contract == null and .readable_transport_policy == null and
+      (has("assurance") or has("mutable_transport_policy") | not))) and
+    $record.inputs.dependencies == [$models.connected_components[] | spx_consumed_scalar_dependency] and
+    ($record.artifacts | type == "object" and length > 0 and
+      all(to_entries[]; (.key | test("^[^/]+(/[^/]+)*$") and
+        (split("/") | all(. != "." and . != ".."))) and
+        (.value | type == "string" and test("^[0-9a-f]{64}$")))) and
+    $record.artifacts["proof-reuse-inputs.json"] == $record.input_sha256 and
+    all($models.operation_models[].obligation_models[];
+      [.proof_inputs[] | select(.role == "proof_reuse_inputs")] ==
+        [{role: "proof_reuse_inputs", sha256: $record.input_sha256}])
+  else all($models.operation_models[].obligation_models[].proof_inputs[]; .role != "proof_reuse_inputs") end;
+
+def spx_completion_sat_arguments:
+  . as $args | (index("--external-smt2-solver")) as $solver |
+  if $solver == null then . else
+    [to_entries[] | select(.key != $solver and .key != ($solver + 1)) | .value |
+      select(. != "--smt2" and . != "--z3" and . != "--no-array-field-sensitivity")] +
+    ["--sat-solver", "cadical"] end;
+
+def spx_call_completion_lemmas:
+  try (
+    .proof_plan.operations as $plans | .proof.models.connected_components as $suppliers |
+    all(.proof.models.operation_models[];
+      . as $operation |
+      [$plans[] | select(.operation_id == $operation.operation_id)][0].source as $source |
+      (if $source | has("call_completion_lemmas") then $source.call_completion_lemmas else [] end) as $lemmas |
+      ([$source.syncs[].id]) as $syncs |
+      ($lemmas | type == "array") and
+      ([$lemmas[].id] == ([$lemmas[].id] | unique)) and
+      all($lemmas[];
+        . as $lemma |
+        keys == ["completed_calls", "component_id", "id", "operation_id", "start_sync", "target_sync"] and
+        (.id | type == "string" and length <= 256 and test("^[A-Za-z][A-Za-z0-9_]*$")) and
+        all((.start_sync, .target_sync, .component_id, .operation_id);
+          type == "string" and test("^[A-Za-z][A-Za-z0-9_.:-]{0,255}$")) and
+        ($syncs | index($lemma.start_sync) != null and index($lemma.target_sync) != null) and
+        (.completed_calls | type == "number" and . == floor and . > 0 and . < 4294967296) and
+        ([$suppliers[] | select(.component_id == $lemma.component_id)] as $matches |
+          ($matches | length) == 1 and $matches[0].summary_strategy == "scalar-body-free-v1" and
+          $matches[0].entry_contract == null and ($matches[0] | has("assurance") | not) and
+          ($matches[0].source_summary_certificate.operation_symbols | has($lemma.operation_id)))) and
+      all((., .obligation_models[]);
+        if ($lemmas | length) > 0 then .call_completion_policy == "checked-exact-prefix-scalar-call-completion-v1"
+        else has("call_completion_policy") | not end) and
+      all(.obligation_models[];
+        . as $model |
+        [$lemmas[] | select($model.obligation_id == ("sync:" + .start_sync))] as $active |
+        ([$active[] | "spx-bisimulation-call-completion:" + .id] | sort) as $expected |
+        ([.required_assertion_descriptions[] | select(startswith("spx-bisimulation-call-completion:"))] | sort) == $expected and
+        (if ($active | length) > 0 then
+          .property_checker_command.completion_assertion_arguments ==
+            (.property_checker_command.assertion_arguments | spx_completion_sat_arguments)
+         else (.property_checker_command | has("completion_assertion_arguments") | not) end))) and
+    all(.proof.shards[].partitioned_evidence.assertions[]?;
+      if .description | startswith("spx-bisimulation-call-completion:") then
+        ("spx_proof_call_completion_" + (.description | ltrimstr("spx-bisimulation-call-completion:"))) as $symbol |
+        .source_function == $symbol and .property_id == ($symbol + ".assertion.1")
+      else true end)
+  ) catch false;
+
 def spx_contextual_proof_system:
   .proof_plan.operations as $operations |
   .proof as $proof |
+  ($proof.models | spx_reusable_proof_inputs($proof.checker)) and
   ($proof.format == "spaghetti-extractor-contextual-refinement-v2") and
   ($proof | has("assurance") | not) and
   (($proof | spx_assertion_option) != null) and
   spx_source_unwind_commands and
+  spx_call_completion_lemmas and
   spx_exact_memory_frames and
   spx_exact_mutable_memory_frames and
   spx_exact_mutable_cut_frames and
@@ -1917,6 +2049,7 @@ def spx_contextual_proof_system:
   ($proof.checker.model_bounds.localized_model_validity_assertions_fail_closed == true) and
   ($proof.checker.model_bounds.public_capacity == "paired_local_capacity_assertions") and
   ($proof | spx_entry_unwinding_commands) and
+  ($proof | spx_supported_slicing_commands) and
   ($proof | spx_nonvacuity_goal_selection) and
   ($proof | spx_reference_unwind_commands) and
   ($proof.checker.maximum_parallel_shards == 1) and
@@ -1982,6 +2115,7 @@ def spx_contextual_proof_system:
   ] | length) == 0;
 
 def spx_strong_contextual_proof:
+  (.proof.models | has("diagnostic_selection") | not) and
   (.proof.activation_authorized == true) and
   (.proof.status == "satisfied") and
   (all(.proof.shards[]; .status == "satisfied")) and

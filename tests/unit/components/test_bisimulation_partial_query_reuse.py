@@ -1,6 +1,7 @@
 """Resume a real interrupted proof without treating its partial result as a theorem."""
 
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -66,7 +67,7 @@ class PartialQueryReuseTests(unittest.TestCase):
                 self.assertFalse(any(row['kind'] == 'authored_assertion' for row in partitioned['queries']))
                 reader = Path(__file__).resolve().parents[3] / TESTKIT['resources'][0]
                 for predicate, expected in [('spx_contextual_proof_system', 0), ('spx_strong_contextual_proof', 1)]:
-                    run = subprocess.run([shutil.which('jq'), '-e', reader.read_text() + '\n' + predicate, str(old_path)],
+                    run = run_jq_reader([shutil.which('jq'), '-e', reader.read_text() + '\n' + predicate, str(old_path)],
                                          capture_output=True, text=True)
                     self.assertEqual(run.returncode, expected, run.stderr)
                 # Rehashing all statuses cannot turn the unexecuted inventory
@@ -88,13 +89,13 @@ class PartialQueryReuseTests(unittest.TestCase):
                         checker=proof['checker'], models=proof['models'], shard_results=proof['shards'], world=proof['world'])
                 proof.update(status='satisfied', activation_authorized=True)
                 proof['receipt_sha256'] = canonical_sha256_v3({k: v for k, v in proof.items() if k != 'receipt_sha256'})
-                run = subprocess.run([shutil.which('jq'), '-e', reader.read_text() + '\nspx_contextual_proof_system'],
+                run = run_jq_reader([shutil.which('jq'), '-e', reader.read_text() + '\nspx_contextual_proof_system'],
                                      input=json.dumps(forged), capture_output=True, text=True)
                 self.assertEqual(run.returncode, 1, run.stderr)
                 # A forged root activation flag must also reject when the
                 # shard remains explicitly incomplete, even with green leaves.
                 shard['status'] = 'incomplete'
-                run = subprocess.run([shutil.which('jq'), '-e', reader.read_text() + '\nspx_strong_contextual_proof'],
+                run = run_jq_reader([shutil.which('jq'), '-e', reader.read_text() + '\nspx_strong_contextual_proof'],
                                      input=json.dumps(forged), capture_output=True, text=True)
                 self.assertEqual(run.returncode, 1, run.stderr)
             promoted = json.loads(previous_bytes)

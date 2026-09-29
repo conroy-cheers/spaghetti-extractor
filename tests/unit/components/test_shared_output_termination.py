@@ -1,8 +1,8 @@
 """Ordinary source consumes a selected output fact, with exact local evidence."""
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,7 +54,7 @@ class SharedOutputTerminationTests(unittest.TestCase):
             for capacity, valid in ((3, True), (2, False), (True, False), (4, False)):
                 changed = copy.deepcopy(result)
                 changed['shared_contract']['service_contracts'][0]['external_effect_contract']['result_register_relations'][0]['capacity_argument'] = capacity
-                checked = subprocess.run([shutil.which('jq'), '-L', 'nix/jq',
+                checked = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq',
                     'include "strong-contextual-proof"; spx_shared_certificate'], input=json.dumps(changed),
                     capture_output=True, text=True, check=True, timeout=10)
                 self.assertEqual(json.loads(checked.stdout), valid)

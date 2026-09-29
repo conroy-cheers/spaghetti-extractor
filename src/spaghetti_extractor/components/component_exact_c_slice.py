@@ -35,6 +35,7 @@ def write_component_exact_c_slice_v1(
     executable_transfer_plan_sha256: str,
     out: Path,
     dependency_components: Sequence[Mapping[str, object]] = (),
+    summary_entry_rvas: Sequence[int] = (),
 ) -> dict[str, object]:
     """Render the exact transfers for one component and its call closure."""
 
@@ -162,6 +163,7 @@ def write_component_exact_c_slice_v1(
     call_closure = _internal_direct_call_closure(
         transfers=transfers,
         seed_unit_ids=unit_ids,
+        summary_entry_rvas=summary_entry_rvas,
     )
     rendered_unit_ids = sorted(
         set(unit_ids)
@@ -258,6 +260,7 @@ def _internal_direct_call_closure(
     *,
     transfers: Sequence[_Transfer],
     seed_unit_ids: Sequence[str],
+    summary_entry_rvas: Sequence[int] = (),
 ) -> dict[str, object]:
     """Close checked constant direct calls without changing component ownership.
 
@@ -267,6 +270,12 @@ def _internal_direct_call_closure(
     from the component's deployment-owned ``unit_ids``.
     """
 
+    if (not isinstance(summary_entry_rvas, (list, tuple))
+            or any(type(rva) is not int or not 0 <= rva < 2**32 for rva in summary_entry_rvas)
+            or len(set(summary_entry_rvas)) != len(summary_entry_rvas)):
+        raise ComponentBisimulationError('exact-C summary entry inventory is malformed')
+    summaries = set(summary_entry_rvas)
+    used_summaries: set[int] = set()
     by_id = {item.identity: item for item in transfers}
     by_rva = {item.rva_start: item for item in transfers}
     if len(by_id) != len(transfers) or len(by_rva) != len(transfers):
@@ -312,7 +321,6 @@ def _internal_direct_call_closure(
                         f"0x{call.target_rva:08x} is absent from the checked "
                         "transfer plan"
                     )
-                closure_entries.add(target.rva_start)
                 call_edges.add(
                     (
                         unit_id,
@@ -324,6 +332,13 @@ def _internal_direct_call_closure(
                         call.return_rva,
                     )
                 )
+                if target.rva_start in summaries:
+                    # Preserve the exact call event and its return continuation.
+                    # Omitting a body supplies no summary: the consumer must
+                    # discharge or explicitly retain every call premise.
+                    used_summaries.add(target.rva_start)
+                    continue
+                closure_entries.add(target.rva_start)
                 if target.identity not in selected:
                     selected.add(target.identity)
                     closure_units.add(target.identity)
@@ -350,7 +365,10 @@ def _internal_direct_call_closure(
                     call_pending.append(successor.identity)
                 control_pending.append(successor.identity)
 
+    if used_summaries != summaries:
+        raise ComponentBisimulationError('exact-C summary entry does not name an encountered direct call')
     return {
+        **({'summary_entry_rvas': sorted(summaries)} if summaries else {}),
         "unit_ids": sorted(closure_units),
         "entry_rvas": sorted(closure_entries),
         "call_edges": [
@@ -405,6 +423,7 @@ def materialize_component_exact_c_slice_v1(
     dependency_binding_intents: Mapping[str, Path] | None = None,
     bisimulation_intent: Path | None,
     out: Path,
+    summary_entry_rvas: Sequence[int] = (),
 ) -> dict[str, object]:
     """Load the three content-addressed inputs and materialize one slice."""
 
@@ -430,7 +449,7 @@ def materialize_component_exact_c_slice_v1(
             # that unchanged machine context on the exact side so the proof
             # compares complete operation outcomes, while root_unit_ids keeps
             # the actual deployment ownership narrow.
-            "context_unit_ids": list(operation.semantics.transfer_ids),
+            "context_unit_ids": list(operation.semantics.proof_context_transfer_ids),
             "continuation_unit_ids": list(operation.semantics.machine_projection.get("operation", {}).get("continuation_unit_ids", [])),
             "entry_rvas": list(operation.semantics.entry_rvas),
         }
@@ -459,7 +478,7 @@ def materialize_component_exact_c_slice_v1(
                         # A root proof stops at its declared operation exit,
                         # but a connected callee must execute through that
                         # exit and return to its caller.
-                        "unit_ids": list(operation.semantics.transfer_ids),
+                        "unit_ids": list(operation.semantics.proof_context_transfer_ids),
                         "entry_rvas": list(operation.semantics.entry_rvas),
                     }
                     for operation in dependency.operations
@@ -474,6 +493,7 @@ def materialize_component_exact_c_slice_v1(
         executable_transfer_plan_sha256=sha256_file(Path(transfer_plan)),
         out=Path(out),
         dependency_components=dependency_components,
+        summary_entry_rvas=summary_entry_rvas,
     )
 
 

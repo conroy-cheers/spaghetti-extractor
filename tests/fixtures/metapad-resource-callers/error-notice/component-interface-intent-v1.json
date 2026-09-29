@@ -1,0 +1,432 @@
+{
+  "format": "spaghetti-extractor-component-interface-intent-v1",
+  "status": "complete",
+  "id": "resource-error-notice",
+  "schema": {
+    "format": "spaghetti-extractor-boundary-schema-v1",
+    "schema_id": "resource-error-notice",
+    "types": [
+      {
+        "id": "bytes",
+        "kind": "pointer",
+        "pointee_type_id": "u8",
+        "qualifiers": []
+      },
+      {
+        "id": "get.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "u32"
+        ],
+        "result_type_id": "bytes",
+        "variadic": false
+      },
+      {
+        "id": "load_string.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "u32",
+          "u32",
+          "bytes",
+          "u32"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "message.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "u32",
+          "bytes",
+          "bytes",
+          "u32"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "notice.fn",
+        "kind": "function",
+        "calling_convention": "cdecl",
+        "parameter_type_ids": [
+          "bytes",
+          "bytes",
+          "bytes",
+          "bytes"
+        ],
+        "result_type_id": "u32",
+        "variadic": false
+      },
+      {
+        "id": "u32",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 32
+      },
+      {
+        "id": "u8",
+        "kind": "integer",
+        "signed": false,
+        "width_bits": 8
+      }
+    ],
+    "signatures": [
+      {
+        "id": "get",
+        "function_type_id": "get.fn",
+        "parameters": [
+          {
+            "id": "id",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "result",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": 500,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "message",
+        "function_type_id": "message.fn",
+        "parameters": [
+          {
+            "id": "window",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "text",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": 500,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "kind": "fixed",
+              "bytes": 500,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "flags",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "reply",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      },
+      {
+        "id": "notice",
+        "function_type_id": "notice.fn",
+        "parameters": [
+          {
+            "id": "module",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "buffer",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read_write",
+            "extent": {
+              "bytes": 500,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "main_window",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          },
+          {
+            "id": "caption",
+            "type_id": "bytes",
+            "interpretation": "view",
+            "nullable": false,
+            "access": "read",
+            "extent": {
+              "kind": "fixed",
+              "bytes": 500,
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ],
+        "results": [
+          {
+            "id": "reply",
+            "type_id": "u32",
+            "interpretation": "value",
+            "nullable": false,
+            "access": "none",
+            "extent": {
+              "bytes": null,
+              "kind": "none",
+              "value_id": null
+            },
+            "resource_kind": null,
+            "provider_domain": null
+          }
+        ]
+      }
+    ],
+    "schema_sha256": "eced96ebbe44c887f7dfada94ec131ab8bb5c66c5d47ea1d43b3533a0247160a"
+  },
+  "state": [],
+  "operations": [
+    {
+      "allowed_service_ids": [
+        "message_box",
+        "resource_text"
+      ],
+      "checked_interaction_contract_ids": [],
+      "effect_ids": [],
+      "id": "notice",
+      "lifecycle_additional_roots": {
+        "state": []
+      },
+      "lifecycle_bindings": [],
+      "post_states": [
+        "ready"
+      ],
+      "pre_states": [
+        "ready"
+      ],
+      "projection_entries": [
+        {
+          "source_id": "module",
+          "target": {
+            "root": "parameter",
+            "value_id": "module",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "buffer",
+          "target": {
+            "root": "parameter",
+            "value_id": "buffer",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "main_window",
+          "target": {
+            "root": "parameter",
+            "value_id": "main_window",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "caption",
+          "target": {
+            "root": "parameter",
+            "value_id": "caption",
+            "fields": []
+          }
+        },
+        {
+          "source_id": "reply",
+          "target": {
+            "root": "result",
+            "value_id": "reply",
+            "fields": []
+          }
+        }
+      ],
+      "signature_id": "notice",
+      "source_values": [
+        {
+          "id": "module",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "nullable": false,
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "buffer",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "nullable": false,
+          "access": "read_write",
+          "extent": {
+            "bytes": 500,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "main_window",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "nullable": false,
+          "access": "read",
+          "extent": {
+            "bytes": 4,
+            "kind": "fixed",
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "caption",
+          "type_id": "bytes",
+          "interpretation": "view",
+          "nullable": false,
+          "access": "read",
+          "extent": {
+            "kind": "fixed",
+            "bytes": 500,
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        },
+        {
+          "id": "reply",
+          "type_id": "u32",
+          "interpretation": "value",
+          "nullable": false,
+          "access": "none",
+          "extent": {
+            "bytes": null,
+            "kind": "none",
+            "value_id": null
+          },
+          "resource_kind": null,
+          "provider_domain": null
+        }
+      ]
+    }
+  ],
+  "effects": [],
+  "services": [
+    {
+      "id": "message_box",
+      "signature_id": "message",
+      "effect_ids": [],
+      "interaction_contract_id": "notice.message"
+    },
+    {
+      "id": "resource_text",
+      "signature_id": "get",
+      "effect_ids": [],
+      "interaction_contract_id": "resource-text.get"
+    }
+  ],
+  "protocol": {
+    "states": [
+      "ready"
+    ],
+    "initial_state": "ready"
+  },
+  "intent_sha256": "13fed58c1b1ccf677bef3793788605947bad8080a3d50dd4fe79fe02e8461d60"
+}

@@ -29,6 +29,7 @@ from ..util import sha256_file, sha256_text, write_json
 from .binding_intent import ComponentMachineBindingIntentV1
 from .formats import (
     COMPONENT_WORK_PACKAGE_V6_FORMAT,
+    COMPONENT_EXACT_C_SLICE_V1_FORMAT,
 )
 from .interface_package_v5 import (
     CompiledComponentInterfaceV5,
@@ -36,6 +37,8 @@ from .interface_package_v5 import (
     compile_component_interface_v5,
 )
 from .source import component_operation_symbols, load_component_source_package
+from .caller_definition_document import checked_caller_document
+from .work_package_editing import editing_input_texts
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -79,6 +82,101 @@ def _digest(value: object, context: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         _fail(f"{context} must be lowercase SHA-256")
     return value
+
+
+def caller_definition_text(payload: Mapping[str, Any]) -> str | None:
+    """Bind a declared editing input to owned scope; this does not prove it."""
+    requirements = _mapping(payload.get("requirements"), "work-package requirements")
+    if "caller_definition" not in requirements:
+        return None
+    try:
+        definition = checked_caller_document(requirements["caller_definition"])
+    except ValueError as exc:
+        _fail(str(exc))
+    operations = payload["operations"]
+    if (definition["component_id"] != payload["component_id"]
+            or len(operations) != 1
+            or operations[0]["operation_id"] != definition["operation_id"]
+            or operations[0]["entry_rvas"] != [definition["entry_rva"]]):
+        _fail("caller definition and work-package operation scope differ")
+    owned = set(operations[0]["unit_ids"])
+    slices = {row["unit_id"]: row for row in payload["faithful_c_slices"]}
+    if (not owned <= slices.keys()
+            or sorted(slices[unit]["rva_start"] for unit in owned) != definition["unit_rvas"]):
+        _fail("caller definition and work-package owned units differ")
+    services = definition["source_services"]
+    requested = set(definition['suppliers']) if 'suppliers' in definition else {definition['service_id']}
+    if (any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in services)
+            or sorted(row["id"] for row in services) != sorted(operations[0]["service_ids"])
+            or not requested <= set(operations[0]["service_ids"])):
+        _fail("caller definition and work-package service dependencies differ")
+    return json.dumps(definition, indent=2, sort_keys=True) + "\n"
+
+
+def caller_definition_inspection(payload: Mapping[str, Any]) -> list[str]:
+    """Presentation of declared dependencies, never checked summary evidence."""
+    if caller_definition_text(payload) is None:
+        return []
+    definition = payload["requirements"]["caller_definition"]
+    lines = [
+        "  caller definition: caller-contract.json (declared; local proof required)",
+        f"  scope: entry 0x{definition['entry_rva']:08x}; {len(definition['unit_rvas'])} owned units",
+    ]
+    suppliers = (definition['suppliers'] if 'suppliers' in definition else
+                 {definition['service_id']: {'required_frame': definition['required_frame']}})
+    lines.extend(f"  supplier: {service}; requested frame facts: {row['required_frame']}"
+                 for service, row in sorted(suppliers.items()))
+    for service, contract in sorted(definition['runtime_contracts'].items()):
+        lines.append(f"  runtime assumptions (unverified): {service}")
+        if isinstance(contract, dict):
+            for field in ('id', 'revision', 'requires', 'ensures', 'unverified'):
+                lines.append(f"    {field}: {json.dumps(contract.get(field), sort_keys=True)}")
+        else:
+            lines.append("    malformed declaration; repair before local checking")
+    lines.append("  next: edit caller-contract.json and ordinary C; run component check --source --local-contracts")
+    return lines
+
+
+def caller_editing_binding(definition, inventory):
+    """Derive ownership bookkeeping, explicitly not a native machine binding."""
+    definition = checked_caller_document(definition)
+    selected = [row for row in inventory if row['rva_start'] in definition['unit_rvas']]
+    if sorted(row['rva_start'] for row in selected) != definition['unit_rvas']:
+        _fail('caller editing scope is absent or ambiguous in the transfer plan')
+    units = sorted(row['unit_id'] for row in selected)
+    return ComponentMachineBindingIntentV1.create(component_id=definition['component_id'],
+        operations=[{'id': definition['operation_id'], 'kind': 'operation',
+            'unit_ids': units, 'transfer_ids': units, 'entry_rvas': [definition['entry_rva']],
+            'effect_ids': [], 'service_ids': [row['id'] for row in definition['source_services']],
+            'callback_ids': [], 'outcome_protocol_ids': [], 'object_authority_selectors': [],
+            'pointer_views': [], 'relation_receipt_sha256s': [], 'induction_evidence_sha256': None,
+            'machine_projection': {'operation': {'operation_id': definition['operation_id'],
+                'entry_unit_ids': [row['unit_id'] for row in selected if row['rva_start'] == definition['entry_rva']]}}}],
+        blockers=[{'code': 'caller_definition_requires_local_check',
+            'operation_id': definition['operation_id'],
+            'detail': 'Derived caller ownership only; native machine projections are not established. '
+                      'Check the caller definition with component check --source --local-contracts.'}])
+
+
+def caller_exact_source_map(root, component_id, plan_sha256):
+    """Read bound presentation slices; do not grant exact-slice proof authority."""
+    path = root / 'component-exact-c-slice-v1.json'
+    value = json.loads(path.read_text())
+    if (value['format'] != COMPONENT_EXACT_C_SLICE_V1_FORMAT or value['component_id'] != component_id
+            or value['bindings']['executable_transfer_plan_sha256'] != plan_sha256
+            or value['slice_sha256'] != canonical_sha256_v3({k:v for k,v in value.items() if k != 'slice_sha256'})):
+        _fail('caller work-package exact source identity differs')
+    files = {row['path']: row['sha256'] for row in value['files']}
+    if not files or len(files) != len(value['files']):
+        _fail('caller work-package exact source files are absent or duplicated')
+    for name, digest in files.items():
+        file = root / name
+        if not file.resolve().is_relative_to(root.resolve()) or sha256_file(file) != digest:
+            _fail('caller work-package exact source bytes differ')
+    rows = value['source_map']
+    if len({r['unit_id'] for r in rows}) != len(rows) or any(r['file'] not in files for r in rows):
+        _fail('caller work-package exact source mapping differs')
+    return path, value, {r['unit_id']:r for r in rows}
 
 
 @dataclass(frozen=True)
@@ -185,12 +283,24 @@ class ComponentWorkPackageV6:
             ):
                 _fail("component work-package V6 faithful-C span is invalid")
         generated = _rows(payload.get("generated_files"), "generated files")
-        if [row.get("path") for row in generated] != [
-            "include/component.h", "src/component.c",
-        ] or any(set(row) != {"path", "sha256"} for row in generated):
+        caller_text = caller_definition_text(payload)
+        paths = ["include/component.h", "src/component.c"]
+        if caller_text is not None:
+            paths.append("caller-contract.json")
+        try:
+            editing_texts = editing_input_texts(payload)
+        except ValueError as exc:
+            _fail(str(exc))
+        paths.extend(sorted(editing_texts))
+        if [row.get("path") for row in generated] != paths or any(set(row) != {"path", "sha256"} for row in generated):
             _fail("component work-package V6 generated-file inventory is malformed")
         for row in generated:
             _digest(row.get("sha256"), "generated file")
+        generated_digests = {row['path']: row['sha256'] for row in generated}
+        if caller_text is not None and generated_digests['caller-contract.json'] != sha256_text(caller_text):
+            _fail("materialized caller definition identity differs")
+        if any(generated_digests[name] != sha256_text(text) for name, text in editing_texts.items()):
+            _fail('materialized editing input identity differs')
         return cls(payload)
 
 
@@ -198,12 +308,16 @@ def build_component_work_package_v6(
     *,
     component_id: str,
     interface_package: Path,
-    binding_intent: Path,
+    binding_intent: Path | None = None,
     linked_semantic_module: Path,
-    behavioral_c_package: Path,
+    behavioral_c_package: Path | None = None,
     out: Path,
     source_package: Path | None = None,
     proof_classification: str = "machine_overlay",
+    caller_definition: Mapping[str, Any] | None = None,
+    exact_c_slice: Path | None = None,
+    bisimulation_intent: Path | None = None,
+    relation_intent: Path | None = None,
 ) -> ComponentWorkPackageV6:
     """Derive and publish one V6 package without legacy reducer artifacts."""
 
@@ -215,19 +329,6 @@ def build_component_work_package_v6(
         )
     ))
     bundle = compile_component_interface_v5(intent)
-    binding = ComponentMachineBindingIntentV1.parse(json.loads(
-        Path(binding_intent).read_text(encoding="utf-8")
-    ))
-    if (
-        intent.component_id != component_id
-        or binding.component_id != component_id
-    ):
-        _fail("component work-package V6 component identity is stale")
-    interface_ids = [item.identity for item in bundle.interface.operations]
-    binding_ids = [item.semantics.operation_id for item in binding.operations]
-    if interface_ids != binding_ids:
-        _fail("component work-package V6 operation mapping is not total")
-
     linked_path = Path(linked_semantic_module)
     linked = LinkedSemanticModuleV2.load(linked_path, require_complete=False)
     transfer_path = linked_path.parent / "executable-transfer-plan.json"
@@ -244,14 +345,32 @@ def build_component_work_package_v6(
     inventory = {
         str(row["unit_id"]): row for row in transfer_payload["unit_inventory"]
     }
-    behavioral_root = Path(behavioral_c_package)
-    source_map_path = behavioral_root / "behavioral-c-source-map.json"
-    source_map_payload = json.loads(source_map_path.read_text(encoding="utf-8"))
-    source_map = {
-        str(row["unit_id"]): row for row in source_map_payload["units"]
-    }
-    if source_map_payload.get("executable_transfer_plan_sha256") != transfer_sha256:
-        _fail("component work-package V6 faithful-C source map is stale")
+    if binding_intent is None and caller_definition is None:
+        _fail('work package needs a binding intent or caller definition')
+    binding = (caller_editing_binding(caller_definition, transfer_payload['unit_inventory'])
+        if binding_intent is None else ComponentMachineBindingIntentV1.parse(json.loads(Path(binding_intent).read_text())))
+    if intent.component_id != component_id or binding.component_id != component_id:
+        _fail("component work-package V6 component identity is stale")
+    interface_ids = [item.identity for item in bundle.interface.operations]
+    if interface_ids != [item.semantics.operation_id for item in binding.operations]:
+        _fail("component work-package V6 operation mapping is not total")
+    if exact_c_slice is not None:
+        if caller_definition is None or behavioral_c_package is not None:
+            _fail('caller exact source requires a definition and no competing Behavioral-C package')
+        behavioral_root = Path(exact_c_slice)
+        source_map_path, exact, source_map = caller_exact_source_map(behavioral_root, component_id, transfer_payload['plan_sha256'])
+        owned = sorted({unit for op in binding.operations for unit in op.semantics.unit_ids})
+        if owned != exact['root_unit_ids']:
+            _fail('caller work-package ownership differs from exact slice')
+    else:
+        if behavioral_c_package is None:
+            _fail('work package needs Behavioral-C or caller exact source')
+        behavioral_root = Path(behavioral_c_package)
+        source_map_path = behavioral_root / "behavioral-c-source-map.json"
+        source_map_payload = json.loads(source_map_path.read_text(encoding="utf-8"))
+        source_map = {str(row["unit_id"]): row for row in source_map_payload["units"]}
+        if source_map_payload.get("executable_transfer_plan_sha256") != transfer_sha256:
+            _fail("component work-package V6 faithful-C source map is stale")
 
     if source_package is None:
         symbols = _default_operation_symbols(bundle)
@@ -274,7 +393,7 @@ def build_component_work_package_v6(
     for operation in binding.operations:
         semantics = operation.semantics
         owned = operation_definition_ids[semantics.operation_id]
-        contextual_units.update(semantics.transfer_ids)
+        contextual_units.update(semantics.proof_context_transfer_ids)
         projection = _mapping(
             semantics.machine_projection.get("operation"),
             f"component operation {semantics.operation_id} projection",
@@ -287,7 +406,7 @@ def build_component_work_package_v6(
             "semantic_sha256": semantics.semantic_sha256,
             "definition_ids": sorted(owned),
             "unit_ids": list(semantics.unit_ids),
-            "context_transfer_ids": list(semantics.transfer_ids),
+            "context_transfer_ids": list(semantics.proof_context_transfer_ids),
             "entry_rvas": list(semantics.entry_rvas),
             "entry_unit_ids": sorted(set(projection.get("entry_unit_ids", []))),
             "exit_unit_ids": sorted(set(projection.get("exit_unit_ids", []))),
@@ -403,6 +522,21 @@ def build_component_work_package_v6(
         ],
         "policy": _POLICY,
     }
+    caller_text = None
+    if caller_definition is not None:
+        core["requirements"]["caller_definition"] = canonical(dict(caller_definition))
+        caller_text = caller_definition_text(core)
+        core["generated_files"].append({"path": "caller-contract.json", "sha256": sha256_text(caller_text)})
+    else:
+        core['requirements']['editing_inputs'] = {
+            'interface': intent.to_payload(), 'binding': binding.to_payload()}
+        if bisimulation_intent is not None:
+            core['requirements']['editing_inputs']['bisimulation'] = json.loads(Path(bisimulation_intent).read_text())
+        if relation_intent is not None:
+            core['requirements']['editing_inputs']['relation'] = json.loads(Path(relation_intent).read_text())
+    editing_texts = editing_input_texts(core)
+    core['generated_files'].extend({'path': name, 'sha256': sha256_text(editing_texts[name])}
+                                   for name in sorted(editing_texts))
     payload = {**core, "work_package_sha256": canonical_sha256_v3(core)}
     package = ComponentWorkPackageV6.parse(payload)
     package = ComponentWorkPackageV6(package.payload, header, skeleton)
@@ -412,6 +546,10 @@ def build_component_work_package_v6(
     (output / "baseline").mkdir(parents=True, exist_ok=True)
     (output / "include/component.h").write_text(header, encoding="utf-8")
     (output / "src/component.c").write_text(skeleton, encoding="utf-8")
+    if caller_text is not None:
+        (output / "caller-contract.json").write_text(caller_text, encoding="utf-8")
+    for name, text in editing_texts.items():
+        (output / name).write_text(text, encoding='utf-8')
     for relative, source in copied.items():
         destination = output / "baseline" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -457,10 +595,10 @@ def build_component_semantic_slice_v2(
             owned.append(definition_id)
             definition_ids.add(definition_id)
         by_operation[semantics.operation_id] = sorted(owned)
-        subjects.update(semantics.transfer_ids)
+        subjects.update(semantics.proof_context_transfer_ids)
         subjects.update(semantics.unit_ids)
         subjects.update(owned)
-        subjects.update(f"original:function:{item}" for item in semantics.transfer_ids)
+        subjects.update(f"original:function:{item}" for item in semantics.proof_context_transfer_ids)
     obligation_ids = sorted(
         str(row["obligation_id"])
         for row in linked.payload["residual_obligations"]

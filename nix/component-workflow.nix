@@ -123,6 +123,7 @@ let
       || builtins.any
         (operation:
           (operation.callback_ids or [ ]) != [ ]
+          || (((operation.machine_projection or { }).operation or { }).continuation_unit_ids or [ ]) != [ ]
           || builtins.any
             (binding: (binding.mediation or null) == "callback")
             (((operation.machine_projection or { }).service_bindings or [ ])))
@@ -245,6 +246,8 @@ let
       interfacePackage = v5Interfaces.${id}.derivation;
       bindingIntent = bindingIntentPath id;
       inherit linkedSemanticModule;
+      bisimulationIntent = bisimulationIntents.${id} or null;
+      relationIntent = relationIntents.${id} or null;
       proofClassification = componentRowsById.${id}.proof_classification
         or "machine_overlay";
       sourcePackage = if builtins.hasAttr id sourcePackages
@@ -399,5 +402,10 @@ assert _uniqueComponentEntryRvas;
     liftUnitIndex configurationIndex assetInventory bundle;
   v5InterfaceIndex = interfaceIndex;
   v5BindingIndex = bindingIndex;
+  authoringPaths = {
+    inherit intent;
+    interface_index = interfaceIndexPath;
+    binding_index = bindingIndexPath;
+  };
   contractIds = builtins.attrNames liftUnitIndex;
 }

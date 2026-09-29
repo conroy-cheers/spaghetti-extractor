@@ -40,6 +40,9 @@ from .semantic_external_transducers import (
     checked_external_stack_arguments as _checked_external_stack_arguments,
     checked_local_cell_result_projection as _checked_local_cell_result_projection,
 )
+from .semantic_record_transducers import (
+    normalize_external_aggregate_binding, checked_record_result_projection,
+)
 
 from .semantic_contract_transfer import (
     _array,
@@ -748,6 +751,15 @@ def build_proof_kernel_semantic_contract(
             stack_inputs,
             argument_words=argument_words,
         )
+        try:
+            provider, contract_payload = normalize_external_aggregate_binding(
+                provider=provider, logical=logical, logical_types=logical_types,
+                contract_row=contract_row, payload=contract_payload)
+        except ComponentSemanticContractError as exc:
+            issue("violated", "external_call_service_argument_transducer_invalid",
+                  service_id=service.service_id, detail=str(exc))
+            services.append(service.to_payload())
+            continue
         argument_transducers = provider.get("argument_transducers")
         logical_arguments = contract_arguments
         physical_arguments: list[dict[str, object]] | None = None
@@ -804,7 +816,16 @@ def build_proof_kernel_semantic_contract(
         declared_result = provider.get("result_projection")
         if logical is not None and logical.result_type_id is not None:
             logical_result = logical_types[logical.result_type_id]
-            if (
+            if isinstance(declared_result, Mapping) and declared_result.get("kind") == "local_cell_record":
+                try:
+                    result, result_rule = checked_record_result_projection(
+                        declared_result, logical_type=logical_result, logical_types=logical_types,
+                        transducers=argument_transducers, contract_payload=contract_payload,
+                        argument_words=argument_words)
+                except ComponentSemanticContractError as exc:
+                    issue("violated", "external_call_service_result_projection_invalid",
+                          service_id=service.service_id, detail=str(exc))
+            elif (
                 isinstance(declared_result, Mapping)
                 and declared_result.get("kind") == "local_cell_word"
             ):

@@ -65,6 +65,17 @@ def _index() -> dict[str, object]:
 
 
 class OperatorIndexV1Tests(unittest.TestCase):
+    def test_optional_authoring_paths_require_distinct_target_relative_files(self) -> None:
+        value = _index()
+        paths = {'intent': 'intent/components.json', 'interface_index': 'contracts/interfaces-v5/index.json',
+                 'binding_index': 'contracts/bindings-v5/index.json'}
+        value['components']['authoringPaths'] = paths
+        self.assertEqual(parse_operator_index_v1(value), value)
+        for bad in ('../outside.json', '/outside.json', '.', 'a/../b.json', 'a//b.json', paths['binding_index']):
+            value['components']['authoringPaths'] = {**paths, 'intent': bad}
+            with self.subTest(path=bad), self.assertRaises(ToolkitInputError):
+                parse_operator_index_v1(value)
+
     def test_exact_product_index_parses_without_realizing_products(self) -> None:
         self.assertEqual(parse_operator_index_v1(_index()), _index())
 

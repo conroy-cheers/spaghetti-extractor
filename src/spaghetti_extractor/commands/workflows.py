@@ -1,9 +1,8 @@
-"""Operator workflows backed exclusively by target-SDK Nix artifacts."""
+"""Operator handlers for SDK artifacts and retained local comparison packages."""
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import re
 import shlex
@@ -22,13 +21,11 @@ from ..components.proposal_package import load_component_proposal_package_v2
 from ..operator.formats import OPERATOR_WORK_STATUS_FORMAT
 from ..operator.index_v1 import parse_operator_index_v1
 from ..operator.projections import (
-    normalize_blocker,
     project_candidate_selection,
     project_component_qualification,
     project_component_work_package,
     project_missing_component,
 )
-from ..operator.work_status import build_operator_blocker_detail_v1
 from ..util import sha256_file
 from .component_start import (
     apply_component_start as _apply_component_start_transaction,
@@ -37,82 +34,44 @@ from .component_start import (
     safe_package_file as _safe_package_file,
 )
 from .common import Handler
+from .workflow_status import _single_status_subject, _render_operator_status
 
 
-_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_BOUNDARY_SUBJECT = re.compile(
-    r"(?:call|callback|export|component|component-seed|component_operation|service):"
-    r"[a-z0-9][a-z0-9._-]*"
-)
+def _boundary_inventory(args: argparse.Namespace) -> int:
+    from time import perf_counter
+    from ..components.partition_inventory import inventory_partition, load_intents, parse_partition
+    from ..semantic_link.module_v2 import LinkedSemanticModuleV2
+    from ..semantic_providers.qualification_v2 import SemanticProviderQualificationV2
+    from ..util import write_json
 
-
-def _identifier(value: str) -> str:
-    if _IDENTIFIER.fullmatch(value) is None:
-        raise argparse.ArgumentTypeError(
-            "identifier must contain only letters, digits, '.', '_', or '-'"
-        )
-    return value
-
-
-def _opaque_identity(value: str) -> str:
-    if not value or len(value) > 512 or any(
-        character.isspace() or ord(character) < 0x20 for character in value
-    ):
-        raise argparse.ArgumentTypeError(
-            "identity must be nonempty, bounded, and contain no whitespace"
-        )
-    return value
-
-
-def _boundary_subject_identity(value: str) -> str:
-    if _BOUNDARY_SUBJECT.fullmatch(value) is None:
-        raise argparse.ArgumentTypeError(
-            "boundary subject must be a stable kind:id identity"
-        )
-    return value
-
-
-def _positive(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("value must be positive")
-    return parsed
-
-
-def _add_target_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("target", type=_identifier, help="registered target id")
-    parser.add_argument(
-        "--target-flake",
-        default="./targets",
-        metavar="REF",
-        help="target corpus flake reference (default: ./targets)",
-    )
-    execution = parser.add_mutually_exclusive_group()
-    execution.add_argument(
-        "--builders-file",
-        type=Path,
-        metavar="FILE",
-        help=(
-            "Nix builders inventory; defaults to "
-            "$SPAGHETTI_EXTRACTOR_BUILDERS_FILE or the nearest "
-            "nix/builders.local, then XDG configuration"
-        ),
-    )
-    execution.add_argument(
-        "--local",
-        action="store_true",
-        help="disable remote Nix builders for this command",
-    )
-    parser.add_argument(
-        "--trusted-public-keys-file",
-        type=Path,
-        metavar="FILE",
-        help=(
-            "trusted Nix cache keys; defaults to "
-            "$SPAGHETTI_EXTRACTOR_TRUSTED_PUBLIC_KEYS_FILE, a companion "
-            "nix/trusted-public-keys.local, then XDG configuration"
-        ),
-    )
+    started = perf_counter()
+    partition = parse_partition(json.loads(args.partition.read_text()))
+    if partition.get("target") != args.target:
+        raise ValueError("manual partition target does not match the command target")
+    module = LinkedSemanticModuleV2.load(args.semantic_module)
+    module_loaded = perf_counter()
+    bindings = load_intents(args.bindings, "machine_binding")
+    interfaces = load_intents(args.interfaces, "interface")
+    qualifications = tuple(SemanticProviderQualificationV2.load(path) for path in args.qualification)
+    catalog_loaded = perf_counter()
+    result = inventory_partition(module=module, partition=partition, bindings=bindings,
+                                 interfaces=interfaces, qualifications=qualifications)
+    result["costs"] = {
+        "scope": "retained-input partition audit only; no proof or pilot execution",
+        "module_validation_seconds": module_loaded - started,
+        "catalog_validation_seconds": catalog_loaded - module_loaded,
+        "inventory_seconds": perf_counter() - catalog_loaded,
+        "preparation_builds": 0, "compiler_invocations": 0, "model_builds": 0,
+        "solver_invocations": 0, "link_invocations": 0,
+    }
+    write_json(args.output, result)
+    counts = result["counts"]
+    print(f"partition coverage: {result['coverage_status']}; "
+          f"{counts['assigned_machine_units']}/{counts['machine_units']} machine units "
+          f"in {counts['partition_units']} planned units")
+    print("liftability and final portable selection: unverified; activation: not authorized")
+    print(f"inventory: {args.output}")
+    return 0 if result["coverage_status"] == "complete" else 1
 
 
 def _flake_installable(args: argparse.Namespace, attribute: str) -> str:
@@ -177,7 +136,8 @@ def _operator_index(args: argparse.Namespace) -> Mapping[str, Any]:
     return parsed
 
 
-def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False) -> int:
+def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False,
+           apply_arguments: Mapping[str, object] | None = None) -> int:
     command = nix_command("build")
     if no_link:
         command.append("--no-link")
@@ -189,7 +149,7 @@ def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False) -> i
             local=args.local,
         )
     )
-    command.append(_flake_installable(args, _operator_attribute(args, suffix)))
+    command.append(_product_installable(args, suffix, apply_arguments=apply_arguments))
     return _run(command)
 
 
@@ -214,8 +174,8 @@ def _realize_artifact(
     return path, payload
 
 
-def _realize_path(args: argparse.Namespace, suffix: str, *,
-                  apply_arguments: Mapping[str, object] | None = None) -> Path:
+def _product_installable(args: argparse.Namespace, suffix: str, *,
+                         apply_arguments: Mapping[str, object] | None = None) -> str:
     installable = _flake_installable(args, _operator_attribute(args, suffix))
     if apply_arguments is not None:
         # Pass data through JSON, escaping Nix interpolation as well as quotes.
@@ -227,6 +187,12 @@ def _realize_path(args: argparse.Namespace, suffix: str, *,
         if re.fullmatch(r'/nix/store/[a-z0-9]{32}-[^/\n]+\.drv', derivation) is None:
             raise ValueError('parameterized operator product did not return a store derivation')
         installable = derivation + '^out'
+    return installable
+
+
+def _realize_path(args: argparse.Namespace, suffix: str, *,
+                  apply_arguments: Mapping[str, object] | None = None) -> Path:
+    installable = _product_installable(args, suffix, apply_arguments=apply_arguments)
     output = _capture(
         [
             *nix_command(
@@ -249,100 +215,6 @@ def _realize_path(args: argparse.Namespace, suffix: str, *,
     if len(paths) != 1:
         raise ValueError("operator product did not produce exactly one store path")
     return paths[0]
-
-
-def _single_status_subject(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if payload.get("format") != OPERATOR_WORK_STATUS_FORMAT:
-        raise ValueError("operator status format is unsupported")
-    subjects = payload.get("subjects")
-    if (
-        not isinstance(subjects, list)
-        or len(subjects) != 1
-        or not isinstance(subjects[0], Mapping)
-    ):
-        raise ValueError("operator status must contain exactly one subject")
-    return dict(subjects[0])
-
-
-def _render_operator_status(
-    args: argparse.Namespace,
-    payload: Mapping[str, Any],
-    *,
-    headline: str,
-    raw_blockers: Sequence[Mapping[str, Any]] | None = None,
-    default_family: str,
-    default_code: str,
-) -> int:
-    subject = _single_status_subject(payload)
-    family = getattr(args, "family", None)
-    code = getattr(args, "code", None)
-    show_all = bool(getattr(args, "all", False))
-    limit = int(getattr(args, "limit", 20))
-    details = bool(getattr(args, "details", False))
-    if details:
-        if family is None and code is None and not show_all:
-            raise ValueError("--details requires --family, --code, or --all")
-        if raw_blockers is None:
-            raise ValueError("operator blocker details are unavailable")
-        selected = []
-        for raw in raw_blockers:
-            normalized = normalize_blocker(
-                raw, default_family=default_family, default_code=default_code
-            )
-            if family is not None and normalized["family"] != family:
-                continue
-            if code is not None and normalized["code"] != code:
-                continue
-            selected.append(dict(raw))
-        sources = subject.get("sources")
-        if not isinstance(sources, list) or not sources or not isinstance(sources[0], Mapping):
-            raise ValueError("operator blocker details have no materialized source")
-        source = dict(sources[0])
-        detail = build_operator_blocker_detail_v1(
-            target_id=args.target,
-            subject=str(subject["subject"]),
-            source_format=str(source["format"]),
-            source_sha256=str(source["sha256"]),
-            blockers=selected,
-            family=family,
-            code=code,
-            limit=None if show_all else limit,
-        )
-        if args.json:
-            print(json.dumps(detail, indent=2, sort_keys=True))
-        else:
-            print(f"{headline} details={detail['returned']}/{detail['total']}")
-            for row in detail["blockers"]:
-                print(f"  {json.dumps(row, sort_keys=True)}")
-        return 0
-
-    blockers = subject.get("blockers")
-    groups = blockers.get("groups") if isinstance(blockers, Mapping) else None
-    if not isinstance(groups, list) or any(not isinstance(row, Mapping) for row in groups):
-        raise ValueError("operator status blocker groups are malformed")
-    selected_groups = [
-        dict(row) for row in groups
-        if (family is None or row.get("family") == family)
-        and (code is None or row.get("code") == code)
-    ]
-    if not show_all:
-        selected_groups = selected_groups[:limit]
-    if args.json:
-        rendered = copy.deepcopy(dict(payload))
-        rendered["subjects"][0]["blockers"]["groups"] = selected_groups
-        print(json.dumps(rendered, indent=2, sort_keys=True))
-        return 0
-    print(headline)
-    for row in selected_groups:
-        location = row.get("example_location")
-        suffix = "" if location is None else f" [{location}]"
-        print(
-            f"  blocker: {row.get('family')}:{row.get('code')} "
-            f"count={row.get('count')}{suffix}"
-        )
-    if not selected_groups and subject.get("next_action"):
-        print(f"  next: {subject.get('next_action')}")
-    return 0
 
 
 def _project_analyze(args: argparse.Namespace) -> int:
@@ -428,6 +300,14 @@ def _component_list_near(args: argparse.Namespace) -> int:
 
 
 def _component_list(args: argparse.Namespace) -> int:
+    if getattr(args, 'source_project', None) is not None:
+        from ..operator.source_export_guidance import list_component_source
+        return list_component_source(args)
+    if getattr(args, 'comparison_package', None) is not None:
+        from ..operator.comparison_guidance import list_component_comparison
+        return list_component_comparison(args)
+    if getattr(args,'services',False) or getattr(args,'service',None):
+        raise ValueError('service inventory requires --comparison-package or --source-project; no target build is needed')
     if args.near is not None:
         return _component_list_near(args)
     index = _operator_index(args)
@@ -486,6 +366,16 @@ def _component_selection(args: argparse.Namespace) -> tuple[str, Mapping[str, An
 
 
 def _component_status(args: argparse.Namespace) -> int:
+    if getattr(args, 'comparison_result', None) is not None:
+        from ..operator.comparison import inspect_component_comparison
+        return inspect_component_comparison(args)
+    if (getattr(args,'reuse_comparison',None) is not None or getattr(args,'case',None) is not None) and args.comparison_package is None:
+        raise ValueError('component status reuse/case preview requires --comparison-package')
+    if getattr(args, 'comparison_package', None) is not None:
+        from ..operator.comparison_guidance import status_component_comparison
+        return status_component_comparison(args)
+    if args.dependency_package or getattr(args,'dependency_source',None):
+        raise ValueError('dependency selection status requires --comparison-package')
     identity, row = _component_selection(args)
     products = row.get("products")
     if not isinstance(products, list):
@@ -583,6 +473,33 @@ def _component_start_work_package(
 
 
 def _component_start(args: argparse.Namespace) -> int:
+    if getattr(args,'interface_intent',None) is not None:
+        from ..operator.interface_authoring import start_interface_component
+        return start_interface_component(args)
+    if getattr(args,'operation_symbol',None) or getattr(args,'compiler',None) is not None:
+        raise ValueError('component start --operation-symbol/--compiler require --interface-intent')
+    if any(getattr(args,name,None) for name in ('state_owners','service_catalog','service_bridge','resource_checks','assumption_file','adapter_file','include_file')):
+        raise ValueError('component start --state-owners/--service-catalog/--service-bridge/--resource-checks/--assumption-file/--adapter-file/--include-file require --interface-intent')
+    if getattr(args,'experimental_package',None) is not None:
+        from ..operator.experimental import start_experimental_component
+        return start_experimental_component(args)
+    if getattr(args, 'comparison_package', None) is not None or getattr(args, 'comparison_result', None) is not None:
+        from ..operator.comparison import start_component_comparison
+        return start_component_comparison(args)
+    if getattr(args, 'reuse_source', None) is not None:
+        raise ValueError('component start --reuse-source requires --comparison-package, --comparison-result or --experimental-package')
+    if getattr(args, 'reuse_cases', None):
+        raise ValueError('component start --reuse-cases requires --comparison-package or --experimental-package')
+    if getattr(args, 'case_file', None):
+        raise ValueError('component start --case-file requires --comparison-package, --comparison-result or --experimental-package')
+    if any(getattr(args,name,None) for name in ('source_file','remove_source','private_header')):
+        raise ValueError('component start source-file/remove-source/private-header options require --comparison-package or --experimental-package')
+    if getattr(args, 'dependency_package', None):
+        raise ValueError('component start --dependency-package requires --comparison-package')
+    if getattr(args, 'dependency_source', None):
+        raise ValueError('component start --dependency-source requires --comparison-package or --experimental-package')
+    if getattr(args, 'refine_requirement', None):
+        raise ValueError('component start --refine-requirement requires --comparison-package or --experimental-package')
     component_id, row = _component_selection(args)
     if "workPackage" not in row.get("products", []):
         raise ValueError(f"component {component_id!r} has no V6 work package")
@@ -613,6 +530,21 @@ def _component_start(args: argparse.Namespace) -> int:
 
 
 def _component_check(args: argparse.Namespace) -> int:
+    if getattr(args, 'authoring_workspace', None) is not None:
+        from ..operator.interface_authoring import check_authoring_workspace
+        return check_authoring_workspace(args)
+    reuse_proof = getattr(args, 'reuse_proof', None)
+    if reuse_proof is not None and any(getattr(args, name, False) for name in (
+            'comparison_package', 'source', 'conditional', 'local_contracts', 'compare_baseline')):
+        raise ValueError('component check --reuse-proof requires ordinary proof checking')
+    if getattr(args, 'comparison_package', None) is not None:
+        from ..operator.comparison import check_component_comparison
+        return check_component_comparison(args)
+    if getattr(args, 'compiler_view', False):
+        raise ValueError('--compiler-view requires --authoring-workspace or --comparison-package')
+    if (any(getattr(args, name, None) is not None for name in ('output','history','history_baseline','case','case_arguments','reuse_comparison','dependency_package','dependency_source'))
+            or getattr(args, 'rerun', False)):
+        raise ValueError('component check output/history/case/reuse/rerun/dependency options require --comparison-package')
     local_contracts = getattr(args, "local_contracts", False)
     compare_baseline = getattr(args, 'compare_baseline', False)
     conditional = getattr(args, "conditional", False)
@@ -621,8 +553,12 @@ def _component_check(args: argparse.Namespace) -> int:
     regions = getattr(args, 'region', None)
     query_timeout = getattr(args, 'query_timeout', None)
     entry_query_timeout = getattr(args, 'entry_query_timeout', None)
-    if (regions or query_timeout is not None or entry_query_timeout is not None) and not conditional:
-        raise ValueError('component check --region, --query-timeout and --entry-query-timeout require --conditional')
+    if entry_query_timeout is not None and not conditional:
+        raise ValueError('component check --entry-query-timeout requires --conditional')
+    if query_timeout is not None and not conditional and not regions and reuse_proof is None:
+        raise ValueError('component check --query-timeout requires --region, --reuse-proof or --conditional')
+    if regions and (args.source or local_contracts):
+        raise ValueError('component check --region cannot be combined with source-only checking')
     selection = None
     if regions:
         from ..components.conditional_check_result import checked_obligation_selection
@@ -636,6 +572,24 @@ def _component_check(args: argparse.Namespace) -> int:
     if local_contracts and not args.source:
         raise ValueError("component check --local-contracts requires --source; local results do not qualify a provider")
     identity, row = _component_selection(args)
+    proof_product = None
+    if not conditional and (selection is not None or reuse_proof is not None):
+        if 'proofCheckFor' not in row.get('products', []):
+            raise ValueError(f'component {identity!r} has no parameterized ordinary proof-check product')
+        from ..operator.proof_check import render_component_proof_check, retain_component_proof
+        request = {'obligations': selection}
+        if query_timeout is not None:
+            request['queryTimeoutSeconds'] = query_timeout
+        if reuse_proof is not None:
+            request['previousQueryEvidencePath'] = retain_component_proof(
+                path=reuse_proof, component_id=identity, capture=_capture)
+        artifact = ('contextual-proof-diagnostic.json' if selection is not None
+                    else 'semantic-provider-qualification.json')
+        path, payload = _realize_artifact(args,
+            f'components.units.{_attr_segment(identity)}.proofCheckFor', artifact, apply_arguments=request)
+        if selection is not None:
+            return render_component_proof_check(path=path, payload=payload, component_id=identity, as_json=args.json)
+        proof_product = (path, payload)
     if compare_baseline:
         if 'sourceEditCheck' not in row.get('products', []):
             raise ValueError(f'component {identity!r} has no configured source-edit baseline and boundary')
@@ -675,9 +629,7 @@ def _component_check(args: argparse.Namespace) -> int:
         )
         return render_component_source_check(path=path, payload=payload, target_id=args.target,
                                              component_id=identity, as_json=args.json)
-    if args.json:
-        raise ValueError("component check --json requires --source; use component status --json for qualification")
-    if "qualification" not in row.get("products", []):
+    if proof_product is None and "qualification" not in row.get("products", []):
         from ..operator.proof_diagnostics import component_binding_details
 
         details = []
@@ -699,7 +651,7 @@ def _component_check(args: argparse.Namespace) -> int:
         SemanticProviderQualificationV2,
     )
 
-    path, payload = _realize_artifact(
+    path, payload = proof_product if proof_product is not None else _realize_artifact(
         args,
         f"components.units.{_attr_segment(identity)}.qualification",
         "semantic-provider-qualification.json",
@@ -707,6 +659,9 @@ def _component_check(args: argparse.Namespace) -> int:
     qualification = SemanticProviderQualificationV2.parse(payload)
     if not qualification.provider_id.endswith(f".{identity}.portable-c"):
         raise ValueError("component qualification binds another component")
+    if args.json:
+        print(json.dumps(qualification.payload, indent=2, sort_keys=True))
+        return 0 if qualification.payload['status'] == 'complete' else 1
     if qualification.payload["status"] != "complete":
         from ..operator.proof_diagnostics import component_failure_details
 
@@ -718,6 +673,9 @@ def _component_check(args: argparse.Namespace) -> int:
             f"{len(qualification.payload['blockers'])} blocker(s)"
             + ("\n" + "\n".join(details) if details else "")
         )
+    print(f'{identity}: complete provider qualification')
+    print(f'Evidence: {path.parent}')
+    print('Next: select the qualified replacement and check the combined native link.')
     return 0
 
 
@@ -980,6 +938,12 @@ def _boundary_inspect(args: argparse.Namespace) -> int:
                 f"  operation: {operation.get('operation_id')} "
                 f"symbol={operation.get('symbol')}"
             )
+        from ..components.work_package_v6 import caller_definition_inspection
+        for line in caller_definition_inspection(payload):
+            print(line)
+        from ..components.work_package_editing import editing_input_inspection
+        for line in editing_input_inspection(payload):
+            print(line)
         for issue in payload.get("blockers", []):
             print(f"  blocker: {issue}")
         return 0
@@ -1015,7 +979,15 @@ def _boundary_propose(args: argparse.Namespace) -> int:
         print(f"wrote component seed work package: {args.output.resolve()}")
         return 0
     if args.output is not None:
-        raise ValueError("--output is currently supported for component seeds")
+        if subject.get("kind") != "component":
+            raise ValueError("--output requires a component or component seed")
+        component_id = canonical.removeprefix("component:")
+        root, package = _component_start_work_package(args, component_id)
+        plan = _component_start_plan(component_id=component_id, package=package,
+                                     target_path=f"components/{component_id}.c")
+        _copy_component_start_package(source=root, output=args.output.resolve(), plan=plan)
+        print(f"wrote writable component boundary package: {args.output.resolve()}")
+        return 0
     return _build(
         args,
         f"boundaries.subjects.{_attr_segment(canonical)}.source",
@@ -1026,10 +998,13 @@ def _boundary_propose(args: argparse.Namespace) -> int:
 def _boundary_adopt(args: argparse.Namespace) -> int:
     subject = _boundary_subject(args)
     canonical = str(subject["canonicalSubject"])
-    if args.output is None:
-        raise ValueError("boundary adopt requires --output FILE")
+    if args.output is None and not args.apply:
+        raise ValueError("boundary adopt requires --output PATH or --apply")
     configured_seed = (subject.get("kind") == "component"
                        and args.subject.startswith("component-seed:"))
+    if args.apply and (args.input is None or subject.get('kind') != 'component'
+                       or subject.get('dynamic') is True or configured_seed):
+        raise ValueError('boundary adopt --apply requires a configured component and --input DIR')
     if subject.get("dynamic") is True or (configured_seed and args.input is not None):
         if args.input is None:
             raise ValueError("component seed adoption requires --input DIR with "
@@ -1045,12 +1020,36 @@ def _boundary_adopt(args: argparse.Namespace) -> int:
         print("authority=no; update the configured inputs and check the edited source"
               if configured_seed else "authority=no; configure these inputs, then use component start")
         return 0
+    if args.input is not None and subject.get("kind") == "component":
+        _, package = _component_start_work_package(args, canonical.removeprefix("component:"))
+        if 'caller_definition' not in package['requirements']:
+            if args.apply:
+                from .component_apply import apply_reviewed_component_inputs
+                result = apply_reviewed_component_inputs(
+                    draft=args.input.resolve(), package=package, target=args.target,
+                    bundle=_local_target_bundle(args),
+                    authoring_paths=_operator_index(args)['components'].get('authoringPaths'))
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return 0
+            from .component_review import write_reviewed_configured_component_inputs
+            write_reviewed_configured_component_inputs(draft=args.input.resolve(), package=package,
+                                                       program_id=args.target, output=args.output.resolve())
+            print(f'wrote canonical component draft inputs: {args.output.resolve()}')
+            print('authority=no; review changed contracts and recheck transport, coverage/progress and qualification')
+            return 0
+        if args.apply:
+            raise ValueError('caller-definition adoption requires --output PATH; target application is not supported')
+        from .component_start import adopt_caller_definition
+        adopt_caller_definition(draft=args.input.resolve(), package=package, output=args.output.resolve())
+        print(f"adopted declared caller definition: {args.output.resolve()}")
+        print("authority=no; run component check --source --local-contracts with the edited definition")
+        return 0
     if args.input is not None:
-        raise ValueError("--input is supported only for component seeds")
+        raise ValueError("--input requires a component or component seed")
     if subject.get("kind") == "component":
         component_id = canonical.removeprefix("component:")
         raise ValueError(
-            "component adoption was replaced by the writable transition: "
+            "component adoption requires --input DIR; for the writable source transition use: "
             f"component start {args.target} {component_id} --apply"
         )
     if "intent" not in subject.get("products", []):
@@ -1162,16 +1161,6 @@ def _library_status(args: argparse.Namespace) -> int:
             if blocker.get("next_action"):
                 print(f"  next: {blocker.get('next_action')}")
     return 0
-
-
-def _parse_rva(value: str) -> int:
-    try:
-        parsed = int(value, 0)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("RVA must be an integer") from error
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("RVA must not be negative")
-    return parsed
 
 
 def _library_inspect(args: argparse.Namespace) -> int:
@@ -1406,12 +1395,69 @@ def _candidate_configuration(
     return str(configuration), row
 
 
+def _candidate_policy(args: argparse.Namespace) -> int:
+    from ..operator.experimental import prepare_candidate_policy
+    return prepare_candidate_policy(args)
+
+
 def _candidate_build(args: argparse.Namespace) -> int:
-    configuration, _ = _candidate_configuration(args)
+    reuse_proof = getattr(args, 'reuse_proof', None)
+    if args.experimental_comparison or args.component_comparison or args.experimental_policy or args.output or getattr(args,'reuse_experimental',None):
+        if reuse_proof:
+            raise ValueError('candidate --reuse-proof cannot combine with experimental comparison options')
+        from ..operator.experimental import build_candidate_experiment
+        return build_candidate_experiment(args)
+    configuration, row = _candidate_configuration(args)
+    if reuse_proof:
+        from ..operator.proof_check import retain_candidate_proofs
+        evidence = retain_candidate_proofs(entries=reuse_proof, configuration=row,
+            product='realizationFor', capture=_capture)
+        return _build(args, f'candidate.configurations.{_attr_segment(configuration)}.realizationFor',
+                      apply_arguments={'proofEvidenceByComponent': evidence})
     return _build(
         args,
         f"candidate.configurations.{_attr_segment(configuration)}.realization",
     )
+
+
+def _candidate_apply(args: argparse.Namespace) -> int:
+    from ..candidate.source_project_apply import apply_project_sources
+    report = apply_project_sources(project=args.project, target_id=args.target,
+        comparisons=args.comparison, component_ids=args.component, remove_component_ids=args.remove_component,
+        accept_boundary_changes=args.accept_boundary_change, assembly_command=args.assembly_command,
+        check_commands=args.check_command)
+    print('applied component selection and assembly to '+str(args.project))
+    print('previous project retained at '+report['backup'])
+    print('receipt and command logs: '+report['transaction'])
+    print(f"passed {report['checks_passed']} supplied integration commands; no formal qualification is granted")
+    return 0
+
+
+def _candidate_export(args: argparse.Namespace) -> int:
+    from ..candidate.source_export import export_comparison_sources
+    report = export_comparison_sources(comparisons=args.comparison, target_id=args.target, output=args.output,
+                                      update=args.update, update_components=args.update_components,
+                                      accept_boundary_changes=args.accept_boundary_change, component_ids=args.component,
+                                      remove_component_ids=args.remove_component)
+    print(f"exported {len(report['components'])} component source packages to {args.output}")
+    print('scope: component library; application entry and platform/service bindings remain required')
+    if 'update' in report:
+        print('previous library retained at '+report['update']['backup'])
+        if 'updated_components' in report['update']:
+            print('components refreshed: '+', '.join(report['update']['updated_components']))
+            print('components retained from existing export: '+', '.join(report['update']['retained_components']))
+        if report['update'].get('added_components'):
+            print('components added after boundary review: '+', '.join(report['update']['added_components']))
+        if report['update'].get('removed_components'):
+            print('components removed after review: '+', '.join(report['update']['removed_components']))
+        for identity,fields in report['update'].get('accepted_boundary_changes',{}).items():
+            print('accepted boundary change for '+identity+': '+', '.join(fields))
+        drafts=report['update'].get('preserved_source_drafts',{})
+        if drafts:
+            print('unchecked C drafts preserved (previous comparison records unchanged): '+', '.join(sorted(drafts)))
+            print('compare and publish these drafts before assembling checked source')
+        print('rebuild the library and rerun affected program comparisons; this update grants no qualification')
+    return 0
 
 
 def _candidate_list(args: argparse.Namespace) -> int:
@@ -1446,10 +1492,20 @@ def _candidate_list(args: argparse.Namespace) -> int:
 
 def _candidate_status(args: argparse.Namespace) -> int:
     configuration, configuration_row = _candidate_configuration(args)
+    reuse_proof = getattr(args, 'reuse_proof', None)
+    request = {}
+    product = 'selection'
+    if reuse_proof:
+        from ..operator.proof_check import retain_candidate_proofs
+        evidence = retain_candidate_proofs(entries=reuse_proof, configuration=configuration_row,
+            product='selectionFor', capture=_capture)
+        product = 'selectionFor'
+        request['apply_arguments'] = {'proofEvidenceByComponent': evidence}
     path, selection_payload = _realize_artifact(
         args,
-        f"candidate.configurations.{_attr_segment(configuration)}.selection",
+        f"candidate.configurations.{_attr_segment(configuration)}.{product}",
         "implementation-selection.json",
+        **request,
     )
     payload, raw_blockers = project_candidate_selection(
         target_id=args.target,
@@ -1496,6 +1552,9 @@ def _candidate_status(args: argparse.Namespace) -> int:
 
 
 def _candidate_test(args: argparse.Namespace) -> int:
+    if args.experimental_package or args.output or args.experimental_timeout is not None:
+        from ..operator.experimental import test_candidate_experiment
+        return test_candidate_experiment(args)
     candidate = _operator_index(args).get("candidate")
     suites = candidate.get("testSuites", {}) if isinstance(candidate, Mapping) else {}
     if not isinstance(suites, Mapping) or not suites:
@@ -1511,147 +1570,9 @@ def _candidate_test(args: argparse.Namespace) -> int:
     )
 
 
-def _add_component_selector(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("unit", type=_identifier, help="component unit id")
-
-
-def _add_progress_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--limit", type=_positive, default=20)
-    parser.add_argument("--all", action="store_true")
-    parser.add_argument("--family")
-    parser.add_argument("--code")
-    parser.add_argument("--details", action="store_true")
-
-
 def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
-    _add_target_arguments(parser)
-    if name == "project analyze":
-        return _project_analyze
-    if name == "project status":
-        _add_progress_arguments(parser)
-        return _project_status
-    if name == "project check":
-        parser.add_argument("--acceptance", action="store_true")
-        return _project_check
-    if name == "component list":
-        parser.add_argument("--near", type=_parse_rva, metavar="RVA",
-                            help="list bounded boundary alternatives at this instruction")
-        parser.add_argument("--json", action="store_true")
-        return _component_list
-    if name in {
-        "component status", "component build", "component start", "component check",
-    }:
-        _add_component_selector(parser)
-        if name == "component status":
-            _add_progress_arguments(parser)
-            parser.add_argument(
-                "--development",
-                action="store_true",
-                help=(
-                    "show contract/source progress without requiring machine-derived "
-                    "activation authority"
-                ),
-            )
-            return _component_status
-        if name == "component build":
-            return _component_build
-        if name == "component start":
-            destination = parser.add_mutually_exclusive_group(required=True)
-            destination.add_argument(
-                "--output", type=Path, metavar="DIR",
-                help="copy the checked package into a writable directory",
-            )
-            destination.add_argument(
-                "--apply", action="store_true",
-                help="atomically add the skeleton and its canonical source intent",
-            )
-            return _component_start
-        parser.add_argument("--source", action="store_true",
-                            help="check source compilation/profile without requiring or granting qualification")
-        parser.add_argument('--compare-baseline', action='store_true',
-                            help='with --source, compare a configured source edit; does not import baseline application proofs')
-        parser.add_argument("--conditional", action="store_true",
-                            help="check under configured runtime contracts without provider or activation authority")
-        parser.add_argument('--region', action='append', metavar='OPERATION/OBLIGATION',
-                            help='with --conditional, check selected existing regions and keep other coverage unresolved (repeatable)')
-        parser.add_argument('--query-timeout', type=_positive, metavar='SECONDS',
-                            help='with --conditional, override the per-query timeout, not the whole-command duration')
-        parser.add_argument('--entry-query-timeout', type=_positive, metavar='SECONDS',
-                            help='with --conditional, give independent entry queries their own timeout; defaults to --query-timeout')
-        parser.add_argument("--local-contracts", action="store_true",
-                            help="with --source, check configured local memory and service contracts without provider authority")
-        parser.add_argument("--json", action="store_true", help="show structured --source or --conditional feedback")
-        return _component_check
-    if name == "boundary status":
-        parser.add_argument("--json", action="store_true")
-        return _boundary_status
-    if name in {
-        "boundary inspect",
-        "boundary propose",
-        "boundary adopt",
-        "boundary check",
-    }:
-        parser.add_argument("subject", type=_boundary_subject_identity)
-        if name in {"boundary inspect", "boundary propose"}:
-            parser.add_argument("--proposal", type=_opaque_identity, metavar="ID",
-                                help="select an explicit component-seed alternative")
-        if name == "boundary inspect":
-            parser.add_argument("--json", action="store_true")
-            return _boundary_inspect
-        if name == "boundary propose":
-            parser.add_argument("--output", type=Path, metavar="DIR")
-            return _boundary_propose
-        if name == "boundary adopt":
-            parser.add_argument("--input", type=Path, metavar="DIR",
-                                help="edited component seed with canonical interface and binding")
-            parser.add_argument("--output", type=Path, metavar="PATH")
-            return _boundary_adopt
-        return _boundary_check
-    if name == "library status":
-        parser.add_argument("--json", action="store_true")
-        return _library_status
-    if name == "library inspect":
-        selector = parser.add_mutually_exclusive_group(required=True)
-        selector.add_argument("--rva", type=_parse_rva)
-        selector.add_argument("--island", type=_opaque_identity)
-        selector.add_argument("--family", type=_opaque_identity)
-        parser.add_argument("--json", action="store_true")
-        return _library_inspect
-    if name == "library adopt":
-        parser.add_argument("--island", required=True, type=_opaque_identity)
-        selection = parser.add_mutually_exclusive_group(required=True)
-        selection.add_argument(
-            "--recipe",
-            type=_opaque_identity,
-            help="adopt the uniquely matching reusable implementation recipe",
-        )
-        selection.add_argument(
-            "--draft",
-            type=_opaque_identity,
-            metavar="RECIPE",
-            help="record an implementation recipe that still needs qualification",
-        )
-        parser.add_argument("--replace", action="store_true")
-        parser.add_argument("--dry-run", action="store_true")
-        return _library_adopt
-    if name == "library check":
-        parser.add_argument("--selection", type=_opaque_identity)
-        return _library_check
-    if name == "candidate list":
-        parser.add_argument("--json", action="store_true")
-        return _candidate_list
-    if name == "candidate status":
-        parser.add_argument("--configuration", type=_identifier)
-        _add_progress_arguments(parser)
-        return _candidate_status
-    if name == "candidate build":
-        parser.add_argument("--configuration", type=_identifier)
-        return _candidate_build
-    if name == "candidate test":
-        parser.add_argument("--suite", type=_identifier)
-        return _candidate_test
-    raise ValueError(f"unsupported operator workflow: {name}")
+    from .workflow_options import configure_workflow_command
+    return configure_workflow_command(name, parser)
 
 
 __all__ = ["configure_command"]

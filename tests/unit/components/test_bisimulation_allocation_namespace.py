@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,14 +68,14 @@ class AllocationNamespaceTests(unittest.TestCase):
                                                   exact_c_slice=system["exact_c_slice"])
             module = Path(__file__).resolve().parents[3] / 'nix/jq/strong-contextual-proof.jq'
             for query, expected in (("spx_cut_capture_codecs", 0), ("spx_unconditional_operation_entries", 1)):
-                checked = subprocess.run([shutil.which('jq'), '-e', module.read_text() + '\n' + query],
+                checked = run_jq_reader([shutil.which('jq'), '-e', module.read_text() + '\n' + query],
                     input=json.dumps(system), capture_output=True, text=True, timeout=30)
                 self.assertEqual(checked.returncode, expected, checked.stderr)
             for kind in ('input', 'admission'):
                 missing = copy.deepcopy(system)
                 row = missing['proof']['models']['operation_models'][0]['obligation_models'][0]
                 row['required_assertion_descriptions'].remove(f'spx-bisimulation-allocation-entry-{kind}:run')
-                checked = subprocess.run([shutil.which('jq'), '-e', module.read_text() + '\nspx_cut_capture_codecs'],
+                checked = run_jq_reader([shutil.which('jq'), '-e', module.read_text() + '\nspx_cut_capture_codecs'],
                     input=json.dumps(missing), capture_output=True, text=True, timeout=30)
                 self.assertEqual(checked.returncode, 1, checked.stderr)
 

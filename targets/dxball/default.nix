@@ -25,7 +25,7 @@ let
       {
         nativeBuildInputs = [
           wine
-          pkgs.xvfb-run
+          sdk.tools.headlessWayland
         ];
         __contentAddressed = true;
       }
@@ -35,7 +35,7 @@ let
         export WINEDEBUG=-all
         export WINEDLLOVERRIDES="mscoree,mshtml="
         mkdir -p "$HOME"
-        xvfb-run -a -s '-screen 0 640x480x24' sh -eu -c '
+        spaghetti-headless-wayland sh -eu -c '
           wineboot -u >/dev/null 2>&1
           wine ${installer}/DXBall19.EXE /s >/dev/null 2>&1
           wineserver -w
@@ -109,6 +109,44 @@ let
     };
   };
   components = workflow.components;
+  lifecycleFixture = ../../tests/fixtures/dxball-directdraw-lifecycle;
+  lifecycleExact = sdk.lifting.exactCSlice {
+    componentId = "directdraw-init";
+    namePrefix = "spaghetti-extractor-dxball";
+    transferPlan = workflow.transferPlan.plan;
+    bindingIntent = components.bindingIntentPaths.directdraw-init;
+    bisimulationIntent = components.bisimulationIntents.directdraw-init or null;
+  };
+  lifecycleComparison = sdk.lifting.comparisonPackage {
+    namePrefix = "spaghetti-extractor-dxball-lifecycle";
+    targetId = "dxball";
+    componentId = "directdraw-init";
+    platform = "host";
+    interfacePackage = ./intent/interfaces-v5/directdraw-init.json;
+    sourcePackage = components.sourcePackages.directdraw-init;
+    adapterFiles = {
+      "driver.c" = lifecycleFixture + "/driver.c";
+      "behavioral-fn-0000cd5c.c" = "${lifecycleExact.derivation}/behavioral-fn-0000cd5c.c";
+      "behavioral-support.c" = "${lifecycleExact.derivation}/behavioral-support.c";
+    };
+    includeFiles = builtins.listToAttrs (map (name: {
+      inherit name; value = "${lifecycleExact.derivation}/${name}";
+    }) [ "behavioral-c.h" "state-machine-runtime.h" "component-exact-c-slice-v1.json" ]);
+    originalFiles = [
+      "adapters/behavioral-fn-0000cd5c.c" "adapters/behavioral-support.c"
+      "headers/behavioral-c.h" "headers/state-machine-runtime.h"
+      "headers/component-exact-c-slice-v1.json"
+    ];
+    oracleKind = "retained-c";
+    cases = map (i: { id = toString i; arguments = [ (toString i) ]; }) (pkgs.lib.range 0 7);
+    observationFields = [ "result" "window_alive" "window_hidden" "draw_alive" "state" "services" ];
+    assumptions = [
+      "Machine-derived C oracle at RVA 0xcd5c; window-creation prefix and actual Win32 services excluded"
+      "Two early initialization failure paths; controlled DirectDraw HRESULTs and window lifecycle"
+      "Explicit continuation frame and bounded sparse memory; unknown reads, writes and calls reject"
+    ];
+    scope = "DirectDraw-create/cooperative-level failure through hide, message, destroy and return";
+  };
   componentMigrationStatus = pkgs.writeTextFile {
     name = "dxball-component-v6-migration-status";
     destination = "/component-v6-migration-status.json";
@@ -533,7 +571,7 @@ let
             {code:"provider_facet_incomplete", facet:"contextual_refinement"}
           ]
         ' "$provider/semantic-provider-qualification.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           .status == "incomplete" and
           .proof.status == "incomplete" and
@@ -541,9 +579,9 @@ let
           spx_contextual_proof_system and
           (.proof.shards | length) == 1 and
           ([.proof.shards[].nonvacuity.status] | all(. == "satisfied")) and
-          .proof.checker.model_bounds.maximum_calls_per_obligation == 27 and
-          .proof.checker.model_bounds.maximum_exact_stack_cached_accesses == 0 and
-          .proof.checker.model_bounds.maximum_exact_stack_cached_bytes == 0 and
+          .proof.checker.model_bounds.maximum_calls_per_obligation == 11 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_accesses == 7 and
+          .proof.checker.model_bounds.maximum_exact_stack_cached_bytes == 28 and
           ([.proof.shards[] | select(.status != "satisfied") | {
             shard_id,
             status,
@@ -552,7 +590,7 @@ let
             nonvacuity_status:.nonvacuity.status,
             failed_queries:[.partitioned_evidence.queries[] | select(
               .status != "satisfied"
-            ) | {kind, property_id, code, detail}]
+            ) | {kind, status, expected_property_ids, safety_partition, code, detail}]
           }]) == [{
             shard_id:"initialize:entry:semantic-transfer:original-cutpoint-0000cd5c-0000cd6a",
             status:"incomplete",
@@ -561,17 +599,40 @@ let
             nonvacuity_status:"satisfied",
             failed_queries:[{
               kind:"language_safety",
-              property_id:null,
+              status:"incomplete",
+              expected_property_ids:["spx_bisimulation_check_0000.array_bounds.1"],
+              safety_partition:"bounds",
+              code:"cbmc_timeout",
+              detail:"exceeded 300 seconds"
+            }, {
+              kind:"language_safety",
+              status:"incomplete",
+              expected_property_ids:["dxball_directdraw_initialize.pointer_dereference.1"],
+              safety_partition:"pointer",
+              code:"cbmc_timeout",
+              detail:"exceeded 300 seconds"
+            }, {
+              kind:"language_safety",
+              status:"incomplete",
+              expected_property_ids:["dxball_directdraw_initialize.pointer_dereference.519"],
+              safety_partition:"pointer",
+              code:"cbmc_timeout",
+              detail:"exceeded 300 seconds"
+            }, {
+              kind:"language_safety",
+              status:"incomplete",
+              expected_property_ids:["spx_behavioral_run.pointer_dereference.36"],
+              safety_partition:"pointer",
               code:"cbmc_timeout",
               detail:"exceeded 300 seconds"
             }]
           }]
         ' "$provider/contextual-refinement-result.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           spx_strong_cutpoint_plan
         ' "$provider/component-proof-plan-v1.json" >/dev/null
-        jq -L ${../../nix/jq} -e '
+        jq -L ${sdk.validation.jqModules} -e '
           include "strong-contextual-proof";
           spx_contextual_exact_c_slice
         ' "$provider/exact-c/component-exact-c-slice-v1.json" >/dev/null
@@ -772,6 +833,7 @@ sdk.target.pe32Bundle {
   targetAssets.boundary_schema = [ "intent/boundaries.json" ];
   targetAssets.boundary_source = [ "source/window-class-boundary.c" ];
   extraArtifacts.boundaries = boundaries;
+  extraArtifacts.directdraw-lifecycle-comparison-package = lifecycleComparison.derivation;
   extraArtifacts.directdraw-init-v6-provider = directdrawProvider.derivation;
   extraArtifacts.directdraw-init-contextual-bisimulation-v6 = directdrawProofGate;
   checks = v6ComponentChecks // {

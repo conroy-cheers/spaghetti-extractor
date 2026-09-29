@@ -1,5 +1,5 @@
 # spaghetti-extractor-python-role: operator
-{
+args@{
   pkgs,
   pythonEnv,
   namePrefix,
@@ -90,6 +90,8 @@ let
 in
 assert _disjoint && _intents;
 {
+  withComponentPackages = packages: import ./boundary-workbench.nix
+    (args // { componentPackages = packages; });
   configured = allSubjects != [ ];
   inherit subjects;
   status = phase.derivation;

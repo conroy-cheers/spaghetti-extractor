@@ -300,7 +300,7 @@ let
         ;
     };
   mkPe32Workflow =
-    {
+    workflowArgs@{
       original,
       binaryIdentity,
       targetId ? binaryIdentity,
@@ -319,6 +319,7 @@ let
         maxCandidatesPerSeed = 12;
       },
       proofSmtSolver ? null,
+      proofEvidenceByComponent ? { },
       namePrefix ? "spaghetti-extractor-${targetId}",
     }:
     let
@@ -677,6 +678,12 @@ let
                 }).exactCSlice;
             in portableCWorkPackageProviderV2 ({
             smtSolver = proofSmtSolver;
+            previousQueryEvidence = if !(builtins.hasAttr componentId proofEvidenceByComponent) then null else
+              let
+                path = proofEvidenceByComponent.${componentId};
+                matched = builtins.match "(/nix/store/[a-z0-9]{32}-[^/]+)(/.*)?" path;
+              in assert lib.assertMsg (matched != null) "proof evidence must be an imported store package";
+              builtins.appendContext path { "${builtins.head matched}" = { path = true; }; };
             semanticSlice = components.v6SemanticSlices.${componentId}.semanticSlice;
             bindingIntent = components.bindingIntentPaths.${componentId};
             interfacePackage = components.v5Interfaces.${componentId}.derivation;
@@ -808,6 +815,20 @@ let
           namePrefix = "${namePrefix}-${configurationId}";
         }
       ) semanticImplementationSelections;
+      candidateWithProofEvidence = { configurationId, proofEvidenceByComponent }:
+        assert lib.assertMsg (builtins.elem configurationId configurationIds)
+          "proof evidence names an unknown candidate configuration";
+        assert lib.assertMsg (builtins.isAttrs proofEvidenceByComponent)
+          "candidate proof evidence must map component IDs to retained packages";
+        assert lib.assertMsg (builtins.all (id:
+          builtins.elem id portableSemanticProviderSets.${configurationId}.directIds
+          && builtins.isString proofEvidenceByComponent.${id}) (builtins.attrNames proofEvidenceByComponent))
+          "proof evidence names an unselected component or malformed package path";
+        let current = mkPe32Workflow (workflowArgs // { inherit proofEvidenceByComponent; });
+        in {
+          selection = current.semanticImplementationSelections.${configurationId};
+          realization = current.nativeRealizations.${configurationId};
+        };
       behavioralC = behavioralCSource;
       singleModuleProjectIntent = pe32SingleModuleProjectIntent {
         inherit namePrefix moduleInterface;
@@ -861,6 +882,10 @@ let
     assert lib.assertMsg (
       libraryCatalogConfigured || libraryAdoptionIntents == { }
     ) "library adoption intents require a configured catalog";
+    assert lib.assertMsg (builtins.isAttrs proofEvidenceByComponent && builtins.all
+      (id: builtins.hasAttr id portableSemanticProvidersByComponent
+        && builtins.isString proofEvidenceByComponent.${id}) (builtins.attrNames proofEvidenceByComponent))
+      "proof evidence must name configured portable components and store package paths";
     {
       inherit
         analysis
@@ -886,6 +911,7 @@ let
         portableSemanticProviderSets
         semanticImplementationSelections
         nativeRealizations
+        candidateWithProofEvidence
         singleModuleProjectIntent
         singleModuleProjectLoadPlan
         singleModuleProjects
@@ -1062,6 +1088,7 @@ let
       checks ? { },
       acceptanceChecks ? { },
       candidateTests ? { },
+      callerCompositions ? { },
       targetAssets ? { },
       apps ? { },
       project ? null,
@@ -1070,6 +1097,15 @@ let
       metadata = parseTargetMetadata targetRoot;
       hasComponents = workflow.hasComponents or false;
       hasProject = project != null;
+      componentWorkPackages = if !hasComponents then { } else lib.mapAttrs
+        (id: package: if builtins.hasAttr id callerCompositions
+          then package.withCallerDefinition callerCompositions.${id}.definition
+          else package)
+        workflow.components.v6WorkPackages;
+      bundleCalls = if callerCompositions == { } then workflow.calls else
+        workflow.calls.withComponentPackages (lib.mapAttrs'
+          (id: package: lib.nameValuePair "component:${id}" package) componentWorkPackages);
+
       targetRootString = toString targetRoot;
       relativeTargetPath =
         path:
@@ -1109,7 +1145,7 @@ let
         // {
           path = relativeTargetPath asset.path;
         }
-      ) workflow.calls.assetInventory;
+      ) bundleCalls.assetInventory;
       libraryIntentAssets =
         if !(metadata.paths ? libraries) then
           [ ]
@@ -1150,6 +1186,11 @@ let
       declaredAssets =
         metadataAssets
         ++ componentAssets
+        ++ lib.mapAttrsToList (id: composition: {
+          path = relativeTargetPath composition.definition;
+          role = "component_caller_definition";
+          owner = id;
+        }) callerCompositions
         ++ callAssets
         ++ libraryIntentAssets
         ++ candidateTestAssets
@@ -1220,8 +1261,8 @@ let
           status = if workflow.libraryOperator == null then null else workflow.libraryOperator.status;
           };
         boundaries = {
-          status = workflow.calls.status;
-          subjects = workflow.calls.subjects;
+          status = bundleCalls.status;
+          subjects = bundleCalls.subjects;
         };
         platform = {
           qualified-v1 = workflow.qualifiedPlatform.derivation;
@@ -1236,7 +1277,7 @@ let
           semantic-slices-v2 = lib.mapAttrs (
             _: value: value.derivation
           ) workflow.components.v6SemanticSlices;
-          work-packages-v6 = lib.mapAttrs (_: value: value.derivation) workflow.components.v6WorkPackages;
+          work-packages-v6 = lib.mapAttrs (_: value: value.derivation) componentWorkPackages;
         };
         diagnostics = {
           target-ownership = ownership;
@@ -1295,7 +1336,7 @@ let
       standardChecks = {
         target-bundle-assets = ownership;
         target-input-identity = targetInputIdentity;
-        boundaries = workflow.calls.check;
+        boundaries = bundleCalls.check;
         qualified-platform = workflow.qualifiedPlatform.derivation;
       }
       // lib.optionalAttrs (workflow ? transferPlan) {
@@ -1322,7 +1363,7 @@ let
           (lib.mapAttrsToList (name: value: {
             inherit name;
             path = value.derivation;
-          }) workflow.components.v6WorkPackages);
+          }) componentWorkPackages);
         default-semantic-implementation-selection =
           workflow.semanticImplementationSelections.${defaultConfiguration}.derivation;
       };
@@ -1391,21 +1432,32 @@ let
                 interfacePackage = workflow.components.v5Interfaces.${id}.derivation;
                 sourcePackage = workflow.components.sourcePackages.${id};
                 localContracts = true;
+                callerComposition = callerCompositions.${id} or null;
               }).derivation;
             }
             // lib.optionalAttrs (builtins.hasAttr id workflow.components.v6SemanticSlices) {
               semanticSlice = workflow.components.v6SemanticSlices.${id}.derivation;
             }
-            // lib.optionalAttrs (builtins.hasAttr id workflow.components.v6WorkPackages) {
-              workPackage = workflow.components.v6WorkPackages.${id}.derivation;
+            // lib.optionalAttrs (builtins.hasAttr id componentWorkPackages) {
+              workPackage = componentWorkPackages.${id}.derivation;
             }
             // lib.optionalAttrs (builtins.hasAttr id workflow.portableSemanticProvidersByComponent) {
               qualification = workflow.portableSemanticProvidersByComponent.${id}.derivation;
+            }
+            // lib.optionalAttrs (builtins.hasAttr id workflow.portableSemanticProvidersByComponent
+              && workflow.portableSemanticProvidersByComponent.${id} ? proofCheckFor) {
+              proofCheckFor = workflow.portableSemanticProvidersByComponent.${id}.proofCheckFor;
             }
           ) (lib.filterAttrs (_: value: value.kind == "component") workflow.components.liftUnitIndex);
       candidateConfigurations = lib.genAttrs configurationIds (id: {
         selection = workflow.semanticImplementationSelections.${id}.derivation;
         realization = checkedCandidateBuilds.${id};
+      } // lib.optionalAttrs (workflow ? candidateWithProofEvidence) {
+        selectionFor = { proofEvidenceByComponent }:
+          (workflow.candidateWithProofEvidence { configurationId = id; inherit proofEvidenceByComponent; }).selection.derivation;
+        realizationFor = { proofEvidenceByComponent }:
+          checkedCandidateBuild id
+            (workflow.candidateWithProofEvidence { configurationId = id; inherit proofEvidenceByComponent; }).realization;
       });
       candidateTestAggregate =
         if candidateTests == { } then
@@ -1457,8 +1509,7 @@ let
         '';
       };
       projectStatus = projectStatusPhase.derivation;
-      checkedCandidateBuilds = lib.mapAttrs (
-        configurationId: realization:
+      checkedCandidateBuild = configurationId: realization:
         pkgs.runCommand "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
           {
             nativeBuildInputs = [ context.pythonEnv pkgs.jq pkgs.coreutils ];
@@ -1495,8 +1546,8 @@ let
             cp -rs ${realization.derivation}/. "$out/"
             ln -s ${targetInputIdentity}/target-input-identity.json \
               "$out/target-input-identity.json"
-          ''
-      ) workflow.nativeRealizations;
+          '';
+      checkedCandidateBuilds = lib.mapAttrs checkedCandidateBuild workflow.nativeRealizations;
       checkedCandidateTests = lib.mapAttrs (
         id: test:
         pkgs.linkFarm "spaghetti-extractor-${metadata.id}-${id}-checked-candidate-test" [
@@ -1522,9 +1573,9 @@ let
         units = componentUnits;
       };
       operatorBoundaries = {
-        inherit (workflow.calls) status check;
+        inherit (bundleCalls) status check;
         subjects = lib.mapAttrs (_: value: builtins.removeAttrs value [ "kind" ])
-          workflow.calls.subjects;
+          bundleCalls.subjects;
       };
       operatorLibraries = if !workflow.libraryCatalogConfigured then null else {
         status = workflow.libraryOperator.status;
@@ -1560,6 +1611,8 @@ let
         project.products = builtins.attrNames operatorProject;
         components = {
           products = [ "proposals" ];
+          authoringPaths = if !hasComponents || !(workflow.components ? authoringPaths) then null else
+            lib.mapAttrs (_: relativeTargetPath) workflow.components.authoringPaths;
           units = if !hasComponents then { } else lib.mapAttrs
             (id: value: {
               inherit (value) label entryRvas;
@@ -1582,7 +1635,7 @@ let
           subjects = lib.mapAttrs (subject: value: {
             inherit (value) kind;
             products = builtins.attrNames operatorBoundaries.subjects.${subject};
-          }) workflow.calls.subjects;
+          }) bundleCalls.subjects;
         };
       };
       operator = {
@@ -1641,6 +1694,11 @@ let
       !hasComponents
       || (builtins.isString defaultConfiguration && builtins.elem defaultConfiguration configurationIds);
     assert lib.assertMsg (
+      builtins.isAttrs callerCompositions && builtins.all
+        (id: hasComponents && builtins.hasAttr id workflow.components.sourcePackages)
+        (builtins.attrNames callerCompositions)
+    ) "callerCompositions must select components with authored source packages";
+    assert lib.assertMsg (
       invalidManualRoles == [ ]
     ) "targetAssets contains unsupported roles: ${builtins.toJSON invalidManualRoles}";
     assert lib.assertMsg (
@@ -1686,6 +1744,7 @@ in
     pe32Project = mkPe32ProjectWorkflow;
   };
   environment.pe32 = mkPe32Environment;
+  environment.nativeCallthroughProfile = callWith ./machine-import-effect-profile.nix analysisCommon;
   transfer.executablePlan = executableTransferPlan;
   analysis = {
     component = analysisComponent;
@@ -1706,6 +1765,12 @@ in
     testSuite = candidateTestSuite;
   };
   lifting = {
+    interface = callWith ./component-v5-interface-package.nix analysisCommon;
+    sourcePackage = callWith ./component-source-package-v3.nix analysisCommon;
+    workPackage = callWith ./component-v6-work-package.nix analysisCommon;
+    comparisonPackage = callWith ./component-comparison-package.nix analysisCommon;
+    exactCSlice = componentExactCSliceV1;
+    sourceCheck = callWith ./component-source-check.nix analysisCommon;
     behaviorPack = callWith ./library-behavior-pack-v3.nix analysisCommon;
     catalogPack = callWith ./library-catalog-pack.nix analysisCommon;
     linkedLibraries = callWith ./linked-libraries.nix analysisCommon;
@@ -1713,6 +1778,7 @@ in
     boundarySchema = callWith ./boundary-schema-workflow.nix analysisCommon;
   };
   validation = {
+    jqModules = ./jq;
     pythonEnv = context.transferPythonEnv;
     testRunner = context.packages.testkitTestRunner;
     testSuite = callWith ./test-suite.nix {

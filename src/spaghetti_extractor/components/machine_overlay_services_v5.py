@@ -16,9 +16,11 @@ from ..external.resolved import (
 )
 from ..transfer.model import _Call, _Transfer
 from ..transfer.call_sites import external_tail_call
+from .aggregate_result_binding import normalize_aggregate_result_words
 from .component_c_v5 import _parameter_type, _result_type
 from .interface_package_v5 import CompiledComponentInterfaceV5
-from .machine_overlay_external_v5 import _checked_service_argument_transducers
+from .machine_overlay_external_v5 import _checked_service_argument_transducers, _entry_target_capture_lines
+from .machine_binding import external_target_sampling
 
 def _raw_service_provider_kind(value: object) -> object:
     row = object_(value, "component service binding")
@@ -479,6 +481,7 @@ def _operation_service_bindings(
                 "import_symbol": identity.get("symbol"),
                 "ordinal": identity.get("ordinal"),
                 "captured_target_projection": captured_target,
+                **({"target_sampling": provider["target_sampling"]} if "target_sampling" in provider else {}),
                 # The checked fixed-arity ABI determines the complete physical
                 # frame. Transfer stack_inputs is intentionally only the sparse
                 # subset staged by this transfer; predecessor-staged arguments
@@ -545,139 +548,10 @@ def _normalize_aggregate_result_binding(
         raise BoundaryModelError(
             f"{context} aggregate result must be a word-record value"
         )
-    physical_index, transducer = aggregate_rows[0]
-    cell_id = transducer.get("cell_id")
-    if not isinstance(cell_id, str) or not cell_id:
-        raise BoundaryModelError(f"{context} aggregate result cell id is invalid")
-    boundary = object_(contract_row.get("boundary"), f"{context} boundary")
-    frame = object_(
-        boundary.get("physical_call_frame_v3"),
-        f"{context} physical call frame",
-    )
-    transport = object_(frame.get("transport"), f"{context} physical transport")
-    arguments = [
-        object_(item, f"{context} physical argument")
-        for item in array(transport.get("arguments"), f"{context} physical arguments")
-    ]
-    hidden = [item for item in arguments if item.get("role") == "hidden_sret"]
-    physical_results = [
-        object_(item, f"{context} physical result")
-        for item in array(transport.get("results"), f"{context} physical results")
-    ]
-    if len(hidden) != 1 or len(physical_results) != 1:
-        raise BoundaryModelError(
-            f"{context} aggregate result lacks one compiler-lowered hidden return"
-        )
-    hidden_fragments = array(hidden[0].get("fragments"), f"{context} hidden return")
-    result_fragments = array(
-        physical_results[0].get("fragments"), f"{context} aggregate result"
-    )
-    if len(hidden_fragments) != 1 or len(result_fragments) != 1:
-        raise BoundaryModelError(f"{context} aggregate result is fragmented")
-    hidden_location = object_(
-        object_(hidden_fragments[0], f"{context} hidden fragment").get("location"),
-        f"{context} hidden location",
-    )
-    result_location = object_(
-        object_(result_fragments[0], f"{context} result fragment").get("location"),
-        f"{context} result location",
-    )
-    hidden_offset = hidden_location.get("stack_offset_bytes")
-    derived_index = (
-        (hidden_offset - 4) // 4
-        if isinstance(hidden_offset, int)
-        and not isinstance(hidden_offset, bool)
-        and hidden_offset >= 4
-        and hidden_offset % 4 == 0
-        else -1
-    )
-    result_width = len(fields) * 32
-    if (
-        physical_index != derived_index
-        or hidden_location.get("kind") != "stack"
-        or hidden_location.get("width_bits") != 32
-        or hidden[0].get("storage_bits") != 32
-        or physical_results[0].get("pass_mode") != "indirect"
-        or result_location.get("kind") != "memory"
-        or result_location.get("memory_slot") != hidden[0].get("id")
-        or result_location.get("width_bits") != result_width
-        or physical_results[0].get("storage_bits") != result_width
-    ):
-        raise BoundaryModelError(
-            f"{context} aggregate result disagrees with its compiler-lowered ABI"
-        )
-    relation = {
-        "argument_index": physical_index,
-        "extent_words": len(fields),
-        "variants": [
-            {
-                "id": "aggregate_result",
-                "discriminants": [],
-                "input_word_indices": [],
-                "output_word_indices": list(range(len(fields))),
-                "output_condition": "always",
-                "failure_preserved_word_indices": [],
-                "failure_observed_word_indices": [],
-            }
-        ],
-    }
-    relation_sha256 = canonical_sha256_v3(relation)
-    local_cells = list(array(payload.get("local_cells", []), f"{context} local cells"))
-    if any(
-        isinstance(item, Mapping)
-        and item.get("argument_index") == physical_index
-        for item in local_cells
-    ):
-        raise BoundaryModelError(f"{context} aggregate local cell is duplicated")
-    local_cells.append(relation)
-    normalized = [dict(object_(item, f"{context} argument transducer")) for item in value]
-    normalized[physical_index] = {
-        "kind": "local_cell",
-        "cell_id": cell_id,
-        "initial_words": [None] * len(fields),
-        "local_cell_relation_sha256": relation_sha256,
-    }
-    raw_memory = payload.get("caller_memory_frame")
-    if raw_memory is None:
-        memory = {
-            "status": "complete",
-            "model": "compiler-derived-hidden-sret-v1",
-            "arguments": [],
-            "assumptions": [
-                "hidden return storage is retained only during the call"
-            ],
-        }
-    else:
-        memory = dict(object_(raw_memory, f"{context} caller-memory frame"))
-        memory["arguments"] = list(
-            array(memory.get("arguments"), f"{context} caller-memory arguments")
-        )
-    if any(
-        isinstance(item, Mapping) and item.get("argument_index") == physical_index
-        for item in memory["arguments"]
-    ):
-        raise BoundaryModelError(f"{context} aggregate caller memory is duplicated")
-    memory["arguments"].append(
-        {
-            "argument_index": physical_index,
-            "role": "caller_memory",
-            "access": "read_write",
-            "extent": "enclosing_object",
-            "retention": "during_call",
-        }
-    )
-    memory["arguments"] = sorted(
-        memory["arguments"], key=lambda item: int(item["argument_index"])
-    )
-    result_projection = {
-        "kind": "local_cell_record",
-        "cell_id": cell_id,
-        "fields": [
-            {"id": str(field["id"]), "word_index": index}
-            for index, field in enumerate(fields)
-        ],
-    }
-    return normalized, local_cells, memory, result_projection
+    return normalize_aggregate_result_words(
+        field_ids=[str(field["id"]) for field in fields], provider=provider,
+        payload=payload, contract_row=contract_row,
+        argument_words=argument_words, context=context)
 
 
 def _logical_word_field(
@@ -795,11 +669,18 @@ def _service_setup_lines(
         (str(by_id[item.identity]["symbol"]) if item.identity in by_id else "0")
         for item in bundle.interface.services
     ]
+    captures = []
+    for index, service in enumerate(bundle.interface.services):
+        binding = by_id.get(service.identity, {})
+        target = binding.get("captured_target_projection")
+        if external_target_sampling(binding.get("target_sampling", "service_call"), has_target=target is not None) == "operation_entry":
+            captures.extend(_entry_target_capture_lines(target, index=index))
     return [
         "  spx_component_service_context_v1 service_context = {",
         f"    {runtime_expression}, {state_expression}, {memory_fault_expression},",
         f"    {fault_expression}, {{0, 0}}",
         "  };",
+        *captures,
         f"  spx_{component}_services_v5 logical_services = {{",
         f"    &service_context, {', '.join(values) if values else '0'}",
         "  };",

@@ -10,7 +10,9 @@ from pathlib import Path
 from ..artifacts.artifact_set import canonical_sha256_v3
 from ..components.bisimulation_readonly_contracts import (
     check_readonly_source_contracts, check_mutable_source_contracts, check_shared_source_contracts,
+    check_object_source_contracts,
 )
+from ..components.bisimulation_object_model import object_source_shape
 from ..components.bisimulation_readonly_model import fixed_mutable_summary_operations
 from ..components.interface_package_v5 import ComponentInterfaceIntentV1, compile_component_interface_v5
 from ..components.portable_object import compile_portable_component_objects
@@ -22,14 +24,20 @@ from ..components.bisimulation_source_call_check import (
     prepare_source_call_regions, checked_source_call_regions,
     prepare_source_region_graphs, checked_source_region_graphs,
 )
-from ..components.bisimulation_shared_original_check import check_shared_original_comparison, checked_shared_original_transition
+from ..components.bisimulation_shared_original_check import (
+    check_shared_original_comparison, checked_shared_original_transition,
+    check_object_original_comparison, checked_object_original_transition,
+)
 from ..util import sha256_file, write_json
 from .work_status import build_operator_blocker_detail_v1, build_operator_work_status_v2
+from .source_guidance import source_issue_guidance
 
 
 def write_component_source_check(
     *, target_id: str, component_id: str, interface_package: Path,
     source_package: Path, host_compiler: Path, pe32_compiler: Path, out: Path,
+    compiler_view: bool = False,
+    state_owners: list | None = None,
     cbmc: Path | None = None,
     contract_workspace: Path | None = None,
     contract_unwind: int = 16,
@@ -38,6 +46,7 @@ def write_component_source_check(
     previous_local_contract: Path | None = None,
     shared_contract=None,
     shared_service_bindings=None,
+    terminal_services=(),
     original_comparison=None,
     source_call_regions=(),
     source_region_graphs=(),
@@ -50,17 +59,27 @@ def write_component_source_check(
     preparation_started = time.monotonic()
     if (source_call_regions or source_region_graphs) and region_goto_cc is None:
         raise ValueError("source call regions require an explicit inventory compiler")
-    if original_comparison is not None and (cbmc is None or smt_solver is None or shared_contract is None
-            or shared_service_bindings is None or local_contract_dependencies
-            or set(original_comparison) != {'exact_c_slice','binding_intent','machine_domain'}):
-        raise ValueError("original comparison requires a leaf shared contract, exact inputs and explicit SMT solver")
+    if original_comparison is not None and (cbmc is None or local_contract_dependencies
+            or set(original_comparison)-{'service_bindings'} != {'exact_c_slice','binding_intent','machine_domain'}):
+        raise ValueError("original comparison requires a supported leaf contract, exact inputs and explicit checker")
+    if terminal_services and (cbmc is None or local_contract_dependencies or shared_contract is not None):
+        raise ValueError('terminal services require an explicit local-object checker')
     interface_path = interface_package / "component-interface-intent-v1.json"
     intent = ComponentInterfaceIntentV1.parse(json.loads(interface_path.read_text()))
     source = load_component_source_package(source_package)
     if intent.component_id != component_id or source["lift_unit_id"] != component_id:
         raise ValueError("source check inputs bind another component")
     profile = check_component_source_profile(package=source_package)
+    from ..components.source_dialect import practical_source_profile
+    from ..components.state_ownership import checked_state_owners
+    state_owners=checked_state_owners(state_owners, sources=[row["path"].removeprefix("source/") for row in source["files"]])
+    practical = practical_source_profile(profile, state_owners=state_owners)
     bundle = compile_component_interface_v5(intent)
+    object_comparison = original_comparison is not None and shared_contract is None
+    if original_comparison is not None and (
+            (object_comparison and (object_source_shape(bundle, terminal_services=terminal_services) is None or shared_service_bindings is not None))
+            or (not object_comparison and (shared_service_bindings is None or smt_solver is None))):
+        raise ValueError("original comparison requires its checked object or shared-service source domain")
     if shared_service_bindings is not None:
         from ..components.bisimulation_shared_services import normalize_shared_service_bindings
         if shared_contract is None:
@@ -88,6 +107,8 @@ def write_component_source_check(
         machine_overlay=None, machine_overlay_error="source review only",
         runtime_header="", host_compiler=host_compiler, pe32_compiler=pe32_compiler,
         output=None, summary_dependencies=summary_dependencies,
+        inspect_storage=practical['status'] == 'pending-storage',
+        compiler_view_output=out/'compiler-views' if compiler_view else None,
     )
     if timings is not None:
         timings.append({"phase":"compiler","step":"host-and-pe32-source-check","seconds":time.monotonic()-compilation_started})
@@ -96,7 +117,13 @@ def write_component_source_check(
     # The shared compiler retains its missing-overlay result. Only the source
     # facet is projected here; this result never satisfies machine refinement.
     source_checks = [dict(row) for row in checks if row["code"] != "component_machine_overlay_incomplete"]
-    blockers = [dict(row, family="source-profile") for row in profile["issues"]]
+    practical = practical_source_profile(profile, [dict(row['storage'], source=row['source'],
+        **({'authored_source':row['source'].removeprefix('source/')} if state_owners is not None else {}))
+        for row in source_checks if 'storage' in row], state_owners=state_owners)
+    proof_requested = cbmc is not None or bool(source_call_regions or source_region_graphs)
+    selected_issues = profile['issues'] if proof_requested else practical['issues']
+    blockers = [dict(row, family="source-profile", diagnostic=row.get('diagnostic') or source_issue_guidance(row["code"]))
+                for row in selected_issues]
     for row in source_checks:
         diagnostic = row.get("diagnostic", "")
         diagnostic = str(diagnostic).replace(str(source_package / "sources") + "/", "")
@@ -139,8 +166,10 @@ def write_component_source_check(
         model_output = out / "local-contract-models"
         if contract_workspace is not None and contract_workspace.resolve().is_relative_to(out.resolve()):
             raise ValueError("local contract workspace must be outside the artifact output")
-        checker = (check_shared_source_contracts if shared_contract is not None else
+        checker = (check_object_source_contracts if object_comparison or terminal_services else
+                   check_shared_source_contracts if shared_contract is not None else
                    check_mutable_source_contracts if fixed_mutable_summary_operations(bundle) is not None
+                   else check_object_source_contracts if object_source_shape(bundle) is not None
                    else check_readonly_source_contracts)
         local_contract = checker(
             bundle=bundle, package=source_package,
@@ -150,7 +179,9 @@ def write_component_source_check(
             summary_dependencies=summary_dependencies,
             previous_contract=None if previous_local_contract is None else previous_local_contract/'local-contract-models',
             timings=timings,
+            **({'smt_solver': smt_solver} if smt_solver is not None else {}),
             **({"shared_contract": shared_contract} if shared_contract is not None else {}),
+            **({'terminal_services': terminal_services} if terminal_services else {}),
         )
         if contract_workspace is not None and contract_workspace.is_dir():
             shutil.copytree(contract_workspace, model_output)
@@ -173,14 +204,18 @@ def write_component_source_check(
     if original_comparison is not None and not blockers:
         original_workspace = (out/'original-comparison' if contract_workspace is None else
                               contract_workspace.with_name(contract_workspace.name+'-original'))
-        original_result = check_shared_original_comparison(certificate=local_contract,
-            source_artifacts=model_output, **original_comparison, service_bindings=shared_service_bindings,
+        original_checker = check_object_original_comparison if object_comparison else check_shared_original_comparison
+        original_validator = checked_object_original_transition if object_comparison else checked_shared_original_transition
+        original_options = dict(original_comparison)
+        service_bindings = original_options.pop('service_bindings', [] if object_comparison else shared_service_bindings)
+        original_result = original_checker(certificate=local_contract,
+            source_artifacts=model_output, **original_options, service_bindings=service_bindings,
             output=original_workspace, goto_cc=cbmc.with_name('goto-cc'), cbmc=cbmc, smt_solver=smt_solver,
             unwind=contract_unwind, timeout_seconds=contract_timeout_seconds, timings=timings)
         if original_result['status'] == 'satisfied':
             started = time.monotonic()
             try:
-                original_transition = checked_shared_original_transition(original_result,
+                original_transition = original_validator(original_result,
                     artifacts=original_workspace,certificate=local_contract,source_artifacts=model_output)
             except (ValueError, KeyError, TypeError, OSError) as error:
                 blockers.append({'family':'source-original-comparison','status':'incomplete',
@@ -220,11 +255,11 @@ def write_component_source_check(
                         if state == "complete" and original_result is not None else
                         "inspect original-comparison/result.json and repair the source or boundary contract"
                         if any(row['family'] == 'source-original-comparison' for row in blockers) else
-                        "resolve component proof obligations, then run component check"
+                        "prepare an executable original/source comparison; focused proofs can add assurance"
                         if state == "complete" else
                         "inspect local-contract.json, refine the local contract or source, and rerun component check --source --local-contracts"
                         if any(row["family"] == "source-local-contract" for row in blockers) else
-                        "repair the reported source errors and rerun component check --source"),
+                        "repair the reported source errors and rerun this source check"),
     }])
     out.mkdir(parents=True, exist_ok=True)
     write_json(out / "source-check.json", status)
@@ -235,7 +270,7 @@ def write_component_source_check(
     )
     write_json(out / "source-check-details.json", details)
     write_json(out / "compiler-checks.json", {
-        "authority": False, "checks": source_checks, "source_profile": profile,
+        "authority": False, "checks": source_checks, "source_profile": profile, "practical_profile": practical,
         **({'source_call_regions': call_regions} if call_regions is not None else {}),
         **({'source_region_graphs': region_graphs} if region_graphs is not None else {}),
         "local_contract": None if local_contract is None else {
@@ -307,11 +342,22 @@ def render_component_source_check(*, path: Path, payload: dict, target_id: str,
         validate_component_source_composition_feedback(path.parent, local, payload['status'])
     if as_json:
         print(json.dumps({"status": payload, "details": details,
+                          **({"practical_profile":compiler_feedback['practical_profile'],
+                              "proof_profile":compiler_feedback['source_profile']}
+                             if 'practical_profile' in compiler_feedback else {}),
                           **({"local_contract":local} if local is not None else {}),
                           **({"source_call_regions": call_regions} if call_regions is not None else {}),
                           **({"source_region_graphs": region_graphs} if region_graphs is not None else {})}, indent=2, sort_keys=True))
     else:
         print(f"{component_id}: source={payload['status']} (host/PE32 compilation and C profile; no qualification authority)")
+        if 'practical_profile' in compiler_feedback:
+            print('  practical dialect: '+compiler_feedback['practical_profile']['status']+
+                  '; formal source eligibility: '+compiler_feedback['source_profile']['status'])
+        from ..components.state_ownership import state_owner_guidance
+        for line in state_owner_guidance(compiler_feedback.get('practical_profile',{}).get('state_owners')):
+            print(line)
+        if any('compiler_view' in row for row in compiler_feedback['checks']):
+            print('  compiler views: '+str(path.parent/'compiler-views')+' (diagnostic only; keep editing the original C)')
         if region_graphs is not None:
             print(f"  manual region graphs: {region_graphs['status']} (compiled boundaries; behavior, state transport and progress unchecked)")
         if subjects[0].get("stage") == "source-compile-profile-and-local-contract":

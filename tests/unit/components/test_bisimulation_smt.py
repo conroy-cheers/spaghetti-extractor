@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.bisimulation_refinement import check_bisimulation_refinement
 from spaghetti_extractor.components.cbmc_backend import bind_smt_solver, run_cbmc_properties, solver_arguments, validate_smt_solver_binding
 from spaghetti_extractor.components.contextual_bisimulation import validate_contextual_refinement_v2
+from spaghetti_extractor.components.bisimulation_support import PACKED_SINGLE_STRATEGY
 from . import test_bisimulation_normal_exits as fixture
 
 TESTKIT = {"fixtures": ("cbmc", "compiler", "jq", "z3"),
@@ -44,9 +46,12 @@ class SmtProofTests(unittest.TestCase):
                 packet = json.loads((root / "contextual-refinement-result.json").read_text())
                 proof = packet["proof"]
                 self.assertEqual(proof["checker"]["smt_solver"], binding)
+                self.assertEqual({model["property_checker_command"]["strategy"]
+                    for operation in proof["models"]["operation_models"]
+                    for model in operation["obligation_models"]}, {PACKED_SINGLE_STRATEGY})
                 for predicate, code in (("spx_contextual_proof_system", 0),
                                         ("spx_strong_contextual_proof", 0 if value == 7 else 1)):
-                    checked = subprocess.run([jq, "-e", reader + "\n" + predicate],
+                    checked = run_jq_reader([jq, "-e", reader + "\n" + predicate],
                         input=json.dumps(packet), text=True, capture_output=True)
                     self.assertEqual(checked.returncode, code, checked.stderr + checked.stdout)
                 for path in (root / "diagnostics").rglob("query.json"):
@@ -58,13 +63,54 @@ class SmtProofTests(unittest.TestCase):
                 if value != 7 or legacy_arrays:
                     continue
                 with patch("spaghetti_extractor.components.bisimulation_query_evidence.run_cbmc_process",
-                           side_effect=AssertionError("unchanged qualified SMT queries must reuse")):
+                           side_effect=AssertionError("unchanged qualified SMT queries must reuse")), \
+                     patch("spaghetti_extractor.components.bisimulation_refinement._render_harness",
+                           side_effect=AssertionError("unchanged local proof must not render models")), \
+                     patch("spaghetti_extractor.components.bisimulation_execution._run_compile",
+                           side_effect=AssertionError("unchanged local proof must not compile models")):
                     reused = check_bisimulation_refinement(**{**captured,
                         "previous_query_evidence": root, "diagnostic_root": root / "reused-diagnostics"})
                 self.assertEqual(reused["status"], "satisfied", reused["issues"])
-                reuse = [json.loads(p.read_text()) for p in (root / "reused-diagnostics").rglob("reuse.json")]
-                self.assertTrue(reuse)
-                self.assertTrue(all(row["executed_queries"] == 0 and row["reused_queries"] > 0 for row in reuse))
+                reuse = json.loads((root / "proof-reuse.json").read_text())
+                self.assertEqual([reuse[k] for k in ("model_generation", "compiler_runs", "solver_runs")], [0, 0, 0])
+                self.assertEqual(reused['bindings'], result['bindings'])
+                self.assertEqual(reused['checks'], result['checks'])
+                headers = dict(captured['c_headers'])
+                name = next(iter(headers))
+                headers[name] += '\n/* changed caller header */\n'
+                with patch('spaghetti_extractor.components.bisimulation_refinement._render_harness',
+                           side_effect=RuntimeError('caller header requires model recheck')):
+                    with self.assertRaisesRegex(RuntimeError, 'requires model recheck'):
+                        check_bisimulation_refinement(**{**captured, 'c_headers': headers,
+                            'previous_query_evidence': root, 'diagnostic_root': root / 'changed-header'})
+                for field in ('headers', 'artifacts', 'caller-binding', 'input-inventory'):
+                    forged = copy.deepcopy(packet)
+                    changed = forged['proof']['models']
+                    record = changed['reusable_inputs']
+                    if field == 'headers':
+                        record['inputs']['extra']['headers']['foreign.h'] = 'different header'
+                    elif field == 'artifacts':
+                        record['artifacts']['../outside'] = '0' * 64
+                    elif field == 'caller-binding':
+                        record['inputs']['caller']['machine_overlay_sha256'] = '0' * 64
+                        record['input_sha256'] = canonical_sha256_v3(record['inputs'])
+                    else:
+                        changed['operation_models'][0]['obligation_models'][0]['proof_inputs'] = [
+                            row for row in changed['operation_models'][0]['obligation_models'][0]['proof_inputs']
+                            if row['role'] != 'proof_reuse_inputs']
+                    forged['proof']['receipt_sha256'] = canonical_sha256_v3({
+                        k: v for k, v in forged['proof'].items() if k != 'receipt_sha256'})
+                    with self.subTest(reuse_mutation=field), self.assertRaises(ValueError):
+                        validate_contextual_refinement_v2(forged['proof'], proof_plan=forged['proof_plan'],
+                                                         exact_c_slice=forged['exact_c_slice'])
+                # A valid old theorem with modified retained files cannot be used.
+                retained_header = root / 'diagnostics' / 'stdint.h'
+                original_header = retained_header.read_bytes()
+                retained_header.write_bytes(original_header + b'\n/* changed */\n')
+                with self.assertRaisesRegex(ValueError, 'bound inventory'):
+                    check_bisimulation_refinement(**{**captured,
+                        'previous_query_evidence': root, 'diagnostic_root': root / 'corrupted-diagnostics'})
+                retained_header.write_bytes(original_header)
                 for mutation in ("missing-pin", "null-pin", "wrong-id", "wrong-hash", "wrong-path", "mixed-command",
                                  "mixed-array-encoding", "missing-array-option", "downgraded-option"):
                     forged = copy.deepcopy(packet)
@@ -94,7 +140,7 @@ class SmtProofTests(unittest.TestCase):
                     changed["receipt_sha256"] = canonical_sha256_v3({k: v for k, v in changed.items() if k != "receipt_sha256"})
                     with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                         validate_contextual_refinement_v2(changed, proof_plan=forged["proof_plan"], exact_c_slice=forged["exact_c_slice"])
-                    checked = subprocess.run([jq, "-e", reader + "\nspx_contextual_proof_system"],
+                    checked = run_jq_reader([jq, "-e", reader + "\nspx_contextual_proof_system"],
                         input=json.dumps(forged), text=True, capture_output=True)
                     self.assertEqual(checked.returncode, 1, (mutation, checked.stderr, checked.stdout))
 

@@ -31,17 +31,39 @@ from tests.unit.components.test_dynamic_state_storage import state_fixture
 TESTKIT = {"fixtures": ("cbmc", "compiler")}
 
 
-def check_native_cut(root, cbmc, *, mutation="", remainder=False, legacy=False, ambiguous=False, nul_extent=None):
+def check_native_cut(root, cbmc, *, mutation="", remainder=False, legacy=False, ambiguous=False,
+                     nul_extent=None, roundtrip=False, bad_decoding=False, resumed=False, reject_realization=0,
+                     invariant=None, offset_value=3):
     authority = authority_payload(ambiguous=ambiguous)
     payload = cut_fixture.CutViewAdmissionTests()._intent().to_payload()
     projection = payload["operations"][0]["syncs"][0]["captures"][0]["projection"]
+    if invariant is not None:
+        payload["operations"][0]["syncs"][0]["invariant"] = invariant
     if remainder:
         projection["extent"] = {"kind": "origin_remainder"}
+    if roundtrip:
+        decoding = {"op": "sub32", "args": [{"op": "projected_value"},
+                                             {"op": "bytes_address", "name": "buffer"}]}
+        if bad_decoding:
+            decoding = {"op": "add32", "args": [decoding, {"op": "const", "value": 1, "width": 32}]}
+        payload["operations"][0]["syncs"][0]["captures"].append({
+            "kind": "source_state", "id": "offset", "mode": "machine_codec",
+            "projection": {"kind": "register", "register": "eax", "width": 32, "at": "entry"},
+            "encoding": {"op": "add32", "args": [{"op": "bytes_address", "name": "buffer"},
+                                                   {"op": "state_input", "name": "offset"}]},
+            "decoding": decoding})
     authored = ComponentBisimulationIntentV1.create(component_id="views", operations=payload["operations"]).operations[0]
     specs = {"buffer": {"permissions": 1, "selector": '"image-buffer"'}}
     header = _render_proof_header(authored=authored, image_base=0x400000, unit_rvas={"cut": 4096},
-                                 active_target_sync_ids={"scan"}, native_specs=None if legacy else specs,
+                                 active_target_sync_ids={"scan"}, active_start_sync_id="scan" if resumed else None,
+                                 native_specs=None if legacy else specs,
                                  nul_view_ids=frozenset() if nul_extent is None else frozenset({"buffer"}))
+    if roundtrip:
+        header = "extern unsigned int test_realizations;\n" + header
+        needle = '"spx-bisimulation-capture-roundtrip:scan:offset"); ' + chr(92)
+        assert header.count(needle) == 1
+        header = header.replace(needle, needle + '\n    __CPROVER_assert(test_realizations == 1U, '
+            '"roundtrip reuses validated address"); ' + chr(92))
     (root / "proof.h").write_text(header)
     _write_cbmc_stdint(root / "stdint.h")
     (root / "state-machine-runtime.h").write_text(exact_runtime_header())
@@ -107,6 +129,34 @@ void main(void) {
   entry(&runtime, &state);
 }
 ''')
+    if roundtrip:
+        text = source.read_text().replace('void run(spx_view_v5 *buffer) {', '''
+unsigned int test_realizations;
+static spx_boundary_status test_realize(void *opaque, const spx_machine_reference_v1 *reference,
+    uint32_t permissions, uint32_t nullable, uint32_t one_past, uint32_t *address) {
+  ++test_realizations;
+  return spx_proof_authority_runtime_realize(opaque, reference, permissions, nullable, one_past, address);
+}
+void run(spx_view_v5 *buffer) {
+  uint32_t offset = 3U;''').replace('SPX_PROOF_SYNC(scan, 1, buffer);',
+                                  'SPX_PROOF_SYNC(scan, 1, buffer, offset);')
+        text = text.replace('  spx_runtime runtime = spx_proof_runtime(&spx_source_world);',
+            '  spx_runtime runtime = spx_proof_runtime(&spx_source_world);\n  runtime.realize_reference = test_realize;')
+        text = text.replace('  spx_proof_exact_output.ebx = 4198404U;',
+            '  spx_proof_exact_output.ebx = 4198404U;\n  spx_proof_exact_output.eax = 4198407U;')
+        text = text.replace('uint32_t offset = 3U;', f'uint32_t offset = {offset_value}U;')
+        text = text.replace('spx_proof_exact_output.eax = 4198407U;',
+                            f'spx_proof_exact_output.eax = {4198404 + offset_value}U;')
+        if resumed:
+            text = text.replace('  spx_machine_state state = spx_proof_exact_output;',
+                '  spx_proof_start = 1U;\n  spx_proof_exact_input = spx_proof_exact_output;\n'
+                '  spx_machine_state state = spx_proof_exact_output;')
+            text = text.replace('  __CPROVER_cover(1);\n  SPX_PROOF_SYNC(scan, 1, buffer, offset);',
+                '  SPX_PROOF_SYNC(scan, 1, buffer, offset);\n  __CPROVER_cover(1);')
+        if reject_realization:
+            text = text.replace('  ++test_realizations;', '  ++test_realizations;\n'
+                f'  if (test_realizations == {reject_realization}U) return SPX_BOUNDARY_MEMORY_FAULT;')
+        source.write_text(text)
     command = [str(cbmc), str(source), '--json-ui', '--unwind', '2', '--sat-solver', 'cadical',
                *reference_authority_unwind_arguments(authority)]
     result = run_cbmc_properties(command=[*command, '--trace', '--unwinding-assertions', '--pointer-check',
@@ -119,6 +169,49 @@ void main(void) {
 
 
 class NativeCutViewTests(unittest.TestCase):
+    def test_nul_invariant_distinguishes_termination_from_origin_capacity(self):
+        invariant = {"op": "ult32", "args": [{"op": "state_input", "name": "offset"},
+                                             {"op": "nul_extent", "name": "buffer"}]}
+        for offset in (7, 8):
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                result, cover = check_native_cut(Path(temporary), shutil.which('cbmc'),
+                    remainder=True, nul_extent=8, roundtrip=True, invariant=invariant, offset_value=offset)
+                self.assertEqual(result['status'], 'satisfied' if offset == 7 else 'violated', result.get('detail'))
+                if offset == 7:
+                    self.assertEqual(cover['status'], 'satisfied', cover)
+                else:
+                    self.assertEqual(result['detail'], 'spx-bisimulation-invariant:scan')
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(BisimulationRefinementError, 'canonical captured NUL-view'):
+                check_native_cut(Path(temporary), shutil.which('cbmc'), roundtrip=True, invariant=invariant)
+
+    def test_resumed_address_sites_keep_each_runtime_failure_visible(self):
+        for reject in (0, 2, 3):
+            with self.subTest(reject=reject), tempfile.TemporaryDirectory() as temporary:
+                result, cover = check_native_cut(Path(temporary), shutil.which('cbmc'),
+                    roundtrip=True, resumed=True, reject_realization=reject)
+                self.assertEqual(result['status'], 'violated' if reject else 'satisfied', result.get('detail'))
+                if reject:
+                    self.assertEqual(result['detail'], 'spx-bisimulation-view-reference-address')
+                    self.assertEqual(result['source']['function'],
+                        f'__CPROVER_spx_view_address_site_{reject - 2}')
+                else:
+                    self.assertEqual(cover['status'], 'satisfied', cover)
+                    for index in range(3):
+                        self.assertIn(f'__CPROVER_spx_view_address_site_{index}.assertion.1',
+                            result['property_ids'])
+
+    def test_outgoing_roundtrip_reuses_address_but_still_checks_the_decoder(self):
+        for wrong in (False, True):
+            with self.subTest(wrong=wrong), tempfile.TemporaryDirectory() as temporary:
+                result, cover = check_native_cut(Path(temporary), shutil.which('cbmc'),
+                    roundtrip=True, bad_decoding=wrong)
+                self.assertEqual(result['status'], 'violated' if wrong else 'satisfied', result.get('detail'))
+                if wrong:
+                    self.assertEqual(result['detail'], 'spx-bisimulation-capture-roundtrip:scan:offset')
+                else:
+                    self.assertEqual(cover['status'], 'satisfied', cover)
+
     def test_native_origin_extents_and_pointer_movement_cross_real_barrier(self):
         cbmc = shutil.which('cbmc')
         self.assertIsNotNone(cbmc)

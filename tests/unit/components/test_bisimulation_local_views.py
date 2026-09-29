@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -489,7 +489,7 @@ int main(void) { start(); spx_proof_exact_input.ebx=0U; spx_proof_start=1U; lift
         for bad in (False,True):
             value=copy.deepcopy(document)
             if bad: value["proof"]["models"]["operation_models"][0]["obligation_models"][0]["required_assertion_descriptions"]=checks[:1]
-            result=subprocess.run([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
+            result=run_jq_reader([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
                 input=json.dumps(value),text=True,capture_output=True)
             self.assertEqual(result.returncode,1 if bad else 0,result.stderr)
 
@@ -504,7 +504,7 @@ int main(void) { start(); spx_proof_exact_input.ebx=0U; spx_proof_start=1U; lift
             else:
                 with self.assertRaisesRegex(ValueError,"owner substitution"):
                     validate_local_view_model(planned,model)
-            result=subprocess.run([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
+            result=run_jq_reader([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
                 input=json.dumps(value),text=True,capture_output=True)
             self.assertEqual(result.returncode,0 if legacy else 1,result.stderr)
 
@@ -529,6 +529,6 @@ int main(void) { start(); spx_proof_exact_input.ebx=0U; spx_proof_start=1U; lift
                     validate_local_view_model(planned,model)
             else:
                 validate_local_view_model(planned,model)
-            result=subprocess.run([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
+            result=run_jq_reader([shutil.which("jq"),"-e",module.read_text()+"\nspx_cut_capture_codecs"],
                 input=json.dumps(value),text=True,capture_output=True)
             self.assertEqual(result.returncode,1 if bad else 0,result.stderr)

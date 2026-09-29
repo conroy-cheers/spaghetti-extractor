@@ -29,6 +29,9 @@ from .source import load_component_source_package, component_operation_symbols, 
 from .formats import COMPONENT_SOURCE_PACKAGE_V3_FORMAT
 from .source_profile import check_component_source_profile
 from . import bisimulation_source_dependencies as source_dependencies
+from .bisimulation_object_model import (
+    OBJECT_CONTRACT_POLICY, OBJECT_MODEL_POLICY, object_source_shape, render_object_source_model,
+)
 
 
 def validate_readonly_source_contracts(value: Mapping[str, object], *, artifacts: Path | None = None) -> None:
@@ -45,7 +48,12 @@ def validate_shared_source_contracts(value, *, artifacts=None):
     _validate_memory_source_contracts(value, artifacts=artifacts, mutable=True, shared=True)
 
 
-def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts: Path | None, mutable: bool, ancestors=(), shared=False) -> None:
+def validate_object_source_contracts(value, *, artifacts=None):
+    """Recheck local object evidence without accepting it as a provider summary."""
+    _validate_memory_source_contracts(value, artifacts=artifacts, mutable=True, objects=True)
+
+
+def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts: Path | None, mutable: bool, ancestors=(), shared=False, objects=False) -> None:
     """Require exact retained inputs and outputs, not just a self-consistent hash.
 
     Without an artifact tree, validate the certificate's complete claims and
@@ -63,10 +71,18 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
     if shared:
         shape = shared_source_shape
         renderer = lambda **args: render_shared_source_model(**args, shared_contract=value["shared_contract"])
+    if objects:
+        terminal_services = value.get('terminal_services', [])
+        shape = lambda bundle: object_source_shape(bundle, terminal_services=terminal_services)
+        renderer = lambda **args: render_object_source_model(**args, terminal_services=terminal_services)
     fields = {"status", "authorizing", "policy", "model_policy", "checker_options",
               "interface_sha256", "interface_intent", "authored_goto_sha256", "source_package",
               "source_profile", "operation_symbols", "source_dependencies", "headers_sha256",
               "support_headers", "tools", "checks", "models", "inventories", "commands", "receipt_sha256"}
+    if objects and 'terminal_services' in value:
+        fields.add('terminal_services')
+    if 'property_checker_command' in value:
+        fields.add('property_checker_command')
     composed = isinstance(value, Mapping) and value.get("policy") in {
         source_dependencies.MUTABLE_POLICY, source_dependencies.READONLY_POLICY, SHARED_DEPENDENCY_POLICY}
     if shared:
@@ -82,9 +98,9 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
     require(value["receipt_sha256"] == canonical_sha256_v3(
         {k: v for k, v in value.items() if k != "receipt_sha256"}), "receipt digest is stale")
     require(value["status"] == "satisfied" and value["authorizing"] is False
-            and value["policy"] == ((SHARED_DEPENDENCY_POLICY if composed else SHARED_CONTRACT_POLICY) if shared else (source_dependencies.MUTABLE_POLICY if mutable else source_dependencies.READONLY_POLICY) if composed else
+            and value["policy"] == (OBJECT_CONTRACT_POLICY if objects else (SHARED_DEPENDENCY_POLICY if composed else SHARED_CONTRACT_POLICY) if shared else (source_dependencies.MUTABLE_POLICY if mutable else source_dependencies.READONLY_POLICY) if composed else
                                     (MUTABLE_CONTRACT_POLICY if mutable else READONLY_CONTRACT_POLICY))
-            and value["model_policy"] == ((SHARED_DEPENDENCY_MODEL if composed else SHARED_MODEL_POLICY) if shared else (source_dependencies.MUTABLE_MODEL if mutable else source_dependencies.READONLY_MODEL) if composed else
+            and value["model_policy"] == (OBJECT_MODEL_POLICY if objects else (SHARED_DEPENDENCY_MODEL if composed else SHARED_MODEL_POLICY) if shared else (source_dependencies.MUTABLE_MODEL if mutable else source_dependencies.READONLY_MODEL) if composed else
                                           (MUTABLE_MODEL_POLICY if mutable else READONLY_MODEL_POLICY)),
             "local proof policy is unsupported or incomplete")
     options = value["checker_options"]
@@ -92,6 +108,13 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
             and options[8].isdigit(), "checker options are malformed")
     option_builder = mutable_checker_options if mutable else readonly_checker_options
     require(options == option_builder(int(options[8])), "checker options are weakened")
+    partition_command = value.get('property_checker_command')
+    if partition_command is not None:
+        from .bisimulation_execution import property_checker_command
+        require(isinstance(partition_command, Mapping) and partition_command.get('smt_solver') is not None,
+                'partitioned source checking needs a bound solver')
+        require(partition_command == property_checker_command([], source_unwind_limit=int(options[8]),
+                    smt_solver=partition_command['smt_solver']), 'partitioned source policy is weakened')
     bundle = compile_component_interface_v5(ComponentInterfaceIntentV1.parse(value["interface_intent"]))
     operations = shape(bundle)
     require(operations is not None and value["interface_sha256"] == bundle.interface.interface_sha256,
@@ -252,7 +275,7 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
     opacity = check_memory_source_access(functions, operation_symbols=list(symbols.values()),
         context_tag=f"tag-spx_{_c_identifier(bundle.interface.identity)}_context_v5", mutable=mutable,
         dependency_symbols=[row['symbol'] for row in summary_rows],
-        boundary_bundle=bundle if shared else None)
+        boundary_bundle=bundle if shared or objects else None)
     require(opacity["status"] == "satisfied" and not _cyclic_calls([tuple(edge) for edge in opacity["call_edges"]]),
             "source access or progress premise fails")
     require(isinstance(value["checks"], list) and value["checks"][:1] == [{"kind": "source_opacity", **opacity}],
@@ -280,9 +303,29 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
                 checked = name + "-checked.goto"
                 command(name + "-instrument", "goto_instrument",
                         ["--dfcc", entry, "--enforce-contract", symbols[operation], name + ".goto", checked])
-            stdout, output_hash = command(name + "-check", "cbmc", [checked, "--function", entry, *options], solver=True)
+            partitioned = kind == 'input_dependence' and partition_command is not None
+            check = value["checks"][len(expected_checks)]
+            if partitioned:
+                from .bisimulation_property_evidence import _validate_partitioned_property_evidence
+                from .bisimulation_property_replay import replay_partitioned_model
+                require(isinstance(check, Mapping) and set(check) == {'operation_id', 'kind', 'status',
+                    'code', 'properties', 'property_ids', 'output_sha256', 'partitioned_evidence'},
+                    'partitioned source result fields differ')
+                query = {k: v for k, v in check.items() if k not in {'operation_id', 'kind'}}
+                definition = model.get('property_model')
+                require(isinstance(definition, Mapping) and definition.get('proof_function') == entry
+                        and definition.get('property_checker_command') == partition_command,
+                        'partitioned source model differs')
+                _validate_partitioned_property_evidence(shard=query, model=definition, uniform_entry=True)
+                require(query['status'] == 'satisfied' and query['code'] == 'cbmc_properties_satisfied',
+                        'partitioned source checks are incomplete')
+                if root is not None:
+                    replay_partitioned_model(query=query, definition=definition, model=root/checked,
+                        query_root=root/'query-evidence'/name, tool_hashes=value['tools'], command=partition_command)
+                stdout, output_hash = None, query['output_sha256']
+            else:
+                stdout, output_hash = command(name + "-check", "cbmc", [checked, "--function", entry, *options], solver=True)
             if stdout is None:
-                check = value["checks"][len(expected_checks)]
                 require(isinstance(check, Mapping) and isinstance(check.get("property_ids"), list)
                         and all(isinstance(item, str) and item for item in check["property_ids"])
                         and check["property_ids"] == sorted(set(check["property_ids"])), "property inventory is malformed")
@@ -307,11 +350,13 @@ def _validate_memory_source_contracts(value: Mapping[str, object], *, artifacts:
                             'required authored current-zero assertion is absent')
             expected_checks.append({"operation_id": operation, "kind": kind, "status": "satisfied",
                 "code": "cbmc_properties_satisfied", "properties": len(statuses),
-                "property_ids": sorted(statuses), "output_sha256": output_hash})
+                "property_ids": sorted(statuses), "output_sha256": output_hash,
+                **({'partitioned_evidence': query['partitioned_evidence']} if partitioned else {})})
             expected_models.append({"operation_id": operation, "kind": kind, "entry": entry,
                 "source_sha256": hashlib.sha256(generated.encode()).hexdigest(),
                 "raw_goto_sha256": model["raw_goto_sha256"] if root is None else hashlib.sha256(content(name + ".goto")).hexdigest(),
-                "checked_goto_sha256": model["checked_goto_sha256"] if root is None else hashlib.sha256(content(checked)).hexdigest()})
+                "checked_goto_sha256": model["checked_goto_sha256"] if root is None else hashlib.sha256(content(checked)).hexdigest(),
+                **({'property_model': definition} if partitioned else {})})
     require(value["checks"] == expected_checks and value["models"] == expected_models,
             "model or result binding is stale")
     require(consumed_commands == set(commands) and consumed_inventories == set(inventories),

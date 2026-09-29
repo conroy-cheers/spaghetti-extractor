@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -84,7 +84,7 @@ class MutableFrameTests(unittest.TestCase):
             python = True
         except ValueError:
             python = False
-        jq = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
+        jq = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
                             input=json.dumps(case), capture_output=True, text=True)
         return python, jq.returncode == 0
 

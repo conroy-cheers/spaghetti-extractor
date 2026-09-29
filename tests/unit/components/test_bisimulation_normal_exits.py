@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,7 +53,8 @@ def check_normal_exit(root: Path, *, cbmc: Path, source_value: int = 7, exit_kin
                       restored_outside_write: bool = False, memory_cut_offset: int | None = None,
                       memory_cut_invariant_offset: int | None = None, timeout_seconds: int = 30,
                       machine_clobbers: tuple[str, ...] = (), private_stack_writes: tuple = (),
-                      frame_base_offset: int | None = None, frame_relation_offset: int | None = None) -> dict:
+                      frame_base_offset: int | None = None, frame_relation_offset: int | None = None,
+                      scalar_postcondition_intent=None, retained_inputs=None) -> dict:
     if read_buffer or source_contracts:
         assert reference_view
     if return_to_caller or private_write or entry_domain_trap or readable_clobber_ecx or readable_clobber_before_cut:
@@ -339,6 +340,17 @@ def check_normal_exit(root: Path, *, cbmc: Path, source_value: int = 7, exit_kin
             "implementation_sha256": source["implementation_sha256"],
             "source_profile_sha256": profile["receipt_sha256"],
             "proof_interface_sha256": result["bindings"]["interface_sha256"], "certificate": certificate}
+    if scalar_postcondition_intent is not None:
+        from spaghetti_extractor.components.bisimulation_summary_contracts import check_scalar_summary_contracts
+        certificate = check_scalar_summary_contracts(bundle=bundle, operation_symbols=symbols,
+            source_files=[authored], headers=render_component_c_headers_v5(bundle, symbols),
+            output=root / 'scalar-contract', goto_cc=cbmc.with_name('goto-cc'),
+            goto_instrument=cbmc.with_name('goto-instrument'), cbmc=cbmc,
+            postcondition_intent=scalar_postcondition_intent)
+        result['bindings']['source_summary_contracts'] = {
+            'implementation_sha256': source['implementation_sha256'],
+            'source_profile_sha256': profile['receipt_sha256'],
+            'proof_interface_sha256': result['bindings']['interface_sha256'], 'certificate': certificate}
     proof = build_contextual_refinement_v2(proof_plan=plan, exact_c_slice=exact,
         implementation_sha256=source["implementation_sha256"],
         source_profile_sha256=profile["receipt_sha256"], checker=result["checker"],
@@ -346,6 +358,9 @@ def check_normal_exit(root: Path, *, cbmc: Path, source_value: int = 7, exit_kin
             bundle=bundle, binding_intent_sha256=binding.intent_sha256,
             machine_object_authority_sha256=reference_authority["authority_sha256"]))
     validate_contextual_refinement_v2(proof, proof_plan=plan, exact_c_slice=exact)
+    if retained_inputs is not None:
+        retained_inputs.update(bundle=bundle, binding=binding, operation_symbols=symbols,
+            proof_system={'proof': proof, 'proof_plan': plan, 'exact_c_slice': exact})
     (root / "contextual-refinement-result.json").write_text(json.dumps({
         "proof": proof, "proof_plan": plan, "exact_c_slice": exact}, indent=2) + "\n")
     (root / "native-fixture-inputs.json").write_text(json.dumps({
@@ -381,7 +396,7 @@ class NormalExitResultTests(unittest.TestCase):
             self.assertFalse(packet["proof"]["activation_authorized"])
             reader = (Path(__file__).resolve().parents[3] / TESTKIT["resources"][0]).read_text()
             for predicate, code in (("spx_contextual_proof_system", 0), ("spx_strong_contextual_proof", 1)):
-                checked = subprocess.run([jq, "-e", reader + "\n" + predicate],
+                checked = run_jq_reader([jq, "-e", reader + "\n" + predicate],
                     input=json.dumps(packet), capture_output=True, text=True)
                 self.assertEqual(checked.returncode, code, checked.stderr)
 

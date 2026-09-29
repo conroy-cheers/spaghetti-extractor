@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import subprocess
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from spaghetti_extractor.components.bisimulation_execution import _run_partitioned_properties, _run_safety_query
 from spaghetti_extractor.components.bisimulation_support import (
-    safety_group_refinement, safety_property_groups, ASSERTION_BATCH_STRATEGY, PACKED_SAFETY_STRATEGY,
+    safety_group_refinement, safety_property_groups, ASSERTION_BATCH_STRATEGY, PACKED_SAFETY_STRATEGY, PACKED_SINGLE_STRATEGY,
 )
 from tests.unit.components.test_bisimulation_refinement_execution import _task
 
@@ -28,13 +29,14 @@ class SafetySelectionTests(unittest.TestCase):
                      for owner in ('first', 'second', 'third') for index in range(700)]
         ids = [row['property_id'] for row in inventory]
         for strategy, sizes in ((ASSERTION_BATCH_STRATEGY, [700, 700, 700]),
-                                (PACKED_SAFETY_STRATEGY, [1024, 1024, 52])):
+                                (PACKED_SAFETY_STRATEGY, [1024, 1024, 52]),
+                                (PACKED_SINGLE_STRATEGY, [1024, 1024, 52])):
             groups = safety_property_groups('pointer', ids, inventory, strategy=strategy)
             self.assertEqual(list(map(len, groups)), sizes)
             self.assertEqual([identity for group in groups for identity in group], ids)
             self.assertEqual(safety_property_groups('unwinding', ids, inventory, strategy=strategy), [ids])
             evidence = {'strategy': strategy, 'language_safety_inventory': inventory, 'loops': []}
-            run = subprocess.run([shutil.which('jq'), '-c', module.read_text() +
+            run = run_jq_reader([shutil.which('jq'), '-c', module.read_text() +
                 '\nspx_safety_query_groups'], input=json.dumps(evidence), capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(json.loads(run.stdout), [
@@ -73,7 +75,7 @@ class SafetySelectionTests(unittest.TestCase):
                 self.assertEqual(safety_group_refinement(changed, expected, complete=complete), accepted)
                 value = {'actual': [{'safety_partition': p, 'expected_property_ids': ids} for p, ids in changed],
                          'expected': [{'safety_partition': p, 'expected_property_ids': ids} for p, ids in expected]}
-                run = subprocess.run([shutil.which('jq'), '-e', module.read_text() +
+                run = run_jq_reader([shutil.which('jq'), '-e', module.read_text() +
                     '\n.expected as $expected | .actual | spx_safety_group_refinement($expected; ' +
                     str(complete).lower() + ')'], input=json.dumps(value), capture_output=True, text=True)
                 self.assertEqual(run.returncode, int(not accepted), run.stderr)
@@ -150,7 +152,7 @@ class SafetySelectionTests(unittest.TestCase):
                         position = next(i for i, q in enumerate(changed['queries'])
                                         if q.get('safety_partition') == 'bounds')
                         del changed['queries'][position]
-                    checked = subprocess.run([shutil.which('jq'), '-e', module.read_text() +
+                    checked = run_jq_reader([shutil.which('jq'), '-e', module.read_text() +
                         '\nspx_selected_safety_queries'], input=json.dumps(changed), text=True,
                         capture_output=True, timeout=10)
                     self.assertEqual(checked.returncode, int(missing), checked.stderr)
@@ -210,7 +212,7 @@ class SafetySelectionTests(unittest.TestCase):
                         rows[a]["property_ids"].remove(dropped)
                         rows[a]["properties"] -= 1
                         next(r for r in changed["language_safety_inventory"] if r["property_id"] == dropped)["class"] = "unknown"
-                    checked = subprocess.run([shutil.which("jq"), "-e", module.read_text() +
+                    checked = run_jq_reader([shutil.which("jq"), "-e", module.read_text() +
                         "\nspx_selected_safety_queries"], input=json.dumps(changed), text=True,
                         capture_output=True, timeout=10)
                     self.assertEqual(checked.returncode, int(mutation is not None), (mutation, checked.stderr))

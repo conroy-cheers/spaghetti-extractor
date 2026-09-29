@@ -13,7 +13,7 @@ from .capabilities import spx_portable_reference_runtime_v5_source
 from .component_c_v5 import _parameter_type, _result_type
 from .interface_package_v5 import CompiledComponentInterfaceV5
 from .machine_overlay_services_v5 import _c_identifier
-from .machine_overlay_v5 import _view_runtime_helpers
+from .machine_overlay_runtime_helpers import _view_runtime_helpers
 from .bisimulation_source_dependencies import render_dependencies, context_setup
 
 

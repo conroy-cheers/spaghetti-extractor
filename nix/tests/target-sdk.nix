@@ -6,11 +6,33 @@ let
   pe32WorkflowArguments = builtins.functionArgs sdk.workflow.pe32;
   artifact = pkgs.writeText "minimal-sdk-consumer-artifact" "checked\n";
   acceptance = pkgs.writeText "minimal-sdk-acceptance-artifact" "accepted\n";
+  # Reuse the discovered closure of the existing semantic-link fixture tests.
+  # Importing the complete checkout here rescheduled SDK fixtures and all their
+  # consumers after unrelated operator, documentation or desktop-runner edits.
+  testManifest = builtins.fromJSON (builtins.unsafeDiscardStringContext
+    (builtins.readFile ../generated/test-suite-manifest.json));
+  semanticFixtureShard = pkgs.lib.findFirst
+    (shard: builtins.elem "tests/unit/semantic_link/test_module_v2.py" shard.test_paths)
+    (throw "SDK semantic fixture has no discovered test closure; run nix run .#dev -- refresh")
+    testManifest.shards;
+  semanticFixtureSource = pkgs.lib.fileset.toSource {
+    root = ../..;
+    fileset = pkgs.lib.fileset.unions (map (path: ../../. + "/${path}") semanticFixtureShard.files);
+  };
+  nativeRealizationPythonSource = import ../python-module-closure.nix {
+    inherit pkgs;
+    phaseRole = "developer";
+    modules = [
+      "spaghetti_extractor.artifacts.artifact_set"
+      "spaghetti_extractor.native_realization.receipt_v2"
+      "spaghetti_extractor.util"
+    ];
+  };
   semanticModuleFixture = pkgs.runCommand
     "minimal-sdk-linked-semantic-module-v2"
     { nativeBuildInputs = [ sdk.validation.pythonEnv ]; } ''
       mkdir -p "$out"
-      export PYTHONPATH=${../../.}/src:${../../.}
+      export PYTHONPATH=${semanticFixtureSource}/src:${semanticFixtureSource}
       python3 - "$out" <<'PY'
       import sys
       from pathlib import Path
@@ -82,7 +104,7 @@ let
     { nativeBuildInputs = [ sdk.validation.pythonEnv ]; } ''
       mkdir -p "$out"
       cp ${artifact} "$out/fixture.exe"
-      export PYTHONPATH=${../../.}/src:${../../.}
+      export PYTHONPATH=${nativeRealizationPythonSource.pythonPath}
       python3 - "$out/fixture.exe" "$out/native-realization.json" <<'PY'
       import sys
       from pathlib import Path
@@ -223,6 +245,11 @@ let
       graph.phases.example.derivation = artifact;
     };
     components = {
+      authoringPaths = {
+        intent = ../../tests/fixtures/minimal-target-bundle/intent/components.json;
+        interface_index = toString ../../tests/fixtures/minimal-target-bundle + "/contracts/interfaces-v5/index.json";
+        binding_index = toString ../../tests/fixtures/minimal-target-bundle + "/contracts/bindings-v5/index.json";
+      };
       assetInventory = [ {
         path = ../../tests/fixtures/minimal-target-bundle/intent/components.json;
         role = "component_intent";
@@ -241,6 +268,7 @@ let
       v6WorkPackages.example = {
         derivation = artifact;
         semanticSlice = artifact;
+        withCallerDefinition = _: { derivation = acceptance; semanticSlice = artifact; };
       };
       evidences.example = artifact;
       qualifications.example = artifact;
@@ -289,6 +317,12 @@ let
     nativeRealizations.default = realization;
     nativeRealizations.minimal = realization;
     calls = {
+      withComponentPackages = componentPackages: import ../boundary-workbench.nix {
+        inherit pkgs componentPackages;
+        pythonEnv = sdk.validation.pythonEnv;
+        namePrefix = "minimal-sdk-boundaries";
+        targetId = "minimal-sdk-consumer";
+      };
       configured = false;
       assetInventory = [ ];
       status = artifact;
@@ -302,6 +336,17 @@ let
       minimal.derivation = minimalImplementationSelection;
     };
   };
+  evidenceTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-target-bundle;
+    inputs.baseline = artifact;
+    workflow = workflow // {
+      candidateWithProofEvidence = { configurationId, proofEvidenceByComponent }:
+        assert configurationId == "default";
+        assert proofEvidenceByComponent == { example = toString artifact; };
+        { selection.derivation = defaultImplementationSelection; inherit realization; };
+    };
+  };
+  evidenceRequest = { proofEvidenceByComponent.example = toString artifact; };
   changedDefaultImplementationSelection =
     mkImplementationSelection "default" "portable";
   failingConfigurationStatus = pkgs.runCommand
@@ -392,9 +437,75 @@ let
     minimal-sdk-consumer = target;
     minimal-analysis-consumer = analysisTarget;
   };
+  callerArgs = {
+    namePrefix = "sdk-caller";
+    targetId = "minimal-sdk-consumer";
+    componentId = "example";
+    interfacePackage = artifact;
+    sourcePackage = artifact;
+  };
+  # These are dependency-graph probes. Real definitions and proofs are checked
+  # by the public caller fixtures; mock inputs here must never authorize them.
+  composition = { definition = artifact; exactSlice = artifact; supplier = artifact; };
+  preparedCaller = sdk.lifting.sourceCheck callerArgs;
+  checkedCaller = sdk.lifting.sourceCheck (callerArgs // {
+    localContracts = true; callerComposition = composition;
+  });
+  changedCaller = sdk.lifting.sourceCheck (callerArgs // {
+    localContracts = true;
+    callerComposition = composition // { definition = acceptance; supplier = acceptance; };
+  });
+  networkCaller = sdk.lifting.sourceCheck (callerArgs // {
+    localContracts = true;
+    callerComposition = composition // { supplier = { initialize = artifact; update = acceptance; }; };
+  });
+  terminalSupplier = sdk.lifting.sourceCheck (callerArgs // {
+    localContracts = true;
+    terminalServices = acceptance;
+    originalComparison = {
+      exactSlice = artifact; bindingIntent = artifact; machineDomain = artifact; serviceBindings = acceptance;
+    };
+  });
+  callerInputs = phase: lib.splitString "\n"
+    phase.derivation.SPAGHETTI_CA_DECLARED_INPUT_REFERENCES;
+  lib = pkgs.lib;
+  rejectsCaller = extra: !(builtins.tryEval ((sdk.lifting.sourceCheck
+    (callerArgs // { localContracts = true; callerComposition = composition; } // extra))
+    .derivation.drvPath)).success;
+  callerTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-target-bundle;
+    inherit workflow;
+    inputs.baseline = artifact;
+    callerCompositions.example = composition;
+  };
 in
+assert builtins.elem (toString preparedCaller.derivation) (callerInputs checkedCaller);
+assert builtins.elem (toString preparedCaller.derivation) (callerInputs changedCaller);
+assert builtins.elem (toString preparedCaller.derivation) (callerInputs networkCaller);
+assert builtins.elem (toString artifact) (callerInputs networkCaller);
+assert builtins.elem (toString acceptance) (callerInputs networkCaller);
+assert networkCaller.derivation.drvPath != checkedCaller.derivation.drvPath;
+assert builtins.elem (toString acceptance) (callerInputs terminalSupplier);
+assert builtins.elem (toString artifact) (callerInputs terminalSupplier);
+assert checkedCaller.derivation.drvPath != changedCaller.derivation.drvPath;
+assert callerTarget.operator.components.units.example.sourceCheck
+  == target.operator.components.units.example.sourceCheck;
+assert callerTarget.operator.components.units.example.sourceContractCheck
+  != target.operator.components.units.example.sourceContractCheck;
+assert callerTarget.operator.components.units.example.workPackage == acceptance;
+assert callerTarget.operator.boundaries.subjects."component:example".source == acceptance;
+assert rejectsCaller { localContracts = false; };
+assert rejectsCaller { sourceCallRegions = artifact; };
+assert rejectsCaller { sourceRegionGraphs = artifact; };
+assert rejectsCaller { terminalServices = artifact; };
+assert rejectsCaller { localContractDependencies = [ { package = artifact; operationId = "example"; } ]; };
+assert rejectsCaller { callerComposition = composition // { misspelled = true; }; };
+assert rejectsCaller { callerComposition = builtins.removeAttrs composition [ "supplier" ]; };
+assert !(rejectsCaller { callerComposition = composition // { supplier = { }; }; });
+assert rejectsCaller { callerComposition = composition // { previous = artifact; }; previousLocalContract = artifact; };
 assert sdk.format == "spaghetti-extractor-target-sdk-v5";
 assert builtins.isFunction sdk.environment.pe32;
+assert builtins.isFunction sdk.environment.nativeCallthroughProfile;
 assert builtins.isFunction sdk.workflow.pe32Project;
 assert builtins.isFunction sdk.candidate.nativeRealizationV2;
 assert !(sdk.candidate ? generatedBehavioralCProvider);
@@ -405,6 +516,13 @@ assert pe32WorkflowArguments ? lifting;
 assert pe32WorkflowArguments ? backend;
 assert pe32WorkflowArguments ? analysisLimits;
 assert pe32WorkflowArguments ? proofSmtSolver;
+assert pe32WorkflowArguments ? proofEvidenceByComponent;
+assert (evidenceTarget.operator.candidate.configurations.default.selectionFor evidenceRequest).drvPath ==
+  target.operator.candidate.configurations.default.selection.drvPath;
+assert (evidenceTarget.operator.candidate.configurations.default.realizationFor evidenceRequest).drvPath ==
+  target.operator.candidate.configurations.default.realization.drvPath;
+assert evidenceTarget.operatorIndex.candidate.configurations.default.products ==
+  [ "realization" "realizationFor" "selection" "selectionFor" ];
 assert !(pe32WorkflowArguments ? externalProfile);
 assert !(pe32WorkflowArguments ? machineImportProfiles);
 assert !(pe32WorkflowArguments ? callProtocols);
@@ -433,6 +551,11 @@ assert registry.minimal-sdk-consumer.operatorIndex.format ==
   "spaghetti-extractor-operator-index-v1";
 assert registry.minimal-sdk-consumer.operatorIndex.components.units.example.entryRvas ==
   [ 4096 ];
+assert registry.minimal-sdk-consumer.operatorIndex.components.authoringPaths == {
+  intent = "intent/components.json";
+  interface_index = "contracts/interfaces-v5/index.json";
+  binding_index = "contracts/bindings-v5/index.json";
+};
 assert registry.minimal-sdk-consumer.operatorIndex.libraries == null;
 assert !(registry.minimal-sdk-consumer.operator ? libraries);
 assert !(registry.minimal-sdk-consumer.artifacts ? libraries);
@@ -469,6 +592,7 @@ assert registry.minimal-analysis-consumer.operator.components.proposals ==
 assert registry.minimal-analysis-consumer.operatorIndex.defaultConfiguration ==
   "faithful";
 assert registry.minimal-analysis-consumer.operatorIndex.components.units == { };
+assert registry.minimal-analysis-consumer.operatorIndex.components.authoringPaths == null;
 assert registry.minimal-analysis-consumer.operatorIndex.libraries == null;
 assert !(registry.minimal-analysis-consumer.artifacts ? libraries);
 assert registry.minimal-analysis-consumer.default.implementationSelection == null;

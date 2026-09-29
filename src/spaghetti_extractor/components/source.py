@@ -65,6 +65,30 @@ def build_component_source_package(
 
 def load_component_source_package(value: Path | str) -> dict[str, object]:
     """Load a package only after rechecking its manifest against source bytes."""
+    return _load_component_source_package(value, allow_c_drafts=False)[0]
+
+
+def checked_private_headers(value, sources, *, protected=()) -> list[str]:
+    """Validate an explicit implementation-header declaration, not isolation proof."""
+    if value is None:return []
+    if (not isinstance(value,list) or any(not isinstance(name,str) for name in value)
+            or len(value)!=len(set(value)) or any(not name.endswith('.h') or name not in sources for name in value)):
+        raise ComponentIntentError('private_headers must name distinct authored headers')
+    if set(value)&set(protected):
+        raise ComponentIntentError('shared or original inputs cannot be private headers: '+', '.join(sorted(set(value)&set(protected))))
+    return sorted(value)
+
+
+def load_component_source_workspace(value: Path | str, *, private_headers=None) -> tuple[dict, dict[str, str]]:
+    """Inspect recorded metadata and unchecked C edits, without rebinding evidence.
+
+    Existing authored C and explicitly declared private headers may differ.
+    Shared inputs and source layout must match. No evidence is rebound.
+    """
+    return _load_component_source_package(value, allow_c_drafts=True, private_headers=private_headers)
+
+
+def _load_component_source_package(value: Path | str, *, allow_c_drafts: bool, private_headers=None) -> tuple[dict, dict[str, str]]:
 
     path = Path(value)
     manifest_path = path / "source-package.json" if path.is_dir() else path
@@ -92,7 +116,12 @@ def load_component_source_package(value: Path | str) -> dict[str, object]:
         )
 
     source_root = manifest_path.parent / "sources"
+    authored = payload.get('files')
+    if not isinstance(authored,list):
+        raise ComponentIntentError('component source-package files must be an array')
+    private = checked_private_headers(private_headers,[row.get('path') for row in authored if isinstance(row,Mapping)])
     listed: set[str] = set()
+    drafts = {}
     for field, expected_role in (("files", "source"), ("shared_inputs", "shared_input")):
         rows = payload.get(field)
         if not isinstance(rows, list):
@@ -110,9 +139,19 @@ def load_component_source_package(value: Path | str) -> dict[str, object]:
             source = source_root.joinpath(*relative.parts)
             if not source.is_file():
                 raise ComponentIntentError(f"component source file is missing: {text}")
-            if raw_row.get("size") != source.stat().st_size:
+            size = source.stat().st_size
+            digest = sha256_file(source)
+            if (allow_c_drafts and expected_role == "source" and (text.endswith('.c') or text in private)
+                    and (raw_row.get("size") != size or raw_row.get("sha256") != digest)):
+                if (not isinstance(raw_row.get("size"), int) or raw_row["size"] < 0
+                        or not isinstance(raw_row.get("sha256"), str)
+                        or re.fullmatch('[0-9a-f]{64}', raw_row["sha256"]) is None):
+                    raise ComponentIntentError(f"component source binding is invalid: {text}")
+                drafts[text] = digest
+                continue
+            if raw_row.get("size") != size:
                 raise ComponentIntentError(f"component source size is stale: {text}")
-            if raw_row.get("sha256") != sha256_file(source):
+            if raw_row.get("sha256") != digest:
                 raise ComponentIntentError(f"component source hash is stale: {text}")
     actual = {
         path.relative_to(source_root).as_posix()
@@ -124,7 +163,7 @@ def load_component_source_package(value: Path | str) -> dict[str, object]:
             "component source package has missing or unlisted files: "
             f"missing={sorted(listed - actual)}, unlisted={sorted(actual - listed)}"
         )
-    return payload
+    return payload, drafts
 
 
 def _normalize_operation_symbols(value: Mapping[str, object]) -> dict[str, str]:
@@ -233,3 +272,21 @@ __all__ = [
     "component_operation_symbols",
     "load_component_source_package",
 ]
+
+
+def _build_path(value: str) -> str:
+    # Make prerequisites and shell commands share these names. Reject Make/shell
+    # metacharacters instead of interpreting names supplied by an input package.
+    if not re.fullmatch(r'[A-Za-z0-9_./-]+', value) or '..' in Path(value).parts or value.startswith('/'):
+        raise ValueError('source export requires portable relative build paths: '+value)
+    return value
+
+
+def checked_source_build(build: dict, source: dict) -> None:
+    if (not isinstance(build,dict) or set(build)!={'sources','includes','inputs'}
+            or any(not isinstance(rows,list) or any(not isinstance(p,str) or _build_path(p)!=p for p in rows)
+                or len(rows)!=len(set(rows)) for rows in build.values())):
+        raise ValueError('source export build inputs must be unique portable relative paths')
+    if (set(build['sources'])!={row['path'] for row in source['files'] if row['path'].endswith('.c')}
+            or build['inputs']!=sorted(row['path'] for row in source['files']+source['shared_inputs'])):
+        raise ValueError('source export build inputs differ from its component source package')

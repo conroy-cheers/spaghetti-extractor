@@ -268,7 +268,7 @@ def _contract_transfer_ids(
             {
                 identity
                 for semantics in contract.machine_semantics
-                for identity in semantics.transfer_ids
+                for identity in semantics.proof_context_transfer_ids
             }
         )
     )
@@ -353,7 +353,7 @@ def _compile_kernel_semantic_contract(
             machine_image=machine_image,
         )
         operations.append(normalized_projection)
-        unit_ids.update(str(item) for item in semantics.transfer_ids)
+        unit_ids.update(str(item) for item in semantics.proof_context_transfer_ids)
         raw_services = semantics.machine_projection.get("service_bindings", [])
         if not isinstance(raw_services, list):
             raise BoundaryModelError("V5 refinement service bindings are malformed")

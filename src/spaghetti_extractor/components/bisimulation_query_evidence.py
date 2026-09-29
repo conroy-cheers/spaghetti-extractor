@@ -122,9 +122,15 @@ def previous_proof_queries(root, *, runtime_assurance=None):
                     "directory": root / diagnostics / f"operation-{oi:04d}-obligation-{mi:04d}" / "query-evidence",
                     "outputs": _output_digests(shards[(operation["operation_id"], model["obligation_id"])]),
                     "goto_model_sha256": model["goto_model_sha256"], "checker": proof["checker"],
+                    # A nonvacuity failure can replace the property result in
+                    # ordinary incomplete receipts. Files from those unpublished
+                    # property processes are not evidence; rerun them instead.
+                    "coverage_only": 'partitioned_evidence' not in shards[
+                        (operation["operation_id"], model["obligation_id"])],
                     "proof_receipt_sha256": proof["receipt_sha256"]}
                 for oi, operation in enumerate(proof["models"]["operation_models"])
-                for mi, model in enumerate(operation["obligation_models"])}
+                for mi, model in enumerate(operation["obligation_models"])
+                if model['goto_model_sha256'] is not None}
     except (ValueError, KeyError, TypeError, OSError) as error:
         raise BisimulationRefinementError("previous query proof: " + str(error)) from error
 

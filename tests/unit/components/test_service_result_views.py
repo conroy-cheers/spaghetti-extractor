@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -87,7 +88,7 @@ class ServiceResultViewTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         MachineObjectAuthorityV2(machine_backend=authority.machine_backend,
                             bindings=authority.bindings, rules=[rule])
-                result = subprocess.run([shutil.which('jq'), '-e', program+'\nspx_reference_authority_extents'],
+                result = run_jq_reader([shutil.which('jq'), '-e', program+'\nspx_reference_authority_extents'],
                     input=json.dumps({'rules':[rule]}), capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0 if expected else 1, result.stderr)
 
@@ -314,7 +315,7 @@ class ServiceResultViewTests(unittest.TestCase):
             self.assertEqual(result['status'], 'satisfied', result.get('issues'))
             validate_contextual_refinement_v2(artifact['proof'], proof_plan=artifact['proof_plan'], exact_c_slice=artifact['exact_c_slice'])
             program = (Path(__file__).resolve().parents[3] / 'nix/jq/strong-contextual-proof.jq').read_text()
-            checked = subprocess.run([shutil.which('jq'), '-e', program + '\nspx_strong_contextual_proof'],
+            checked = run_jq_reader([shutil.which('jq'), '-e', program + '\nspx_strong_contextual_proof'],
                 input=json.dumps(artifact), text=True, capture_output=True)
             self.assertEqual(checked.returncode, 0, checked.stderr or checked.stdout)
 

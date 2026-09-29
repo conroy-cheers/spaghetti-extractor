@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -68,7 +68,7 @@ class ProofServiceEffectTests(unittest.TestCase):
                 renderer['implementation_closure_sha256'] = canonical_sha256_v3(renderer['implementation_files'])
                 rehash_model(model)
             self.assertTrue(_trusted_adapter_lowering_used(model))
-            checked = subprocess.run([shutil.which('jq'), '-L', 'nix/jq',
+            checked = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq',
                 'include "strong-contextual-proof"; spx_typed_adapter_renderer_inventory'],
                 input=json.dumps(model['trusted_adapter_lowering']), capture_output=True, text=True, check=True)
             self.assertIs(json.loads(checked.stdout), True)
@@ -97,7 +97,7 @@ class ProofServiceEffectTests(unittest.TestCase):
                     _trusted_adapter_lowering_used(model)
             else:
                 self.assertTrue(_trusted_adapter_lowering_used(model))
-            checked = subprocess.run([shutil.which('jq'), '-L', 'nix/jq',
+            checked = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq',
                 'include "strong-contextual-proof"; spx_typed_adapter_renderer_inventory'],
                 input=json.dumps(altered), capture_output=True, text=True, check=True)
             self.assertIs(json.loads(checked.stdout), omitted is None)
@@ -148,7 +148,7 @@ class ProofServiceEffectTests(unittest.TestCase):
                 query = 'include "strong-contextual-proof"; . as $models | '
                 query += '(.trusted_adapter_lowering | spx_typed_adapter_renderer_inventory) and '
                 query += 'all(.trusted_adapter_lowering.adapter_plan[]; spx_declared_external_range_effects($models))'
-                checked = subprocess.run([shutil.which('jq'), '-L', 'nix/jq', query],
+                checked = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq', query],
                     input=json.dumps(altered), text=True, capture_output=True, timeout=10)
                 self.assertEqual(checked.returncode, 0, checked.stderr)
                 self.assertIs(json.loads(checked.stdout), mutation == 'none')
@@ -169,7 +169,7 @@ class ProofServiceEffectTests(unittest.TestCase):
                     _trusted_adapter_lowering_used(model)
             else:
                 self.assertTrue(_trusted_adapter_lowering_used(model))
-            checked = subprocess.run([jq, "-L", str(Path(__file__).parents[3] / "nix/jq"),
+            checked = run_jq_reader([jq, "-L", str(Path(__file__).parents[3] / "nix/jq"),
                 'include "strong-contextual-proof"; spx_typed_adapter_renderer_inventory'],
                 input=json.dumps(model["trusted_adapter_lowering"]), capture_output=True, text=True, timeout=10)
             self.assertEqual(checked.returncode, 0, checked.stderr)

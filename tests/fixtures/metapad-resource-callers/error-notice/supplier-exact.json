@@ -1,0 +1,123 @@
+{
+  "bindings": {
+    "bisimulation_intent_sha256": "a3bb4d58249a5d15c9f7a1c79b37b6ff051055dc7c64970299b9ec44e1d92d3d",
+    "dependency_binding_intent_sha256s": {},
+    "executable_transfer_plan_sha256": "33f6ad7e3e6b1541d59ed2279b14621e2cb9bcf7582b8957bbc6fd727acf2590"
+  },
+  "component_id": "resource-text",
+  "dependency_components": [],
+  "entry_rvas": [
+    4740
+  ],
+  "files": [
+    {
+      "path": "behavioral-c.h",
+      "sha256": "6ddd75a37b588013410269c628f97588ef08c751faa9cdf9e4782e0dc6fd2b5b"
+    },
+    {
+      "path": "behavioral-dispatch.c",
+      "sha256": "4aef8629d3c18e9774dc76c507c28188d76cb2f5194cd1b927a9077f438eb72a"
+    },
+    {
+      "path": "behavioral-fn-00001284.c",
+      "sha256": "04309b094dffb8d27995ea06160b336877050757d7ed92036ae6f497afe43d9d"
+    },
+    {
+      "path": "behavioral-support.c",
+      "sha256": "ba9d7914a8e8d2eb72a750eca9af1e68f1f16369aa15e36a2983835a23dcfdca"
+    },
+    {
+      "path": "state-machine-runtime.h",
+      "sha256": "30d64ce97ddac5421af0dbff399cdb40e538fc2ebddfc40a24962d84e9905317"
+    }
+  ],
+  "forced_label_rvas": [],
+  "format": "spaghetti-extractor-component-exact-c-slice-v1",
+  "functions": [
+    {
+      "control_form": "direct_labels_and_structured_branches_v1",
+      "entries": [
+        4740
+      ],
+      "id": "behavioral-c-function:00001284",
+      "symbol": "spx_sub_00001284",
+      "unit_rvas": [
+        4740,
+        4749,
+        4764,
+        4770
+      ]
+    }
+  ],
+  "internal_direct_call_closure": {
+    "call_edges": [],
+    "entry_rvas": [],
+    "unit_ids": []
+  },
+  "policy": {
+    "connected_component_closure_bound": true,
+    "exact_checked_transfers_only": true,
+    "forced_labels_are_step_barriers": true,
+    "production_run_semantics_preserved": true
+  },
+  "root_context_unit_ids": [
+    "semantic-transfer:original-cutpoint-00001284-0000128d",
+    "semantic-transfer:original-cutpoint-0000128d-0000129c",
+    "semantic-transfer:original-cutpoint-0000129c-000012a2",
+    "semantic-transfer:original-cutpoint-000012a2-000012a7"
+  ],
+  "root_entry_rvas": [
+    4740
+  ],
+  "root_unit_ids": [
+    "semantic-transfer:original-cutpoint-00001284-0000128d",
+    "semantic-transfer:original-cutpoint-0000128d-0000129c",
+    "semantic-transfer:original-cutpoint-0000129c-000012a2",
+    "semantic-transfer:original-cutpoint-000012a2-000012a7"
+  ],
+  "slice_sha256": "793258ad2ec0da8fde08df07281be380deee4d3a781846491ab7c211153457b8",
+  "source_map": [
+    {
+      "file": "behavioral-fn-00001284.c",
+      "function_id": "behavioral-c-function:00001284",
+      "line_end": 155,
+      "line_start": 90,
+      "rva": 4740,
+      "symbol": "spx_sub_00001284",
+      "unit_id": "semantic-transfer:original-cutpoint-00001284-0000128d"
+    },
+    {
+      "file": "behavioral-fn-00001284.c",
+      "function_id": "behavioral-c-function:00001284",
+      "line_end": 233,
+      "line_start": 156,
+      "rva": 4749,
+      "symbol": "spx_sub_00001284",
+      "unit_id": "semantic-transfer:original-cutpoint-0000128d-0000129c"
+    },
+    {
+      "file": "behavioral-fn-00001284.c",
+      "function_id": "behavioral-c-function:00001284",
+      "line_end": 400,
+      "line_start": 234,
+      "rva": 4764,
+      "symbol": "spx_sub_00001284",
+      "unit_id": "semantic-transfer:original-cutpoint-0000129c-000012a2"
+    },
+    {
+      "file": "behavioral-fn-00001284.c",
+      "function_id": "behavioral-c-function:00001284",
+      "line_end": 473,
+      "line_start": 401,
+      "rva": 4770,
+      "symbol": "spx_sub_00001284",
+      "unit_id": "semantic-transfer:original-cutpoint-000012a2-000012a7"
+    }
+  ],
+  "unit_ids": [
+    "semantic-transfer:original-cutpoint-00001284-0000128d",
+    "semantic-transfer:original-cutpoint-0000128d-0000129c",
+    "semantic-transfer:original-cutpoint-0000129c-000012a2",
+    "semantic-transfer:original-cutpoint-000012a2-000012a7"
+  ]
+}

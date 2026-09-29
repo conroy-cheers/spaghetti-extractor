@@ -238,5 +238,101 @@ class FunctionalShardTests(unittest.TestCase):
                 )
 
 
+
+
+class BoundedCaptureTests(unittest.TestCase):
+    """Detached output writers must not defeat a root-process deadline."""
+
+    def observe(self, root, code, *, timeout=0.15, data=b''):
+        from spaghetti_extractor.candidate.functional import _run_observed_process
+        return _run_observed_process(
+            command=(sys.executable, '-c', code), stdin_bytes=data, env={},
+            cwd=str(root), timeout_seconds=timeout, out_prefix=root/'capture',
+            strip_stderr_line_regexes=(), stdout_sink='capture',
+        )
+
+    def test_detached_writer_does_not_block_exit_or_timeout_and_logs_are_snapshots(self):
+        import os
+        import signal
+        import time
+        for linger in (False, True):
+            with self.subTest(linger=linger), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                code = (
+                    'import os,sys,time\n'
+                    'pid=os.fork()\n'
+                    'if pid==0:\n'
+                    ' os.setsid()\n'
+                    ' open("detached.pid","w").write(str(os.getpid()))\n'
+                    ' time.sleep(0.5)\n'
+                    ' os.write(1,b"late output\\n")\n'
+                    ' time.sleep(5)\n'
+                    ' os._exit(0)\n'
+                    'os.write(1,b"root output\\n")\n'
+                    + ('time.sleep(5)\n' if linger else '')
+                )
+                try:
+                    started = time.monotonic()
+                    result = self.observe(root, code)
+                    self.assertLess(time.monotonic()-started, 2.0)
+                    self.assertEqual(result['timed_out'], linger)
+                    self.assertFalse(result['cleanup_failed'])
+                    self.assertEqual((root/'capture.stdout').read_bytes(), b'root output\n')
+                    time.sleep(0.6)
+                    self.assertEqual((root/'capture.stdout').read_bytes(), b'root output\n')
+                finally:
+                    pid_file = root/'detached.pid'
+                    if pid_file.exists():
+                        try:
+                            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    def test_unread_large_stdin_is_bounded_and_stdin_remains_a_pipe(self):
+        import time
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            started = time.monotonic()
+            result = self.observe(root, 'import time; time.sleep(5)', data=b'x'*1048576)
+            self.assertTrue(result['timed_out'])
+            self.assertLess(time.monotonic()-started, 2.0)
+            result = self.observe(root, 'import os,stat; print(all(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (0,1,2)))', timeout=2)
+            self.assertEqual(result['returncode'], 0)
+            self.assertEqual((root/'capture.stdout').read_bytes(), b'True\n')
+
+    def test_cancellation_reaps_root_and_preserves_partial_output(self):
+        import os
+        import signal
+        import time
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def cancel(signum, frame):
+                raise KeyboardInterrupt('test cancellation')
+            previous = signal.signal(signal.SIGALRM, cancel)
+            signal.setitimer(signal.ITIMER_REAL, 0.25)
+            started = time.monotonic()
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    self.observe(root, 'import os,time; open("root.pid","w").write(str(os.getpid())); print("ready",flush=True); time.sleep(5)', timeout=10)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+            self.assertLess(time.monotonic()-started, 2.0)
+            self.assertEqual((root/'capture.stdout').read_bytes(), b'ready\n')
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int((root/'root.pid').read_text()), 0)
+
+    def test_failed_launch_retains_empty_logs(self):
+        from spaghetti_extractor.candidate.functional import _run_observed_process
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(FileNotFoundError):
+                _run_observed_process(command=(str(root/'absent'),),stdin_bytes=b'',
+                    env={},cwd=str(root),timeout_seconds=0.1,out_prefix=root/'capture',
+                    strip_stderr_line_regexes=(),stdout_sink='capture')
+            self.assertEqual((root/'capture.stdout').read_bytes(),b'')
+            self.assertEqual((root/'capture.stderr').read_bytes(),b'')
+
+
 if __name__ == "__main__":
     unittest.main()

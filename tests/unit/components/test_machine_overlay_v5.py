@@ -36,9 +36,7 @@ from spaghetti_extractor.components.machine_overlay_v5 import (
 )
 from spaghetti_extractor.components.normalized_component import (
     NormalizedComponentContract,
-    NormalizedMachineBinding,
 )
-from spaghetti_extractor.external.resolved import bind_launch_policy_v1
 from spaghetti_extractor.transfer.model import _Action, _Call, _Node, _Transfer
 from spaghetti_extractor.transfer.runtime_abi import exact_runtime_header
 
@@ -55,196 +53,57 @@ TESTKIT = {
 }
 
 
-def _transfer(identity: str, rva: int) -> _Transfer:
-    return _Transfer(identity, "a" * 64, "b" * 64, rva, (), (), (), (), ())
-
-
-def _component_overlay(
-    component_id: str,
-    *,
-    action_by_unit: dict[str, tuple[_Action, ...]] | None = None,
-    call_by_unit: dict[str, tuple[_Call, ...]] | None = None,
-    resolved_external_environment: dict[str, object] | None = None,
-    code_capabilities: dict[str, dict[str, object]] | None = None,
-    authority_selectors: dict[str, list[dict[str, str]]] | None = None,
-    object_authority_rule_ids: tuple[str, ...] | None = None,
-    external_service_thunk_renderer=None,
-):
-    interface = ComponentInterfaceIntentV1.parse(
-        json.loads(
-            (
-                ROOT / f"targets/gnu-hello/intent/interfaces-v5/{component_id}.json"
-            ).read_text(encoding="utf-8")
-        )
-    )
-    binding = ComponentMachineBindingIntentV1.parse(
-        json.loads(
-            (
-                ROOT / f"targets/gnu-hello/intent/bindings-v5/{component_id}.json"
-            ).read_text(encoding="utf-8")
-        )
-    )
-    bundle = compile_component_interface_v5(interface)
-    contract = NormalizedComponentContract.create(
-        interface=bundle.interface,
-        machine_semantics=[item.semantics for item in binding.operations],
-    )
-    machine_binding = None
-    if authority_selectors is not None:
-        artifact_digest = "a" * 64
-        machine_binding = NormalizedMachineBinding.create(
-            bundle=bundle,
-            contract=contract,
-            artifacts={
-                "pe_sha256": artifact_digest,
-                "machine_ir_sha256": artifact_digest,
-                "machine_ir_manifest_sha256": artifact_digest,
-                "structural_units_sha256": artifact_digest,
-                "unit_inventory_sha256": artifact_digest,
-                "component_unit_inventory_sha256": artifact_digest,
-            },
-            operation_authority={
-                item.semantics.operation_id: {
-                    **dict(item.authority),
-                    "object_authority_selectors": authority_selectors.get(
-                        item.semantics.operation_id, []
-                    ),
-                    "service_ids": list(item.semantics.service_ids),
-                    "callback_ids": list(item.semantics.callback_ids),
-                    "outcome_protocol_ids": list(item.semantics.outcome_protocol_ids),
-                }
-                for item in binding.operations
-            },
-        )
-    unit_ids = sorted(
-        {
-            unit_id
-            for operation in binding.operations
-            for unit_id in operation.semantics.transfer_ids
-        }
-    )
-    transfers = []
-    for unit_id in unit_ids:
-        match = re.search(r"(?:original-cutpoint|rooted-view)-([0-9a-f]{8})", unit_id)
-        assert match is not None
-        transfer = _transfer(unit_id, int(match.group(1), 16))
-        transfers.append(
-            _Transfer(
-                transfer.identity,
-                transfer.contract_sha256,
-                transfer.instruction_bytes_sha256,
-                transfer.rva_start,
-                transfer.nodes,
-                transfer.x87_nodes,
-                (action_by_unit or {}).get(unit_id, ()),
-                (call_by_unit or {}).get(unit_id, ()),
-                transfer.x87_operations,
-            )
-        )
-    return render_component_machine_overlay_v5(
-        bundle=bundle,
-        contract=contract,
-        operation_symbols={
-            operation.identity: f"test_{component_id.replace('-', '_')}_{operation.identity}"
-            for operation in bundle.interface.operations
-        },
-        transfers=transfers,
-        machine_binding=machine_binding,
-        object_authority_rule_ids=object_authority_rule_ids,
-        resolved_external_environment=(
-            _resolved_environment()
-            if resolved_external_environment is None
-            else resolved_external_environment
-        ),
-        code_capabilities=code_capabilities,
-        external_service_thunk_renderer=external_service_thunk_renderer,
-    )
-
-
-def _external_contract(
-    identity: dict[str, object], *, abi_template: str, argument_words: int
-) -> dict[str, object]:
-    return {
-        "import_kind": "ordinary",
-        "identity": identity,
-        "descriptor_index": 0,
-        "cell_index": 0,
-        "iat_rva": 0x2000,
-        "contract": {
-            "profile_id": "fixture-profile",
-            "profile_sha256": "5" * 64,
-            "entry_key": "fixture-entry",
-            "entry_index": 0,
-            "payload": {
-                "id": "fixture-contract",
-                "abi_template": abi_template,
-                "argument_words": argument_words,
-                "result_register_relations": [],
-                "memory_effect": "readOnly",
-                "world_effect": "none",
-            },
-        },
-        "boundary": {"fixture": True},
-    }
-
-
-def _resolved_environment(
-    *contracts: dict[str, object],
-    interface_catalogs: tuple[dict[str, object], ...] = (),
-) -> dict[str, object]:
-    launch = {
-        "assumptions": {
-            name: {"contract": f"fixture-{name}"}
-            for name in (
-                "argv",
-                "environment",
-                "fs",
-                "iat",
-                "initial_stack",
-                "relocations",
-            )
-        },
-        "feature_inventory": {
-            "direct_syscalls": [],
-            "executable_writes": [],
-            "threads": [],
-            "unknown_async_callbacks": [],
-            "unmodelled_seh": [],
-        },
-        "format": "spaghetti-extractor-pe32-launch-assumption-template-v1",
-        "schema_version": 1,
-    }
-    rows = list(contracts)
-    result: dict[str, object] = {
-        "format": "spaghetti-extractor-resolved-external-environment-v1",
-        "status": "complete",
-        "bindings": {
-            "module_interface_sha256": "1" * 64,
-            "module_pe_sha256": "2" * 64,
-            "environment_intent_sha256": "3" * 64,
-            "runtime_profile_pack_sha256s": [],
-            "interface_profile_pack_sha256s": [],
-        },
-        "target": {"abi": "pe32-i686-mingw32", "data_layout": "pe32-ilp32-v1"},
-        "launch_policy": bind_launch_policy_v1(
-            launch, source_sha256="4" * 64, filename="fixture-launch.json"
-        ),
-        "canonical_boundaries": [],
-        "interface_method_catalogs": list(interface_catalogs),
-        "machine_import_contracts": rows,
-        "original_semantic_imports": rows,
-        "generated_runtime_support_imports": [],
-        "loader_service_contracts": [],
-        "static_authority_bindings": [],
-        "checked_exception_protocols": [],
-        "blockers": [],
-        "authority": "checked_static_environment",
-    }
-    result["resolved_environment_sha256"] = canonical_sha256_v3(result)
-    return result
-
+from .machine_overlay_fixture import _transfer as _transfer, _component_overlay as _component_overlay, _external_contract as _external_contract, _resolved_environment as _resolved_environment
 
 class ComponentMachineOverlayV5Tests(unittest.TestCase):
+    def test_complete_replacement_links_without_body_and_rejects_interior(self):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is unavailable")
+        entry = {
+            "component_id": "whole", "operation_id": "run",
+            "entry_unit_id": "entry", "entry_rva": 4096,
+            "owned_unit_ids": ["entry", "return"],
+            "symbol": "portable_entry", "logical_symbol": "portable_run",
+            "logical_abi_sha256": "a" * 64,
+        }
+        source = render_component_dispatch_registry_v1(
+            entries=[entry], portable_unit_rvas={"entry": 4096, "return": 4100},
+            retired_function_symbols=["original_routine"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "state-machine-runtime.h").write_text(exact_runtime_header())
+            (root / "registry.c").write_text(source + r'''
+spx_step_result portable_entry(spx_runtime *rt, spx_machine_state *state) {
+  (void)rt;
+  state->eax = 42U;
+  return (spx_step_result){ SPX_RETURN, 0U, 123U };
+}
+int main(void) {
+  spx_machine_state state = {0};
+  const spx_region_override *entry = spx_region_override_lookup(4096U);
+  const spx_region_override *interior = spx_region_override_lookup(4100U);
+  if (!entry || !interior || entry->fallback_on_unimplemented ||
+      interior->fallback_on_unimplemented || spx_region_override_lookup(4104U)) return 1;
+  if (entry->function(0, &state).kind != SPX_RETURN || state.eax != 42U) return 2;
+  if (interior->function(0, &state).kind != SPX_UNIMPLEMENTED || state.eax != 42U) return 3;
+  if (original_routine(0, &state, 4096U).kind != SPX_UNIMPLEMENTED || state.eax != 42U) return 4;
+  if (original_routine(0, &state, 4100U).kind != SPX_UNIMPLEMENTED || state.eax != 42U) return 5;
+  return 0;
+}
+''')
+            subprocess.run([compiler, "-std=c11", str(root / "registry.c"),
+                            "-o", str(root / "check")], check=True, capture_output=True)
+            subprocess.run([str(root / "check")], check=True, capture_output=True)
+        with self.assertRaisesRegex(BoundaryModelError, "RVAs overlap"):
+            render_component_dispatch_registry_v1(
+                entries=[entry], portable_unit_rvas={"entry": 4096, "return": 4096})
+        with self.assertRaisesRegex(BoundaryModelError, "symbol is invalid"):
+            render_component_dispatch_registry_v1(
+                entries=[entry], portable_unit_rvas={"entry": 4096, "return": 4100},
+                retired_function_symbols=["portable_entry"])
+
     def test_common_exit_uses_only_outgoing_edges_and_preserves_kind(self):
         def transfer(identity, rva, action):
             return _Transfer(identity, 'a' * 64, 'b' * 64, rva, (), (), (action,), (), ())
@@ -350,7 +209,8 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         self.assertEqual(len(rendered.entries), 1)
         self.assertEqual(
             rendered.entries[0]["owned_unit_ids"],
-            ["semantic-transfer:original-cutpoint-0000933d-0000934a"],
+            ["semantic-transfer:original-cutpoint-0000933d-0000934a",
+             "semantic-transfer:original-cutpoint-0000934a-00009352"],
         )
         self.assertIn("state->esp + UINT32_C(4)", rendered.source)
         self.assertIn("state->eax = ((uint32_t)(logical_result_word))", rendered.source)
@@ -360,7 +220,8 @@ class ComponentMachineOverlayV5Tests(unittest.TestCase):
         registry = render_component_dispatch_registry_v1(
             entries=rendered.entries,
             portable_unit_rvas={
-                "semantic-transfer:original-cutpoint-0000933d-0000934a": 0x933D
+                "semantic-transfer:original-cutpoint-0000933d-0000934a": 0x933D,
+                "semantic-transfer:original-cutpoint-0000934a-00009352": 0x934A,
             },
         )
         self.assertIn("spx_region_override_lookup", registry)

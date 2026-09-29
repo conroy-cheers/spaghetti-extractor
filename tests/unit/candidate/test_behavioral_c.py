@@ -52,6 +52,72 @@ def _transfer(rva: int, *, nodes=(), actions=(), calls=()) -> _Transfer:
 
 
 class BehavioralCBackendTests(unittest.TestCase):
+    def test_nested_load_stops_at_first_fault_in_compiled_c(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("host C compiler is unavailable")
+        row = _transfer(
+            0x1000,
+            nodes=(
+                _Node("const", immediate=0xffffffff),
+                _Node("load", (0,), aux=4),
+                _Node("const", immediate=20),
+                _Node("add32", (1, 2)),
+                _Node("load", (3,), aux=4),
+            ),
+            actions=(
+                _Action("set_reg", (4,), aux=0),
+                _Action("outcome_return", (4,)),
+            ),
+        )
+        plan = build_behavioral_c_plan((row,), entry_rvas=(0x1000,))
+        units, _ = behavioral_c_translation_units((row,), plan)
+        harness = r'''
+#include "behavioral-c.h"
+static unsigned reads, fail_at;
+static uint32_t read_word(void *context, uint32_t address,
+                          uint32_t width, uint32_t *fault) {
+  (void)context; (void)address; (void)width;
+  ++reads;
+  /* A valid later read deliberately clears an earlier access's fault. */
+  *fault = reads == fail_at;
+  return *fault ? 0U : 123U;
+}
+int main(void) {
+  spx_runtime runtime = {0};
+  runtime.read = read_word;
+  for (fail_at = 0; fail_at <= 2; ++fail_at) {
+    spx_machine_state state = {0};
+    state.eax = 77U;
+    reads = 0;
+    spx_step_result result = spx_sub_00001000(&runtime, &state, 0x1000U);
+    if (fail_at) {
+      if (result.kind != SPX_MEMORY_FAULT || reads != fail_at ||
+          state.eax != 77U) return 1;
+    } else if (result.kind != SPX_RETURN || reads != 2 ||
+               state.eax != 123U || result.value != 123U) return 2;
+  }
+  return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "state-machine-runtime.h").write_text(exact_runtime_header())
+            (root / "behavioral-c.h").write_text(behavioral_c_header(plan))
+            for name, source in units.items():
+                (root / name).write_text(source)
+            (root / "harness.c").write_text(harness)
+            executable = root / "nested-load"
+            compiled = subprocess.run(
+                [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 "-ffunction-sections", "-Wl,--gc-sections", "-I", str(root),
+                 *(str(root / name) for name in units),
+                 str(root / "harness.c"), "-o", str(executable)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            subprocess.run([str(executable)], check=True, capture_output=True)
+
     def test_checked_nonlocal_propagates_to_exact_ancestor_in_compiled_c(
         self,
     ) -> None:

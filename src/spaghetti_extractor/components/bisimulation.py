@@ -124,6 +124,7 @@ def _invariant_expression(
         "loop_variable",
         "bytes_address",
         "byte_extent",
+        "nul_extent",
         "resource_identity",
     }:
         row = _object(value, {"op", "name"}, context)
@@ -207,6 +208,7 @@ class BisimulationSyncV1:
     allocation_history: AllocationHistoryV1 | None = None
     private_stack_scope: PrivateStackScopeV1 | None = None
     memory_facts: tuple[Mapping[str, object], ...] = ()
+    preserved_parameter_slots: tuple[str, ...] = ()
 
     @classmethod
     def parse(
@@ -225,6 +227,8 @@ class BisimulationSyncV1:
             fields.add("private_stack_scope")
         if isinstance(value, Mapping) and "memory_facts" in value:
             fields.add("memory_facts")
+        if isinstance(value, Mapping) and "preserved_parameter_slots" in value:
+            fields.add("preserved_parameter_slots")
         row = _object(value, fields, context)
         from .bisimulation_stack_scope import PrivateStackScopeV1
         from .bisimulation_allocation_cuts import AllocationHistoryV1
@@ -298,8 +302,11 @@ class BisimulationSyncV1:
                 f"{context} derived relations must be ordered and unique"
             )
         from .bisimulation_memory_facts import parse_facts
+        from .bisimulation_projection_frames import parse_slots
         try:
             memory_facts = parse_facts(row.get("memory_facts", []), captures, allocation_history)
+            preserved_slots = (parse_slots(row["preserved_parameter_slots"], captures, private_stack_scope)
+                               if "preserved_parameter_slots" in row else ())
         except ValueError as error:
             raise ComponentBisimulationError(f"{context}: {error}") from error
         return cls(
@@ -313,6 +320,7 @@ class BisimulationSyncV1:
             allocation_history,
             private_stack_scope,
             memory_facts,
+            preserved_slots,
         )
 
     def source_arguments(self) -> tuple[str, ...]:
@@ -338,6 +346,7 @@ class BisimulationSyncV1:
             **({"allocation_history": self.allocation_history.to_payload()} if self.allocation_history else {}),
             **({"private_stack_scope": self.private_stack_scope.to_payload()} if self.private_stack_scope else {}),
             **({"memory_facts": [_canonical(fact) for fact in self.memory_facts]} if self.memory_facts else {}),
+            **({"preserved_parameter_slots": list(self.preserved_parameter_slots)} if self.preserved_parameter_slots else {}),
         }
 
 
@@ -378,11 +387,12 @@ class BisimulationOperationV1:
     reference_origin_capacity: int | None = None
     source_unwind_limit: int | None = None
     entry_allocation_history: AllocationHistoryV1 | None = None
+    call_completion_lemmas: tuple[Mapping[str, object], ...] = ()
 
     @classmethod
     def parse(cls, value: object, context: str) -> "BisimulationOperationV1":
         if (not isinstance(value, Mapping) or not {"operation_id", "syncs"} <= set(value)
-                or set(value) - {"operation_id", "syncs", "shared_captures", "machine_clobbers", "private_stack_writes", "private_stack_accesses", "reference_origin_capacity", "source_unwind_limit", "entry_allocation_history"}):
+                or set(value) - {"operation_id", "syncs", "shared_captures", "machine_clobbers", "private_stack_writes", "private_stack_accesses", "reference_origin_capacity", "source_unwind_limit", "entry_allocation_history", "call_completion_lemmas"}):
             actual = set(value) if isinstance(value, Mapping) else set()
             raise ComponentBisimulationError(
                 f"{context} fields differ: actual={sorted(actual)!r}"
@@ -434,6 +444,11 @@ class BisimulationOperationV1:
         identities = [item.identity for item in syncs]
         if len(identities) != len(set(identities)):
             raise ComponentBisimulationError(f"{context} sync ids are duplicated")
+        from .bisimulation_completion import parse_lemmas
+        try:
+            completion_lemmas = parse_lemmas(row.get("call_completion_lemmas", []), set(identities))
+        except ValueError as error:
+            raise ComponentBisimulationError(str(error)) from error
         # Each cut has its own live relation. The compiler-derived inventory
         # overapproximates mutable locals before restoring that cut's captures;
         # a local captured at an earlier cut supplies no implicit later fact.
@@ -447,6 +462,7 @@ class BisimulationOperationV1:
             origin_capacity,
             source_unwind_limit,
             entry_history,
+            completion_lemmas,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -473,6 +489,8 @@ class BisimulationOperationV1:
             result["reference_origin_capacity"] = self.reference_origin_capacity
         if self.source_unwind_limit is not None:
             result["source_unwind_limit"] = self.source_unwind_limit
+        if self.call_completion_lemmas:
+            result["call_completion_lemmas"] = [dict(row) for row in self.call_completion_lemmas]
         if self.entry_allocation_history is not None:
             result["entry_allocation_history"] = self.entry_allocation_history.to_payload()
         return result
@@ -746,6 +764,8 @@ def build_component_proof_plan_v1(
                     "condensation_edges": list(shape["condensation_edges"]),
                 },
                 "source": {
+                    **({"call_completion_lemmas": [dict(row) for row in authored[operation_id].call_completion_lemmas]}
+                       if operation_id in authored and authored[operation_id].call_completion_lemmas else {}),
                     **({"entry_allocation_history": authored[operation_id].entry_allocation_history.to_payload()}
                        if operation_id in authored and authored[operation_id].entry_allocation_history is not None else {}),
                     **({"source_unwind_limit": authored[operation_id].source_unwind_limit}

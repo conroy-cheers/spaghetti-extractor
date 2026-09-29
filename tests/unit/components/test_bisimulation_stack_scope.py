@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -158,6 +158,6 @@ void main(void) {{
             elif mutation == "missing-input-check":
                 segment["obligation_id"] = "sync:cut"
                 segment["required_assertion_descriptions"].append("spx-bisimulation-allocation-history-input:cut")
-            result = subprocess.run([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
+            result = run_jq_reader([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
                 input=json.dumps(value), text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0 if mutation == "none" else 1, (mutation, result.stderr))

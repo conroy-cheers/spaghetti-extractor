@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -88,7 +88,7 @@ class TerminalCutTests(unittest.TestCase):
                 if omit:
                     value["proof"]["models"]["operation_models"][0]["obligation_models"][0][
                         "required_assertion_descriptions"].remove(guard)
-                result = subprocess.run([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
+                result = run_jq_reader([shutil.which("jq"), "-e", program + "\nspx_cut_capture_codecs"],
                     input=json.dumps(value), text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, int(omit), (outgoing, omit, result.stderr))
 

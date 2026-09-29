@@ -56,6 +56,11 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "show typed call transport, lifecycle, and idiomatic-view frontiers",
     },
     {
+        "name": "boundary inventory",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "audit a manual whole-target partition using retained semantic inputs",
+    },
+    {
         "name": "boundary inspect",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "inspect one checked or proposed call protocol",
@@ -106,9 +111,24 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "show provider-selection readiness for one configuration",
     },
     {
+        "name": "candidate policy",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "prepare a reviewable experimental policy from retained comparisons",
+    },
+    {
         "name": "candidate build",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "build the target's default static candidate",
+    },
+    {
+        "name": "candidate export",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "export compared component C as a standalone-buildable source library",
+    },
+    {
+        "name": "candidate apply",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "apply component sources and target assembly together, preserving the working project on failure",
     },
     {
         "name": "candidate test",
@@ -249,6 +269,7 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "component start": "operator",
     "component check": "operator",
     "boundary status": "operator",
+    "boundary inventory": "operator",
     "boundary inspect": "operator",
     "boundary propose": "operator",
     "boundary adopt": "operator",
@@ -259,7 +280,10 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "library check": "operator",
     "candidate list": "operator",
     "candidate status": "operator",
+    "candidate policy": "operator",
     "candidate build": "operator",
+    "candidate export": "operator",
+    "candidate apply": "operator",
     "candidate test": "operator",
     "expert static-inventory-binary": "proposal",
     "expert static-export-roots": "proposal",

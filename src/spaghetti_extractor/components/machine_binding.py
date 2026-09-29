@@ -40,6 +40,7 @@ from .value_codec import (
 
 
 _REGISTERS = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"})
+_FLAGS = frozenset({"cf", "zf", "sf", "of", "pf", "df"})
 _EFFECT_FAMILIES = {
     "memory_event": "memory_events",
     "external_event": "external_events",
@@ -94,6 +95,12 @@ class MachineProjectionV1:
                 raise ComponentMachineBindingError(f"{context} register is unsupported")
             _width(row["width"], context)
             _phase(row["at"], context)
+        elif kind == "flag":
+            _exact(row, {"kind", "flag", "at"}, context)
+            flag = _text(row['flag'], f'{context} flag')
+            if flag not in _FLAGS:
+                raise ComponentMachineBindingError(f"{context} flag is unsupported")
+            _phase(row['at'], context)
         elif kind == "stack":
             _exact(row, {"kind", "offset", "width", "at"}, context)
             if not isinstance(row["offset"], int) or isinstance(row["offset"], bool):
@@ -950,6 +957,17 @@ def _validate_service_event_selectors(value: object, context: str) -> None:
         )
 
 
+def external_target_sampling(value: object, *, has_target: bool) -> str:
+    """The address projection and the time of its evaluation are independent."""
+    if value not in ("service_call", "operation_entry") or (
+        value == "operation_entry" and not has_target
+    ):
+        raise ComponentMachineBindingError(
+            "external target sampling requires service_call or operation_entry with a target projection"
+        )
+    return str(value)
+
+
 @dataclass(frozen=True)
 class ServiceMachineBindingV1:
     service_id: str
@@ -966,6 +984,11 @@ class ServiceMachineBindingV1:
             fields = {"kind", "events", "identity"}
             if "target_projection" in provider:
                 fields.add("target_projection")
+            if "target_sampling" in provider:
+                fields.add("target_sampling")
+                if "target_projection" not in provider:
+                    raise ComponentMachineBindingError("target sampling requires a target projection")
+                external_target_sampling(provider["target_sampling"], has_target=True)
             if "result_projection" in provider:
                 fields.add("result_projection")
             if "argument_authority_selectors" in provider:

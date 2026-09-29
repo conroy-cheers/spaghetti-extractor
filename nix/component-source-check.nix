@@ -6,8 +6,10 @@
 , previousLocalContract ? null
 , sharedContract ? null
 , originalComparison ? null
+, terminalServices ? null
 , sourceCallRegions ? null
 , sourceRegionGraphs ? null
+, callerComposition ? null
 }:
 let
   compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
@@ -24,7 +26,37 @@ assert builtins.isInt localContractTimeoutSeconds && localContractTimeoutSeconds
 assert localContractDependencies == [ ] || localContracts;
 assert previousLocalContract == null || localContracts;
 assert sharedContract == null || localContracts;
-assert originalComparison == null || (localContracts && sharedServiceBindings != null && localContractDependencies == [ ]);
+assert terminalServices == null || (localContracts && sharedContract == null
+  && localContractDependencies == [ ] && callerComposition == null);
+assert terminalServices == null || originalComparison == null || originalComparison ? serviceBindings;
+assert originalComparison == null || (localContracts && localContractDependencies == [ ]
+  && (sharedContract == null || sharedServiceBindings != null));
+assert callerComposition == null || (localContracts
+  && sharedContract == null && originalComparison == null
+  && sourceCallRegions == null && sourceRegionGraphs == null
+  && localContractDependencies == [ ]);
+assert callerComposition == null || (
+  builtins.isAttrs callerComposition
+  && builtins.attrNames (builtins.removeAttrs callerComposition [ "previous" ])
+    == [ "definition" "exactSlice" "supplier" ]
+  && (!(callerComposition ? previous) || previousLocalContract == null));
+if callerComposition != null then
+let
+  # Preparation is shared with sourceCheck and independent of boundary or
+  # supplier changes. Conditional comparison never becomes qualification.
+  preparation = import ./component-source-check.nix {
+    inherit pkgs pythonEnv namePrefix targetId componentId interfacePackage sourcePackage;
+  };
+in import ./component-source-call-check.nix {
+  inherit pkgs pythonEnv namePrefix targetId componentId interfacePackage sourcePackage;
+  sourcePreparation = preparation.derivation;
+  inherit (callerComposition) exactSlice supplier;
+  contract = callerComposition.definition;
+  previous = callerComposition.previous or previousLocalContract;
+  unwind = localContractUnwind;
+  timeoutSeconds = localContractTimeoutSeconds;
+}
+else
 import ./ca-python-json-phase.nix {
   inherit pkgs pythonEnv;
   name = "${namePrefix}-${componentId}-component-source${if localContracts then "-contract" else ""}-check";
@@ -43,6 +75,10 @@ import ./ca-python-json-phase.nix {
     // pkgs.lib.optionalAttrs (sourceCallRegions != null) { source_call_regions = sourceCallRegions; }
     // pkgs.lib.optionalAttrs (sourceRegionGraphs != null) { source_region_graphs = sourceRegionGraphs; }
     // pkgs.lib.optionalAttrs (previousLocalContract != null) { previous_local_contract = previousLocalContract; }
+    // pkgs.lib.optionalAttrs (terminalServices != null) { terminal_services = terminalServices; }
+    // pkgs.lib.optionalAttrs (originalComparison != null && originalComparison ? serviceBindings) {
+      original_service_bindings = originalComparison.serviceBindings;
+    }
     // pkgs.lib.optionalAttrs (originalComparison != null) {
       original_exact_slice = originalComparison.exactSlice;
       original_binding = originalComparison.bindingIntent;
@@ -79,7 +115,11 @@ import ./ca-python-json-phase.nix {
             "exact_c_slice": inputs["original_exact_slice"],
             "binding_intent": json.loads(inputs["original_binding"].read_text()),
             "machine_domain": json.loads(inputs["original_domain"].read_text()),
+            ${pkgs.lib.optionalString (originalComparison ? serviceBindings) ''
+            "service_bindings": json.loads(inputs["original_service_bindings"].read_text()),
+            ''}
         }''},
+        terminal_services=${if terminalServices == null then "[]" else ''json.loads(inputs["terminal_services"].read_text())''},
         smt_solver=${if originalComparison == null then "None" else ''Path(${builtins.toJSON "${pkgs.z3}/bin/z3"})''},
         source_call_regions=${if sourceCallRegions == null then "[]" else ''json.loads(inputs["source_call_regions"].read_text())''},
         source_region_graphs=${if sourceRegionGraphs == null then "[]" else ''json.loads(inputs["source_region_graphs"].read_text())''},

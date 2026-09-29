@@ -292,6 +292,24 @@ FORMAT_SPECS = (
         state="active",
         symbol="CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT",
     ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-comparison-plan-v1",
+        version=1, owner=_OWNER,
+        codec="spaghetti_extractor.components.comparison_package",
+        role="plan", state="active", symbol="COMPONENT_COMPARISON_PLAN_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-comparison-result-v1",
+        version=1, owner=_OWNER,
+        codec="spaghetti_extractor.components.comparison_run",
+        role="receipt", state="active", symbol="COMPONENT_COMPARISON_RESULT_V1_FORMAT",
+    ),
+    FormatSpecV1(
+        literal="spaghetti-extractor-component-partition-intent-v1",
+        version=1, owner=_OWNER,
+        codec="spaghetti_extractor.components.partition_inventory",
+        role="intent", state="active", symbol="COMPONENT_PARTITION_INTENT_V1_FORMAT",
+    ),
 )
 
 COMPONENT_LIFTING_INTENT_V1_FORMAT = FORMAT_SPECS[0].literal
@@ -324,10 +342,16 @@ COMPONENT_EXACT_C_SLICE_V1_FORMAT = FORMAT_SPECS[26].literal
 TRUSTED_ADAPTER_LOWERING_V1_FORMAT = FORMAT_SPECS[27].literal
 CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT = FORMAT_SPECS[28].literal
 CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT = FORMAT_SPECS[29].literal
+COMPONENT_COMPARISON_PLAN_V1_FORMAT = FORMAT_SPECS[30].literal
+COMPONENT_COMPARISON_RESULT_V1_FORMAT = FORMAT_SPECS[31].literal
+COMPONENT_PARTITION_INTENT_V1_FORMAT = FORMAT_SPECS[32].literal
 
 
 __all__ = [
+    "COMPONENT_PARTITION_INTENT_V1_FORMAT",
     "FORMAT_SPECS",
+    "COMPONENT_COMPARISON_PLAN_V1_FORMAT",
+    "COMPONENT_COMPARISON_RESULT_V1_FORMAT",
     "CONDITIONAL_CONTEXTUAL_CHECK_V1_FORMAT",
     "CONDITIONAL_CONTEXTUAL_REFINEMENT_V1_FORMAT",
     "RETIRED_COMPONENT_ACTIVATION_PLAN_V4_FORMAT",

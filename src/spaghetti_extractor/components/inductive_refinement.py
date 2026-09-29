@@ -986,6 +986,7 @@ def _write_cbmc_stdint(path: Path) -> None:
         "typedef unsigned short uint16_t; typedef signed short int16_t;\n"
         "typedef unsigned int uint32_t; typedef signed int int32_t;\n"
         "typedef unsigned long long uint64_t; typedef signed long long int64_t;\n"
+        "typedef __CPROVER_size_t uintptr_t;\n"
         "#define INT8_C(x) x\n#define INT16_C(x) x\n"
         "#define INT32_C(x) x\n#define INT64_C(x) x##LL\n"
         "#define UINT8_C(x) x##U\n#define UINT16_C(x) x##U\n"

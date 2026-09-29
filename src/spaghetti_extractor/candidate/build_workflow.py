@@ -761,6 +761,27 @@ def _object_global_symbol_bindings(
     return result
 
 
+def _retired_generated_function_symbols(
+    *, qualifications: Sequence[SemanticProviderQualificationV2],
+    portable_definition_ids: set[str],
+    linked_symbols: set[str],
+) -> tuple[str, ...]:
+    """Identify wholly replaced generated routines, never missing partial ones."""
+
+    definitions_by_symbol: dict[str, set[str]] = {}
+    for qualification in qualifications:
+        if qualification.provider_kind != "generated_behavioral_c":
+            continue
+        for row in qualification.payload["definition_materializations"]:
+            definitions_by_symbol.setdefault(row["native_symbol"], set()).add(
+                row["definition_id"]
+            )
+    return tuple(sorted(
+        symbol for symbol, definitions in definitions_by_symbol.items()
+        if definitions <= portable_definition_ids and symbol not in linked_symbols
+    ))
+
+
 def _prepare_portable_dispatch_registry(
     *,
     portable_inputs: Sequence[Mapping[str, Any]],
@@ -890,9 +911,18 @@ def _prepare_portable_dispatch_registry(
 
     registry: dict[str, Any] | None = None
     if portable_inputs:
+        retired_symbols = _retired_generated_function_symbols(
+            qualifications=[SemanticProviderQualificationV2.load(Path(path))
+                            for path in provider_qualifications],
+            portable_definition_ids={str(definition_id)
+                for item in portable_inputs
+                for definition_id in item["selected_definition_ids"]},
+            linked_symbols=set(symbol_owners),
+        )
         registry_source = render_component_dispatch_registry_v1(
             entries=[dict(item["overlay"]) for item in portable_inputs],
             portable_unit_rvas=portable_unit_rvas,
+            retired_function_symbols=retired_symbols,
         )
         source_path = output / "portable-dispatch-registry.c"
         source_path.write_text(registry_source, encoding="ascii")
@@ -938,7 +968,7 @@ def _prepare_portable_dispatch_registry(
         if any(
             bindings.get(symbol) != "strong"
             or symbol in symbol_owners
-            for symbol in _PORTABLE_REGISTRY_SYMBOLS
+            for symbol in (*_PORTABLE_REGISTRY_SYMBOLS, *retired_symbols)
         ):
             raise CandidateNativeBuildError(
                 "portable dispatch registry symbols are missing, weak, or duplicated"

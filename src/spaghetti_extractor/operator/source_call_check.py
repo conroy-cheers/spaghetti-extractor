@@ -22,7 +22,7 @@ def write_component_source_call_check(*, target_id, component_id, preparation, e
         raise ValueError('caller preparation identifies another component')
     checker = check_source_bound_call
     extra = {'smt_solver': smt_solver}
-    if contract.get('profile') in {'cleanup-save-paired-operation-v1','cleanup-replace-paired-operation-v1'}:
+    if contract.get('profile') == 'finite-paired-caller-v1':
         from .source_operation_call_check import check_operation_call
         checker = check_operation_call
         extra = {'source_package': source_package, 'interface_package': interface_package}
@@ -64,6 +64,12 @@ def write_component_source_call_check(*, target_id, component_id, preparation, e
             'supplier_receipt_sha256':result.get('supplier_transition',{}).get('supplier_receipt_sha256')}}
     if 'dependency_contract' in result:
         feedback['local_contract']['caller_comparison']['dependency_contract'] = result['dependency_contract']
+    if result.get('policy') == 'conditional-source-operation-call-v1':
+        feedback['local_contract']['caller_comparison']['native_memory'] = result.get('proof_key',{}).get('bindings',{}).get('native_memory')
+        feedback['local_contract']['caller_comparison']['native_calls'] = result.get('proof_key',{}).get('bindings',{}).get('native_calls')
+        feedback['local_contract']['caller_comparison']['source_services'] = result.get('proof_key',{}).get('bindings',{}).get('source_services')
+        feedback['local_contract']['caller_comparison']['boundary'] = result.get('proof_key',{}).get('bindings',{}).get('boundary')
+        feedback['local_contract']['caller_comparison']['admission'] = result.get('admission')
     write_json(out/'compiler-checks.json',feedback)
     return status
 
@@ -82,6 +88,15 @@ def validate_component_source_call_feedback(root, local, status):
     if operation_profile:
         require(caller.get('dependency_contract') == result.get('dependency_contract'),
                 'displayed caller dependency requirements differ')
+        require(caller.get('native_memory') == result.get('proof_key',{}).get('bindings',{}).get('native_memory'),
+                'displayed native access definitions differ')
+        require(caller.get('native_calls') == result.get('proof_key',{}).get('bindings',{}).get('native_calls'),
+                'displayed native call definitions differ')
+        require(caller.get('source_services') == result.get('proof_key',{}).get('bindings',{}).get('source_services'),
+                'displayed source service definitions differ')
+        require(caller.get('boundary') == result.get('proof_key',{}).get('bindings',{}).get('boundary'),
+                'displayed caller boundary definition differs')
+        require(caller.get('admission') == result.get('admission'), 'displayed caller entry admission differs')
     require((result.get('policy')==POLICY or operation_profile) and result.get('authorizing') is False
             and result.get('activation_authorized') is False and result.get('whole_component_complete') is False
             and result.get('receipt_sha256')==canonical_sha256_v3({k:v for k,v in result.items() if k!='receipt_sha256'})

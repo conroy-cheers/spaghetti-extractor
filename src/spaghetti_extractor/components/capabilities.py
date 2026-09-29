@@ -387,6 +387,8 @@ spx_ref_status spx_view_write_u8(
 def spx_portable_reference_runtime_v5_source() -> str:
     """Reviewed shared implementation of the portable component reference ABI."""
 
+    from .component_local_bytes import local_bytes_runtime
+
     return r'''
 #ifndef SPX_REF_V1_DEFINED
 typedef struct spx_ref_v1 {
@@ -484,7 +486,7 @@ uint32_t spx_view_write_u8(
   return view->write(view->access_context, view->base, index, 1U, value) == 0U
       ? 0U : 1U;
 }
-'''
+''' + local_bytes_runtime()
 
 
 __all__ = [

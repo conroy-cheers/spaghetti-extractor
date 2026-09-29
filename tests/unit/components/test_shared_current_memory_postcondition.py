@@ -1,8 +1,8 @@
 """A checked local current-memory fact cannot be supplied by alias evidence."""
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,7 +47,7 @@ class SharedCurrentMemoryPostconditionTests(unittest.TestCase):
             self.assertEqual(result['status'], 'satisfied', result.get('checks'))
             validate_shared_source_contracts(result, artifacts=root/'proof')
             def jq(value):
-                p = subprocess.run([shutil.which('jq'), '-L', 'nix/jq',
+                p = run_jq_reader([shutil.which('jq'), '-L', 'nix/jq',
                     'include "strong-contextual-proof"; spx_shared_certificate'], input=json.dumps(value),
                     capture_output=True, text=True, check=True, timeout=10)
                 return json.loads(p.stdout)

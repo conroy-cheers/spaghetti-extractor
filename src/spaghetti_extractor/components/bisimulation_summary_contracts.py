@@ -23,6 +23,7 @@ from .machine_overlay_services_v5 import _c_identifier
 from .bisimulation_postconditions import (
     check_scalar_postconditions, validate_scalar_postconditions,
     validate_scalar_postcondition_bindings,
+    scalar_postcondition_requests,
 )
 
 
@@ -159,6 +160,30 @@ def checked_scalar_summary_certificate(
     return certificate
 
 
+def consumed_scalar_summary_contract(certificate: Mapping[str, object]) -> dict[str, object]:
+    """Extract the checked source guarantees consumed by the scalar wrapper.
+
+    Implementation, compiler and solver evidence identifies the supplier that
+    established these guarantees; it is not part of their meaning. Keep the full
+    interface and header identities, frame/context policy and exact predicates.
+    Equal results are a source-summary compatibility premise, not permission to
+    replace a supplier: current machine qualification, entry/adapter contracts,
+    unchanged caller inputs and retained caller evidence still need checking.
+    """
+    validate_scalar_summary_contracts(certificate)
+    if certificate["status"] != "satisfied":
+        raise ValueError("consumed scalar contract requires satisfied source evidence")
+    return {
+        "strategy": certificate["strategy"],
+        "interface_sha256": certificate["interface_sha256"],
+        "headers_sha256": certificate["headers_sha256"],
+        "operation_symbols": dict(certificate["operation_symbols"]),
+        "postconditions": [{key: fact[key] for key in
+                            ("operation_id", "id", "signature", "expression")}
+                           for fact in certificate["postconditions"]],
+    }
+
+
 def _contract_source(
     bundle: CompiledComponentInterfaceV5, operation_id: str, symbol: str,
 ) -> tuple[str, str]:
@@ -201,7 +226,7 @@ def check_scalar_summary_contracts(
     *, bundle: CompiledComponentInterfaceV5, operation_symbols: Mapping[str, str],
     source_files: Sequence[Path], headers: Mapping[str, str], output: Path,
     goto_cc: Path, goto_instrument: Path, cbmc: Path, timeout_seconds: int = 60,
-    workspace: Path | None = None,
+    workspace: Path | None = None, postcondition_intent=None,
 ) -> dict[str, object]:
     """Prove an empty write frame and independence from fresh operation contexts.
 
@@ -211,6 +236,8 @@ def check_scalar_summary_contracts(
     enabled. The certificate is intentionally not deployment authority.
     """
     operation_ids = scalar_summary_operations(bundle)
+    requested = (None if postcondition_intent is None else
+                 scalar_postcondition_requests(bundle, postcondition_intent))
     if operation_ids is None or set(operation_symbols) != set(operation_ids):
         return {"status": "incomplete", "authorizing": False,
                 "code": "scalar_summary_contract_shape_unsupported"}
@@ -334,6 +361,7 @@ def check_scalar_summary_contracts(
         bundle=bundle, operation_symbols=operation_symbols, output=output, inputs=inputs,
         goto_cc=goto_cc, cbmc=cbmc, checker_options=_CHECKER_OPTIONS,
         timeout_seconds=timeout_seconds,
+        candidates_by_operation=requested,
     ) if complete else []
     core = {"status": "satisfied" if complete else "incomplete", "authorizing": False,
             "strategy": SCALAR_SUMMARY_STRATEGY,

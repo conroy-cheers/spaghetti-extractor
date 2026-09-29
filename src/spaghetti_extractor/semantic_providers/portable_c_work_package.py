@@ -169,10 +169,8 @@ def write_portable_c_work_package_provider_v2(
         _fail('entry query timeout requires a positive integer and explicit conditional assurance')
     from ..components.conditional_check_result import checked_obligation_selection
     selected_obligations = checked_obligation_selection(selected_obligations)
-    if selected_obligations is not None and runtime_assurance is None:
-        _fail('focused region checks require explicit conditional assurance')
     output = Path(out)
-    if runtime_assurance is not None and any((output / name).exists() for name in (
+    if (runtime_assurance is not None or selected_obligations is not None) and any((output / name).exists() for name in (
             "semantic-provider-qualification.json", "provider-object-manifest.json",
             "definition-choices.json", "implementation-choices.json")):
         _fail("conditional check output contains activation artifacts")
@@ -967,6 +965,40 @@ def write_portable_c_work_package_provider_v2(
                 expected_file_sha256=qualification_input["shared_source_contract_file_sha256"])
         except (ValueError, TypeError, KeyError) as error:
             _fail(str(error))
+    # Production compilation is a cheap veto, never proof authority. Check it
+    # before solver work; focused/conditional runs still emit no native objects.
+    if runtime_assurance is None and selected_obligations is None:
+        component_output = output / "component-object"
+        component_output.mkdir()
+        runtime_header = exact_runtime_header()
+        compile_checks, compile_status, _artifact = compile_portable_component_objects(
+            source_root,
+            source,
+            bundle=bundle,
+            operation_symbols=symbols,
+            induction_source_plan=None,
+            machine_overlay=overlay,
+            machine_overlay_error=None,
+            runtime_header=runtime_header,
+            host_compiler=Path(host_compiler),
+            pe32_compiler=Path(pe32_compiler),
+            output=component_output,
+        )
+        manifest_path = component_output / "object-manifest.json"
+        if not manifest_path.is_file():
+            failures = [
+                {
+                    key: row.get(key)
+                    for key in ("compiler", "source", "code", "status", "diagnostic")
+                    if row.get(key) is not None
+                }
+                for row in compile_checks
+                if row.get("status") != "checked"
+            ]
+            _fail(
+                "direct portable component did not emit an object manifest: "
+                + repr(failures)
+            )
     shard_proof = check_bisimulation_refinement(
         selected_obligations=selected_obligations,
         runtime_assurance=runtime_assurance,
@@ -1068,6 +1100,7 @@ def write_portable_c_work_package_provider_v2(
         output=output / "source-summary-contracts", cbmc=cbmc,
         timeout_seconds=timeout_seconds, workspace=source_summary_workspace,
         connected_components=connected_proof_components, proof_models=proof_models,
+        postcondition_intent=requested_postconditions,
     )
     if summary_contracts is not None:
         proof_models["source_summary_contracts"] = {
@@ -1103,6 +1136,17 @@ def write_portable_c_work_package_provider_v2(
         implementation_sha256=str(source["implementation_sha256"]),
     )
     proof_status = str(proof.get("status"))
+    if selected_obligations is not None:
+        # Ordinary diagnostics use the same checked proof envelope and exact
+        # query evidence. No native object, supplier theorem or choice is emitted.
+        packet_path = output / 'contextual-refinement-result.json'
+        write_json(packet_path, {'status': proof_status, 'proof': proof,
+            'qualification_input': qualification_input,
+            'qualification_input_sha256': qualification_input_sha256,
+            'proof_plan': proof_plan, 'exact_c_slice': exact_c_slice_manifest})
+        diagnostic_path = output / 'contextual-proof-diagnostic.json'
+        write_json(diagnostic_path, proof)
+        return {'proof_diagnostic': diagnostic_path, 'contextual_refinement': packet_path}
     postconditions = None
     if requested_postconditions is not None:
         postconditions = {"authorizing": False, "intent": requested_postconditions.to_payload(), "facts": []}
@@ -1174,37 +1218,6 @@ def write_portable_c_work_package_provider_v2(
         write_json(
             output / "encapsulated-owned-admission.json",
             encapsulated_admission,
-        )
-    component_output = output / "component-object"
-    component_output.mkdir()
-    runtime_header = exact_runtime_header()
-    compile_checks, compile_status, _artifact = compile_portable_component_objects(
-        source_root,
-        source,
-        bundle=bundle,
-        operation_symbols=symbols,
-        induction_source_plan=None,
-        machine_overlay=overlay,
-        machine_overlay_error=None,
-        runtime_header=runtime_header,
-        host_compiler=Path(host_compiler),
-        pe32_compiler=Path(pe32_compiler),
-        output=component_output,
-    )
-    manifest_path = component_output / "object-manifest.json"
-    if not manifest_path.is_file():
-        failures = [
-            {
-                key: row.get(key)
-                for key in ("compiler", "source", "code", "status", "diagnostic")
-                if row.get(key) is not None
-            }
-            for row in compile_checks
-            if row.get("status") != "checked"
-        ]
-        _fail(
-            "direct portable component did not emit an object manifest: "
-            + repr(failures)
         )
     component_manifest = dict(
         _load_json(

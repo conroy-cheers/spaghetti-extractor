@@ -1881,6 +1881,7 @@
         target-sdk = targetSdkCheck;
         pe32-project = pe32ProjectCheck;
         native-ingress-runtime = nativeIngressRuntimeCheck;
+        headless-wayland = import ../tests/headless-wayland.nix { inherit pkgs; };
         native-module = nativeModuleCheck;
         behavioral-c-differential = behavioralCDifferentialCheck;
         component-v5 = componentV5Check;

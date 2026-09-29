@@ -450,7 +450,7 @@ class SemanticRefinementTests(
         )
 
     def test_external_service_reports_abi_only_effect_contract_as_incomplete(self) -> None:
-        from tests.unit.components.test_machine_overlay_v5 import _external_contract, _resolved_environment
+        from tests.unit.components.machine_overlay_fixture import _external_contract, _resolved_environment
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

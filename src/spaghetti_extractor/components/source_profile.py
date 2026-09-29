@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Mapping
@@ -39,6 +38,8 @@ def check_component_source_profile(*, package: Path | str) -> dict[str, object]:
         relative = str(row["path"])
         path = root / "sources" / relative
         text = path.read_text(encoding="utf-8")
+        if relative.endswith('.h'):
+            text = _ordinary_header_guard(text)
         lexical = _strip_comments_and_literals(text)
         for code, pattern in _FORBIDDEN.items():
             match = pattern.search(lexical)
@@ -49,7 +50,7 @@ def check_component_source_profile(*, package: Path | str) -> dict[str, object]:
                 "code": f"restricted_c_{code}",
                 "source": {"path": relative, "line": lexical.count("\n", 0, match.start()) + 1},
             })
-        if relative.endswith(".c"):
+        if relative.endswith((".c", ".h")):
             for offset in _top_level_object_declarations(lexical):
                 issues.append({
                     "status": "incomplete",
@@ -99,6 +100,30 @@ def _strip_comments_and_literals(text: str) -> str:
     return pattern.sub(lambda match: "\n" * match.group(0).count("\n"), text)
 
 
+def _ordinary_header_guard(text: str) -> str:
+    """Ignore only an outer conventional guard; inspect every enclosed token.
+
+    Nested conditionals and executable macros remain subject to the profile.
+    Guard recognition changes scanning, never the bytes compiled or bound.
+    """
+    lexical=_strip_comments_and_literals(text).splitlines()
+    occupied=[i for i,line in enumerate(lexical) if line.strip()]
+    if len(occupied)<3:return text
+    first,second,last=occupied[0],occupied[1],occupied[-1]
+    match=re.fullmatch(r'\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*',lexical[first])
+    # Reserved/compiler macros are configuration tests, not hygienic guards.
+    # In particular, hiding __CPROVER__ here would exempt a host/proof conditional
+    # from both the conditional-compilation and intrinsic restrictions below.
+    if (match is None or match[1].startswith('_') or match[1] in {'WIN32','WIN64','linux','unix'}
+            or re.fullmatch(r'\s*#\s*define\s+'+re.escape(match[1])+r'\s*',lexical[second]) is None
+            or re.fullmatch(r'\s*#\s*endif\s*',lexical[last]) is None):return text
+    lines=text.splitlines(keepends=True)
+    for i,pattern in [(first,r'#\s*ifndef\s+'+re.escape(match[1])),
+                      (second,r'#\s*define\s+'+re.escape(match[1])),(last,r'#\s*endif\b')]:
+        lines[i]=re.sub(pattern,lambda m:' '*len(m[0]),lines[i],count=1)
+    return ''.join(lines)
+
+
 def _top_level_object_declarations(text: str) -> list[int]:
     """Locate file-scope C object declarations in the restricted profile.
 
@@ -140,6 +165,8 @@ def _top_level_object_declarations(text: str) -> list[int]:
         if normalized.startswith("_Static_assert"):
             continue
         if re.fullmatch(r"(?:struct|union|enum)\b[\s\S]*}\s*;", normalized):
+            continue
+        if re.fullmatch(r"(?:struct|union|enum)\s+[A-Za-z_][A-Za-z_0-9]*\s*;", normalized):
             continue
         if "=" not in normalized and "(*" not in normalized and "(" in normalized:
             continue

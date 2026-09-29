@@ -201,6 +201,7 @@ def checked_external_argument_transducers(
         else {}
     )
     by_parameter: dict[int, dict[str, object]] = {}
+    record_parameters: dict[int, dict[str, dict[str, object]]] = {}
     local_cell_ids: set[str] = set()
     guards: list[dict[str, object]] = []
     writebacks: list[dict[str, object]] = []
@@ -390,17 +391,35 @@ def checked_external_argument_transducers(
                 }
             by_parameter[parameter_index] = decoded
             continue
-        parameter_index = int(transducer["parameter_index"])
+        parameter_index = transducer.get("parameter_index")
+        if type(parameter_index) is not int:
+            raise ComponentSemanticContractError("external argument transducer needs a logical parameter index")
         if parameter_index < 0 or parameter_index >= len(parameter_type_ids):
             raise ComponentSemanticContractError(
                 "external argument transducer names an unknown logical parameter"
             )
-        if parameter_index in by_parameter:
+        logical_type = logical_types[parameter_type_ids[parameter_index]]
+        if kind == "record_field":
+            from .semantic_record_transducers import checked_word_record_fields
+            fields = checked_word_record_fields(logical_type, logical_types)
+            field_id = transducer.get("field_id")
+            values = record_parameters.setdefault(parameter_index, {})
+            if (set(transducer) != {"kind", "parameter_index", "field_id"} or
+                    not isinstance(field_id, str) or
+                    field_id not in {field.identity for field in fields} or field_id in values or
+                    parameter_index in by_parameter):
+                raise ComponentSemanticContractError("record argument field is duplicated, unknown or mixed with a whole argument")
+            values[field_id] = json.loads(json.dumps(machine_argument))
+            continue
+        if parameter_index in by_parameter or parameter_index in record_parameters:
             raise ComponentSemanticContractError(
                 "external argument transducer maps one logical parameter twice"
             )
-        logical_type = logical_types[parameter_type_ids[parameter_index]]
         if kind == "logical_argument":
+            if getattr(logical_type, "kind", None) == "record":
+                raise ComponentSemanticContractError(
+                    "record arguments require a complete checked field inventory"
+                )
             if getattr(logical_type, "kind", None) == "resource_cell":
                 raise ComponentSemanticContractError(
                     "resource cells require an out-interface transducer"
@@ -469,6 +488,14 @@ def checked_external_argument_transducers(
                 },
             }
         )
+    for parameter_index, values in record_parameters.items():
+        fields = logical_types[parameter_type_ids[parameter_index]].fields
+        if set(values) != {field.identity for field in fields}:
+            raise ComponentSemanticContractError("record argument does not cover every logical field")
+        by_parameter[parameter_index] = {
+            "op": "record", "field_ids": [field.identity for field in fields],
+            "args": [values[field.identity] for field in fields],
+        }
     if set(by_parameter) != set(range(len(parameter_type_ids))):
         raise ComponentSemanticContractError(
             "external argument transducer does not map every logical parameter"

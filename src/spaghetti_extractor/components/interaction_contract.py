@@ -288,18 +288,20 @@ class InteractionContractV1:
             )
         )
         type_ids = [item.identity for item in type_parameters]
-        if not type_parameters or type_ids != sorted(set(type_ids)):
+        # A void(void) interaction can still have effects and outcomes. Its
+        # empty value boundary needs no invented argument or result type.
+        if type_ids != sorted(set(type_ids)):
             raise InteractionContractError(
-                "interaction type parameters must be nonempty, unique, and ordered"
+                "interaction type parameters must be unique and ordered"
             )
         ports = tuple(
             InteractionContractPortV1.parse(item, f"interaction port {index}")
             for index, item in enumerate(_array(row["ports"], "interaction ports"))
         )
         port_keys = [item.key for item in ports]
-        if not ports or port_keys != sorted(set(port_keys)):
+        if port_keys != sorted(set(port_keys)):
             raise InteractionContractError(
-                "interaction ports must be nonempty, unique, and ordered"
+                "interaction ports must be unique and ordered"
             )
         if any(item.type_parameter not in set(type_ids) for item in ports):
             raise InteractionContractError("interaction port has an unknown type parameter")

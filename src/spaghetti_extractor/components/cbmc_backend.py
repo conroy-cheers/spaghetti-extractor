@@ -141,10 +141,15 @@ def run_cbmc_properties(
             "output_sha256": output_sha256,
         }
     if failures:
-        first = failures[0]
+        # CBMC injects this property when execution reaches an undefined callee.
+        # It identifies an incomplete model, not an implementation mismatch.
+        # Match the checker-generated identity as well as its description: an
+        # authored assertion with the same text must remain a counterexample.
+        missing_bodies = all(_missing_body_failure(item) for item in failures)
+        first = next((item for item in failures if not _missing_body_failure(item)), failures[0])
         return {
-            "status": "violated",
-            "code": "cbmc_counterexample",
+            "status": "incomplete" if missing_bodies else "violated",
+            "code": "cbmc_missing_function_body" if missing_bodies else "cbmc_counterexample",
             "properties": len(statuses),
             "property_ids": sorted(statuses),
             "source": _failure_source(first),
@@ -538,6 +543,15 @@ def _failures(payload: list[object]) -> list[Mapping[str, object]]:
         for item in _property_results(payload)
         if _normalized_property_status(item.get("status")) == "FAILURE"
     ]
+
+
+def _missing_body_failure(item: Mapping[str, object]) -> bool:
+    property_id = item.get("property")
+    if not isinstance(property_id, str):
+        return False
+    caller, separator, callee = property_id.rpartition(".no-body.")
+    return bool(caller and separator and callee
+                and item.get("description") == f"no body for callee {callee}")
 
 
 def _property_statuses(payload: list[object]) -> dict[str, str]:

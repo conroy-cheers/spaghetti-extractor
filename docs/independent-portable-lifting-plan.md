@@ -1,5 +1,28 @@
 # Plan: Independently Liftable Portable-C Components
 
+Scope correction (2026-09-29): the project delivers idiomatic C Windows
+applications using Windows runtimes, preferably exercised through Wine. Porting
+the lifted applications to other operating systems is outside project scope.
+The historical Portable-C terminology and experiments below do not impose a
+non-Windows runtime requirement. [Current delivery scope](current-goal.md).
+
+Current sequencing (2026-09-21): follow
+[P1–P4 in the whole-target plan](whole-target-independent-lifting.md#practical-subsystem-milestone-and-sequencing)
+for the next practical connected subsystem and different-target reuse milestone.
+That order takes precedence over the historical formal-composition steps below.
+The normal path is executable C boundaries, comparison, replay, integration and
+reuse, with focused proof as additional evidence. Strong whole-program
+qualification is a separate optional objective; its standards remain unchanged.
+
+Product-direction update (2026-09-15): the operator has accepted practical modular
+lifting with explicit assurance and optional focused proofs. The
+[practical independent lifting design](practical-independent-lifting-design.md)
+now specifies the proposed next implementation sequence and experimental execution
+policy. Universal formal composition is not a prerequisite for that practical
+workflow. This is a design update, not an implemented relaxation of existing
+strong qualification or native-activation readers. The formal composition work
+below remains the path to stronger assurance.
+
 The first real independent-component milestone is complete for the hand-defined
 Metapad network under explicit trusted runtime contracts. See the
 [completion audit](baselines/2026-09-14-independent-component-milestone.md) for its

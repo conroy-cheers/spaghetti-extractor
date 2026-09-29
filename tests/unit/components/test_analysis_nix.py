@@ -369,7 +369,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('allowedStatuses = [ "complete" ]', module)
         self.assertIn('realization.payload["ready_for_observation"]', module)
         self.assertIn("native_realization_required_before_execution", module)
-        self.assertIn("xvfb-run -a", module)
+        self.assertIn("exec spaghetti-headless-wayland", module)
         self.assertIn("WINEDEBUG=-all", module)
         self.assertIn("candidate_only: true", module)
         self.assertIn("original_binary_executed: false", module)

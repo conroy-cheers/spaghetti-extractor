@@ -69,6 +69,14 @@
     },
     {
       "capabilities": [
+        "terminal"
+      ],
+      "description": "Pinned libvterm UTF-8 screen and cursor observer",
+      "id": "terminal-screen",
+      "nix_attribute": "test-fixture-terminal-screen"
+    },
+    {
+      "capabilities": [
         "z3"
       ],
       "description": "Pinned Z3 executable for word-level SMT proof checks",

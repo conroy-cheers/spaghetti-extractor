@@ -1,0 +1,4740 @@
+{
+  "profile": "finite-paired-caller-v1",
+  "component_id": "cleanup-replace",
+  "entry_rva": 45454,
+  "operation_id": "replace",
+  "unit_rvas": [
+    45454,
+    45461,
+    45468,
+    45473,
+    45487
+  ],
+  "service_id": "cleanup",
+  "required_frame": [
+    "ebp",
+    "ebx",
+    "edi",
+    "esi"
+  ],
+  "native_memory": [
+    {
+      "id": "argument-0",
+      "address": {
+        "op": "sub",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [
+          {
+            "op": "machine",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "place": {
+                "kind": "register",
+                "phase": "entry",
+                "width": 32,
+                "selector": {
+                  "register": "esp"
+                }
+              }
+            }
+          },
+          {
+            "op": "const",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "value": 4
+            }
+          }
+        ],
+        "attributes": {}
+      },
+      "width": 4,
+      "read": false,
+      "write": true,
+      "storage": "private"
+    },
+    {
+      "id": "argument-1",
+      "address": {
+        "op": "sub",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [
+          {
+            "op": "machine",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "place": {
+                "kind": "register",
+                "phase": "entry",
+                "width": 32,
+                "selector": {
+                  "register": "esp"
+                }
+              }
+            }
+          },
+          {
+            "op": "const",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "value": 8
+            }
+          }
+        ],
+        "attributes": {}
+      },
+      "width": 4,
+      "read": false,
+      "write": true,
+      "storage": "private"
+    },
+    {
+      "id": "argument-2",
+      "address": {
+        "op": "sub",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [
+          {
+            "op": "machine",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "place": {
+                "kind": "register",
+                "phase": "entry",
+                "width": 32,
+                "selector": {
+                  "register": "esp"
+                }
+              }
+            }
+          },
+          {
+            "op": "const",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "value": 12
+            }
+          }
+        ],
+        "attributes": {}
+      },
+      "width": 4,
+      "read": false,
+      "write": true,
+      "storage": "private"
+    },
+    {
+      "id": "argument-3",
+      "address": {
+        "op": "sub",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [
+          {
+            "op": "machine",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "place": {
+                "kind": "register",
+                "phase": "entry",
+                "width": 32,
+                "selector": {
+                  "register": "esp"
+                }
+              }
+            }
+          },
+          {
+            "op": "const",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "value": 16
+            }
+          }
+        ],
+        "attributes": {}
+      },
+      "width": 4,
+      "read": false,
+      "write": true,
+      "storage": "private"
+    },
+    {
+      "id": "edit-window",
+      "address": {
+        "op": "const",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [],
+        "attributes": {
+          "value": 4260184
+        }
+      },
+      "width": 4,
+      "read": true,
+      "write": false,
+      "storage": "public"
+    },
+    {
+      "id": "mode",
+      "address": {
+        "op": "add",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "args": [
+          {
+            "op": "machine",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "place": {
+                "kind": "register",
+                "phase": "entry",
+                "width": 32,
+                "selector": {
+                  "register": "esp"
+                }
+              }
+            }
+          },
+          {
+            "op": "const",
+            "sort": {
+              "kind": "bitvector",
+              "width": 32
+            },
+            "args": [],
+            "attributes": {
+              "value": 48
+            }
+          }
+        ],
+        "attributes": {}
+      },
+      "width": 4,
+      "read": true,
+      "write": false,
+      "storage": "public"
+    }
+  ],
+  "boundary": {
+    "image_base": 4194304,
+    "values": [
+      {
+        "id": "text_address",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "text_extent",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "mode",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "length",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "length_target",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "scratch_address",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "scratch_extent",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": null
+      },
+      {
+        "id": "stack",
+        "sort": {
+          "kind": "bitvector",
+          "width": 32
+        },
+        "expression": {
+          "op": "sub",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "machine",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "place": {
+                  "kind": "register",
+                  "phase": "entry",
+                  "width": 32,
+                  "selector": {
+                    "register": "esp"
+                  }
+                }
+              }
+            },
+            {
+              "op": "const",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "value": 4
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "active",
+        "sort": {
+          "kind": "bool"
+        },
+        "expression": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "true",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {}
+                },
+                {
+                  "op": "not",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "mode",
+                              "fields": []
+                            }
+                          }
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 2
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "not",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "mode",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 3
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      }
+    ],
+    "admission": [
+      {
+        "id": "replace-entry-stack",
+        "expression": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "true",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {}
+                },
+                {
+                  "op": "ule",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 16
+                      }
+                    },
+                    {
+                      "op": "machine",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "place": {
+                          "kind": "register",
+                          "phase": "entry",
+                          "width": 32,
+                          "selector": {
+                            "register": "esp"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "ule",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "add",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 64
+                  },
+                  "args": [
+                    {
+                      "op": "zero_extend",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "machine",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "place": {
+                              "kind": "register",
+                              "phase": "entry",
+                              "width": 32,
+                              "selector": {
+                                "register": "esp"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 52
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 64
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 4294967296
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-entry-registers",
+        "expression": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "true",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "machine",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "place": {
+                          "kind": "register",
+                          "phase": "entry",
+                          "width": 32,
+                          "selector": {
+                            "register": "edi"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "text_address",
+                          "fields": []
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "ule",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "machine",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "place": {
+                      "kind": "flag",
+                      "phase": "entry",
+                      "width": 32,
+                      "selector": {
+                        "flag": "df"
+                      }
+                    }
+                  }
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 1
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-text-span",
+        "expression": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "ult",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 0
+                          }
+                        },
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "text_address",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "ult",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 0
+                      }
+                    },
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "text_extent",
+                          "fields": []
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "ule",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "add",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 64
+                  },
+                  "args": [
+                    {
+                      "op": "zero_extend",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "text_address",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "zero_extend",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "text_extent",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 64
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 4294967296
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-ui-private-text",
+        "expression": {
+          "op": "not",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "not",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "ule",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 64
+                              },
+                              "args": [
+                                {
+                                  "op": "zero_extend",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "logical",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "path": {
+                                          "root": "parameter",
+                                          "id": "text_address",
+                                          "fields": []
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                },
+                                {
+                                  "op": "zero_extend",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "logical",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "path": {
+                                          "root": "parameter",
+                                          "id": "text_extent",
+                                          "fields": []
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "zero_extend",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 64
+                              },
+                              "args": [
+                                {
+                                  "op": "sub",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "machine",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "place": {
+                                          "kind": "register",
+                                          "phase": "entry",
+                                          "width": 32,
+                                          "selector": {
+                                            "register": "esp"
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 16
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "not",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "ule",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "machine",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "place": {
+                              "kind": "register",
+                              "phase": "entry",
+                              "width": 32,
+                              "selector": {
+                                "register": "esp"
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "text_address",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-ui-private-image",
+        "expression": {
+          "op": "not",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "not",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "ule",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "machine",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "place": {
+                                  "kind": "register",
+                                  "phase": "entry",
+                                  "width": 32,
+                                  "selector": {
+                                    "register": "esp"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "op": "const",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "value": 4194304
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "not",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "ule",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 4419584
+                          }
+                        },
+                        {
+                          "op": "sub",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [
+                            {
+                              "op": "machine",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "place": {
+                                  "kind": "register",
+                                  "phase": "entry",
+                                  "width": 32,
+                                  "selector": {
+                                    "register": "esp"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "op": "const",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "value": 16
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-mode-word",
+        "expression": {
+          "op": "eq",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "concat",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [
+                {
+                  "op": "byte_read",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 8
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "view",
+                        "type_id": "bytes"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "entry_memory",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "add",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "zero_extend",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "entry",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "esp"
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 48
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 3
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "byte_read",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 8
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "view",
+                        "type_id": "bytes"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "entry_memory",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "add",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "zero_extend",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "entry",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "esp"
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 48
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 2
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "byte_read",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 8
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "view",
+                        "type_id": "bytes"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "entry_memory",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "add",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "zero_extend",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "entry",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "esp"
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 48
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 1
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "byte_read",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 8
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "view",
+                        "type_id": "bytes"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "entry_memory",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "add",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 64
+                      },
+                      "args": [
+                        {
+                          "op": "zero_extend",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "entry",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "esp"
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 48
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 64
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 0
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "logical",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "path": {
+                  "root": "parameter",
+                  "id": "mode",
+                  "fields": []
+                }
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      },
+      {
+        "id": "replace-length-target",
+        "expression": {
+          "op": "not",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "not",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "not",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "logical",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [],
+                              "attributes": {
+                                "path": {
+                                  "root": "parameter",
+                                  "id": "active",
+                                  "fields": []
+                                }
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "not",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "concat",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [
+                            {
+                              "op": "byte_read",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 8
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "view",
+                                    "type_id": "bytes"
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "entry_memory",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "add",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "zero_extend",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [
+                                        {
+                                          "op": "const",
+                                          "sort": {
+                                            "kind": "bitvector",
+                                            "width": 32
+                                          },
+                                          "args": [],
+                                          "attributes": {
+                                            "value": 4251992
+                                          }
+                                        }
+                                      ],
+                                      "attributes": {}
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 3
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "byte_read",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 8
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "view",
+                                    "type_id": "bytes"
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "entry_memory",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "add",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "zero_extend",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [
+                                        {
+                                          "op": "const",
+                                          "sort": {
+                                            "kind": "bitvector",
+                                            "width": 32
+                                          },
+                                          "args": [],
+                                          "attributes": {
+                                            "value": 4251992
+                                          }
+                                        }
+                                      ],
+                                      "attributes": {}
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 2
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "byte_read",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 8
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "view",
+                                    "type_id": "bytes"
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "entry_memory",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "add",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "zero_extend",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [
+                                        {
+                                          "op": "const",
+                                          "sort": {
+                                            "kind": "bitvector",
+                                            "width": 32
+                                          },
+                                          "args": [],
+                                          "attributes": {
+                                            "value": 4251992
+                                          }
+                                        }
+                                      ],
+                                      "attributes": {}
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 1
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "byte_read",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 8
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "view",
+                                    "type_id": "bytes"
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "entry_memory",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "add",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 64
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "zero_extend",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [
+                                        {
+                                          "op": "const",
+                                          "sort": {
+                                            "kind": "bitvector",
+                                            "width": 32
+                                          },
+                                          "args": [],
+                                          "attributes": {
+                                            "value": 4251992
+                                          }
+                                        }
+                                      ],
+                                      "attributes": {}
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 64
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 0
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "length_target",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      }
+    ],
+    "views": [
+      {
+        "id": "text",
+        "address": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "text_address",
+              "fields": []
+            }
+          }
+        },
+        "extent": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "text_extent",
+              "fields": []
+            }
+          }
+        }
+      },
+      {
+        "id": "suppress_notice",
+        "supplier_view": "suppress_notice"
+      },
+      {
+        "id": "main_window",
+        "supplier_view": "main_window"
+      },
+      {
+        "id": "edit_window",
+        "supplier_view": "edit_window"
+      },
+      {
+        "id": "caption",
+        "supplier_view": "caption"
+      }
+    ],
+    "private_low": {
+      "op": "ite",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [
+        {
+          "op": "logical",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "active",
+              "fields": []
+            }
+          }
+        },
+        {
+          "op": "sub",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "machine",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "place": {
+                  "kind": "register",
+                  "phase": "entry",
+                  "width": 32,
+                  "selector": {
+                    "register": "esp"
+                  }
+                }
+              }
+            },
+            {
+              "op": "const",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "value": 76
+              }
+            }
+          ],
+          "attributes": {}
+        },
+        {
+          "op": "sub",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "machine",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "place": {
+                  "kind": "register",
+                  "phase": "entry",
+                  "width": 32,
+                  "selector": {
+                    "register": "esp"
+                  }
+                }
+              }
+            },
+            {
+              "op": "const",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "value": 16
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      ],
+      "attributes": {}
+    },
+    "private_high": {
+      "op": "machine",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "place": {
+          "kind": "register",
+          "phase": "entry",
+          "width": 32,
+          "selector": {
+            "register": "esp"
+          }
+        }
+      }
+    },
+    "call_private_low": {
+      "op": "ite",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [
+        {
+          "op": "logical",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "active",
+              "fields": []
+            }
+          }
+        },
+        {
+          "op": "sub",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "machine",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "place": {
+                  "kind": "register",
+                  "phase": "entry",
+                  "width": 32,
+                  "selector": {
+                    "register": "esp"
+                  }
+                }
+              }
+            },
+            {
+              "op": "const",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "value": 76
+              }
+            }
+          ],
+          "attributes": {}
+        },
+        {
+          "op": "sub",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "machine",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "place": {
+                  "kind": "register",
+                  "phase": "entry",
+                  "width": 32,
+                  "selector": {
+                    "register": "esp"
+                  }
+                }
+              }
+            },
+            {
+              "op": "const",
+              "sort": {
+                "kind": "bitvector",
+                "width": 32
+              },
+              "args": [],
+              "attributes": {
+                "value": 16
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      ],
+      "attributes": {}
+    },
+    "call_private_high": {
+      "op": "machine",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "place": {
+          "kind": "register",
+          "phase": "entry",
+          "width": 32,
+          "selector": {
+            "register": "esp"
+          }
+        }
+      }
+    },
+    "services": [
+      {
+        "id": "cleanup",
+        "maximum_calls": 1,
+        "count_diagnostic": "replace-cleanup-order",
+        "before": [
+          {
+            "id": "replace-cleanup-order",
+            "expression": {
+              "op": "eq",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "calls.send_message",
+                      "fields": []
+                    }
+                  }
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 0
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          },
+          {
+            "id": "replace-no-writes-before-cleanup",
+            "expression": {
+              "op": "eq",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "events",
+                      "fields": []
+                    }
+                  }
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 0
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          }
+        ]
+      },
+      {
+        "id": "send_message",
+        "maximum_calls": 1,
+        "count_diagnostic": "replace-one-message",
+        "before": [
+          {
+            "id": "replace-no-authored-public-writes",
+            "expression": {
+              "op": "not",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "and",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "true",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "not",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "eq",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "side",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 0
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "not",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "eq",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "logical",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "path": {
+                                  "root": "parameter",
+                                  "id": "events",
+                                  "fields": []
+                                }
+                              }
+                            },
+                            {
+                              "op": "logical",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "path": {
+                                  "root": "parameter",
+                                  "id": "calls.cleanup",
+                                  "fields": []
+                                }
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          }
+        ]
+      }
+    ],
+    "event_capacity": 2,
+    "call_capacity": 2,
+    "assertions": [
+      {
+        "id": "replace-both-mode-guards",
+        "expression": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "true",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "left.calls.cleanup",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "ite",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "active",
+                              "fields": []
+                            }
+                          }
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 1
+                          }
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 0
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "eq",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "right.calls.cleanup",
+                      "fields": []
+                    }
+                  }
+                },
+                {
+                  "op": "ite",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "active",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 1
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        }
+      }
+    ],
+    "outcomes": [
+      {
+        "id": "fault",
+        "guard": {
+          "op": "and",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "true",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {}
+                },
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "active",
+                      "fields": []
+                    }
+                  }
+                }
+              ],
+              "attributes": {}
+            },
+            {
+              "op": "not",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "left.fault.cleanup",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        },
+        "exit": {
+          "kind": "memory-fault",
+          "rva": null,
+          "diagnostic": "replace-cleanup-fault"
+        },
+        "assertions": [
+          {
+            "id": "replace-cleanup-fault",
+            "expression": {
+              "op": "eq",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "result.fault",
+                      "fields": []
+                    }
+                  }
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 1
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          },
+          {
+            "id": "replace-fault-prefix",
+            "expression": {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "and",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "and",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "and",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "true",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [],
+                                  "attributes": {}
+                                },
+                                {
+                                  "op": "eq",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "logical",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "path": {
+                                          "root": "parameter",
+                                          "id": "left.calls.send_message",
+                                          "fields": []
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 0
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "eq",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "right.calls.send_message",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 0
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "eq",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "logical",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "path": {
+                                  "root": "parameter",
+                                  "id": "left.events",
+                                  "fields": []
+                                }
+                              }
+                            },
+                            {
+                              "op": "const",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "value": 1
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "right.events",
+                              "fields": []
+                            }
+                          }
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 1
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "private_writes",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 0
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          }
+        ]
+      },
+      {
+        "id": "normal",
+        "guard": {
+          "op": "not",
+          "sort": {
+            "kind": "bool"
+          },
+          "args": [
+            {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "active",
+                          "fields": []
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "not",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "left.fault.cleanup",
+                              "fields": []
+                            }
+                          }
+                        },
+                        {
+                          "op": "const",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "value": 0
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          ],
+          "attributes": {}
+        },
+        "exit": {
+          "kind": "fallthrough",
+          "rva": 45493,
+          "diagnostic": "replace-normal-continuation"
+        },
+        "assertions": [
+          {
+            "id": "replace-normal-continuation",
+            "expression": {
+              "op": "eq",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "logical",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "path": {
+                      "root": "parameter",
+                      "id": "result.fault",
+                      "fields": []
+                    }
+                  }
+                },
+                {
+                  "op": "const",
+                  "sort": {
+                    "kind": "bitvector",
+                    "width": 32
+                  },
+                  "args": [],
+                  "attributes": {
+                    "value": 0
+                  }
+                }
+              ],
+              "attributes": {}
+            }
+          },
+          {
+            "id": "replace-complete-message-result",
+            "expression": {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "true",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "machine",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "place": {
+                              "kind": "register",
+                              "phase": "exit",
+                              "width": 32,
+                              "selector": {
+                                "register": "eax"
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "result.value",
+                              "fields": []
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "result.value",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "left.result.send_message",
+                          "fields": []
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          },
+          {
+            "id": "replace-message-count-and-write-frame",
+            "expression": {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "and",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "and",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "and",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "true",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [],
+                                  "attributes": {}
+                                },
+                                {
+                                  "op": "eq",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "logical",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "path": {
+                                          "root": "parameter",
+                                          "id": "left.calls.send_message",
+                                          "fields": []
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 1
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "eq",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "right.calls.send_message",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 1
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "eq",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "logical",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "path": {
+                                  "root": "parameter",
+                                  "id": "left.events",
+                                  "fields": []
+                                }
+                              }
+                            },
+                            {
+                              "op": "add",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "ite",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "logical",
+                                      "sort": {
+                                        "kind": "bool"
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "path": {
+                                          "root": "parameter",
+                                          "id": "active",
+                                          "fields": []
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 1
+                                      }
+                                    },
+                                    {
+                                      "op": "const",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "value": 0
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 1
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "logical",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "path": {
+                              "root": "parameter",
+                              "id": "right.events",
+                              "fields": []
+                            }
+                          }
+                        },
+                        {
+                          "op": "add",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [
+                            {
+                              "op": "ite",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [
+                                {
+                                  "op": "logical",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "path": {
+                                      "root": "parameter",
+                                      "id": "active",
+                                      "fields": []
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 1
+                                  }
+                                },
+                                {
+                                  "op": "const",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "value": 0
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "const",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "value": 1
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "logical",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "path": {
+                          "root": "parameter",
+                          "id": "private_writes",
+                          "fields": []
+                        }
+                      }
+                    },
+                    {
+                      "op": "const",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "value": 4
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          },
+          {
+            "id": "replace-normal-register-frame",
+            "expression": {
+              "op": "and",
+              "sort": {
+                "kind": "bool"
+              },
+              "args": [
+                {
+                  "op": "and",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "and",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "and",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "and",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "true",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [],
+                                  "attributes": {}
+                                },
+                                {
+                                  "op": "eq",
+                                  "sort": {
+                                    "kind": "bool"
+                                  },
+                                  "args": [
+                                    {
+                                      "op": "machine",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "place": {
+                                          "kind": "register",
+                                          "phase": "exit",
+                                          "width": 32,
+                                          "selector": {
+                                            "register": "esp"
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "op": "machine",
+                                      "sort": {
+                                        "kind": "bitvector",
+                                        "width": 32
+                                      },
+                                      "args": [],
+                                      "attributes": {
+                                        "place": {
+                                          "kind": "register",
+                                          "phase": "entry",
+                                          "width": 32,
+                                          "selector": {
+                                            "register": "esp"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "attributes": {}
+                                }
+                              ],
+                              "attributes": {}
+                            },
+                            {
+                              "op": "eq",
+                              "sort": {
+                                "kind": "bool"
+                              },
+                              "args": [
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "exit",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "ebp"
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "op": "machine",
+                                  "sort": {
+                                    "kind": "bitvector",
+                                    "width": 32
+                                  },
+                                  "args": [],
+                                  "attributes": {
+                                    "place": {
+                                      "kind": "register",
+                                      "phase": "entry",
+                                      "width": 32,
+                                      "selector": {
+                                        "register": "ebp"
+                                      }
+                                    }
+                                  }
+                                }
+                              ],
+                              "attributes": {}
+                            }
+                          ],
+                          "attributes": {}
+                        },
+                        {
+                          "op": "eq",
+                          "sort": {
+                            "kind": "bool"
+                          },
+                          "args": [
+                            {
+                              "op": "machine",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "place": {
+                                  "kind": "register",
+                                  "phase": "exit",
+                                  "width": 32,
+                                  "selector": {
+                                    "register": "ebx"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "op": "machine",
+                              "sort": {
+                                "kind": "bitvector",
+                                "width": 32
+                              },
+                              "args": [],
+                              "attributes": {
+                                "place": {
+                                  "kind": "register",
+                                  "phase": "entry",
+                                  "width": 32,
+                                  "selector": {
+                                    "register": "ebx"
+                                  }
+                                }
+                              }
+                            }
+                          ],
+                          "attributes": {}
+                        }
+                      ],
+                      "attributes": {}
+                    },
+                    {
+                      "op": "eq",
+                      "sort": {
+                        "kind": "bool"
+                      },
+                      "args": [
+                        {
+                          "op": "machine",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "place": {
+                              "kind": "register",
+                              "phase": "exit",
+                              "width": 32,
+                              "selector": {
+                                "register": "edi"
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "op": "machine",
+                          "sort": {
+                            "kind": "bitvector",
+                            "width": 32
+                          },
+                          "args": [],
+                          "attributes": {
+                            "place": {
+                              "kind": "register",
+                              "phase": "entry",
+                              "width": 32,
+                              "selector": {
+                                "register": "edi"
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "attributes": {}
+                    }
+                  ],
+                  "attributes": {}
+                },
+                {
+                  "op": "eq",
+                  "sort": {
+                    "kind": "bool"
+                  },
+                  "args": [
+                    {
+                      "op": "machine",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "place": {
+                          "kind": "register",
+                          "phase": "exit",
+                          "width": 32,
+                          "selector": {
+                            "register": "esi"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "op": "machine",
+                      "sort": {
+                        "kind": "bitvector",
+                        "width": 32
+                      },
+                      "args": [],
+                      "attributes": {
+                        "place": {
+                          "kind": "register",
+                          "phase": "entry",
+                          "width": 32,
+                          "selector": {
+                            "register": "esi"
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "attributes": {}
+                }
+              ],
+              "attributes": {}
+            }
+          }
+        ]
+      }
+    ],
+    "context_diagnostic": "replace-source-context-frame",
+    "memory_diagnostic": "replace-current-post-memory",
+    "supplier_admission": {
+      "guard": {
+        "op": "logical",
+        "sort": {
+          "kind": "bool"
+        },
+        "args": [],
+        "attributes": {
+          "path": {
+            "root": "parameter",
+            "id": "active",
+            "fields": []
+          }
+        }
+      },
+      "bindings": {
+        "stack": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "stack",
+              "fields": []
+            }
+          }
+        },
+        "text_address": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "text_address",
+              "fields": []
+            }
+          }
+        },
+        "text_extent": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "text_extent",
+              "fields": []
+            }
+          }
+        },
+        "scratch_address": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "scratch_address",
+              "fields": []
+            }
+          }
+        },
+        "scratch_extent": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "scratch_extent",
+              "fields": []
+            }
+          }
+        },
+        "length": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "length",
+              "fields": []
+            }
+          }
+        },
+        "length_target": {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "length_target",
+              "fields": []
+            }
+          }
+        }
+      }
+    }
+  },
+  "native_calls": [
+    {
+      "id": "cleanup",
+      "event": {
+        "kind": "internal",
+        "source_rva": 45468,
+        "instruction_rva": 45468,
+        "target_rva": 21943,
+        "return_rva": 45473,
+        "call_index": 0,
+        "argument_count": 0,
+        "stack_input_count": 0
+      },
+      "arguments": [
+        {
+          "op": "machine",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "place": {
+              "kind": "register",
+              "phase": "caller_before",
+              "width": 32,
+              "selector": {
+                "register": "edi"
+              }
+            }
+          }
+        }
+      ],
+      "requires": [
+        {
+          "id": "replace-cleanup-entry-text",
+          "expression": {
+            "op": "eq",
+            "sort": {
+              "kind": "bool"
+            },
+            "args": [
+              {
+                "op": "machine",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "place": {
+                    "kind": "register",
+                    "phase": "caller_before",
+                    "width": 32,
+                    "selector": {
+                      "register": "edi"
+                    }
+                  }
+                }
+              },
+              {
+                "op": "logical",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "path": {
+                    "root": "parameter",
+                    "id": "text_address",
+                    "fields": []
+                  }
+                }
+              }
+            ],
+            "attributes": {}
+          }
+        },
+        {
+          "id": "replace-cleanup-entry-flags",
+          "expression": {
+            "op": "ule",
+            "sort": {
+              "kind": "bool"
+            },
+            "args": [
+              {
+                "op": "machine",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "place": {
+                    "kind": "flag",
+                    "phase": "caller_before",
+                    "width": 32,
+                    "selector": {
+                      "flag": "df"
+                    }
+                  }
+                }
+              },
+              {
+                "op": "const",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "value": 1
+                }
+              }
+            ],
+            "attributes": {}
+          }
+        }
+      ],
+      "entry_stack_delta": 0
+    },
+    {
+      "id": "send_message",
+      "event": {
+        "kind": "import",
+        "source_rva": 45487,
+        "instruction_rva": 45487,
+        "target_rva": 0,
+        "return_rva": 45493,
+        "call_index": 0,
+        "argument_count": 0,
+        "stack_input_count": 0,
+        "dll": "user32.dll",
+        "symbol": "SendMessageA"
+      },
+      "arguments": [
+        {
+          "op": "machine",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "place": {
+              "kind": "stack",
+              "phase": "caller_before",
+              "width": 32,
+              "selector": {
+                "offset": 0
+              }
+            }
+          }
+        },
+        {
+          "op": "machine",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "place": {
+              "kind": "stack",
+              "phase": "caller_before",
+              "width": 32,
+              "selector": {
+                "offset": 4
+              }
+            }
+          }
+        },
+        {
+          "op": "machine",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "place": {
+              "kind": "stack",
+              "phase": "caller_before",
+              "width": 32,
+              "selector": {
+                "offset": 8
+              }
+            }
+          }
+        },
+        {
+          "op": "machine",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "place": {
+              "kind": "stack",
+              "phase": "caller_before",
+              "width": 32,
+              "selector": {
+                "offset": 12
+              }
+            }
+          }
+        }
+      ],
+      "requires": [
+        {
+          "id": "replace-complete-private-arguments",
+          "expression": {
+            "op": "eq",
+            "sort": {
+              "kind": "bool"
+            },
+            "args": [
+              {
+                "op": "logical",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "path": {
+                    "root": "parameter",
+                    "id": "private_writes",
+                    "fields": []
+                  }
+                }
+              },
+              {
+                "op": "const",
+                "sort": {
+                  "kind": "bitvector",
+                  "width": 32
+                },
+                "args": [],
+                "attributes": {
+                  "value": 4
+                }
+              }
+            ],
+            "attributes": {}
+          }
+        },
+        {
+          "id": "replace-message-native-arguments",
+          "expression": {
+            "op": "and",
+            "sort": {
+              "kind": "bool"
+            },
+            "args": [
+              {
+                "op": "eq",
+                "sort": {
+                  "kind": "bool"
+                },
+                "args": [
+                  {
+                    "op": "logical",
+                    "sort": {
+                      "kind": "bitvector",
+                      "width": 32
+                    },
+                    "args": [],
+                    "attributes": {
+                      "path": {
+                        "root": "parameter",
+                        "id": "argument_1",
+                        "fields": []
+                      }
+                    }
+                  },
+                  {
+                    "op": "const",
+                    "sort": {
+                      "kind": "bitvector",
+                      "width": 32
+                    },
+                    "args": [],
+                    "attributes": {
+                      "value": 194
+                    }
+                  }
+                ],
+                "attributes": {}
+              },
+              {
+                "op": "and",
+                "sort": {
+                  "kind": "bool"
+                },
+                "args": [
+                  {
+                    "op": "eq",
+                    "sort": {
+                      "kind": "bool"
+                    },
+                    "args": [
+                      {
+                        "op": "logical",
+                        "sort": {
+                          "kind": "bitvector",
+                          "width": 32
+                        },
+                        "args": [],
+                        "attributes": {
+                          "path": {
+                            "root": "parameter",
+                            "id": "argument_2",
+                            "fields": []
+                          }
+                        }
+                      },
+                      {
+                        "op": "const",
+                        "sort": {
+                          "kind": "bitvector",
+                          "width": 32
+                        },
+                        "args": [],
+                        "attributes": {
+                          "value": 1
+                        }
+                      }
+                    ],
+                    "attributes": {}
+                  },
+                  {
+                    "op": "eq",
+                    "sort": {
+                      "kind": "bool"
+                    },
+                    "args": [
+                      {
+                        "op": "logical",
+                        "sort": {
+                          "kind": "bitvector",
+                          "width": 32
+                        },
+                        "args": [],
+                        "attributes": {
+                          "path": {
+                            "root": "parameter",
+                            "id": "argument_3",
+                            "fields": []
+                          }
+                        }
+                      },
+                      {
+                        "op": "logical",
+                        "sort": {
+                          "kind": "bitvector",
+                          "width": 32
+                        },
+                        "args": [],
+                        "attributes": {
+                          "path": {
+                            "root": "parameter",
+                            "id": "text_address",
+                            "fields": []
+                          }
+                        }
+                      }
+                    ],
+                    "attributes": {}
+                  }
+                ],
+                "attributes": {}
+              }
+            ],
+            "attributes": {}
+          }
+        }
+      ],
+      "entry_stack_delta": -16
+    }
+  ],
+  "source_services": [
+    {
+      "id": "cleanup",
+      "views": {
+        "text": "text",
+        "suppress_notice": "suppress_notice",
+        "main_window": "main_window",
+        "edit_window": "edit_window",
+        "caption": "caption"
+      },
+      "arguments": [
+        {
+          "op": "view_address",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "logical",
+              "sort": {
+                "kind": "view",
+                "type_id": "bytes"
+              },
+              "args": [],
+              "attributes": {
+                "path": {
+                  "root": "parameter",
+                  "id": "text",
+                  "fields": []
+                }
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      ],
+      "diagnostic": "replace-complete-view-arguments"
+    },
+    {
+      "id": "send_message",
+      "views": {
+        "text": "text"
+      },
+      "arguments": [
+        {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "window",
+              "fields": []
+            }
+          }
+        },
+        {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "message",
+              "fields": []
+            }
+          }
+        },
+        {
+          "op": "logical",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [],
+          "attributes": {
+            "path": {
+              "root": "parameter",
+              "id": "wparam",
+              "fields": []
+            }
+          }
+        },
+        {
+          "op": "view_address",
+          "sort": {
+            "kind": "bitvector",
+            "width": 32
+          },
+          "args": [
+            {
+              "op": "logical",
+              "sort": {
+                "kind": "view",
+                "type_id": "bytes"
+              },
+              "args": [],
+              "attributes": {
+                "path": {
+                  "root": "parameter",
+                  "id": "text",
+                  "fields": []
+                }
+              }
+            }
+          ],
+          "attributes": {}
+        }
+      ],
+      "diagnostic": "replace-complete-view-arguments"
+    }
+  ],
+  "witnesses": {
+    "length": {
+      "op": "logical",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "path": {
+          "root": "parameter",
+          "id": "length",
+          "fields": []
+        }
+      }
+    },
+    "length_target": {
+      "op": "logical",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "path": {
+          "root": "parameter",
+          "id": "length_target",
+          "fields": []
+        }
+      }
+    },
+    "scratch_address": {
+      "op": "logical",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "path": {
+          "root": "parameter",
+          "id": "scratch_address",
+          "fields": []
+        }
+      }
+    },
+    "scratch_extent": {
+      "op": "logical",
+      "sort": {
+        "kind": "bitvector",
+        "width": 32
+      },
+      "args": [],
+      "attributes": {
+        "path": {
+          "root": "parameter",
+          "id": "scratch_extent",
+          "fields": []
+        }
+      }
+    }
+  },
+  "runtime_contracts": {
+    "send_message": {
+      "ensures": "Same arbitrary uint32 result and public post-memory; stdcall restores the 16 argument bytes and preserves EBX, EBP, ESI and EDI.",
+      "id": "paired-returning-sendmessage-v1",
+      "requires": "Corresponding handle, message, wparam, live text view and current public memory; invocation returns normally under the selected runtime.",
+      "revision": 1,
+      "unverified": [
+        "Concrete Win32 applicability and text termination after cleanup.",
+        "Invocation faults, reentrancy and nonreturning calls."
+      ],
+      "status": "unverified",
+      "normal_return": {
+        "result_field": "eax",
+        "stack_delta": 16,
+        "preserved_fields": [
+          "ebp",
+          "ebx",
+          "edi",
+          "esi"
+        ]
+      },
+      "fault": "none",
+      "normal_excludes": []
+    }
+  }
+}

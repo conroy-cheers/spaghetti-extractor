@@ -409,13 +409,15 @@ let
     export WINEDEBUG=+loaddll
     export WINEDLLOVERRIDES="mscoree,mshtml="
     mkdir -p "$HOME" "$WINEPREFIX"
-    xvfb-run -a wineboot -u >/dev/null 2>&1
-    set +e
-    timeout 60 xvfb-run -a wine "$candidate" >"$trace" 2>&1
-    status=$?
-    set -e
-    wineserver -w >/dev/null 2>&1 || true
-    echo "$status" >"$status_file"
+    spaghetti-headless-wayland ${pkgs.bash}/bin/bash -eu -c '
+      wineboot -u >/dev/null 2>&1
+      set +e
+      timeout 60 wine "$1" >"$2" 2>&1
+      status=$?
+      set -e
+      wineserver -w >/dev/null 2>&1 || true
+      echo "$status" >"$3"
+    ' sh "$candidate" "$trace" "$status_file"
   '';
   mkWineObservation = observationName: realization:
     pkgs.runCommand
@@ -425,7 +427,7 @@ let
           pkgs.jq
           pkgs.coreutils
           pkgs.wineWow64Packages.stableFull
-          pkgs.xvfb-run
+          context.tools.headlessWayland
         ];
         __contentAddressed = true;
       }

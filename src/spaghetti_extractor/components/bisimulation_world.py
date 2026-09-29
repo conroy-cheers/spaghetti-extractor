@@ -15,7 +15,7 @@ from .bisimulation_call_memory import call_memory_fragments, event_stack_input_c
 from .bisimulation_call_ranges import call_range_fragments
 from .bisimulation_terminated_reads import with_terminated_reads
 from .bisimulation_allocation_lifetime import allocation_configuration
-from .bisimulation_reference_origins import origin_declarations, reference_source
+from .bisimulation_reference_origins import origin_declarations, reference_source, logical_argument_physical_index
 from .bisimulation_reference_authority import checked_reference_authority
 from .bisimulation_exact_frame import frame_declarations, frame_write_check, frame_private_low
 from .bisimulation_mutable_frame import mutable_frame_declarations, mutable_frame_write_check
@@ -56,6 +56,7 @@ def _world_source(
     maximum_input_allocations: int = 0,
     memory_fact_capacity: int = 0,
     runtime_assurance: Mapping[str, object] | None = None,
+    projection_frame: Mapping[str, object] | None = None,
 ) -> str:
     """Render paired sparse memories and a shared call/atomic oracle."""
 
@@ -64,6 +65,14 @@ def _world_source(
     native_access = runtime_contract_selected(runtime_assurance, "native-memory-admission")
     from .bisimulation_memory_facts import world_fragments
     memory_facts = world_fragments(memory_fact_capacity)
+    from .bisimulation_projection_frames import world_fragments as projection_frame_fragments
+    parameter_frame = projection_frame_fragments(projection_frame)
+    if projection_frame and (maximum_input_allocations or memory_fact_capacity
+            or reference_allocation_requirements is not None or reference_runtime_inventory is not None
+            or runtime_assurance is not None or summary_ranges or mutable_frame_views
+            or any(row.get("provider_kind") != "component_operation"
+                   for row in (*service_bindings, *(reference_service_bindings or ())))):
+        raise BisimulationRefinementError("parameter slot frames do not yet support allocation, service-memory or conditional runtime effects")
 
     call_specs = _proof_call_specs(service_bindings,
                                   allow_lifetime_effects=reference_runtime_inventory is not None or reference_allocation_requirements is not None)
@@ -127,46 +136,6 @@ def _world_source(
     for spec in call_specs:
         behavior_specs_by_id.setdefault(int(spec["spec_id"]), spec)
     behavior_specs = list(behavior_specs_by_id.values())
-    def logical_argument_physical_index(service_id: str, input_index: object) -> int:
-        if (
-            not isinstance(input_index, int)
-            or isinstance(input_index, bool)
-            or input_index < 0
-        ):
-            raise BisimulationRefinementError(
-                "proof-world reference-result origin argument is malformed"
-            )
-        bindings = [
-            binding
-            for binding in (
-                service_bindings
-                if reference_service_bindings is None
-                else reference_service_bindings
-            )
-            if binding.get("service_id") == service_id
-            and binding.get("provider_kind") != "component_operation"
-        ]
-        physical_indices: set[int] = set()
-        for binding in bindings:
-            transducers = binding.get("argument_transducers")
-            if transducers is None:
-                physical_indices.add(int(input_index))
-                continue
-            for physical_index, transducer in enumerate(transducers):
-                if (
-                    isinstance(transducer, Mapping)
-                    and transducer.get("kind") == "logical_argument"
-                    and transducer.get("parameter_index") == input_index
-                ):
-                    physical_indices.add(physical_index)
-        if (
-            not bindings
-            or len(physical_indices) != 1
-        ):
-            raise BisimulationRefinementError(
-                "proof-world reference-result origin has no unique raw argument"
-            )
-        return next(iter(physical_indices))
     max_arguments = max(
         (len(spec["raw_indices"]) for spec in behavior_specs), default=0
     )
@@ -215,6 +184,7 @@ def _world_source(
             origin_physical_index = logical_argument_physical_index(
                 str(spec["service_id"]),
                 origin_constraint.get("input_argument_index"),
+                service_bindings=service_bindings if reference_service_bindings is None else reference_service_bindings,
             )
             matching_positions = [
                 position
@@ -231,6 +201,7 @@ def _world_source(
                 conditional_physical_index = logical_argument_physical_index(
                     str(spec["service_id"]),
                     remaining.get("nonzero_argument_index"),
+                    service_bindings=service_bindings if reference_service_bindings is None else reference_service_bindings,
                 )
                 conditional_positions = [
                     position
@@ -1239,7 +1210,7 @@ static void spx_proof_register_nul_view(
   spx_exact_world.nul_view_extents[position] = extent;
 }}
 
-{frame_declarations(probe_empty_frame)}{private_frame.declarations(private_stack_writes)}{mutable_frame_declarations(mutable_frame_views, private_stack_writes)}static void spx_proof_write_world(
+{parameter_frame['declarations']}{frame_declarations(probe_empty_frame)}{private_frame.declarations(private_stack_writes)}{mutable_frame_declarations(mutable_frame_views, private_stack_writes)}static void spx_proof_write_world(
     void *opaque, uint32_t address, uint32_t width, uint32_t value,
     uint32_t *fault) {{
   spx_proof_world *world = (spx_proof_world *)opaque;
@@ -1253,7 +1224,7 @@ static void spx_proof_register_nul_view(
 {image_frame.access_check(probe_image_frame)}  if (!{native_admission.access_expression(native_access, 'world', True)}) {{
     *fault = UINT32_C(1); return;
   }}
-{frame_write_check(probe_empty_frame)}{mutable_frame_write_check(mutable_frame_views)}{private_frame.write_check(private_stack_writes)}  private_bytes = spx_proof_private_bytes(world, address, width);
+{parameter_frame['write']}{frame_write_check(probe_empty_frame)}{mutable_frame_write_check(mutable_frame_views)}{private_frame.write_check(private_stack_writes)}  private_bytes = spx_proof_private_bytes(world, address, width);
   if (world == &spx_exact_world) {{
 {exact_stack_updates}
   }}
@@ -1584,6 +1555,7 @@ static void spx_proof_reset_worlds_in_scope(
   spx_exact_world.private_low = {frame_private_low(probe_empty_frame, bool(mutable_frame_views)).replace("entry_esp", "scope_anchor")};
   spx_exact_world.private_high = scope_anchor + private_high_offset;
   spx_exact_world.private_anchor = entry_esp;
+{parameter_frame['reset']}
   spx_exact_world.private_scope_anchor = scope_anchor;
 {exact_stack_reset}
   spx_source_world.allocation_count = UINT32_C(0);

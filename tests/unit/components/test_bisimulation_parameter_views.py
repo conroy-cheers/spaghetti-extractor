@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -223,7 +223,7 @@ int main(void) {
             else:validate_local_view_model(planned,changed)
             document={'proof_plan':{'operations':[planned]},'proof':{'models':{'operation_models':[
                 {**metadata,'operation_id':'run','obligation_models':[changed]}]}}}
-            result=subprocess.run([shutil.which('jq'),'-e',module.read_text()+'\nspx_cut_capture_codecs'],
+            result=run_jq_reader([shutil.which('jq'),'-e',module.read_text()+'\nspx_cut_capture_codecs'],
                 input=json.dumps(document),text=True,capture_output=True)
             self.assertEqual(result.returncode,1 if mutation else 0,result.stderr)
 

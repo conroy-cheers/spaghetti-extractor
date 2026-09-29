@@ -549,7 +549,8 @@ def _render_typed_proof_service_thunk(
         )
         typed_target_expression = "spx_typed_target"
     else:
-        target_lines, typed_target_expression = typed_external_target_lines(binding, zero_result=zero_result)
+        target_lines, typed_target_expression = typed_external_target_lines(binding, zero_result=zero_result,
+            entry_index=next(i for i, item in enumerate(bundle.interface.services) if item == compiled_service))
         lines.extend(target_lines)
     lines.append(
         "  spx_proof_typed_service_begin(spx_typed_service->runtime->context, "

@@ -31,7 +31,8 @@ does not promise functional postconditions that the local checker never proves.
 
 
 def reuse_memory_consumer(*, previous, output, bundle, source, profile, headers,
-                         dependencies, options, tools, mutable, shared_contract=None, timings=None):
+                         dependencies, options, tools, mutable, shared_contract=None, timings=None, objects=False,
+                         terminal_services=(), property_checker_command=None):
     """Return a fully validated rebound certificate, or None for a changed use.
 
 The caller has already copied and validated current supplier evidence. Validate
@@ -39,16 +40,26 @@ the previous consumer, preserve all its compiled artifacts, replace only supplie
 evidence, and validate the resulting theorem with the current model renderer.
 Unknown policy changes and changed consumer inputs take the normal checking path.
 """
-    if previous is None or not dependencies:
+    if previous is None:
         return None
     from .bisimulation_readonly_evidence import validate_readonly_source_contracts, validate_mutable_source_contracts
     from .bisimulation_readonly_evidence import validate_shared_source_contracts
     from .bisimulation_shared_model import SHARED_DEPENDENCY_POLICY
+    from .bisimulation_shared_model import SHARED_CONTRACT_POLICY
+    from .bisimulation_readonly_model import READONLY_CONTRACT_POLICY,MUTABLE_CONTRACT_POLICY
+    from .bisimulation_object_model import OBJECT_CONTRACT_POLICY
+    from .bisimulation_readonly_evidence import validate_object_source_contracts
 
     started = time.monotonic()
     previous, output = Path(previous), Path(output)
     old = json.loads((previous / 'local-contract-result.json').read_text())
-    if (old.get('policy') != (SHARED_DEPENDENCY_POLICY if shared_contract is not None else MUTABLE_POLICY if mutable else READONLY_POLICY)
+    policy = ((SHARED_DEPENDENCY_POLICY if shared_contract is not None else MUTABLE_POLICY if mutable else READONLY_POLICY)
+              if dependencies else (SHARED_CONTRACT_POLICY if shared_contract is not None else MUTABLE_CONTRACT_POLICY if mutable else READONLY_CONTRACT_POLICY))
+    if objects:
+        policy = OBJECT_CONTRACT_POLICY
+    if (old.get('policy') != policy
+            or old.get('terminal_services', []) != list(terminal_services)
+            or old.get('property_checker_command') != property_checker_command
             or old.get('shared_contract') != shared_contract
             or old.get('source_package') != source or old.get('source_profile') != profile
             or old.get('interface_intent') != bundle.intent.to_payload()
@@ -57,9 +68,10 @@ Unknown policy changes and changed consumer inputs take the normal checking path
             or old.get('headers_sha256') != canonical_sha256_v3(headers)):
         return None
     uses = [consumed_memory_contract(row) for row in dependencies]
-    if uses != [consumed_memory_contract(row) for row in old['summary_dependencies']]:
+    if uses != [consumed_memory_contract(row) for row in old.get('summary_dependencies',[])]:
         return None
-    validator = (validate_shared_source_contracts if shared_contract is not None else
+    validator = (validate_object_source_contracts if objects else
+                 validate_shared_source_contracts if shared_contract is not None else
                  validate_mutable_source_contracts if mutable else validate_readonly_source_contracts)
     validator(old, artifacts=previous)
     # Only newly copied dependency directories may exist at this stage. No old
@@ -76,7 +88,8 @@ Unknown policy changes and changed consumer inputs take the normal checking path
         else:
             shutil.copyfile(path, destination)
     core = {k: v for k, v in old.items() if k != 'receipt_sha256'}
-    core['summary_dependencies'] = dependencies
+    if dependencies:
+        core['summary_dependencies'] = dependencies
     result = {**core, 'receipt_sha256': canonical_sha256_v3(core)}
     # This checks current generated C, headers, access rules, tool identities,
     # recorded inventories and complete solver outputs. It invokes no compiler

@@ -106,6 +106,11 @@ synthetic empty catalog, target-signature graph, or release-hypothesis set, and
 their generated artifact family has no `libraries` branch.
 `component list --json` (without `--near`) and `candidate list --json` both emit this complete
 validated index, rather than inventing command-specific partial wire formats.
+The optional `components.authoringPaths` maps the configured lifting intent and
+interface/binding indexes to paths relative to the target bundle. The SDK derives
+these from the actual workflow inputs; `boundary adopt --apply` uses them instead
+of assuming the component intent and operator roots share a directory. Missing or
+null authoring paths disable this mutation, without affecting read-only discovery.
 
 Public realization commands resolve builders in this order: explicit CLI
 arguments, `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest ignored

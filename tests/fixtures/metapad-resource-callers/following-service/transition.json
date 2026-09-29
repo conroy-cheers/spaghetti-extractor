@@ -1,0 +1,754 @@
+{
+  "authorizing": false,
+  "activation_authorized": false,
+  "runtime_compatibility": "unverified",
+  "operation_id": "get",
+  "domain": {
+    "runtime_contract": {
+      "id": "borrowed-image-shared-machine-domain",
+      "inputs": "Related current image bytes; fixed borrowed image views; arbitrary admitted private stack and machine registers.",
+      "lifetime": "Borrowed image views remain live throughout the call; no allocation, release, callback, nonlocal exit or origin rebinding.",
+      "memory": "Little-endian one-to-four-byte accesses; successful valid accesses; writes confined to writable image views or declared private ranges.",
+      "outcomes": "Check normal return target, stack adjustment, raw result alias and undeclared register clobbers; reject other original control outcomes.",
+      "private": "Private ranges are disjoint from the whole image; entry stack words bind the return target and scalar parameters; other private bytes are arbitrary.",
+      "progress": "All selected language-safety and unwinding assertions must pass; resource bounds never restrict admitted inputs.",
+      "revision": 1,
+      "service_frame": "Preserve nonvolatile general registers and x87/segment state; arbitrary ECX, EDX and integer flags; pop the bound argument bytes.",
+      "services": "Only bound direct named stdcall imports; related scalar arguments, view addresses, current input bytes, ordered calls, selected result domains and writable ranges."
+    },
+    "interface_intent": {
+      "effects": [
+        {
+          "id": "buffer_written",
+          "kind": "memory",
+          "operation": "get",
+          "target": {
+            "fields": [],
+            "root": "state",
+            "value_id": "buffer"
+          }
+        }
+      ],
+      "format": "spaghetti-extractor-component-interface-intent-v1",
+      "id": "resource-text",
+      "intent_sha256": "42063d3cf2f366744d828c5cea84693ca7558b1d80b531cf97b80972840eeceb",
+      "operations": [
+        {
+          "allowed_service_ids": [
+            "load_string"
+          ],
+          "checked_interaction_contract_ids": [],
+          "effect_ids": [
+            "buffer_written"
+          ],
+          "id": "get",
+          "lifecycle_additional_roots": {
+            "state": [
+              {
+                "access": "read",
+                "extent": {
+                  "bytes": 4,
+                  "kind": "fixed",
+                  "value_id": null
+                },
+                "id": "module",
+                "interpretation": "view",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "bytes"
+              },
+              {
+                "access": "read_write",
+                "extent": {
+                  "bytes": 500,
+                  "kind": "fixed",
+                  "value_id": null
+                },
+                "id": "buffer",
+                "interpretation": "view",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "bytes"
+              }
+            ]
+          },
+          "lifecycle_bindings": [],
+          "post_states": [
+            "ready"
+          ],
+          "pre_states": [
+            "ready"
+          ],
+          "projection_entries": [
+            {
+              "source_id": "id",
+              "target": {
+                "fields": [],
+                "root": "parameter",
+                "value_id": "id"
+              }
+            },
+            {
+              "source_id": "result",
+              "target": {
+                "fields": [],
+                "root": "result",
+                "value_id": "result"
+              }
+            }
+          ],
+          "signature_id": "get",
+          "source_values": [
+            {
+              "access": "none",
+              "extent": {
+                "bytes": null,
+                "kind": "none",
+                "value_id": null
+              },
+              "id": "id",
+              "interpretation": "value",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "u32"
+            },
+            {
+              "access": "read_write",
+              "extent": {
+                "bytes": 500,
+                "kind": "fixed",
+                "value_id": null
+              },
+              "id": "result",
+              "interpretation": "view",
+              "nullable": false,
+              "provider_domain": null,
+              "resource_kind": null,
+              "type_id": "bytes"
+            }
+          ]
+        }
+      ],
+      "protocol": {
+        "initial_state": "ready",
+        "states": [
+          "ready"
+        ]
+      },
+      "schema": {
+        "format": "spaghetti-extractor-boundary-schema-v1",
+        "schema_id": "metapad.resource-text",
+        "schema_sha256": "050766f2d54b6cb7e28d61cc46844bc28a74f7bd8b043382d5ab4044286a85d6",
+        "signatures": [
+          {
+            "function_type_id": "get.fn",
+            "id": "get",
+            "parameters": [
+              {
+                "access": "none",
+                "extent": {
+                  "bytes": null,
+                  "kind": "none",
+                  "value_id": null
+                },
+                "id": "id",
+                "interpretation": "value",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "u32"
+              }
+            ],
+            "results": [
+              {
+                "access": "read_write",
+                "extent": {
+                  "bytes": 500,
+                  "kind": "fixed",
+                  "value_id": null
+                },
+                "id": "result",
+                "interpretation": "view",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "bytes"
+              }
+            ]
+          },
+          {
+            "function_type_id": "load_string.fn",
+            "id": "load_string",
+            "parameters": [
+              {
+                "access": "none",
+                "extent": {
+                  "bytes": null,
+                  "kind": "none",
+                  "value_id": null
+                },
+                "id": "module",
+                "interpretation": "value",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "u32"
+              },
+              {
+                "access": "none",
+                "extent": {
+                  "bytes": null,
+                  "kind": "none",
+                  "value_id": null
+                },
+                "id": "id",
+                "interpretation": "value",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "u32"
+              },
+              {
+                "access": "read_write",
+                "extent": {
+                  "bytes": 500,
+                  "kind": "fixed",
+                  "value_id": null
+                },
+                "id": "buffer",
+                "interpretation": "view",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "bytes"
+              },
+              {
+                "access": "none",
+                "extent": {
+                  "bytes": null,
+                  "kind": "none",
+                  "value_id": null
+                },
+                "id": "maximum",
+                "interpretation": "value",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "u32"
+              }
+            ],
+            "results": [
+              {
+                "access": "none",
+                "extent": {
+                  "bytes": null,
+                  "kind": "none",
+                  "value_id": null
+                },
+                "id": "result",
+                "interpretation": "value",
+                "nullable": false,
+                "provider_domain": null,
+                "resource_kind": null,
+                "type_id": "u32"
+              }
+            ]
+          }
+        ],
+        "types": [
+          {
+            "id": "bytes",
+            "kind": "pointer",
+            "pointee_type_id": "u8",
+            "qualifiers": []
+          },
+          {
+            "calling_convention": "cdecl",
+            "id": "get.fn",
+            "kind": "function",
+            "parameter_type_ids": [
+              "u32"
+            ],
+            "result_type_id": "bytes",
+            "variadic": false
+          },
+          {
+            "calling_convention": "cdecl",
+            "id": "load_string.fn",
+            "kind": "function",
+            "parameter_type_ids": [
+              "u32",
+              "u32",
+              "bytes",
+              "u32"
+            ],
+            "result_type_id": "u32",
+            "variadic": false
+          },
+          {
+            "id": "u32",
+            "kind": "integer",
+            "signed": false,
+            "width_bits": 32
+          },
+          {
+            "id": "u8",
+            "kind": "integer",
+            "signed": false,
+            "width_bits": 8
+          }
+        ]
+      },
+      "services": [
+        {
+          "effect_ids": [
+            "buffer_written"
+          ],
+          "id": "load_string",
+          "interaction_contract_id": "component-service.resource-text.load-string",
+          "signature_id": "load_string"
+        }
+      ],
+      "state": [
+        {
+          "initial": null,
+          "value": {
+            "access": "read",
+            "extent": {
+              "bytes": 4,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "id": "module",
+            "interpretation": "view",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "bytes"
+          }
+        },
+        {
+          "initial": null,
+          "value": {
+            "access": "read_write",
+            "extent": {
+              "bytes": 500,
+              "kind": "fixed",
+              "value_id": null
+            },
+            "id": "buffer",
+            "interpretation": "view",
+            "nullable": false,
+            "provider_domain": null,
+            "resource_kind": null,
+            "type_id": "bytes"
+          }
+        }
+      ],
+      "status": "complete"
+    },
+    "binding_intent": {
+      "blockers": [],
+      "component_id": "resource-text",
+      "format": "spaghetti-extractor-component-machine-binding-intent-v1",
+      "intent_sha256": "b2ad477ec2b1e54b6320d4def5e0746a57572cda535cd8005426f92c38dc1ce4",
+      "operations": [
+        {
+          "callback_ids": [],
+          "effect_ids": [
+            "buffer_written"
+          ],
+          "entry_rvas": [
+            4740
+          ],
+          "id": "get",
+          "induction_evidence_sha256": null,
+          "kind": "operation",
+          "machine_projection": {
+            "operation": {
+              "callback_operation_ids": [],
+              "continuation_unit_ids": [],
+              "effects": [],
+              "entry_unit_ids": [
+                "semantic-transfer:original-cutpoint-00001284-0000128d"
+              ],
+              "exit_unit_ids": [
+                "semantic-transfer:original-cutpoint-000012a2-000012a7"
+              ],
+              "operation_id": "get",
+              "parameters": [
+                {
+                  "id": "id",
+                  "projection": {
+                    "at": "entry",
+                    "kind": "stack",
+                    "offset": 4,
+                    "width": 32
+                  }
+                }
+              ],
+              "preserved_state_ids": [],
+              "results": [
+                {
+                  "id": "result",
+                  "projection": {
+                    "at": "exit",
+                    "authority": {
+                      "id": "buffer",
+                      "kind": "image",
+                      "lifetime": "image"
+                    },
+                    "base": {
+                      "at": "exit",
+                      "kind": "register",
+                      "register": "eax",
+                      "width": 32
+                    },
+                    "extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    },
+                    "kind": "view",
+                    "requested_extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    }
+                  }
+                }
+              ],
+              "state": [
+                {
+                  "entry": {
+                    "at": "entry",
+                    "authority": {
+                      "id": "buffer",
+                      "kind": "image",
+                      "lifetime": "image"
+                    },
+                    "base": {
+                      "kind": "constant",
+                      "value": 4275488,
+                      "width": 32
+                    },
+                    "extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    },
+                    "kind": "view",
+                    "requested_extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    }
+                  },
+                  "exit": {
+                    "at": "exit",
+                    "authority": {
+                      "id": "buffer",
+                      "kind": "image",
+                      "lifetime": "image"
+                    },
+                    "base": {
+                      "kind": "constant",
+                      "value": 4275488,
+                      "width": 32
+                    },
+                    "extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    },
+                    "kind": "view",
+                    "requested_extent": {
+                      "kind": "constant",
+                      "value": 500,
+                      "width": 32
+                    }
+                  },
+                  "id": "buffer"
+                },
+                {
+                  "entry": {
+                    "at": "entry",
+                    "authority": {
+                      "id": "module",
+                      "kind": "image",
+                      "lifetime": "image"
+                    },
+                    "base": {
+                      "kind": "constant",
+                      "value": 4260176,
+                      "width": 32
+                    },
+                    "extent": {
+                      "kind": "constant",
+                      "value": 4,
+                      "width": 32
+                    },
+                    "kind": "view",
+                    "requested_extent": {
+                      "kind": "constant",
+                      "value": 4,
+                      "width": 32
+                    }
+                  },
+                  "exit": {
+                    "at": "exit",
+                    "authority": {
+                      "id": "module",
+                      "kind": "image",
+                      "lifetime": "image"
+                    },
+                    "base": {
+                      "kind": "constant",
+                      "value": 4260176,
+                      "width": 32
+                    },
+                    "extent": {
+                      "kind": "constant",
+                      "value": 4,
+                      "width": 32
+                    },
+                    "kind": "view",
+                    "requested_extent": {
+                      "kind": "constant",
+                      "value": 4,
+                      "width": 32
+                    }
+                  },
+                  "id": "module"
+                }
+              ]
+            },
+            "service_bindings": [
+              {
+                "mediation": "direct",
+                "provider": {
+                  "events": [
+                    {
+                      "event_index": 0,
+                      "unit_id": "semantic-transfer:original-cutpoint-0000129c-000012a2"
+                    }
+                  ],
+                  "identity": {
+                    "dll": "user32.dll",
+                    "ordinal": null,
+                    "symbol": "LoadStringA"
+                  },
+                  "kind": "external_call"
+                },
+                "service_id": "load_string"
+              }
+            ]
+          },
+          "object_authority_selectors": [
+            {
+              "authority_id": "buffer",
+              "rule_id": "image:metapad:section:2"
+            },
+            {
+              "authority_id": "module",
+              "rule_id": "image:metapad:section:2"
+            }
+          ],
+          "outcome_protocol_ids": [],
+          "pointer_views": [],
+          "relation_receipt_sha256s": [],
+          "service_ids": [
+            "load_string"
+          ],
+          "transfer_ids": [
+            "semantic-transfer:original-cutpoint-00001284-0000128d",
+            "semantic-transfer:original-cutpoint-0000128d-0000129c",
+            "semantic-transfer:original-cutpoint-0000129c-000012a2",
+            "semantic-transfer:original-cutpoint-000012a2-000012a7"
+          ],
+          "unit_ids": [
+            "semantic-transfer:original-cutpoint-00001284-0000128d",
+            "semantic-transfer:original-cutpoint-0000128d-0000129c",
+            "semantic-transfer:original-cutpoint-0000129c-000012a2",
+            "semantic-transfer:original-cutpoint-000012a2-000012a7"
+          ]
+        }
+      ],
+      "status": "complete"
+    },
+    "exact_c_slice_sha256": "793258ad2ec0da8fde08df07281be380deee4d3a781846491ab7c211153457b8",
+    "machine_domain": {
+      "clobbers": [
+        "cf",
+        "df",
+        "ecx",
+        "edx",
+        "eflags",
+        "of",
+        "pf",
+        "sf",
+        "zf"
+      ],
+      "image_base": 4194304,
+      "image_size": 225280,
+      "private_accesses": [
+        {
+          "bytes": 36,
+          "offset": -28
+        }
+      ],
+      "private_writes": [
+        {
+          "bytes": 28,
+          "offset": -28
+        }
+      ]
+    },
+    "service_bindings": [
+      {
+        "abi_sha256": "fb227956fdb08bd6132a34860efe3068887764504e667704bd46e670ec0eb43d",
+        "abi_template": "pe32-stdcall-v1",
+        "argument_interfaces": [],
+        "argument_offsets": [
+          0,
+          4,
+          8,
+          12
+        ],
+        "argument_transducers": null,
+        "captured_target_projection": null,
+        "dll": "user32.dll",
+        "events": [
+          {
+            "event_index": 0,
+            "event_stack_offsets": [],
+            "instruction_rva": 4764,
+            "return_rva": 4770,
+            "source_rva": 4764,
+            "unit_id": "semantic-transfer:original-cutpoint-0000129c-000012a2"
+          }
+        ],
+        "external_contract_identity_sha256": "af785241da2cbfb028bb7398161d742af2ff9208384c6bb6783089dec7833526",
+        "external_effect_contract": {
+          "abi_template": "pe32-stdcall-v1",
+          "argument_domain": [
+            {
+              "argument_index": 3,
+              "maximum": 2147483647,
+              "minimum": 1
+            }
+          ],
+          "argument_words": 4,
+          "arity": {
+            "kind": "fixed",
+            "words": 4
+          },
+          "disposition": "returns",
+          "id": "user32.LoadStringA.positive-buffer-v1",
+          "import": {
+            "dll": "user32.dll",
+            "symbol": "LoadStringA"
+          },
+          "memory_effect": "argumentRanges",
+          "memory_footprints": [
+            {
+              "access": "write",
+              "base_argument": 2,
+              "nullable": false,
+              "offset": 0,
+              "size": {
+                "argument": 3,
+                "kind": "argument",
+                "scale": 1
+              }
+            }
+          ],
+          "profile_id": "pe32-user32-resource-text-runtime-v1",
+          "result_register_relations": [
+            {
+              "register": "eax",
+              "relation": "exact"
+            }
+          ],
+          "world_effect": "opaqueResources"
+        },
+        "import_symbol": "LoadStringA",
+        "local_cells": [],
+        "ordinal": null,
+        "out_interfaces": [],
+        "provider_kind": "external_call",
+        "result_projection": null,
+        "service_id": "load_string",
+        "symbol": "spx_component_external_resource_text_load_string"
+      }
+    ],
+    "relation_intent": {
+      "blockers": [],
+      "component_id": "resource-text",
+      "format": "spaghetti-extractor-component-relation-intent-v1",
+      "intent_sha256": "cd79194238e6e35670506c689992cf09ed1fae32739c3d891784f6d0b08ba1e0",
+      "operations": [
+        {
+          "operation_id": "get",
+          "requirements": [
+            {
+              "expression": {
+                "args": [
+                  {
+                    "args": [],
+                    "attributes": {
+                      "path": {
+                        "fields": [],
+                        "id": "result",
+                        "root": "result"
+                      }
+                    },
+                    "op": "logical",
+                    "sort": {
+                      "kind": "view",
+                      "type_id": "bytes"
+                    }
+                  },
+                  {
+                    "args": [],
+                    "attributes": {
+                      "path": {
+                        "fields": [],
+                        "id": "buffer",
+                        "root": "state"
+                      }
+                    },
+                    "op": "logical",
+                    "sort": {
+                      "kind": "view",
+                      "type_id": "bytes"
+                    }
+                  }
+                ],
+                "attributes": {},
+                "op": "eq",
+                "sort": {
+                  "kind": "bool"
+                }
+              },
+              "id": "returns-shared-buffer",
+              "relation": "normal_exit_postcondition"
+            }
+          ]
+        }
+      ],
+      "policy": {
+        "checked_evidence_required": true,
+        "intent_authorizes": false,
+        "tests_authorize": false
+      },
+      "status": "ready_for_check"
+    }
+  },
+  "domain_sha256": "31b1aa92b52a47390875e4fd4533a51601b3b127688cf5d96bb21e76a23a9637",
+  "supplier_receipt_sha256": "12c7071356626247fc0e420a6bd491b9735b86a6188abbf22c2948072133270e",
+  "source_certificate_sha256": "549c0e8632f2abbb816567e26780da78ea9efcd1dfd4959d2bafe34e377773f3"
+}

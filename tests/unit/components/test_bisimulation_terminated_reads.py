@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -266,7 +266,7 @@ class TerminatedReadTests(unittest.TestCase):
                     _trusted_adapter_lowering_used(model)
             else:
                 self.assertTrue(_trusted_adapter_lowering_used(model))
-            checked = subprocess.run([shutil.which("jq"), program + "\nspx_typed_adapter_renderer_inventory"],
+            checked = run_jq_reader([shutil.which("jq"), program + "\nspx_typed_adapter_renderer_inventory"],
                 input=json.dumps(altered), text=True, capture_output=True, check=True, timeout=10)
             self.assertEqual(json.loads(checked.stdout), omitted is None)
         for mutation in ({}, {"nullable": 0}, {"base_argument": True}, {"base_argument": 2},
@@ -278,7 +278,7 @@ class TerminatedReadTests(unittest.TestCase):
                 with self.assertRaises(ValueError): _proof_call_specs([invalid])
             else:
                 _proof_call_specs([invalid])
-            checked = subprocess.run([shutil.which("jq"), program + "\nspx_terminated_read_effect(2)"],
+            checked = run_jq_reader([shutil.which("jq"), program + "\nspx_terminated_read_effect(2)"],
                 input=json.dumps(payload), text=True, capture_output=True, check=True, timeout=10)
             self.assertEqual(json.loads(checked.stdout), not mutation)
         for change in ({"memory_footprints": None}, {"out_pointer_relations": None},
@@ -287,14 +287,16 @@ class TerminatedReadTests(unittest.TestCase):
             payload = {**selected["external_effect_contract"], **change}
             with self.assertRaises(ValueError):
                 _proof_call_specs([{**selected, "external_effect_contract": payload}])
-            checked = subprocess.run([shutil.which("jq"), program + "\nspx_terminated_read_effect(2)"],
+            checked = run_jq_reader([shutil.which("jq"), program + "\nspx_terminated_read_effect(2)"],
                 input=json.dumps(payload), text=True, capture_output=True, check=True, timeout=10)
             self.assertFalse(json.loads(checked.stdout))
 
     def test_raw_indirect_oracle_does_not_authorize_an_unchecked_typed_target(self):
         fixture = effects_fixture.preconditions_fixture.ServicePreconditionTests()
         fixture.setUp()
-        captured = {"kind": "register", "register": "esi", "width": 32, "at": "entry"}
+        # Complete entry-register transport is now checked. A raw oracle's
+        # target comparison still cannot authorize a partial-width projection.
+        captured = {"kind": "register", "register": "esi", "width": 16, "at": "entry"}
         selected = {**fixture.binding, "abi_sha256": "a" * 64, "captured_target_projection": captured}
         self.assertTrue(_proof_call_specs([selected])[0]["compare_target"])
         from spaghetti_extractor.components.bisimulation_typed_services import build_typed_proof_service_thunk_renderer
@@ -311,6 +313,6 @@ class TerminatedReadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "captured_target_unsupported"):
             _trusted_adapter_lowering_used(model)
         program = Path("nix/jq/strong-contextual-proof.jq").read_text()
-        checked = subprocess.run([shutil.which("jq"), program + "\nspx_declared_external_range_effects({})"],
+        checked = run_jq_reader([shutil.which("jq"), program + "\nspx_declared_external_range_effects({})"],
             input=json.dumps(adapter), text=True, capture_output=True, check=True, timeout=10)
         self.assertFalse(json.loads(checked.stdout))

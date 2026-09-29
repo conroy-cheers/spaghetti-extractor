@@ -3,7 +3,7 @@
 import shutil
 import copy
 import json
-import subprocess
+from .jq_reader import run as run_jq_reader
 import tempfile
 import unittest
 from pathlib import Path
@@ -169,7 +169,7 @@ class CallRangeTests(unittest.TestCase):
             else:
                 with self.assertRaisesRegex(ValueError, "renderer closure"):
                     _trusted_adapter_lowering_used(model)
-            checked = subprocess.run([shutil.which("jq"), "-L", str(Path(__file__).parents[3]/"nix/jq"),
+            checked = run_jq_reader([shutil.which("jq"), "-L", str(Path(__file__).parents[3]/"nix/jq"),
                 'include "strong-contextual-proof"; spx_typed_adapter_renderer_inventory'],
                 input=json.dumps(altered), text=True, capture_output=True, timeout=10)
             self.assertEqual(checked.returncode, 0, checked.stderr)

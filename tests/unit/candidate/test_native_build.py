@@ -10,15 +10,43 @@ from spaghetti_extractor.candidate.build_objects import _payload_symbol_rvas
 from spaghetti_extractor.candidate.build_workflow import (
     _native_realization_object_sources,
     _prepare_portable_dispatch_registry,
+    _retired_generated_function_symbols,
     _stage_provider_objects,
     build_native_realization_payload,
 )
 from spaghetti_extractor.candidate.build_model import CandidateNativeBuildError
 from spaghetti_extractor.candidate.native_build import _link_flags
+from spaghetti_extractor.semantic_providers.qualification_v2 import SemanticProviderQualificationV2
 from spaghetti_extractor.util import sha256_file, write_json
 
 
 class NativeModuleBuildContractTests(unittest.TestCase):
+    def test_only_wholly_portable_absent_generated_functions_get_guards(self):
+        def qualification(kind, rows):
+            return SemanticProviderQualificationV2({
+                "provider_kind": kind,
+                "definition_materializations": [
+                    {"definition_id": definition, "native_symbol": symbol}
+                    for definition, symbol in rows],
+            })
+        generated = qualification("generated_behavioral_c", [
+            ("entry", "whole"), ("tail", "whole"),
+            ("other-entry", "partial"), ("other-tail", "partial"),
+            ("kept", "retained"),
+        ])
+        portable = qualification("qualified_portable_c", [("entry", "overlay")])
+        self.assertEqual(_retired_generated_function_symbols(
+            qualifications=[generated, portable],
+            portable_definition_ids={"entry", "tail", "other-entry", "kept"},
+            linked_symbols={"retained"}), ("whole",))
+        self.assertEqual(_retired_generated_function_symbols(
+            qualifications=[generated], portable_definition_ids={"entry"},
+            linked_symbols=set()), ())
+        # A second generated qualification must not hide an unselected tail.
+        self.assertEqual(_retired_generated_function_symbols(
+            qualifications=[generated, qualification("generated_behavioral_c", [("extra", "whole")])],
+            portable_definition_ids={"entry", "tail"}, linked_symbols=set()), ())
+
     def test_public_build_is_ingress_plan_and_module_name_driven(self) -> None:
         parameters = inspect.signature(
             build_native_realization_payload

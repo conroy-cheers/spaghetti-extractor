@@ -143,6 +143,30 @@ def _authority() -> dict[str, object]:
 
 
 class ComponentBindingIntentTests(unittest.TestCase):
+    def test_declared_continuation_is_proof_context_without_becoming_owned(self):
+        from spaghetti_extractor.components.refinement_v5 import _contract_transfer_ids
+        from spaghetti_extractor.semantic_providers.portable_c_inputs import _direct_operation_rows
+        from types import SimpleNamespace
+
+        row = _semantics().to_payload()
+        row.pop("semantic_sha256")
+        row["machine_projection"] = {"operation": {"continuation_unit_ids": ["continuation"]}}
+        intent = ComponentMachineBindingIntentV1.create(
+            component_id="fixture-component", operations=[{**row, **_authority()}])
+        semantics = intent.operations[0].semantics
+        before = intent.to_payload()
+        self.assertEqual(semantics.proof_context_transfer_ids,
+                         ("continuation", "transfer.00401000"))
+        self.assertEqual(_contract_transfer_ids(SimpleNamespace(machine_semantics=[semantics])),
+                         semantics.proof_context_transfer_ids)
+        operations = _direct_operation_rows(binding=intent,
+            semantic_slice=SimpleNamespace(payload={"definitions": [{
+                "symbol_id": "original:function:unit.00401000", "definition_id": "owned"}]}))
+        self.assertEqual(operations[0]["context_transfer_ids"], list(semantics.proof_context_transfer_ids))
+        self.assertEqual(operations[0]["unit_ids"], ["unit.00401000"])
+        self.assertEqual(operations[0]["definition_ids"], ["owned"])
+        self.assertEqual(intent.to_payload(), before)
+
     def test_intent_is_content_bound_and_round_trips(self) -> None:
         semantics = _semantics().to_payload()
         semantics.pop("semantic_sha256")

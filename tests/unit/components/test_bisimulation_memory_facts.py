@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -345,7 +345,7 @@ static void setup(void) {{
                     facts.validate_model(planned, row)
             else:
                 facts.validate_model(planned, row)
-            result = subprocess.run([shutil.which('jq'), '-e', module.read_text()+'\nspx_cut_capture_codecs'],
+            result = run_jq_reader([shutil.which('jq'), '-e', module.read_text()+'\nspx_cut_capture_codecs'],
                 input=json.dumps(changed), text=True, capture_output=True)
             self.assertEqual(result.returncode, 1 if phase else 0, result.stderr)
 
@@ -372,7 +372,7 @@ static void setup(void) {{
             if mutation == 'policy': model['memory_fact_policy'] = 'unchecked'
             if mutation:
                 with self.assertRaises(ValueError): facts.validate_model(payload, model)
-            checked = subprocess.run([shutil.which('jq'), '-e', module.read_text() +
+            checked = run_jq_reader([shutil.which('jq'), '-e', module.read_text() +
                 '\n.planned as $p | .model | spx_memory_fact_model($p)'],
                 input=json.dumps({'planned': payload, 'model': model}), text=True, capture_output=True)
             self.assertEqual(checked.returncode, 0 if mutation is None else 1, checked.stderr)

@@ -276,6 +276,10 @@ class _FunctionRenderer:
         # helper call.  Keep every scheduled SSA evaluation visible to C while
         # remaining warning-clean when such a value has no later data use.
         self.lines.append(f"  (void){name};")
+        if node.op == "load":
+            # A dependent load can clear the runtime's per-access fault flag.
+            # Stop at the failing access before evaluating any dependent node.
+            self.lines.extend(self._fault_checks())
         done.add(index)
         return name
 

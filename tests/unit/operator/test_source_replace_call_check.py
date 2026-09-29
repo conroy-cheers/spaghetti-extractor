@@ -42,12 +42,14 @@ class SourceReplaceCallTests(unittest.TestCase):
         if status['status']!='complete':raise AssertionError(status)
 
     @classmethod
-    def invoke(cls,name,source='source',summary=None,previous=None):
+    def invoke(cls,name,source='source',summary=None,previous=None,native_memory=None,contract=None):
         d=cls.root/name;d.mkdir()
+        contract=copy.deepcopy(contract if contract is not None else json.loads((FIXTURE/'caller-contract.json').read_text()))
+        if native_memory is not None:contract['native_memory']=native_memory
         with patch.object(checker,'checked_component_operation_summary',return_value=cls.summary if summary is None else summary):
             return write_component_source_call_check(target_id='metapad',component_id='cleanup-replace',
                 preparation=cls.root/source/'preparation',exact=FIXTURE/'exact',supplier=cls.root/'supplier',
-                contract={'profile':checker.REPLACE_PROFILE,'entry_rva':0xb18e,'service_id':'cleanup'},
+                contract=contract,
                 source_package=cls.root/source/'source',interface_package=FIXTURE,out=d/'feedback',workspace=d/'work',
                 goto_cc=Path(shutil.which('goto-cc')),cbmc=Path(shutil.which('cbmc')),smt_solver=None,
                 previous=previous,timeout_seconds=60)
@@ -63,7 +65,7 @@ class SourceReplaceCallTests(unittest.TestCase):
             {'pair.c','replace-selection.c','behavioral-fn-0000b18e.c','behavioral-support.c'})
         changed=copy.deepcopy(self.summary);changed['evidence']['regional_receipts']['tail']='2'*64
         with patch('subprocess.run',side_effect=AssertionError('reuse cannot execute processes')),patch.object(
-                checker,'render_cleanup_replace_model',side_effect=AssertionError('reuse cannot render models')),patch.object(
+                checker,'render_caller_boundary',side_effect=AssertionError('reuse cannot render models')),patch.object(
                 checker,'render_component_c_headers_v5',side_effect=AssertionError('reuse cannot render headers')):
             self.assertEqual(self.invoke('neighbor',summary=changed,previous=self.root/'baseline/feedback')['status'],'complete')
             with patch.object(checker,'checked_component_operation_summary',return_value=changed):
@@ -77,8 +79,8 @@ class SourceReplaceCallTests(unittest.TestCase):
     def test_actual_wrong_guards_message_fault_and_result_edits_reject(self):
         source=(FIXTURE/'replace-selection.c').read_text()
         cases=[('mode','mode != 2U && mode != 3U','mode != 3U','replace-both-mode-guards'),
-            ('message','194U','195U','replace-message-arguments'),
-            ('fault','    if (removed == UINT32_MAX) return (spx_outcome_v5){1U, 0U};\n','    (void)removed;\n','replace-fault-prefix'),
+            ('message','194U','195U','spx-paired-call-arguments'),
+            ('fault','    if (removed == UINT32_MAX) return (spx_outcome_v5){1U, 0U};\n','    (void)removed;\n','spx-paired-call-after-fault'),
             ('result','  return (spx_outcome_v5){0U, result};','  if (result==UINT32_MAX) return (spx_outcome_v5){1U,0U};\n  return (spx_outcome_v5){0U,result};','replace-normal-continuation'),
             ('context','  return (spx_outcome_v5){0U, result};','  context->protocol_state=(spx_cleanup_replace_protocol_state_v5)1;\n  return (spx_outcome_v5){0U,result};','replace-source-context-frame')]
         for name,before,after,diagnostic in cases:
@@ -97,14 +99,14 @@ class SourceReplaceCallTests(unittest.TestCase):
         self.prepare('source-stale',changed)
         self.assertEqual(self.invoke('stale',source='source-stale')['status'],'violated',self.result('stale'))
         raw=json.loads((self.root/'stale/feedback/caller-comparison/proof/query.stdout').read_text())
-        self.assertTrue(any(r.get('status')=='FAILURE' and r.get('description')=='replace-message-arguments' for b in raw for r in b.get('result',[])))
+        self.assertTrue(any(r.get('status')=='FAILURE' and r.get('description')=='spx-paired-call-arguments' for b in raw for r in b.get('result',[])))
 
     def test_edi_withdrawal_invalidates_ui_and_an_omitted_requirement_fails_proof(self):
         frame=self.summary['contract']['normal_return']['preserved_equalities']
         changed=project_cleanup_summary(self.summary, {'rule':'normal-frame-subset-v1',
             'preserved_equalities':[v for v in frame if v!='state.edi==initial.edi']})
         with patch('subprocess.run',side_effect=AssertionError('missing contract guarantee cannot execute processes')),patch.object(
-                checker,'render_cleanup_replace_model',side_effect=AssertionError('no model rendering')):
+                checker,'render_caller_boundary',side_effect=AssertionError('no model rendering')):
             self.assertEqual(self.invoke('withdraw-edi',summary=changed,previous=self.root/'baseline/feedback')['status'],'incomplete')
         result=self.result('withdraw-edi')
         self.assertEqual(result['dependency_contract']['missing_guarantees'],['state.edi==initial.edi'])
@@ -113,10 +115,10 @@ class SourceReplaceCallTests(unittest.TestCase):
         self.assertFalse((self.root/'withdraw-edi/feedback/caller-comparison/proof').exists())
         # Deliberately underdeclare the profile's requirement. Complete original/C
         # comparison must expose the missing fact rather than certify that profile.
-        selected=checker.selected_profile({'profile':checker.REPLACE_PROFILE,'entry_rva':0xb18e,'service_id':'cleanup'})
-        selected['required_frame'].remove('edi')
-        with patch.object(checker,'selected_profile',return_value=selected):
-            self.assertEqual(self.invoke('underdeclared',summary=changed)['status'],'violated',self.result('underdeclared'))
+        contract=json.loads((FIXTURE/'caller-contract.json').read_text())
+        contract['required_frame']=['ebp','ebx','esi']
+        status=self.invoke('underdeclared',contract=contract,summary=changed)
+        self.assertEqual(status['status'],'violated',self.result('underdeclared'))
         raw=json.loads((self.root/'underdeclared/feedback/caller-comparison/proof/query.stdout').read_text())
         self.assertTrue(any(r.get('status')=='FAILURE' and r.get('description')=='replace-message-native-arguments' for b in raw for r in b.get('result',[])))
 
@@ -125,8 +127,17 @@ class SourceReplaceCallTests(unittest.TestCase):
         changed['contract_sha256']=canonical_sha256_v3(changed['contract'])
         with patch('subprocess.run',side_effect=AssertionError('contract mismatch cannot run processes')):
             self.assertEqual(self.invoke('incompatible',summary=changed,previous=self.root/'baseline/feedback')['status'],'incomplete')
-        self.assertIn('reviewed composition rule',self.result('incompatible')['checks'][0]['detail'])
+        self.assertIn('supplier stack transport differs',self.result('incompatible')['checks'][0]['detail'])
         root=self.root/'tampered';shutil.copytree(self.root/'baseline/feedback/caller-comparison',root)
         with (root/'proof/replace-selection.c').open('a') as f:f.write('\n/* stale */\n')
         with self.assertRaisesRegex(ValueError,'proof bytes changed'):
             checker.validate_evidence(json.loads((root/'result.json').read_text()),root)
+
+    def test_native_definition_must_cover_every_real_argument_push(self):
+        memory=self.result('baseline')['proof_key']['bindings']['native_memory']
+        changed=[row for row in memory if row['id']!='argument-3']
+        self.assertEqual(self.invoke('missing-argument',native_memory=changed)['status'],
+                         'violated',self.result('missing-argument'))
+        raw=json.loads((self.root/'missing-argument/feedback/caller-comparison/proof/query.stdout').read_text())
+        self.assertTrue(any(r.get('status')=='FAILURE' and r.get('description')=='spx-caller-writable-frame'
+                            for b in raw for r in b.get('result',[])))

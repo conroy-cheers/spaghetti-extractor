@@ -383,9 +383,9 @@ class ConditionalCheckTests(unittest.TestCase):
                 with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                     checked_conditional_packet(changed, 'counter')
             with patch('spaghetti_extractor.components.bisimulation_refinement._run_bisimulation_obligation') as run:
-                for assurance, selection in ((None, selected), (allocation_byte_projection_assurance(),
-                        [{'operation_id':'run','obligation_id':'sync:missing'}])):
-                    with self.assertRaisesRegex(ValueError, 'conditional assurance|unknown obligations'):
+                for assurance in (None, allocation_byte_projection_assurance()):
+                    selection = [{'operation_id':'run','obligation_id':'sync:missing'}]
+                    with self.assertRaisesRegex(ValueError, 'unknown obligations'):
                         check_bisimulation_refinement(**{**inputs, 'diagnostic_root': root/'invalid'},
                             runtime_assurance=assurance, selected_obligations=selection)
                 for budget, assurance in ((0, allocation_byte_projection_assurance()),
@@ -412,7 +412,7 @@ class ConditionalCheckTests(unittest.TestCase):
                 self.assertEqual(realize.call_args.kwargs['apply_arguments']['queryTimeoutSeconds'],60)
                 self.assertEqual(realize.call_args.kwargs['apply_arguments']['entryQueryTimeoutSeconds'],180)
             with contextlib.redirect_stderr(io.StringIO()):
-                for options in (['--region','run/sync:cut'],['--conditional','--region','missing-slash'],
+                for options in (['--source','--region','run/sync:cut'],['--conditional','--region','missing-slash'],
                                 ['--query-timeout','60'], ['--entry-query-timeout','180']):
                     self.assertNotEqual(main(['component','check','fixture','counter',*options]),0)
                 with self.assertRaises(SystemExit) as rejected:

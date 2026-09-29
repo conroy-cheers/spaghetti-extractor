@@ -8,26 +8,26 @@ arbitrary state against paired memories and a record/replay environment.
 
 from __future__ import annotations
 
+from .bisimulation_assertions import _required_assertion_descriptions as _required_assertion_descriptions
+
 import hashlib
 import json
-import re
 import shutil
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from .bisimulation_readable_composition import (STRATEGY as IMAGE_READABLE_STRATEGY, MUTABLE_STRATEGY,
     image_readable_operations, image_readable_assertions, mutable_summary_bounds, mutable_summary_unwind_arguments)
-from .bisimulation_exact_frame import frame_candidate, MACHINE_STATE_DESCRIPTION, CUT_MACHINE_STATE_DESCRIPTION
+from .bisimulation_exact_frame import frame_candidate
 from .bisimulation_mutable_machine_frame import SPECS as MUTABLE_MACHINE_FRAMES
 from .bisimulation_mutable_frame import mutable_frame_views
-from .bisimulation_clobber_frame import clobber_specs, result_registers
+from .bisimulation_clobber_frame import result_registers
 from .bisimulation_shared_composition import (STRATEGY as SHARED_STRATEGY, FRAMED_STRATEGY,
     shared_boundary_operations, shared_entry_assertions, shared_summary_bounds)
 from .bisimulation_shared_model import SHARED_CONTRACT_POLICY
 from . import bisimulation_image_frame as image_frame
 
+from . import bisimulation_completion as completion
 from .bisimulation_execution import (
     _cbmc_cover_queries,
     _run_bisimulation_obligation,
@@ -35,13 +35,15 @@ from .bisimulation_execution import (
 )
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from .bisimulation import BisimulationOperationV1, ComponentBisimulationIntentV1
-from .bisimulation_continuation import continuation_assertions, continuation_model
+from .bisimulation import ComponentBisimulationIntentV1
+from .bisimulation_continuation import continuation_model
 from .bisimulation_connected import (
     connected_source_prefix,
     prepare_connected_models,
     render_connected_summary_wrapper,
 )
+from .bisimulation_summary_contracts import consumed_scalar_summary_contract
+from . import bisimulation_proof_reuse as proof_reuse
 from .bisimulation_reference_transport import (
     connected_readable_transport_assertions, readonly_connected_transport_source,
     readonly_overlay_transport_source, connected_mutable_transport_assertions,
@@ -53,11 +55,6 @@ from .capabilities import spx_portable_reference_runtime_v5_source
 from .cbmc_backend import (
     CbmcBackendError,
     cbmc_version,
-    discover_cbmc_assertions,
-    discover_cbmc_loops,
-    discover_cbmc_safety_properties,
-    run_cbmc_cover,
-    run_cbmc_properties,
 )
 from .inductive_refinement import _write_cbmc_stdint
 from .interface_ir import ProofKernelComponentInterface
@@ -82,8 +79,6 @@ from .bisimulation_exact import (
     _validate_exact_slice,
 )
 from .bisimulation_harness import (
-    _cut_view_domain,
-    _captured_parameter_view,
     _exit_comparisons as _exit_comparisons,
     _finite_control_proof_model,
     _nul_view_count,
@@ -100,8 +95,6 @@ from .bisimulation_support import (
     UINT32_BYTES,
     include_path as _include_path,
     mapping as _mapping,
-    property_entry_function as _property_entry_function,
-    property_query_order as _property_query_order,
     rows as _rows,
     strings as _strings,
     unit_rva as _unit_rva,
@@ -112,7 +105,6 @@ from .bisimulation_typed_services import (
     build_typed_proof_service_thunk_renderer as build_typed_proof_service_thunk_renderer,
 )
 from .bisimulation_world import _world_source as _world_source
-from .bisimulation_projection import machine_fact_read_descriptions
 from .bisimulation_view_extent import nul_view_parameters
 from .bisimulation_query_evidence import proof_workspace as _proof_workspace, previous_proof_queries
 from .bisimulation_native_views import native_view_specs
@@ -159,8 +151,7 @@ def check_bisimulation_refinement(
         raise BisimulationRefinementError('entry query timeout requires a positive integer and explicit conditional assurance')
     from .conditional_check_result import checked_obligation_selection, deferred_obligation
     selected_obligations = checked_obligation_selection(selected_obligations)
-    if selected_obligations is not None and runtime_assurance is None:
-        raise BisimulationRefinementError('focused region checks require explicit conditional assurance')
+    from .bisimulation_selection import deferred_ordinary_obligation
     assurance_metadata = ({"assurance": runtime_assurance, "authorizing": False}
                           if runtime_assurance is not None else {})
     if diagnostic_root is not None and Path(diagnostic_root).exists():
@@ -376,6 +367,41 @@ def check_bisimulation_refinement(
         reference_authority=reference_authority,
         allocation_requirements=reference_allocation_requirements,
     )
+    caller_reuse_bindings = {
+        "interface_sha256": interface.sha256,
+        "semantic_contract_sha256": _semantic_contract_sha256(semantic_contract),
+        "source_profile_sha256": profile_digest,
+        "implementation_sha256": source["implementation_sha256"],
+        "bisimulation_intent_sha256": intent.intent_sha256,
+        "exact_c_slice_sha256": exact_c_slice["slice_sha256"],
+        "machine_overlay_sha256": hashlib.sha256(machine_overlay_source.encode("ascii")).hexdigest(),
+        "proof_overlay_sha256": hashlib.sha256(proof_overlay_source.encode("ascii")).hexdigest(),
+        "trusted_adapter_lowering": trusted_adapter_lowering,
+        "reference_authority": reference_authority,
+    }
+    connected_bindings = [proof_reuse.connected_binding(row) for row in connected_models]
+    reusable_inputs = None
+    if (runtime_assurance is None and diagnostic_root is not None
+            and all(row["summary_strategy"] == "scalar-body-free-v1" and row["entry_contract"] is None
+                    for row in connected_models)):
+        reusable_inputs = proof_reuse.input_record(caller=caller_reuse_bindings, connected=connected_bindings,
+            extra={"interface": interface.to_payload(), "semantic_contract": dict(semantic_contract),
+                "source": source, "source_profile": dict(source_profile), "intent": intent.to_payload(),
+                "headers": dict(c_headers), "machine_projections": dict(machine_projections),
+                "overlay_entries": list(machine_overlay_entries), "relation_evidence": list(relation_evidence),
+                "reference_allocation_requirements": reference_allocation_requirements,
+                "source_path": str(source_root.resolve()), "exact_path": str(exact_root.resolve()),
+                "cbmc_sha256": hashlib.sha256(Path(cbmc).read_bytes()).hexdigest(),
+                "goto_cc_sha256": hashlib.sha256(goto_cc.read_bytes()).hexdigest(),
+                "query_policies": [make_property_checker_command([], source_unwind_limit=op.source_unwind_limit,
+                    smt_solver=solver_binding, application_first=False,
+                    completion_lemmas=bool(op.call_completion_lemmas)) for op in intent.operations],
+                "smt_solver": solver_binding})
+        reused = (proof_reuse.reuse_proof(previous=previous_query_evidence, record=reusable_inputs,
+            connected=connected_bindings, diagnostic_root=diagnostic_root)
+            if selected_obligations is None else None)
+        if reused is not None and selected_obligations is None:
+            return reused
     source_atomic_call_sites = 0
     for path in source_files:
         source_text = path.read_text(encoding="ascii")
@@ -424,6 +450,9 @@ def check_bisimulation_refinement(
     model_bindings: list[dict[str, object]] = []
     shard_bounds: list[dict[str, int]] = []
     with _proof_workspace(proof_workspace) as root:
+        if reusable_inputs is not None:
+            (root / "proof-reuse-inputs.json").write_text(json.dumps(reusable_inputs["inputs"],
+                sort_keys=True, separators=(",", ":"), ensure_ascii=True), encoding="ascii")
         if runtime_assurance is not None:
             (root / "runtime-assurance.json").write_text(
                 json.dumps(runtime_assurance, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
@@ -527,7 +556,8 @@ def check_bisimulation_refinement(
                     body_free_readonly=connected["summary_strategy"] == IMAGE_READABLE_STRATEGY,
                     body_free_mutable=connected["summary_strategy"] == MUTABLE_STRATEGY,
                     body_free_scalar=connected["summary_strategy"] == "scalar-body-free-v1",
-                    scalar_postconditions=(connected["source_summary_certificate"]["postconditions"]
+                    scalar_postconditions=(consumed_scalar_summary_contract(
+                        connected["source_summary_certificate"])["postconditions"]
                         if connected["summary_strategy"] == "scalar-body-free-v1" else ()),
                     shared_contract=(connected['entry_contract']['proof_system']['proof']['models']['source_summary_contracts']['certificate']['shared_contract']
                         if connected['summary_strategy'] in {SHARED_STRATEGY, FRAMED_STRATEGY} else None),
@@ -587,6 +617,9 @@ def check_bisimulation_refinement(
             clobber_metadata.update(memory_facts.metadata(authored))
             from .bisimulation_stack_scope import scope_metadata
             clobber_metadata.update(scope_metadata(authored))
+            from .bisimulation_projection_frames import metadata as projection_frame_metadata
+            clobber_metadata.update(projection_frame_metadata(authored))
+            clobber_metadata.update(completion.metadata(authored))
             from .bisimulation_projection import machine_fact_metadata
             clobber_metadata.update(machine_fact_metadata(authored))
             from . import bisimulation_local_views as local_views
@@ -646,7 +679,9 @@ def check_bisimulation_refinement(
                     service_bindings=root_proof_service_bindings,
                     reference_authority=reference_authority, allocation_requirements=reference_allocation_requirements,
                     selected_unit_rvas={
-                        _unit_rva(unit_id) for unit_id in proof_selected_units
+                        exact_unit_rvas[unit_id]
+                        if unit_id in exact_unit_rvas else _unit_rva(unit_id)
+                        for unit_id in proof_selected_units
                     },
                 )
                 exact_model = {
@@ -675,6 +710,8 @@ def check_bisimulation_refinement(
                     authored=authored,
                     selected_unit_ids=proof_selected_units,
                 )
+                completion_lemmas = completion.bind(authored, function.get("sync_id"), connected_models,
+                                                    next_sync_ids, exact_unit_rvas)
                 if function.get("sync_id") is not None:
                     # The entry shard establishes this authored relation and
                     # every predecessor shard preserves it at its barrier.
@@ -716,13 +753,35 @@ def check_bisimulation_refinement(
                     encoding="ascii",
                 )
                 wrappers: list[Path] = []
+                from .contextual_bisimulation import operation_proof_source
+                scoped_headers: list[Path] = []
                 for source_index, source_file in enumerate(source_files):
-                    wrapper = shard_root / f"source-{source_index:04d}.c"
-                    wrapper.write_text(
-                        f'#include "{proof_header.name}"\n'
-                        f'#include "{_include_path(source_file)}"\n',
-                        encoding="ascii",
-                    )
+                    original = source_file.read_text(encoding="ascii")
+                    scoped = operation_proof_source(original,
+                        active_operation=authored.operation_id, symbols=symbols)
+                    if scoped == original:
+                        wrapper = shard_root / f"source-{source_index:04d}.c"
+                        wrapper.write_text(f'#include "{proof_header.name}"\n'
+                            f'#include "{_include_path(source_file)}"\n', encoding="ascii")
+                    else:
+                        # Preserve quoted-header lookup relative to the source
+                        # file. Only proof annotations change, never includes or
+                        # production statements. Retain and bind the actual text.
+                        source_directory = shard_root / "authored-sources"
+                        if not source_directory.exists():
+                            source_directory.mkdir()
+                            for row in source["files"]:
+                                relative = str(row["path"])
+                                if relative.endswith(".c"):
+                                    continue
+                                header = source_directory / relative
+                                header.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copyfile(package_root / "sources" / relative, header)
+                                scoped_headers.append(header)
+                        wrapper = source_directory / source_file.relative_to(package_root / "sources")
+                        wrapper.parent.mkdir(parents=True, exist_ok=True)
+                        wrapper.write_text(f'#include "{_include_path(proof_header)}"\n'
+                            f'#line 1 "{_include_path(source_file)}"\n' + scoped, encoding="ascii")
                     wrappers.append(wrapper)
                 costs = operation_costs[authored.operation_id]
                 exact_writes = _mapping(costs["exact_writes"], "exact write costs")
@@ -870,6 +929,8 @@ def check_bisimulation_refinement(
                         )
                     ),
                 )
+                required_assertion_descriptions = sorted({*required_assertion_descriptions,
+                    *(completion.description(row) for row in completion_lemmas)})
                 if image_frame.candidate(interface=interface,
                         mutable_views=mutable_frame_views(interface, authored.operation_id, connected_models),
                         connected=connected_models, authority=reference_authority,
@@ -968,6 +1029,7 @@ def check_bisimulation_refinement(
                     "cut_unsigned_words": cut_local_state.unsigned_words.get(authored.operation_id, {}),
                     "include_finite_control": reaches_exit,
                     "exact_stack_accesses": exact_stack_accesses,
+                    "call_completion_lemmas": completion_lemmas,
                     "continuous_acyclic": not authored.syncs,
                     "unexpected_sync_ids": [sync.identity for sync in authored.syncs
                         if sync.identity != function.get("sync_id") and sync.identity not in next_sync_ids],
@@ -991,7 +1053,7 @@ def check_bisimulation_refinement(
                     }
                     for role, paths in (
                         ("exact_c", exact_compilation_files),
-                        ("source_c", wrappers),
+                        ("source_c", [*wrappers, *scoped_headers]),
                         ("portable_reference_runtime_c", reference_runtime_files),
                         ("connected_provider_c", [*connected_compilation_files, *connected_included_files]),
                         (
@@ -1001,6 +1063,7 @@ def check_bisimulation_refinement(
                             [overlay_file],
                         ),
                         ("proof_header", [proof_header]),
+                        ("proof_reuse_inputs", [root / "proof-reuse-inputs.json"] if reusable_inputs is not None else []),
                         ("runtime_assurance", [root / "runtime-assurance.json"]
                          if runtime_assurance is not None else []),
                         ("reference_authority", [root / "reference-authority.json"]
@@ -1070,7 +1133,8 @@ def check_bisimulation_refinement(
                         allocation_capacity=allocation_capacity))
                 property_checker_command = make_property_checker_command(authority_unwind_arguments,
                     source_unwind_limit=authored.source_unwind_limit, smt_solver=solver_binding,
-                    application_first=runtime_assurance is not None)
+                    application_first=runtime_assurance is not None,
+                    completion_lemmas=bool(completion_lemmas))
                 model_cover_queries = _cbmc_cover_queries(
                     reference_authority=reference_authority, connected_components=connected_models,
                     allocation_capacity=allocation_capacity,
@@ -1174,7 +1238,8 @@ def check_bisimulation_refinement(
             operation_results = [
                 _run_bisimulation_obligation(task, timeout_seconds=timeout_seconds)
                 if selected_ids is None or (task['operation_id'], task['obligation_id']) in selected_ids
-                else deferred_obligation(task, runtime_assurance)
+                else (deferred_ordinary_obligation(task) if runtime_assurance is None
+                      else deferred_obligation(task, runtime_assurance))
                 for task in obligation_tasks
             ]
             all_results.extend(operation_results)
@@ -1236,7 +1301,7 @@ def check_bisimulation_refinement(
         "violated"
         if "violated" in statuses
         else "satisfied"
-        if statuses == {"satisfied"}
+        if statuses == {"satisfied"} and not (selected_obligations is not None and runtime_assurance is None)
         else "incomplete"
     )
     core: dict[str, object] = {
@@ -1247,6 +1312,8 @@ def check_bisimulation_refinement(
             operation.entry_allocation_history is not None for operation in intent.operations),
         "component_id": intent.component_id,
         "bindings": {
+            **({'diagnostic_selection': selected_obligations}
+               if selected_obligations is not None and runtime_assurance is None else {}),
             **assurance_metadata,
             "interface_sha256": interface.sha256,
             "semantic_contract_sha256": _semantic_contract_sha256(semantic_contract),
@@ -1266,43 +1333,9 @@ def check_bisimulation_refinement(
                 "reference_allocation_requirements_sha256": canonical_sha256_v3(reference_allocation_requirements)}
                if reference_allocation_requirements is not None else {}),
             "operation_models": model_bindings,
-            "connected_components": [
-                {
-                    "component_id": row["component_id"],
-                    **({"assurance": row["assurance"], "authorizing": False} if "assurance" in row else {}),
-                    "binding_intent_sha256": row["binding_intent_sha256"],
-                    "implementation_sha256": _mapping(
-                        row["source"], "connected source package"
-                    )["implementation_sha256"],
-                    "source_profile_sha256": row["source_profile_sha256"],
-                    "qualification_sha256": row["qualification_sha256"],
-                    "contextual_refinement_sha256": row["contextual_refinement_sha256"],
-                    "proof_receipt_sha256": row["proof_receipt_sha256"],
-                    "summary_strategy": row["summary_strategy"],
-                    "source_summary_certificate": row["source_summary_certificate"],
-                    "entry_contract": row["entry_contract"],
-                    "readable_transport_policy": row["readable_transport_policy"],
-                    **({"mutable_transport_policy": row["mutable_transport_policy"]} if "mutable_transport_policy" in row else {}),
-                    "machine_overlay_sha256": hashlib.sha256(
-                        str(row["production_overlay_source"]).encode("ascii")
-                    ).hexdigest(),
-                    "proof_overlay_sha256": hashlib.sha256(
-                        str(row["proof_overlay_source"]).encode("ascii")
-                    ).hexdigest(),
-                    "trusted_adapter_lowering_receipt_sha256": (
-                        None
-                        if row["trusted_adapter_lowering"] is None
-                        else _mapping(
-                            row["trusted_adapter_lowering"],
-                            "connected trusted adapter lowering",
-                        )["receipt_sha256"]
-                    ),
-                    "machine_overlay_entries_sha256": canonical_sha256_v3(
-                        row["overlay_entries"]
-                    ),
-                }
-                for row in connected_models
-            ],
+            "connected_components": connected_bindings,
+            **({"reusable_inputs": {**reusable_inputs, "artifacts": proof_reuse.artifact_inventory(diagnostic_root)}}
+               if reusable_inputs is not None else {}),
         },
         "checker": {
             **({"smt_solver": solver_binding} if solver_binding is not None else {}),
@@ -1393,159 +1426,6 @@ def check_bisimulation_refinement(
              for operation in intent.operations if operation.entry_allocation_history is not None],
     }
     return {**core, "receipt_sha256": canonical_sha256_v3(core)}
-
-
-def _required_assertion_descriptions(
-    *,
-    authored: BisimulationOperationV1,
-    proof_function: str,
-    active_start_sync_id: str | None,
-    next_sync_ids: set[str],
-    logical_projection: Mapping[str, object],
-    continuous_acyclic: bool,
-    typed_call_positions: Sequence[int],
-    connected_summary_ids: Sequence[int] = (),
-    connected_entry_assertions: Sequence[str] = (),
-    readable_machine_state: bool = False,
-    mutable_machine_state: bool = False,
-    continuation: Mapping[str, object] | None = None,
-    readable_range_assertions: Sequence[str] = (),
-) -> list[str]:
-    """Derive semantic goals independently of CBMC's property inventory."""
-
-    from .bisimulation_local_views import byte_read_checks, input_owner_description
-    from .bisimulation_memory_facts import description as memory_fact_description, coordinate_phases as memory_fact_coordinate_phases
-    descriptions = {
-        *readable_range_assertions,
-        *(memory_fact_description(sync, fact, phase)
-          for sync in authored.syncs if sync.identity == active_start_sync_id or sync.identity in next_sync_ids
-          for fact in sync.memory_facts for phase in memory_fact_coordinate_phases(sync, fact)),
-        *(memory_fact_description(sync, fact, phase)
-          for sync in authored.syncs for fact in sync.memory_facts
-          for phase in (("construction-order", "input-domain") if sync.identity == active_start_sync_id else ())
-              + (("output-domain", "contents") if sync.identity in next_sync_ids else ())),
-        *(f"spx-bisimulation-allocation-entry-{kind}:{authored.operation_id}"
-          for kind in ("input", "admission")
-          if active_start_sync_id is None and authored.entry_allocation_history is not None),
-        *(description for sync in authored.syncs
-          if sync.identity == active_start_sync_id or sync.identity in next_sync_ids
-          for description in byte_read_checks(sync)),
-        *(f"spx-bisimulation-native-view-input:{sync.identity}:{capture.identity}"
-          for sync in authored.syncs if sync.identity == active_start_sync_id
-          for capture in sync.captures if capture.mode == "native_view"),
-        *(input_owner_description(sync.identity, capture.identity)
-          for sync in authored.syncs if sync.identity == active_start_sync_id
-          for capture in sync.captures if capture.mode == "native_view"),
-        *(f"spx-bisimulation-capture-reference-memory:{sync.identity}:{capture.identity}"
-          for sync in authored.syncs if sync.identity in next_sync_ids
-          for capture in sync.captures if capture.mode == 'native_view' and capture.kind == 'parameter'),
-        *(f"spx-bisimulation-allocation-history-input:{sync.identity}"
-          for sync in authored.syncs if sync.identity == active_start_sync_id and sync.allocation_history is not None),
-        *(f"spx-bisimulation-private-stack-scope:{sync.identity}"
-          for sync in authored.syncs if sync.identity in next_sync_ids
-          and any(item.private_stack_scope is not None for item in authored.syncs)),
-        *(f"spx-bisimulation-private-stack-scope-input:{sync.identity}"
-          for sync in authored.syncs if sync.identity == active_start_sync_id and sync.private_stack_scope is not None),
-        *(description for sync in authored.syncs
-          for direction, active in (("input", sync.identity == active_start_sync_id),
-                                    ("output", sync.identity in next_sync_ids)) if active
-          for description in machine_fact_read_descriptions(sync, direction)),
-        *connected_entry_assertions,
-        *([MACHINE_STATE_DESCRIPTION, CUT_MACHINE_STATE_DESCRIPTION] if readable_machine_state else []),
-        *([spec.description for spec in MUTABLE_MACHINE_FRAMES] if mutable_machine_state else []),
-        *(continuation_assertions(authored.operation_id, proof_function) if continuation is not None else []),
-        f"spx-bisimulation-shared-view-inputs:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-source-frame-preservation:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-control:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-target:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-value:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-continuation-state:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-world-calls:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-world-atomics:{authored.operation_id}:{proof_function}",
-        f"spx-bisimulation-exit-world-memory:{authored.operation_id}:{proof_function}",
-        *(
-            f"spx-bisimulation-exit-observable:{authored.operation_id}:{row['id']}"
-            for row in _exit_comparisons(logical_projection)
-        ),
-        *(
-            f"spx-bisimulation-typed-call-fields:{position}"
-            for position in typed_call_positions
-        ),
-        *(
-            f"spx-bisimulation-typed-call-public-memory:{position}"
-            for position in typed_call_positions
-        ),
-        *(
-            f"spx-bisimulation-connected-summary-input:{summary_id}"
-            for summary_id in connected_summary_ids
-        ),
-        *(
-            f"spx-bisimulation-connected-summary-prefix:{summary_id}"
-            for summary_id in connected_summary_ids
-        ),
-        *(
-            f"spx-bisimulation-connected-summary-memory:{summary_id}"
-            for summary_id in connected_summary_ids
-        ),
-    }
-    if connected_summary_ids:
-        descriptions.add(
-            "spx-bisimulation-connected-summary-cardinality:"
-            f"{authored.operation_id}:{proof_function}"
-        )
-    if authored.machine_clobbers:
-        descriptions.update(spec.description for spec in clobber_specs(
-            authored.machine_clobbers, result_registers(logical_projection)))
-    if authored.private_stack_writes:
-        from .bisimulation_private_frame import specs
-        descriptions.update(spec.description for spec in specs(authored.private_stack_writes))
-    if continuous_acyclic:
-        descriptions.add(
-            "spx-bisimulation-continuous-exact-internal-transfer:"
-            f"{authored.operation_id}:{proof_function}"
-        )
-    for sync in authored.syncs:
-        if sync.identity != active_start_sync_id and sync.identity not in next_sync_ids:
-            descriptions.add(f"spx-bisimulation-unexpected-sync:{sync.identity}")
-        if sync.identity not in next_sync_ids:
-            continue
-        descriptions.update(
-            {
-                f"spx-bisimulation-invariant:{sync.identity}",
-                f"spx-bisimulation-world-calls:{sync.identity}",
-                f"spx-bisimulation-world-atomics:{sync.identity}",
-                f"spx-bisimulation-world-memory:{sync.identity}",
-                f"spx-bisimulation-allocation-cut-admission:{sync.identity}",
-                f"spx-bisimulation-world-connected-calls:{sync.identity}",
-                f"spx-bisimulation-sync-alignment:{sync.identity}",
-                *(
-                    f"spx-bisimulation-capture:{sync.identity}:{capture.identity}"
-                    for capture in sync.captures
-                ),
-                *(
-                    f"spx-bisimulation-capture-roundtrip:{sync.identity}:{capture.identity}"
-                    for capture in sync.captures
-                    if capture.kind == "source_state" and capture.mode == "machine_codec"
-                ),
-                *(
-                    f"spx-bisimulation-resumed-view-admission:{sync.identity}:{capture.identity}"
-                    for capture in sync.captures
-                    if _cut_view_domain(capture, state="spx_proof_exact_output",
-                                        read="spx_proof_exact_output_read") is not None
-                ),
-                *(
-                    f"spx-bisimulation-capture-{kind}:{sync.identity}:{capture.identity}"
-                    for capture in sync.captures
-                    if _captured_parameter_view(capture) is not None
-                    for kind in ("reference-memory", "methods", "metadata", "context", "extent")
-                ),
-                *(
-                    f"spx-bisimulation-derived:{sync.identity}:{derived.identity}"
-                    for derived in sync.derived
-                ),
-            }
-        )
-    return sorted(descriptions)
 
 
 def _semantic_contract_sha256(value: Mapping[str, object]) -> str:

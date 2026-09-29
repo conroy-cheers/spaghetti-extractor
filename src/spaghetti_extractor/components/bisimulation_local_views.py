@@ -258,6 +258,9 @@ def render_expression(sync, value, *, memory, checked_view_addresses=None):
                 address = checked_view_addresses[name]
                 if row.get("op") == "bytes_address":
                     return {"op": "raw_c", "value": address}
+                if row.get("op") == "nul_extent":
+                    return {"op": "raw_c", "value":
+                        f"__CPROVER_uninterpreted_spx_nul_extent((uint32_t)({address}))"}
                 if row.get("op") == "byte_read":
                     index = _render_source_expression(adapt(row["index"]), memory=memory)
                     return {"op": "raw_c", "value":

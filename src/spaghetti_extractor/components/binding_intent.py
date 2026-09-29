@@ -87,6 +87,19 @@ class MachineOperationSemanticsV1:
     machine_projection: Mapping[str, object]
     semantic_sha256: str
 
+    @property
+    def proof_context_transfer_ids(self) -> tuple[str, ...]:
+        """Declared machine context, including unowned continuation barriers.
+
+        This is a proof dependency inventory, not deployment ownership. Keep
+        unit_ids and the authored transfer_ids unchanged in serialized intent.
+        """
+        projection = object_(self.machine_projection.get("operation", {}),
+                             "machine operation proof context")
+        continuations = _identifiers(projection.get("continuation_unit_ids", []),
+                                     "machine operation continuation")
+        return tuple(sorted(set(self.transfer_ids) | set(continuations)))
+
     @classmethod
     def create(
         cls,

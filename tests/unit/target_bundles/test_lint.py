@@ -111,13 +111,14 @@ class TargetBundleLintTests(unittest.TestCase):
                     out=root / "lint.json",
                 )
 
-    def test_accepts_explicit_machine_binding_and_induction_roles(self) -> None:
+    def test_accepts_explicit_component_definition_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write_metadata(root)
             (root / "intent").mkdir()
             (root / "intent/binding.json").write_text("{}\n", encoding="ascii")
             (root / "intent/induction.json").write_text("{}\n", encoding="ascii")
+            (root / "intent/caller.json").write_text("{}\n", encoding="ascii")
             result = lint_target_bundle(
                 target_root=root,
                 target_id="fixture",
@@ -126,6 +127,7 @@ class TargetBundleLintTests(unittest.TestCase):
                     _asset("default.nix", "module"),
                     _asset("intent/binding.json", "component_machine_binding"),
                     _asset("intent/induction.json", "component_induction"),
+                    _asset("intent/caller.json", "component_caller_definition"),
                 ),
                 out=root.parent / f"{root.name}-lint.json",
             )

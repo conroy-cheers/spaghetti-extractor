@@ -124,27 +124,52 @@ void checked_call(void) {
                 self.assertEqual(extent in descriptions, "scan" in next_sync_ids)
 
     def test_outgoing_cut_rejects_invalid_views_even_when_captures_agree(self):
+        self._check_outgoing_cut((
+            (9216, 5120, True), (0xfffffffc, 5120, True), (0, 5120, False),
+            (0xfffffffd, 5120, False), (4096, 5120, False), (4094, 5120, False),
+            (10000, 5120, True), (10000, 9000, False), (10000, 18000, True),
+            (10000, 0, False), (10000, 0xfffff000, False),
+        ))
+
+    def test_context_assumption_consumes_one_evaluation_and_cannot_hide_failure(self):
+        for reject_first in (False, True):
+            with self.subTest(reject_first=reject_first):
+                self._check_outgoing_cut(((9216, 5120, not reject_first),),
+                    count_reference=True, reject_first=reject_first)
+
+    def _check_outgoing_cut(self, cases, *, count_reference=False, reject_first=False):
         intent = self._intent()
         header = _render_proof_header(authored=intent.operations[0], image_base=0x400000,
                                       unit_rvas={"cut": 4096})
+        reference_source = _FIXTURE_REFERENCE_SOURCE
+        if count_reference:
+            reference_source = 'uint32_t fixture_reference_calls;\n' + reference_source.replace(
+                '  const spx_machine_reference_v1 *origin',
+                '  ++fixture_reference_calls;\n'
+                + ('  if (fixture_reference_calls == 1U) return SPX_BOUNDARY_MEMORY_FAULT;\n'
+                   if reject_first else '')
+                + '  const spx_machine_reference_v1 *origin')
+            # Check the actual generated cut before the next independent
+            # reference-memory observation. The old assert/re-evaluate/assume
+            # sequence calls the stateful validator twice and fails this test.
+            needle = '    __CPROVER_assert(spx_proof_world_memory_range_equal('
+            self.assertIn(needle, header)
+            header = 'extern unsigned int fixture_reference_calls;\n' + header.replace(
+                needle, '    __CPROVER_assert(fixture_reference_calls == 1U, '
+                '"context validated once"); ' + chr(92) + '\n' + needle)
         cbmc = shutil.which("cbmc")
         self.assertIsNotNone(cbmc)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "state-machine-runtime.h").write_text(exact_runtime_header())
             (root / "proof.h").write_text(header)
-            for address, stack_pointer, valid in (
-                (9216, 5120, True), (0xfffffffc, 5120, True), (0, 5120, False),
-                (0xfffffffd, 5120, False), (4096, 5120, False), (4094, 5120, False),
-                (10000, 5120, True), (10000, 9000, False), (10000, 18000, True),
-                (10000, 0, False), (10000, 0xfffff000, False),
-            ):
+            for address, stack_pointer, valid in cases:
                 with self.subTest(address=address, stack_pointer=stack_pointer):
                     source = root / "test.c"
                     source.write_text('''
 #include "proof.h"
 const uint32_t spx_proof_private_high_offset = 4096;
-''' + _VIEW_ADMISSION_SOURCE + _FIXTURE_REFERENCE_SOURCE + '''
+''' + _VIEW_ADMISSION_SOURCE + reference_source + '''
 uint32_t spx_proof_start, spx_proof_resumed, spx_proof_relation_probe;
 spx_machine_state spx_proof_exact_input, spx_proof_exact_output;
 spx_step_result spx_proof_exact_result;
@@ -184,7 +209,8 @@ void check(void) {
                         "--json-ui", "--unwind", "2", "--stop-on-fail"], timeout_seconds=10)
                     self.assertEqual(result["status"], "satisfied" if valid else "violated", result)
                     if not valid:
-                        self.assertEqual(result["detail"], "spx-bisimulation-resumed-view-admission:scan:buffer")
+                        description = ("capture-context" if reject_first else "resumed-view-admission")
+                        self.assertEqual(result["detail"], f"spx-bisimulation-{description}:scan:buffer")
 
     def test_byte_view_capture_also_requires_its_memory_assertion(self):
         payload = self._intent().to_payload()

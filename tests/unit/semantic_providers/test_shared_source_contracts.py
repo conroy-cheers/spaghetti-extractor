@@ -2,7 +2,7 @@
 import copy
 import json
 import shutil
-import subprocess
+from tests.unit.components.jq_reader import run as run_jq_reader
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,14 +50,14 @@ class SharedProviderSourceContractsTests(unittest.TestCase):
             python = True
         except ValueError:
             python = False
-        result = subprocess.run([shutil.which('jq'), '-e', self.jq+'\nspx_shared_certificate'],
+        result = run_jq_reader([shutil.which('jq'), '-e', self.jq+'\nspx_shared_certificate'],
             input=json.dumps(certificate), text=True, capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 3, result.stderr)
         return python, result.returncode == 0
 
     def test_both_readers_accept_the_checked_shared_source_certificate(self):
         self.assertEqual(self.certificate_readers(copy.deepcopy(self.certificate)), (True, True))
-        result = subprocess.run([shutil.which('jq'), '-e', self.jq+'\nspx_mutable_certificate'],
+        result = run_jq_reader([shutil.which('jq'), '-e', self.jq+'\nspx_mutable_certificate'],
             input=json.dumps(self.certificate), text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 1, result.stderr)
 

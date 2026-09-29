@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,42 @@ TESTKIT = {"fixtures": ("cbmc", "compiler", "jq"),
 
 
 class EntryUnwindingTests(unittest.TestCase):
+    def test_strong_reader_rejects_experimental_full_slicing_in_every_query_role(self):
+        from tests.unit.components.test_bisimulation_normal_exits import check_normal_exit
+        from tests.unit.components.test_bisimulation_reference_authority import authority_payload
+
+        def accepted(value):
+            result = run_jq_reader([shutil.which("jq"), "-L", str(Path(__file__).parents[3] / "nix/jq"),
+                "-e", 'include "strong-contextual-proof"; spx_strong_contextual_proof'],
+                input=json.dumps(value), capture_output=True, text=True)
+            self.assertIn(result.returncode, (0, 1), result.stderr)
+            return result.returncode == 0
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            check_normal_exit(root, cbmc=Path(shutil.which("cbmc")), reference_authority=authority_payload())
+            baseline = json.loads((root / "contextual-refinement-result.json").read_text())
+            self.assertTrue(accepted(baseline))
+            roles = ("assertion_arguments", "entry_assertion_arguments", "language_safety_discovery_arguments",
+                     "language_safety_baseline_discovery_arguments", "safety", "cover")
+            for role in roles:
+                with self.subTest(role=role):
+                    changed = copy.deepcopy(baseline)
+                    model = changed["proof"]["models"]["operation_models"][0]["obligation_models"][0]
+                    command = model["property_checker_command"]
+                    if role == "safety":
+                        arguments = command["language_safety_queries"][0]["arguments"]
+                    elif role == "cover":
+                        arguments = model["nonvacuity_checker_command"]["queries"][0]["arguments"]
+                    else:
+                        arguments = command[role]
+                    arguments.append("--full-slice")
+                    if role == "assertion_arguments":
+                        # Preserve the separate entry-unwinding relation so it
+                        # cannot accidentally be the reason this mutation fails.
+                        command["entry_assertion_arguments"].append("--full-slice")
+                    self.assertFalse(accepted(changed))
+
     def check(self, source, descriptions):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -93,6 +130,6 @@ void main_focus_typed_call_0(void) { limit=3U; spx_proof_typed_service_begin(); 
             if mutation == "drop": del command["entry_assertion_arguments"]
             elif mutation == "focused": command["assertion_arguments"] = command["entry_assertion_arguments"]
             elif mutation == "extra": command["entry_assertion_arguments"].append("--no-assertions")
-            result = subprocess.run([shutil.which("jq"), "-e", module.read_text()+"\nspx_entry_unwinding_commands"],
+            result = run_jq_reader([shutil.which("jq"), "-e", module.read_text()+"\nspx_entry_unwinding_commands"],
                 input=json.dumps(value), text=True, capture_output=True)
             self.assertEqual(result.returncode, 0 if mutation is None else 1, result.stderr)

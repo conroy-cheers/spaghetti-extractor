@@ -77,6 +77,58 @@ class ComponentSourceCheckTests(unittest.TestCase):
         self.assertFalse((self.output / "object-manifest.json").exists())
         self.assertEqual(list(self.output.rglob("*.o")), [])
 
+    def test_interface_workspace_checks_current_c_before_driver_preparation(self) -> None:
+        authored=self.root/'interface-authoring'
+        source=self.root/'authoring.c';source.write_text(self.valid)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(['component','start','unregistered','leaf','--interface-intent',str(self.root/'interface.json'),
+                '--operation-symbol','run=authored_run','--source-file','source/component.c='+str(source),
+                '--output',str(authored)]),0)
+        self.assertIn('--authoring-workspace',(authored/'AUTHORING.md').read_text())
+        (authored/'prepare.py').write_text('raise AssertionError("source review must not run the comparison recipe")\n')
+        helper=authored/'source/helpers/state.h';helper.parent.mkdir()
+        helper.write_text('static volatile unsigned scratch;\n')
+        body=authored/'source/component.c'
+        body.write_text('#include "helpers/state.h"\n'+self.valid.replace('(void)context;', '++scratch; (void)context;'))
+        def check(*options):
+            stdout=io.StringIO()
+            # As in _check(), the unit fixture uses the host compiler in both
+            # slots. The real authoring handoff exercises the PE32 toolchain.
+            with patch('spaghetti_extractor.components.comparison_environment._executable',return_value=self.compiler), \
+                    patch('spaghetti_extractor.commands.workflows._operator_index',side_effect=AssertionError('no target build')), \
+                    contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stdout):
+                code=main(['component','check','unregistered','leaf','--source','--authoring-workspace',str(authored),*options])
+            return code,stdout.getvalue()
+        retained=self.root/'early-feedback'
+        code,text=check('--output',str(retained),'--json')
+        self.assertEqual(code,2,text)
+        report=json.loads(text)
+        self.assertEqual(report['status']['status'],'incomplete')
+        self.assertEqual(report['status']['counts']['authority_held'],0)
+        feedback=json.loads((retained/'compiler-checks.json').read_text())
+        self.assertTrue(all(row['status']=='checked' for row in feedback['checks']))
+        issue=next(row for row in feedback['source_profile']['issues'] if row['code']=='restricted_c_volatile_storage')
+        self.assertEqual(issue['source'],dict(path='helpers/state.h',line=1))
+        saved=(retained/'inputs/source/sources/helpers/state.h').read_bytes()
+        # Repair the profile issue, then diagnose an ordinary C error without
+        # requiring an output folder or any original/runtime setup.
+        helper.write_text('enum { SCRATCH = 0 };\n')
+        body.write_text(self.valid+'\n#error early_authoring_failure\n')
+        code,text=check()
+        self.assertEqual(code,2,text);self.assertIn('early_authoring_failure',text)
+        body.write_text(self.valid)
+        # Source review regenerates declarations; it does not trust edited
+        # editor headers or execute the unconfigured preparation recipe.
+        (authored/'generated/portable-component-implementation.h').write_text('#error stale_editor_header\n')
+        code,text=check()
+        self.assertEqual(code,0,text);self.assertIn('host/PE32 compilation and C profile',text)
+        self.assertIn('prepare an executable original/source comparison',text)
+        self.assertEqual((retained/'inputs/source/sources/helpers/state.h').read_bytes(),saved)
+        self.assertFalse((authored/'comparison-plan.json').exists())
+        self.assertEqual(list(retained.rglob('*.o')),[])
+        code,text=check('--local-contracts')
+        self.assertEqual(code,2,text);self.assertIn('cannot select comparison cases',text)
+
     def test_compile_error_reports_authored_file_and_repair_clears_it(self) -> None:
         self._source(self.valid + "#error operator_seeded_error\n")
         self.assertEqual(self._check()["status"], "violated")
@@ -88,12 +140,16 @@ class ComponentSourceCheckTests(unittest.TestCase):
         self.assertEqual(self._check()["status"], "complete")
         self.assertEqual(self._public("--source")[0], 0)
 
-    def test_profile_error_remains_incomplete_even_when_compilation_passes(self) -> None:
+    def test_formal_profile_error_is_separate_from_practical_compilation(self) -> None:
         self._source(self.valid.replace("(void)context;", "volatile int value = 0; (void)value; (void)context;"))
-        self.assertEqual(self._check()["status"], "incomplete")
+        self.assertEqual(self._check()["status"], "complete")
         code, text = self._public("--source")
-        self.assertEqual(code, 2)
-        self.assertIn("restricted_c_volatile_storage", text)
+        self.assertEqual(code, 0)
+        self.assertIn("formal source eligibility: incomplete", text)
+        feedback = json.loads((self.output / "compiler-checks.json").read_text())
+        self.assertEqual(feedback['practical_profile']['status'], 'satisfied')
+        issue = next(row for row in feedback['source_profile']['issues'] if row["code"] == "restricted_c_volatile_storage")
+        self.assertEqual(issue["source"]["line"], 2)
 
     def test_stale_source_and_foreign_interface_reject_before_compilation(self) -> None:
         (self.source / "sources/components/leaf.c").write_text("changed")

@@ -887,6 +887,23 @@ static spx_call_status spx_native_add_external_pointee_ranges(
   return SPX_CALL_UNIMPLEMENTED;
 }}
 
+static uint32_t spx_native_interface_storage_allowed(
+    uint32_t start, uint32_t size) {{
+  const spx_native_context *context = &spx_native_context_value;
+  uint64_t end = (uint64_t)start + size;
+  uint64_t image_end = (uint64_t)context->image_base + context->image_size;
+  if (start == 0U || size == 0U || end > UINT64_C(4294967295) ||
+      context->image_size == 0U || image_end > UINT64_C(4294967295) ||
+      context->stack_low >= context->stack_high)
+    return 0U;
+  /* The checked interface caller-memory contract reserves these domains.
+     Registration cannot turn a pointer into independent external storage. */
+  if (((uint64_t)start < image_end && context->image_base < end) ||
+      (start < context->stack_high && context->stack_low < end))
+    return 0U;
+  return 1U;
+}}
+
 static spx_call_status spx_native_add_external_interface_ranges(
     const spx_native_external_range_rule *rule, uint32_t cell) {{
   spx_native_context *context = &spx_native_context_value;
@@ -899,11 +916,14 @@ static spx_call_status spx_native_add_external_interface_ranges(
   if (object == 0U)
     return rule->nullable != 0U
         ? SPX_CALL_OK : SPX_CALL_UNIMPLEMENTED;
+  if (!spx_native_interface_storage_allowed(object, rule->minimum_size))
+    return SPX_CALL_UNIMPLEMENTED;
+  vtable = spx_native_u32(object);
+  if (!spx_native_interface_storage_allowed(vtable, rule->size_value))
+    return SPX_CALL_UNIMPLEMENTED;
   status = spx_native_add_external_range_for_rule(
       rule, object, rule->minimum_size);
   if (status != SPX_CALL_OK) return status;
-  vtable = spx_native_u32(object);
-  if (vtable == 0U) return SPX_CALL_UNIMPLEMENTED;
   status = spx_native_add_external_range_for_rule(
       rule, vtable, rule->size_value);
   if (status != SPX_CALL_OK || rule->interface_class_index == 0U)

@@ -3,8 +3,8 @@
 import copy
 import hashlib
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,7 +34,7 @@ from spaghetti_extractor.transfer.model import _Action, _Call, _Node, _Transfer
 from .test_bisimulation_allocation_namespace import inputs
 from .test_bisimulation_allocation_calls import selected_row
 from .test_inductive_relation import _unit
-from .test_machine_overlay_v5 import _resolved_environment
+from .machine_overlay_fixture import _resolved_environment
 from .test_bisimulation_service_effects import rehash_model
 
 TESTKIT = {'fixtures': ('cbmc', 'compiler', 'jq'), 'resources': ('profiles/pe32-kernel32-runtime-v1.json',
@@ -278,7 +278,7 @@ class LifetimeAdmissionTests(unittest.TestCase):
         program += '''\n. as $models | ({models: .} | spx_allocation_class_inputs) and
           (.trusted_adapter_lowering | spx_typed_adapter_renderer_inventory and
            all(.adapter_plan[]; spx_declared_external_range_effects($models)))'''
-        result = subprocess.run([jq, '-e', program], input=json.dumps(model), text=True, capture_output=True)
+        result = run_jq_reader([jq, '-e', program], input=json.dumps(model), text=True, capture_output=True)
         self.assertNotIn('compile error', result.stderr, result.stderr)
         return result.returncode == 0
 
@@ -323,7 +323,7 @@ class LifetimeAdmissionTests(unittest.TestCase):
             jq = shutil.which('jq')
             self.assertIsNotNone(jq, 'the declared jq fixture must be available')
             program = (Path(__file__).resolve().parents[3] / 'nix/jq/strong-contextual-proof.jq').read_text()
-            checked = subprocess.run([jq, '-e', program + '\nspx_strong_contextual_proof'],
+            checked = run_jq_reader([jq, '-e', program + '\nspx_strong_contextual_proof'],
                 input=json.dumps(artifact), text=True, capture_output=True)
             self.assertEqual(checked.returncode, 0, checked.stderr or checked.stdout)
 

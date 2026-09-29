@@ -25,10 +25,14 @@ let
     cp ${./fixtures/pe32-project-app.c} app.c
     cp ${./fixtures/pe32-project-private.c} private.c
     cp ${./fixtures/pe32-project-private.def} private.def
+    # MinGW derives a DLL's default image base from its output pathname. Keep
+    # that pathname stable across content-addressed builds, then install it.
     ${compiler}/bin/i686-w64-mingw32-gcc -shared private.c private.def \
-      -Wl,--out-implib,libprivate.a -o "$out/private/private.dll"
+      -Wl,--out-implib,libprivate.a -o private.dll
     ${compiler}/bin/i686-w64-mingw32-gcc app.c -L. -lprivate \
-      -o "$out/app/app.exe"
+      -o app.exe
+    cp private.dll "$out/private/private.dll"
+    cp app.exe "$out/app/app.exe"
     ${pythonEnv}/bin/python3 - "$out" <<'PY'
     import pathlib
     import sys
@@ -348,7 +352,7 @@ pkgs.runCommand "spaghetti-extractor-pe32-project-check" {
   nativeBuildInputs = [
     pkgs.jq
     pkgs.wineWow64Packages.stableFull
-    pkgs.xvfb-run
+    context.tools.headlessWayland
   ];
   __contentAddressed = true;
 } ''
@@ -384,8 +388,14 @@ pkgs.runCommand "spaghetti-extractor-pe32-project-check" {
   mkdir -p distribution
   cp ${fixture}/app/app.exe distribution/
   cp ${fixture}/private/private.dll distribution/
-  xvfb-run -a wineboot -u >/dev/null 2>&1
-  (cd distribution && timeout 60 xvfb-run -a wine ./app.exe)
-  wineserver -w >/dev/null 2>&1 || true
+  (cd distribution && spaghetti-headless-wayland ${pkgs.bash}/bin/bash -eu -c '
+    wineboot -u >/dev/null 2>&1
+    set +e
+    timeout 60 wine ./app.exe
+    status=$?
+    set -e
+    wineserver -w >/dev/null 2>&1 || true
+    exit "$status"
+  ')
   touch "$out"
 ''

@@ -8,6 +8,7 @@ from ..artifacts.artifact_set import canonical_sha256_v3
 from ..boundary._canonical import BoundaryModelError, array, object_
 from ..transfer.values import _c_string
 from .component_c_v5 import _parameter_type, _result_type
+from .machine_binding import MachineProjectionV1, external_target_sampling
 from .machine_overlay_result_views import result_view_lines
 from .finite_word_transducers import FiniteWordMapError, parse_finite_word_map
 from .interface_package_v5 import CompiledComponentInterfaceV5
@@ -674,7 +675,11 @@ def _external_service_thunk(
                 object_(
                     captured_target,
                     "component captured external target projection",
-                )
+                ),
+                entry_index=(next(i for i, item in enumerate(bundle.interface.services)
+                                  if item.identity == binding["service_id"])
+                             if external_target_sampling(binding.get("target_sampling", "service_call"),
+                                 has_target=True) == "operation_entry" else None),
             )
         )
     lines.extend(
@@ -1045,13 +1050,50 @@ def _external_service_thunk(
     return lines
 
 
+def _entry_target_capture_lines(projection: Mapping[str, object], *, index: int) -> list[str]:
+    """Capture once per invocation, retaining read faults until the service is used.
+
+    Storage belongs to this operation's stack frame, including nested invocations.
+    It is never reconstructed by rereading mutable memory at a later service call.
+    """
+    target = MachineProjectionV1.parse(projection, "operation-entry target").payload
+    if target.get("width") != 32 or target.get("at") != "entry":
+        raise BoundaryModelError("operation-entry target requires a 32-bit entry word")
+    slot = f"service_context.entry_targets[{index}]"
+    if target["kind"] == "register":
+        register = target["register"]
+        if register not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
+            raise BoundaryModelError("operation-entry target register is unsupported")
+        return [f"  if (service_context.state == 0) {slot}.fault = 1U;",
+                f"  else {slot}.value = service_context.state->{register};"]
+    if target["kind"] == "static_slot":
+        address = f"(uint64_t)service_context.runtime->image_base + UINT64_C({target['rva']})"
+    elif target["kind"] == "stack":
+        address = f"(uint64_t)service_context.state->esp + UINT64_C({target['offset']})"
+    else:
+        raise BoundaryModelError("operation-entry target projection is unsupported")
+    return ["  {", f"    if (service_context.runtime == 0 || service_context.state == 0) {slot}.fault = 1U;",
+            "    else {", f"      uint64_t address = {address};",
+            f"      if (address > UINT64_C(4294967292)) {slot}.fault = 1U;",
+            f"      else {slot}.value = spx_component_read(service_context.runtime,",
+            f"          (uint32_t)address, UINT32_C(4), &{slot}.fault);", "    }", "  }"]
+
+
 def _captured_external_target_lines(
     projection: Mapping[str, object],
+    *, entry_index: int | None = None,
 ) -> list[str]:
     if projection.get("width") != 32 or projection.get("at") != "entry":
         raise BoundaryModelError(
             "component captured external target is not a 32-bit entry word"
         )
+    if entry_index is not None:
+        if type(entry_index) is not int or entry_index < 0:
+            raise BoundaryModelError("invalid operation-entry target index")
+        return [f"  uint32_t captured_external_target = service->entry_targets[{entry_index}].value;",
+                f"  if (service->entry_targets[{entry_index}].fault != 0U)",
+                "    goto spx_service_memory_fail;",
+                "  if (captured_external_target == 0U)", "    goto spx_service_fail;"]
     kind = projection.get("kind")
     if kind == "register":
         register = projection.get("register")

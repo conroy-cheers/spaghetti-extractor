@@ -6,7 +6,7 @@ from .bisimulation_compaction_template import TEMPLATE
 from .bisimulation_compaction_domain import compaction_public_domain
 from .bisimulation_harness import _architectural_state_equalities
 from .bisimulation_mutable_memory import sparse_mutable_memory_runtime
-from .machine_overlay_v5 import _view_runtime_helpers
+from .machine_overlay_runtime_helpers import _view_runtime_helpers
 from .capabilities import spx_portable_reference_runtime_v5_source
 
 

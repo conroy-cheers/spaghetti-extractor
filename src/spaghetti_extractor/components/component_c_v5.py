@@ -24,13 +24,14 @@ def render_component_c_headers_v5(
     """Render the public, implementation, and conformance V5 C artifacts."""
 
     interface = bundle.interface
-    schema = bundle.intent.schema
     component = _c(interface.identity)
     expected = {operation.identity for operation in interface.operations}
     if set(operation_symbols) != expected:
         raise BoundaryModelError("V5 component operation-symbol map is not total")
     for symbol in operation_symbols.values():
         _c(symbol)
+
+    from .component_local_bytes import local_bytes_header
 
     public = _render_public(bundle, component)
     implementation = _render_implementation(bundle, component, operation_symbols)
@@ -39,6 +40,7 @@ def render_component_c_headers_v5(
         "portable-component.h": public,
         "portable-component-implementation.h": implementation,
         "component-conformance.c": conformance,
+        "portable-component-local-bytes.h": local_bytes_header(),
     }
     if induction_source is not None:
         result["portable-component-inductive.h"] = _render_inductive_header(
@@ -105,6 +107,27 @@ def _render_public(bundle: CompiledComponentInterfaceV5, component: str) -> str:
         "spx_ref_status spx_ref_difference(spx_ref_v5, spx_ref_v5, int64_t *);",
         "",
     ]
+    floats = [t for t in schema.types if t.kind == "float"]
+    if floats:
+        for value in floats:
+            _plain_type(schema.type_index, value)
+        lines.extend(['#include <float.h>', '#include <limits.h>',
+                      '#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)',
+                      '#error "binary floating interfaces require ordinary C floating semantics"', '#endif'])
+        for kind in sorted({str(t.body['format']) for t in floats}):
+            width,ctype,prefix,mantissa,exponent = {'binary32': (32,'float','FLT',24,128),
+                'binary64': (64,'double','DBL',53,1024)}.get(kind,(None,None,None,None,None))
+            if width is None:
+                raise BoundaryModelError('V5 component C supports binary32/binary64 floating interfaces; '+kind+' requires another binding')
+            lines.append(f'_Static_assert(sizeof({ctype}) * CHAR_BIT == {width} && FLT_RADIX == 2 && '
+                         f'{prefix}_MANT_DIG == {mantissa} && {prefix}_MAX_EXP == {exponent} && '
+                         f'{prefix}_MIN_EXP == {3-exponent} && {prefix}_HAS_SUBNORM == 1, '
+                         f'"{kind} C representation is unavailable");')
+    # A tag first declared in a parameter list has prototype scope in C.
+    # Declare every nominal opaque type before records or service signatures so
+    # all generated declarations and later implementation definitions agree.
+    lines.extend(f"struct spx_opaque_{_c(t.identity)}_v5;"
+                 for t in schema.types if t.kind == "opaque")
     lines.extend(_record_type_declarations(schema.type_index))
     callback_types = sorted(
         {
@@ -191,7 +214,6 @@ def _render_implementation(
     operation_symbols: Mapping[str, str],
 ) -> str:
     guard = f"SPX_{component.upper()}_IMPLEMENTATION_V5_H"
-    schema = bundle.intent.schema
     lines = [
         f"#ifndef {guard}",
         f"#define {guard}",
@@ -209,20 +231,36 @@ def _render_implementation(
         "",
     ]
     for operation in bundle.interface.operations:
-        signature = schema.signature_index[operation.signature_id]
-        parameters = [f"spx_{component}_context_v5 *context"] + [
-            f"{_parameter_type(schema.type_index, value)} {_c(value.identity)}"
-            for value in signature.parameters
-        ]
         lines.extend(
             [
-                f"{_result_type(schema.type_index, signature)} "
-                f"{operation_symbols[operation.identity]}({', '.join(parameters)});",
+                _operation_declaration(bundle,operation,operation_symbols[operation.identity])+";",
                 "",
             ]
         )
     lines.extend([f"#endif /* {guard} */", ""])
     return "\n".join(lines)
+
+
+def _operation_declaration(bundle,operation,symbol):
+    schema=bundle.intent.schema
+    signature=schema.signature_index[operation.signature_id]
+    context=_fresh_c_name('context',{_c(value.identity) for value in signature.parameters})
+    parameters=[f"spx_{_c(bundle.interface.identity)}_context_v5 *{context}"]+[
+        f"{_parameter_type(schema.type_index,value)} {_c(value.identity)}" for value in signature.parameters]
+    return f"{_result_type(schema.type_index,signature)} {symbol}({', '.join(parameters)})"
+
+
+def render_component_c_skeleton_v5(bundle: CompiledComponentInterfaceV5,
+                                    operation_symbols: Mapping[str,str]) -> str:
+    """Generate editable operation definitions from the same declarations as C headers."""
+    render_component_c_headers_v5(bundle,operation_symbols)
+    lines=['#include "portable-component-implementation.h"','']
+    for operation in bundle.interface.operations:
+        lines += ['/* Operation: '+operation.identity+' */',
+            _operation_declaration(bundle,operation,operation_symbols[operation.identity])+' {',
+            '    #error "Implement operation '+operation.identity+' using the declared boundary"',
+            '}', '']
+    return '\n'.join(lines)
 
 
 def _render_conformance(
@@ -293,7 +331,9 @@ def _render_inductive_header(
     prefix = f"spx_{component}_{operation_c}"
     state_type = f"{prefix}_state_v1"
     control_type = f"{prefix}_control_v1"
-    context = f"spx_{component}_context_v5 *context"
+    occupied = {_c(item.identity) for item in signature.parameters}
+    names = {key: _fresh_c_name(key, occupied) for key in ('context', 'state', 'phase_id', 'completion_id')}
+    context = f"spx_{component}_context_v5 *{names['context']}"
     parameters = [context] + [
         f"{_parameter_type(types, item)} {_c(item.identity)}"
         for item in signature.parameters
@@ -331,12 +371,12 @@ def _render_inductive_header(
             lines.append(f"  {_plain_type(types, types[type_id])} {_c(str(item['id']))};")
     else:
         lines.append("  uint8_t reserved;")
-    state_parameters = ", ".join([f"{state_type} *state", *parameters])
+    state_parameters = ", ".join([f"{state_type} *{names['state']}", *parameters])
     step_parameters = ", ".join(
-        [f"{state_type} *state", "uint32_t phase_id", *parameters]
+        [f"{state_type} *{names['state']}", f"uint32_t {names['phase_id']}", *parameters]
     )
     finish_parameters = ", ".join(
-        [f"const {state_type} *state", "uint32_t completion_id", *parameters]
+        [f"const {state_type} *{names['state']}", f"uint32_t {names['completion_id']}", *parameters]
     )
     lines.extend(
         [
@@ -390,25 +430,27 @@ def _render_inductive_wrapper(
     prefix = f"spx_{component}_{operation_c}"
     state_type = f"{prefix}_state_v1"
     control_type = f"{prefix}_control_v1"
-    parameters = [f"spx_{component}_context_v5 *context"] + [
+    occupied = {_c(item.identity) for item in signature.parameters} | set(symbols.values())
+    context, state, control = [_fresh_c_name(key, occupied) for key in ('context', 'state', 'control')]
+    parameters = [f"spx_{component}_context_v5 *{context}"] + [
         f"{_parameter_type(types, item)} {_c(item.identity)}"
         for item in signature.parameters
     ]
-    arguments = ["context", *(_c(item.identity) for item in signature.parameters)]
+    arguments = [context, *(_c(item.identity) for item in signature.parameters)]
     rendered_arguments = ", ".join(arguments)
     result_type = _result_type(types, signature)
     lines = [
         '#include "portable-component-inductive.h"',
         "",
         f"{result_type} {symbols['wrapper']}({', '.join(parameters)}) {{",
-        f"  {state_type} state = {{0}};",
-        f"  {control_type} control = {symbols['initialize']}(&state, {rendered_arguments});",
-        f"  while (control.kind == {prefix.upper()}_CONTROL_RUNNING) {{",
-        f"    control = {symbols['step']}(&state, control.phase_id, {rendered_arguments});",
+        f"  {state_type} {state} = {{0}};",
+        f"  {control_type} {control} = {symbols['initialize']}(&{state}, {rendered_arguments});",
+        f"  while ({control}.kind == {prefix.upper()}_CONTROL_RUNNING) {{",
+        f"    {control} = {symbols['step']}(&{state}, {control}.phase_id, {rendered_arguments});",
         "  }",
     ]
     finish_call = (
-        f"{symbols['finish']}(&state, control.completion_id, "
+        f"{symbols['finish']}(&{state}, {control}.completion_id, "
         f"{rendered_arguments})"
     )
     if result_type == "void":
@@ -457,6 +499,12 @@ def _plain_type(types: Mapping[str, BoundaryTypeV1], value: BoundaryTypeV1) -> s
         return "void"
     if value.kind == "bool":
         return "uint8_t"
+    if value.kind == "float":
+        supported = {('binary32',32): 'float', ('binary64',64): 'double'}
+        key = (value.body['format'],value.body['value_bits'])
+        if key not in supported:
+            raise BoundaryModelError('V5 component C requires binary32/32-bit or binary64/64-bit floats')
+        return supported[key]
     if value.kind == "integer":
         width = int(value.body["width_bits"])
         if width not in {8, 16, 32, 64}:
@@ -537,4 +585,19 @@ def _c(value: str) -> str:
     return result
 
 
-__all__ = ["render_component_c_headers_v5"]
+def _fresh_c_name(preferred: str, occupied: set[str]) -> str:
+    """Reserve a generated local without changing authored parameter names.
+
+    Keep existing output unchanged when there is no collision. Callers share the
+    occupied set for all locals in the same C scope, including authored inputs.
+    """
+    name=preferred
+    suffix=2
+    while name in occupied:
+        name=f'{preferred}_{suffix}'
+        suffix+=1
+    occupied.add(name)
+    return name
+
+
+__all__ = ["render_component_c_headers_v5", "render_component_c_skeleton_v5"]

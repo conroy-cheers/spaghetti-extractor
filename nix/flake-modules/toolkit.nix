@@ -7,6 +7,25 @@
       xedIsaCatalog = pkgs.callPackage ../xed-isa-catalog.nix {
         xedCatalogSrc = ../../tools/xed-isa-catalog;
       };
+      sourcePackages = [
+        context.package
+        context.pythonEnv
+        context.nativeExtension
+        context.transferNativeExtension
+      ];
+      executionPackages = [
+        pkgs.pkgsCross.mingw32.stdenv.cc
+        pkgs.pkgsCross.mingw32.buildPackages.binutils
+        pkgs.wineWow64Packages.stableFull
+        context.tools.headlessWayland
+      ];
+      liftingEnvironment = {
+        SPAGHETTI_PE32_MCFGTHREAD_DLL = "${pkgs.pkgsCross.mingw32.windows.mcfgthreads}/bin/libmcfgthread-2.dll";
+        shellHook = ''
+          export PYTHONPATH="$PWD:$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+          export NIX_LDFLAGS_i686_w64_mingw32="-L${pkgs.pkgsCross.mingw32.windows.mcfgthreads}/lib ''${NIX_LDFLAGS_i686_w64_mingw32:-}"
+        '';
+      };
     in
     {
       packages = {
@@ -58,26 +77,32 @@
         };
       };
 
-      devShells.default = pkgs.mkShell {
-        packages = [
-          context.package
-          context.pythonEnv
-          context.nativeExtension
-          context.transferNativeExtension
+      # Ordinary component editing needs fewer build inputs than proof/toolkit
+      # development. The large full-shell environment also triggered a pinned
+      # Wine/Linux-loader crash in retained jq cases with long arguments.
+      devShells.lifting = pkgs.mkShell (liftingEnvironment // {
+        packages = sourcePackages ++ executionPackages ++ [
+          # Preparing pinned source backends for exported component projects.
+          pkgs.autoconf
+          pkgs.automake
+          pkgs.libtool
+          pkgs.m4
+          pkgs.bison
+        ];
+      });
+
+      devShells.default = pkgs.mkShell (liftingEnvironment // {
+        packages = sourcePackages ++ [
           pkgs.lean4
           pkgs.z3
           pkgs.cbmc
           pkgs.bubblewrap
           pkgs.jq
           pkgs.pkg-config
-          pkgs.pkgsCross.mingw32.stdenv.cc
-          pkgs.pkgsCross.mingw32.buildPackages.binutils
-          pkgs.wineWow64Packages.stableFull
-          pkgs.xvfb-run
+        ] ++ executionPackages ++ [
           pkgs.xwd
           pkgs.imagemagick
         ];
-        shellHook = ''export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"'';
-      };
+      });
     };
 }

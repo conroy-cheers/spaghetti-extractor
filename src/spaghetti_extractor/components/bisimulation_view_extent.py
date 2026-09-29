@@ -63,6 +63,24 @@ def nul_view_parameters(interface, operation_id: str) -> frozenset[str]:
     )
 
 
+def validate_nul_invariant(sync, nul_view_ids):
+    """Expose only terminator witnesses already admitted and transported at this cut."""
+    captured = {capture.identity for capture in sync.captures
+                if _captured_parameter_view(capture) is not None}
+
+    def visit(value):
+        if isinstance(value, Mapping):
+            if value.get("op") == "nul_extent" and value.get("name") not in captured & nul_view_ids:
+                raise BisimulationRefinementError("NUL invariant requires a canonical captured NUL-view parameter")
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    visit(sync.invariant)
+
+
 def view_extent_expressions(*, projections, identity, nul_view_ids, state, read, native=False):
     rows = {name: getattr(value, "payload", value) for name, value in projections.items()}
     if any(not isinstance(rows.get(name), Mapping) or rows[name].get("kind") not in {"view", "bytes_view"}

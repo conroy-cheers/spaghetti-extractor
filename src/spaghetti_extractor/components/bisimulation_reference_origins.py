@@ -1,5 +1,8 @@
 """Issued logical origins and their physical storage/lifetime correspondence."""
 
+from typing import Mapping
+from .bisimulation_support import BisimulationRefinementError
+
 
 def parse_capacity(value):
     if type(value) is not int or not 1 <= value <= 0xffffffff:
@@ -185,3 +188,41 @@ static spx_boundary_status spx_proof_realize_reference(
   return SPX_BOUNDARY_OK;
 }}
 """
+
+
+def logical_argument_physical_index(service_id: str, input_index: object, *, service_bindings) -> int:
+    if (
+        not isinstance(input_index, int)
+        or isinstance(input_index, bool)
+        or input_index < 0
+    ):
+        raise BisimulationRefinementError(
+            "proof-world reference-result origin argument is malformed"
+        )
+    bindings = [
+        binding
+        for binding in service_bindings
+        if binding.get("service_id") == service_id
+        and binding.get("provider_kind") != "component_operation"
+    ]
+    physical_indices: set[int] = set()
+    for binding in bindings:
+        transducers = binding.get("argument_transducers")
+        if transducers is None:
+            physical_indices.add(int(input_index))
+            continue
+        for physical_index, transducer in enumerate(transducers):
+            if (
+                isinstance(transducer, Mapping)
+                and transducer.get("kind") == "logical_argument"
+                and transducer.get("parameter_index") == input_index
+            ):
+                physical_indices.add(physical_index)
+    if (
+        not bindings
+        or len(physical_indices) != 1
+    ):
+        raise BisimulationRefinementError(
+            "proof-world reference-result origin has no unique raw argument"
+        )
+    return next(iter(physical_indices))

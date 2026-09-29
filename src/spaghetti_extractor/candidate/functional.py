@@ -9,6 +9,7 @@ import signal
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from ..artifacts.formats import (
     CANDIDATE_TEST_SUITE_FORMAT,
 )
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
+from ..execution import communicate_until_exit, stop_process, signal_process_group as _terminate_process_group
 
 
 class CandidateTestInputError(ValueError):
@@ -87,6 +89,7 @@ def run_candidate_test_case(
     timeout_seconds: float = 30.0,
     candidate_binary: Path | None = None,
     strip_stderr_line_regexes: tuple[str, ...] | list[str] = (),
+    observe_process=None,
 ) -> dict[str, Any]:
     """Run one expected-output case as an independent cacheable work unit."""
 
@@ -114,6 +117,7 @@ def run_candidate_test_case(
         out=artifacts,
         default_timeout_seconds=timeout_seconds,
         strip_stderr_line_regexes=strip_stderr_line_regexes,
+        observe_process=observe_process,
     )
     # CA derivations rewrite self-references from the temporary output path to
     # the final store path.  Keep shard-local artifacts relative so that the
@@ -473,6 +477,7 @@ def _run_functional_case(
     out: Path,
     default_timeout_seconds: float,
     strip_stderr_line_regexes: tuple[str, ...] | list[str],
+    observe_process=None,
 ) -> dict[str, Any]:
     case_id = _artifact_name(str(case.get("id") or f"case-{index:04d}"))
     case_out = out / case_id
@@ -488,7 +493,7 @@ def _run_functional_case(
     kind = str(case["kind"])
     if kind == "expected-exit":
         expected = _case_expected_output(case)
-        candidate = _run_observed_process(
+        candidate = (observe_process or _run_observed_process)(
             command=(*candidate_command, *args),
             stdin_bytes=stdin_bytes,
             env=env,
@@ -572,8 +577,6 @@ def _run_observed_process(
     stdout_path = out_prefix.with_suffix(".stdout")
     stderr_path = out_prefix.with_suffix(".stderr")
     command_list = list(command)
-    stdout_file = None
-    stdout_target: Any = subprocess.PIPE
     stdout_sink_path: str | None = None
     if stdout_sink == "full_device":
         full_device = Path("/dev/full")
@@ -587,57 +590,50 @@ def _run_observed_process(
             raise CandidateTestInputError(
                 "functional full_device stdout sink requires character device /dev/full"
             )
-        stdout_file = full_device.open("wb", buffering=0)
-        stdout_target = stdout_file
         stdout_sink_path = str(full_device)
-    try:
-        proc = subprocess.Popen(
-            command_list,
-            stdin=subprocess.PIPE,
-            stdout=stdout_target,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            env={**os.environ, **env},
-            start_new_session=True,
-        )
-        stdout, stderr = proc.communicate(input=stdin_bytes, timeout=timeout_seconds)
-        stdout = stdout or b""
-        stderr = stderr or b""
-        timed_out = False
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        _terminate_process_group(proc, signal.SIGTERM)
+    # Keep stdin/stdout/stderr pipe semantics at the target boundary. Anonymous
+    # spool files are capture storage only; late detached writes cannot mutate
+    # retained observations or force us to wait for EOF.
+    with tempfile.TemporaryFile() as captured_out, tempfile.TemporaryFile() as captured_err:
+        sink = open(stdout_sink_path, "wb") if stdout_sink_path else subprocess.PIPE
+        proc = None
+        cleanup_failed = False
         try:
-            stdout, stderr = proc.communicate(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            _terminate_process_group(proc, signal.SIGKILL)
-            stdout, stderr = proc.communicate()
-        if not stdout:
-            stdout = _timeout_bytes(exc.stdout)
-        if not stderr:
-            stderr = _timeout_bytes(exc.stderr)
-        timed_out = True
-        returncode = None
-    except BaseException:
-        if "proc" in locals() and proc.poll() is None:
-            _terminate_process_group(proc, signal.SIGTERM)
+            proc = subprocess.Popen(
+                command_list, stdin=subprocess.PIPE, stdout=sink, stderr=subprocess.PIPE,
+                cwd=cwd, env={**os.environ, **env}, start_new_session=True,
+            )
             try:
-                proc.wait(timeout=2.0)
+                communicate_until_exit(proc, stdin_bytes, stdout=captured_out, stderr=captured_err, timeout=timeout_seconds)
+                timed_out = False
+                returncode = proc.returncode
             except subprocess.TimeoutExpired:
-                _terminate_process_group(proc, signal.SIGKILL)
-                proc.wait()
-        raise
-    finally:
-        if stdout_file is not None:
-            stdout_file.close()
-    stdout_path.write_bytes(stdout)
-    stderr = _strip_matching_lines(stderr, strip_stderr_line_regexes)
-    stderr_path.write_bytes(stderr)
+                timed_out = True
+                returncode = None
+                cleanup_failed = not stop_process(proc)
+            except BaseException:
+                stop_process(proc)
+                raise
+        finally:
+            if proc is not None and proc.stdin is not None:
+                proc.stdin.close()
+            if stdout_sink_path:
+                sink.close()
+            # Read a fixed snapshot size, not a moving EOF supplied by a writer.
+            captured_out.seek(0)
+            captured_err.seek(0)
+            stdout = captured_out.read(os.fstat(captured_out.fileno()).st_size)
+            stderr = captured_err.read(os.fstat(captured_err.fileno()).st_size)
+            stdout_path.write_bytes(stdout)
+            stderr = _strip_matching_lines(stderr, strip_stderr_line_regexes)
+            stderr_path.write_bytes(stderr)
     return {
         "command": list(command),
         "cwd": cwd,
         "returncode": returncode,
         "timed_out": timed_out,
+        "cleanup_failed": cleanup_failed,
+        "output_scope": "root-exit-snapshot",
         "stdout_sink": {
             "kind": stdout_sink,
             "path": stdout_sink_path,
@@ -664,21 +660,19 @@ def _run_bounded_liveness_process(
         )
     stdout_path = out_prefix.with_suffix(".stdout")
     stderr_path = out_prefix.with_suffix(".stderr")
-    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         proc = subprocess.Popen(
             list(command),
             stdin=subprocess.PIPE,
-            stdout=stdout_file,
-            stderr=stderr_file,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=cwd,
             env={**os.environ, **env},
             start_new_session=True,
         )
         assert proc.stdin is not None
         try:
-            proc.stdin.write(stdin_bytes)
-            proc.stdin.close()
-            proc.wait(timeout=liveness_seconds)
+            communicate_until_exit(proc, stdin_bytes, stdout=stdout_file, stderr=stderr_file, timeout=liveness_seconds)
             liveness_observed = False
             terminated_by_harness = False
         except subprocess.TimeoutExpired:
@@ -688,18 +682,22 @@ def _run_bounded_liveness_process(
             try:
                 proc.wait(timeout=max(0.1, hard_timeout_seconds - liveness_seconds))
             except subprocess.TimeoutExpired:
-                _terminate_process_group(proc, signal.SIGKILL)
-                proc.wait()
+                if not stop_process(proc):
+                    raise CandidateTestInputError("candidate cleanup failed after liveness deadline")
         except BaseException:
-            if proc.poll() is None:
-                _terminate_process_group(proc, signal.SIGKILL)
-                proc.wait()
+            stop_process(proc)
             raise
-    stdout = stdout_path.read_bytes()
-    stderr = _strip_matching_lines(
-        stderr_path.read_bytes(), strip_stderr_line_regexes
-    )
-    stderr_path.write_bytes(stderr)
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read(os.fstat(stdout_file.fileno()).st_size)
+            stderr = _strip_matching_lines(
+                stderr_file.read(os.fstat(stderr_file.fileno()).st_size), strip_stderr_line_regexes
+            )
+            stdout_path.write_bytes(stdout)
+            stderr_path.write_bytes(stderr)
     return {
         "command": list(command),
         "cwd": cwd,
@@ -711,15 +709,6 @@ def _run_bounded_liveness_process(
         "stdout": _stream_artifact(stdout_path, stdout),
         "stderr": _stream_artifact(stderr_path, stderr),
     }
-
-
-def _terminate_process_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-    try:
-        os.killpg(proc.pid, sig)
-    except ProcessLookupError:
-        return
-    except PermissionError:
-        proc.terminate() if sig == signal.SIGTERM else proc.kill()
 
 
 def _case_args(case: dict[str, Any]) -> tuple[str, ...]:
@@ -915,14 +904,6 @@ def _functional_case_manifest(cases: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _case_manifest_sha256(manifest: list[dict[str, Any]]) -> str:
     return sha256_bytes(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-
-
-def _timeout_bytes(value: Any) -> bytes:
-    if value is None:
-        return b""
-    if isinstance(value, bytes):
-        return value
-    return str(value).encode("utf-8", errors="replace")
 
 
 def _stream_artifact(path: Path, data: bytes) -> dict[str, Any]:

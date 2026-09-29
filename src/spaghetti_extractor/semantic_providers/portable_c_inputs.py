@@ -145,7 +145,7 @@ def _direct_operation_rows(
                 "definition_ids": sorted(definition_ids),
                 "unit_ids": list(semantics.unit_ids),
                 "entry_rvas": list(semantics.entry_rvas),
-                "context_transfer_ids": list(semantics.transfer_ids),
+                "context_transfer_ids": list(semantics.proof_context_transfer_ids),
                 "effect_ids": list(semantics.effect_ids),
                 "service_ids": list(semantics.service_ids),
                 "callback_ids": list(semantics.callback_ids),

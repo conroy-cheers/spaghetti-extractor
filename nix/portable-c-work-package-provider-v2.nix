@@ -38,10 +38,10 @@ assert builtins.isInt timeoutSeconds && timeoutSeconds > 0;
 assert sourceEntryTimeoutSeconds == null ||
   (builtins.isInt sourceEntryTimeoutSeconds && sourceEntryTimeoutSeconds > 0 && runtimeAssurance != null);
 assert runtimeAssurance == null || (builtins.isString conditionalTargetId && conditionalTargetId != "");
-assert selectedObligations == null || runtimeAssurance != null;
 
 let
   conditional = runtimeAssurance != null;
+  focused = !conditional && selectedObligations != null;
   providerIds = builtins.sort builtins.lessThan (
     builtins.attrNames providerComponents
   );
@@ -75,12 +75,14 @@ let
   ) { } provenanceIds;
   phase = import ./ca-python-json-phase.nix {
     inherit pkgs pythonEnv;
-    name = "${namePrefix}-${if conditional then "conditional-contextual-check" else "portable-c-work-package-provider-v2"}";
-    kind = if conditional then "component-conditional-check" else "semantic-provider-qualification";
-    artifactName = if conditional then "conditional-engine-result.json" else "semantic-provider-qualification.json";
+    name = "${namePrefix}-${if conditional then "conditional-contextual-check" else if focused then "contextual-proof-diagnostic" else "portable-c-work-package-provider-v2"}";
+    kind = if conditional then "component-conditional-check" else if focused then "component-proof-diagnostic" else "semantic-provider-qualification";
+    artifactName = if conditional then "conditional-engine-result.json" else
+      if focused then "contextual-proof-diagnostic.json" else "semantic-provider-qualification.json";
     expectedFormat = if conditional then "spaghetti-extractor-conditional-contextual-check-v1"
+      else if focused then "spaghetti-extractor-contextual-refinement-v2"
       else "spaghetti-extractor-semantic-provider-qualification-v2";
-    allowedStatuses = if conditional then [ "satisfied" "incomplete" "violated" ] else [ "complete" "incomplete" ];
+    allowedStatuses = if conditional || focused then [ "satisfied" "incomplete" "violated" ] else [ "complete" "incomplete" ];
     pythonModules = [
       "spaghetti_extractor.semantic_providers.portable_c_work_package"
     ];
@@ -210,10 +212,10 @@ let
               "interaction_contract_catalog"
           ),
       )
-      ${if conditional then ''
+      ${if conditional || focused then ''
       if any((output.parent / name).exists() for name in (
           "semantic-provider-qualification.json", "definition-choices.json", "implementation-choices.json")):
-          raise SystemExit("conditional check emitted activation artifacts")
+          raise SystemExit("diagnostic check emitted activation artifacts")
       '' else ''
       if (
           not result["object_manifest"].is_file()
@@ -265,7 +267,27 @@ in
   conditionalEngineResult = phase.artifact;
   conditionalRefinement = "${phase.derivation}/conditional-refinement-result.json";
   engineDerivation = phase.derivation;
-} // pkgs.lib.optionalAttrs (!conditional) {
+} // pkgs.lib.optionalAttrs focused {
+  proofDiagnostic = phase.artifact;
+} // pkgs.lib.optionalAttrs (!conditional && !focused) {
+  proofCheckFor = { obligations ? null, queryTimeoutSeconds ? timeoutSeconds,
+    previousQueryEvidencePath ? null }:
+    let
+      # JSON operator arguments have no Nix string context. Restore the already
+      # imported store reference so its complete closure reaches the sandbox.
+      evidenceMatch = if previousQueryEvidencePath == null then null else
+        builtins.match "(/nix/store/[a-z0-9]{32}-[^/]+)(/.*)?" previousQueryEvidencePath;
+      retainedEvidence = if previousQueryEvidencePath == null then previousQueryEvidence else
+        assert evidenceMatch != null;
+        builtins.appendContext previousQueryEvidencePath {
+          "${builtins.head evidenceMatch}" = { path = true; };
+        };
+    in
+    (import ./portable-c-work-package-provider-v2.nix (args // {
+      selectedObligations = obligations;
+      timeoutSeconds = queryTimeoutSeconds;
+      previousQueryEvidence = retainedEvidence;
+    })).derivation;
   qualification = phase.artifact;
   definitionChoices = "${phase.derivation}/definition-choices.json";
   choices = "${phase.derivation}/implementation-choices.json";

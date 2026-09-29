@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +19,8 @@ from spaghetti_extractor.components.component_c_v5 import render_component_c_hea
 from spaghetti_extractor.components.interface_ir import ProofKernelComponentInterface
 from spaghetti_extractor.components.refinement_v5 import _logical_projection
 from spaghetti_extractor.components.machine_binding import ServiceMachineBindingV1
-from spaghetti_extractor.components.machine_overlay_external_v5 import _captured_external_target_lines
+from spaghetti_extractor.components.machine_overlay_external_v5 import _captured_external_target_lines, _entry_target_capture_lines
+from spaghetti_extractor.components.machine_overlay_services_v5 import _service_setup_lines
 from spaghetti_extractor.components.semantic_external_transducers import checked_captured_external_target_guard
 from spaghetti_extractor.components.cbmc_backend import run_cbmc_properties
 from spaghetti_extractor.components.inductive_refinement import _write_cbmc_stdint
@@ -39,16 +40,24 @@ def slot_binding():
         "captured_target_projection": {"kind": "static_slot", "rva": 0xe158, "width": 32, "at": "entry"}}
 
 
-def fixture():
+def fixture(register=None, sampling=None):
     bundle = shared_fixture.shared_buffer_bundle()
     interface = ProofKernelComponentInterface.parse(_logical_projection(bundle))
     binding = slot_binding()
+    if register is not None:
+        binding["captured_target_projection"] = {"kind": "register", "register": register, "width": 32, "at": "entry"}
+    if sampling is not None:
+        binding['target_sampling'] = sampling
     renderer = build_typed_proof_service_thunk_renderer(interface=interface, service_bindings=[binding])
     return bundle, interface, binding, "\n".join(renderer(bundle, binding, {}))
 
 
-def check_target(*, before="", after="", repair="", erase=False):
-    bundle, interface, binding, thunk = fixture()
+def check_target(*, before="", after="", repair="", erase=False, register=None, sampling=None):
+    bundle, interface, binding, thunk = fixture(register, sampling)
+    component = bundle.interface.identity.replace('-', '_')
+    setup = '\n'.join(_service_setup_lines(bundle=bundle, component=component,
+        service_bindings=[binding], context_expression='&logical_context', runtime_expression='&source',
+        state_expression='&portable', memory_fault_expression='&fault', fault_expression='&service_fault'))
     if erase:
         thunk = thunk.replace("  spx_proof_typed_service_target(spx_typed_target);", "")
     with tempfile.TemporaryDirectory() as directory:
@@ -66,6 +75,8 @@ typedef struct {
   spx_runtime *runtime;
   spx_machine_state *state;
   uint32_t *memory_fault, *service_fault;
+  struct {uint32_t physical_word,target_rva;} callback_result;
+  struct {uint32_t value,fault;} entry_targets[1];
 } spx_component_service_context_v1;
 uint32_t spx_component_read(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault) {
   if (rt->read == 0) { *fault = 1U; return 0U; }
@@ -78,7 +89,6 @@ int main(void) {
   spx_machine_state input={.esp=0x800000U}, output, portable={0};
   spx_runtime exact=spx_proof_runtime(&spx_exact_world), source=spx_proof_runtime(&spx_source_world);
   exact.image_base=source.image_base=0x400000U;
-  spx_component_service_context_v1 context={&source,&portable,&fault,&service_fault};
   spx_machine_reference_v1 issued;
   __CPROVER_assert(source.resolve_reference(source.context,0x413d20U,500U,3U,0,0U,0U,&issued)==SPX_BOUNDARY_OK,
       "fixture borrowed buffer");
@@ -87,13 +97,14 @@ int main(void) {
   view.extent=500U;view.element_width=1U;
   spx_proof_exact_write(0,0x40e158U,4U,target,&fault);
   spx_proof_source_write(0,0x40e158U,4U,target,&fault);
-''' + before + '''
+''' + (f"portable.{register}=target;\n" if register else "") +
+            f'spx_{component}_context_v5 logical_context={{0}};\n' + setup + before + '''
   spx_stack_input args[4]={{0,4,7},{4,4,31},{8,4,0x413d20U},{12,4,500}};
   spx_call_event event={.kind=SPX_CALL_INDIRECT,.instruction_rva=100U,.return_rva=105U,
       .target_rva=target,.stack_inputs=args,.stack_input_count=4};
   spx_proof_exact_external_call(&exact,&event,&input,&output);
 ''' + after + '''
-  uint32_t result=load_string(&context,7U,31U,&view,500U);
+  uint32_t result=load_string(&service_context,7U,31U,&view,500U);
   __CPROVER_assert(fault==0U && service_fault==0U && result==output.eax,"typed slot target response");
 ''' + repair + '''
   __CPROVER_assert(spx_proof_world_public_memory_equal(),"typed slot target public memory");
@@ -105,6 +116,131 @@ int main(void) {
 
 
 class ServiceTargetTests(unittest.TestCase):
+    def test_production_capture_is_per_invocation_and_retains_read_faults(self):
+        projection = slot_binding()['captured_target_projection']
+        capture = '\n'.join(_entry_target_capture_lines(projection, index=0))
+        target = '\n'.join(_captured_external_target_lines(projection, entry_index=0))
+        source = '''#include <stdint.h>
+typedef struct {uint32_t image_base;} runtime;
+typedef struct {uint32_t esp;} state;
+typedef struct {runtime *runtime;state *state;struct {uint32_t value,fault;} entry_targets[1];} context;
+static uint32_t current,read_fault,reads;
+static uint32_t spx_component_read(runtime *rt,uint32_t address,uint32_t width,uint32_t *fault){
+ (void)rt;(void)address;(void)width;reads++;*fault=read_fault;return current;
+}
+static context capture(runtime *rt,state *s){context service_context={.runtime=rt,.state=s};
+''' + capture + '''
+ return service_context;
+}
+static uint32_t invoke(context *service,uint32_t *result){
+''' + target + '''
+ *result=captured_external_target;return 0U;
+spx_service_memory_fail:return 1U;
+spx_service_fail:return 2U;
+}
+uint32_t nondet_u32(void);
+int main(void){runtime rt={0x400000U};state s={0};uint32_t result=0U;
+ uint32_t first=nondet_u32(),second=nondet_u32();
+ __CPROVER_assume(first!=0U && second!=0U && first!=second);
+ current=first;context outer=capture(&rt,&s);
+ current=second;context nested=capture(&rt,&s);
+ current=0U;read_fault=1U;
+ __CPROVER_assert(invoke(&outer,&result)==0U && result==first,"outer capture survives nested call and slot change");
+ __CPROVER_assert(invoke(&nested,&result)==0U && result==second,"nested capture is independent");
+ __CPROVER_assert(reads==2U,"calls never reread the slot");
+ context failed=capture(&rt,&s);current=first;read_fault=0U;
+ __CPROVER_assert(invoke(&failed,&result)==1U,"capture read fault cannot be repaired by a later slot read");
+ context next=capture(&rt,&s);
+ __CPROVER_assert(invoke(&next,&result)==0U && result==first,"a new invocation captures again");
+ current=0U;context null=capture(&rt,&s);current=second;
+ __CPROVER_assert(invoke(&null,&result)==2U,"null capture remains a service fault");
+ rt.image_base=0xfffffff0U;uint32_t before=reads;context wrap=capture(&rt,&s);
+ __CPROVER_assert(reads==before && invoke(&wrap,&result)==1U,"wrapping capture fails before reading");
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'capture.c';path.write_text(source)
+            result=run_cbmc_properties(command=[shutil.which('cbmc'),str(path),'--json-ui','--trace',
+                '--unwind','3','--unwinding-assertions','--bounds-check','--pointer-check','--sat-solver','cadical'],
+                timeout_seconds=30)
+        self.assertEqual(result['status'],'satisfied',result)
+
+    def test_operation_entry_sampling_survives_mutation_and_detects_wrong_capture(self):
+        mutation = '''
+  spx_proof_exact_write(0,0x40e158U,4U,0U,&fault);
+  spx_proof_source_write(0,0x40e158U,4U,0U,&fault);
+'''
+        result = check_target(sampling='operation_entry', before=mutation)
+        self.assertEqual(result['status'], 'satisfied', result)
+        wrong = check_target(sampling='operation_entry', before=mutation,
+            after='service_context.entry_targets[0].value ^= 1U;')
+        self.assertEqual(wrong['status'], 'violated', wrong)
+        self.assertIn('typed-call-fields', wrong['detail'])
+        failed = check_target(sampling='operation_entry', after='service_context.entry_targets[0].fault=1U;')
+        self.assertEqual(failed['status'], 'violated', failed)
+        self.assertIn('typed-target-entry-readable', failed['detail'])
+
+    def test_sampling_is_explicit_and_bound_in_both_readers(self):
+        program = Path('nix/jq/strong-contextual-proof.jq').read_text()
+        for sampling in ('service_call', 'operation_entry', None, 'first_call', 1):
+            binding = slot_binding(); binding['target_sampling'] = sampling
+            valid = sampling in ('service_call', 'operation_entry')
+            if valid:
+                checked_typed_external_target(binding)
+            else:
+                with self.assertRaisesRegex(ValueError, 'captured_target_unsupported'):
+                    checked_typed_external_target(binding)
+            p = run_jq_reader([shutil.which('jq'), program+'\nspx_typed_external_target_supported'],
+                input=json.dumps(binding), text=True, capture_output=True, check=True, timeout=10)
+            self.assertEqual(json.loads(p.stdout), valid)
+            provider = {'kind': 'external_call', 'events': [{'unit_id': 'unit', 'event_index': 0}],
+                'identity': {'dll': 'fixture.dll', 'symbol': 'call', 'ordinal': None},
+                'target_projection': binding['captured_target_projection'], 'target_sampling': sampling}
+            row = {'service_id': 'call', 'mediation': 'direct', 'provider': provider}
+            if valid: ServiceMachineBindingV1.parse(row, 'fixture')
+            else:
+                with self.assertRaises(ValueError): ServiceMachineBindingV1.parse(row, 'fixture')
+        provider.pop('target_projection'); provider['target_sampling'] = 'operation_entry'
+        with self.assertRaisesRegex(ValueError, 'target projection'):
+            ServiceMachineBindingV1.parse(row, 'fixture')
+
+    def test_resumed_regions_require_capture_transport_instead_of_resampling(self):
+        from spaghetti_extractor.components.bisimulation_harness import _render_harness
+        with self.assertRaisesRegex(ValueError, 'entry_target_cut_transport_unsupported'):
+            _render_harness(interface=None, authored=None, machine_image={}, operation_projection={},
+                overlay_entry={}, functions=[{'sync_id': 'loop'}], max_writes=1, max_private_writes=1,
+                max_calls=1, max_atomics=1, max_shadow_bytes=1, max_nul_views=1,
+                service_bindings=[{**slot_binding(), 'target_sampling': 'operation_entry'}],
+                connected_summaries=[], include_finite_control=False)
+
+    def test_entry_register_target_matches_and_detects_wrong_or_erased_transport(self):
+        self.assertEqual(check_target(register="esi")["status"], "satisfied")
+        wrong = check_target(register="esi", after="portable.esi = target + 1U;")
+        self.assertEqual(wrong["status"], "violated", wrong)
+        self.assertIn("typed-call-fields", wrong["detail"])
+        erased = check_target(register="esi", after="portable.esi = target + 1U;", erase=True)
+        self.assertEqual(erased["status"], "satisfied", erased)
+        null = check_target(register="esi", after="portable.esi = 0U;")
+        self.assertEqual(null["status"], "violated", null)
+        self.assertIn("typed-target-register-nonnull", null["detail"])
+
+    def test_both_readers_validate_complete_entry_register_recipes(self):
+        program = Path("nix/jq/strong-contextual-proof.jq").read_text()
+        for register in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"):
+            binding = fixture(register)[2]
+            for change in ({}, {"register": "eip"}, {"width": 16}, {"at": "exit"}, {"rva": 0}):
+                selected = copy.deepcopy(binding)
+                selected["captured_target_projection"].update(change)
+                if change:
+                    with self.assertRaisesRegex(ValueError, "captured_target_unsupported"):
+                        checked_typed_external_target(selected)
+                else:
+                    self.assertEqual(checked_typed_external_target(selected), selected["captured_target_projection"])
+                    self.assertIn(f"service->state->{register}", "\n".join(_captured_external_target_lines(selected["captured_target_projection"])))
+                p = run_jq_reader([shutil.which("jq"), program+"\nspx_typed_external_target_supported"],
+                    input=json.dumps(selected), text=True, capture_output=True, check=True, timeout=10)
+                self.assertEqual(json.loads(p.stdout), not change)
+
     def test_failed_slot_read_keeps_the_native_memory_fault_channel(self):
         binding=slot_binding()
         native='\n'.join(_captured_external_target_lines(binding['captured_target_projection']))
@@ -247,7 +383,7 @@ int main(void) {
                 with self.assertRaisesRegex(ValueError, "renderer closure"): _trusted_adapter_lowering_used(model)
             else:
                 self.assertTrue(_trusted_adapter_lowering_used(model))
-            p = subprocess.run([shutil.which("jq"), program+"\nspx_typed_adapter_renderer_inventory"],
+            p = run_jq_reader([shutil.which("jq"), program+"\nspx_typed_adapter_renderer_inventory"],
                 input=json.dumps(altered), text=True, capture_output=True, check=True, timeout=10)
             self.assertEqual(json.loads(p.stdout), omitted is None)
         for change in ({}, {"kind": "register"}, {"rva": True}, {"rva": 0xffffffff},
@@ -257,6 +393,6 @@ int main(void) {
                 with self.assertRaisesRegex(ValueError, "captured_target_unsupported"): checked_typed_external_target(selected)
             else:
                 checked_typed_external_target(selected)
-            p = subprocess.run([shutil.which("jq"), program+"\nspx_typed_external_target_supported"],
+            p = run_jq_reader([shutil.which("jq"), program+"\nspx_typed_external_target_supported"],
                 input=json.dumps(selected), text=True, capture_output=True, check=True, timeout=10)
             self.assertEqual(json.loads(p.stdout), not change)

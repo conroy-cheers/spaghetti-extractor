@@ -17,8 +17,10 @@ ASSERTION_BATCH_STRATEGY = "inventory_function_grouped_paired_language_safety_wi
 PACKED_SAFETY_STRATEGY = "inventory_bounded_safety_groups_with_bounded_authored_batches_v13"
 APPLICATION_FIRST_STRATEGY = "inventory_bounded_safety_groups_with_application_first_authored_batches_v14"
 CUT_CONTROL_FIRST_STRATEGY = "inventory_bounded_safety_groups_with_cut_control_first_authored_batches_v15"
+PACKED_SINGLE_STRATEGY = "inventory_bounded_safety_groups_with_single_authored_assertions_v16"
+SINGLE_ASSERTION_STRATEGIES = (ASSERTION_SINGLE_STRATEGY, PACKED_SINGLE_STRATEGY)
 ASSERTION_QUERY_STRATEGIES = (ASSERTION_SINGLE_STRATEGY, ASSERTION_BATCH_STRATEGY, PACKED_SAFETY_STRATEGY,
-                              APPLICATION_FIRST_STRATEGY, CUT_CONTROL_FIRST_STRATEGY)
+                              APPLICATION_FIRST_STRATEGY, CUT_CONTROL_FIRST_STRATEGY, PACKED_SINGLE_STRATEGY)
 
 _TYPED_BARRIER_PROPERTIES = (
     (
@@ -95,6 +97,8 @@ def property_query_order(assertion: Mapping[str, object], *, strategy=PACKED_SAF
     """Schedule control disagreements before unchanged descriptor metadata."""
 
     description = str(assertion.get("description", ""))
+    if description.startswith("spx-bisimulation-call-completion:"):
+        return -2, str(assertion.get("property_id", ""))
     if strategy in (APPLICATION_FIRST_STRATEGY, CUT_CONTROL_FIRST_STRATEGY):
         # Normal source paths stop at cuts; the root exit assertion can cover
         # only residual faults. A timeout there must not hide a wrong successor.
@@ -139,7 +143,7 @@ def assertion_policy_option(models):
         return None
     if len(strategies) != 1 or not strategies <= set(ASSERTION_QUERY_STRATEGIES):
         return None
-    return ('authored-assertions=bounded-groups-formula-sliced' if ASSERTION_SINGLE_STRATEGY not in strategies
+    return ('authored-assertions=bounded-groups-formula-sliced' if not strategies.intersection(SINGLE_ASSERTION_STRATEGIES)
             else 'authored-assertions=per-property-formula-sliced')
 
 
@@ -176,7 +180,7 @@ def safety_property_groups(partition, property_ids, inventory, *, strategy=ASSER
         return []
     if partition == "unwinding" or len(property_ids) <= 1024:
         return [list(property_ids)]
-    if strategy in (PACKED_SAFETY_STRATEGY, APPLICATION_FIRST_STRATEGY, CUT_CONTROL_FIRST_STRATEGY):
+    if strategy in (PACKED_SAFETY_STRATEGY, APPLICATION_FIRST_STRATEGY, CUT_CONTROL_FIRST_STRATEGY, PACKED_SINGLE_STRATEGY):
         return [list(property_ids[offset:offset + 1024]) for offset in range(0, len(property_ids), 1024)]
     owners = {row["property_id"]: row["source_function"] for row in inventory}
     groups: dict[str, list[str]] = {}

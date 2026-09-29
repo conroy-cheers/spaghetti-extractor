@@ -215,6 +215,41 @@ def view_address_expression(name: str, *, index: str | None = None, object_start
     return f"__CPROVER_spx_view_{function}({arguments})"
 
 
+def view_address_check_source(symbol: str) -> str:
+    """Give a checked address call its own property identity, preserving its body."""
+    return """static uint32_t __CPROVER_spx_view_address(
+    void *opaque, spx_machine_reference_v1 reference, uint64_t extent) {
+  const spx_component_view_context *view = (const spx_component_view_context *)opaque;
+  uint32_t valid = view != 0 && __CPROVER_spx_view_reference_matches(
+      opaque, reference, extent, view->address);
+  __CPROVER_assert(valid, "spx-bisimulation-view-reference-address");
+  __CPROVER_assume(valid);
+  return view->address;
+}
+""".replace("__CPROVER_spx_view_address(", symbol + "(", 1)
+
+
+def specialize_view_address_checks(header: str) -> str:
+    """Separate cut-macro call sites without changing their checks or assumptions.
+
+    CBMC otherwise merges every call into one property. Keep runtime helpers
+    unchanged and emit one identical assertion-bearing function for each direct
+    cut expression. The normal property inventory must still check every site.
+    """
+    prefix, marker, macros = header.partition("#define SPX_PROOF_BEGIN")
+    if not marker:
+        raise ValueError("cut header lacks its proof entry macro")
+    definitions = []
+
+    def specialize(match):
+        symbol = "__CPROVER_spx_view_address_site_" + str(len(definitions))
+        definitions.append(view_address_check_source(symbol))
+        return symbol + "("
+
+    macros = re.sub(r"\b__CPROVER_spx_view_address\(", specialize, macros)
+    return prefix + "\n".join(definitions) + "\n" + marker + macros if definitions else header
+
+
 def view_reference_transport_source() -> str:
     return reference_transport_source() + """
 static uint32_t __CPROVER_spx_view_reference_matches(
@@ -226,16 +261,7 @@ static uint32_t __CPROVER_spx_view_reference_matches(
           0U, 0U, extent, &address) && address == expected && view->address == address;
 }
 
-static uint32_t __CPROVER_spx_view_address(
-    void *opaque, spx_machine_reference_v1 reference, uint64_t extent) {
-  const spx_component_view_context *view = (const spx_component_view_context *)opaque;
-  uint32_t valid = view != 0 && __CPROVER_spx_view_reference_matches(
-      opaque, reference, extent, view->address);
-  __CPROVER_assert(valid, "spx-bisimulation-view-reference-address");
-  __CPROVER_assume(valid);
-  return view->address;
-}
-
+""" + view_address_check_source("__CPROVER_spx_view_address") + """
 static uint32_t __CPROVER_spx_view_object_address(
     void *opaque, spx_machine_reference_v1 reference, uint64_t extent) {
   uint32_t address = __CPROVER_spx_view_address(opaque, reference, extent);

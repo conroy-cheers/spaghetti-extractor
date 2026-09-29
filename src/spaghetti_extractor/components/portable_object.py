@@ -37,6 +37,8 @@ def compile_portable_component_objects(
     pe32_compiler: Path,
     output: Path | None,
     summary_dependencies=(),
+    inspect_storage: bool = False,
+    compiler_view_output: Path | None = None,
 ) -> tuple[list[Mapping[str, object]], str, str | None]:
     """Compile and content-bind every authored and generated translation unit."""
 
@@ -158,6 +160,14 @@ def compile_portable_component_objects(
                     ),
                 }
                 checks.append(check)
+                if inspect_storage and completed.returncode == 0 and source_path in files:
+                    from .source_dialect import inspect_object_storage
+                    check['storage'] = inspect_object_storage(compiler, object_path)
+                if compiler_view_output is not None and source_path in files:
+                    from .source_compiler_view import write_compiler_view
+                    view = compiler_view_output/f'{compiler_kind}-{index}'
+                    feedback = write_compiler_view(command, cwd=source_root, output=view)
+                    check['compiler_view'] = dict(status=feedback['status'], path=view.name+'/view.json')
                 if completed.returncode != 0:
                     status = "violated"
                 elif output is not None:

@@ -365,6 +365,15 @@ FORMAT_SPECS = (
         state="retired",
         symbol="RETIRED_MODULE_RUNTIME_PLAN_V7_FORMAT",
     ),
+    FormatSpecV1(literal="spaghetti-extractor-experimental-component-policy-v1", version=1,
+        owner=_OWNER, codec="spaghetti_extractor.candidate.experimental_manifest", role="policy",
+        state="active", symbol="EXPERIMENTAL_COMPONENT_POLICY_V1_FORMAT"),
+    FormatSpecV1(literal="spaghetti-extractor-experimental-component-execution-v1", version=1,
+        owner=_OWNER, codec="spaghetti_extractor.candidate.experimental_manifest", role="execution_manifest",
+        state="active", symbol="EXPERIMENTAL_COMPONENT_EXECUTION_V1_FORMAT"),
+    FormatSpecV1(literal="spaghetti-extractor-experimental-component-run-v1", version=1,
+        owner=_OWNER, codec="spaghetti_extractor.candidate.experimental_run", role="receipt",
+        state="active", symbol="EXPERIMENTAL_COMPONENT_RUN_V1_FORMAT"),
 )
 
 BEHAVIORAL_C_LAYOUT_INTENT_FORMAT = FORMAT_SPECS[0].literal
@@ -405,5 +414,9 @@ RETIRED_MODULE_RUNTIME_PLAN_V6_FORMAT = FORMAT_SPECS[35].literal
 MODULE_RUNTIME_PLAN_FORMAT = FORMAT_SPECS[36].literal
 RETIRED_PINNED_CODE_LAYOUT_AUTHORITY_V1_FORMAT = FORMAT_SPECS[37].literal
 RETIRED_MODULE_RUNTIME_PLAN_V7_FORMAT = FORMAT_SPECS[38].literal
+
+EXPERIMENTAL_COMPONENT_POLICY_V1_FORMAT = FORMAT_SPECS[39].literal
+EXPERIMENTAL_COMPONENT_EXECUTION_V1_FORMAT = FORMAT_SPECS[40].literal
+EXPERIMENTAL_COMPONENT_RUN_V1_FORMAT = FORMAT_SPECS[41].literal
 
 __all__ = [spec.symbol for spec in FORMAT_SPECS] + ["FORMAT_SPECS"]

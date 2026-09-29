@@ -1,8 +1,8 @@
 """Physical footprints must survive cuts that project pointers from current memory."""
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,7 +49,7 @@ class MutableCutTests(unittest.TestCase):
             python = True
         except ValueError:
             python = False
-        jq = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
+        jq = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
                             input=json.dumps(case), capture_output=True, text=True)
         return python, jq.returncode == 0
 
@@ -78,7 +78,7 @@ class MutableCutTests(unittest.TestCase):
         # additionally requires the strong predicate and its satisfied proof.
         self.assertEqual(self.readers(copy.deepcopy(case)), (True, True))
         self.assertIs(proof["activation_authorized"], False)
-        strong = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_strong_contextual_proof"],
+        strong = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_strong_contextual_proof"],
             input=json.dumps(case), capture_output=True, text=True)
         self.assertEqual(strong.returncode, 1)
         predecessor = proof["shards"][0]["partitioned_evidence"]

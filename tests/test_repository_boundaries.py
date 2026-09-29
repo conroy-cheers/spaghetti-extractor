@@ -940,7 +940,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
             "__init__.py",
             "__main__.py",
             "cli.py",
-            "errors.py",
+            "errors.py", "execution.py",
             "util.py",
         }
         actual = {path.name for path in package.glob("*.py")}

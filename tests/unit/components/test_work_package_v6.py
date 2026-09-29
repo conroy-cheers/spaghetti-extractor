@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import shutil
+import tempfile
+from pathlib import Path
 import unittest
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
@@ -11,8 +15,15 @@ from spaghetti_extractor.components.work_package_v6 import (
     ComponentWorkPackageV6,
     ComponentWorkPackageV6Error,
     _machine_review_frontier,
+    caller_definition_text,
+    caller_definition_inspection,
+    caller_editing_binding,
+    caller_exact_source_map,
 )
 from spaghetti_extractor.semantic_providers.formats import SEMANTIC_SLICE_V2_FORMAT
+from spaghetti_extractor.util import sha256_text
+
+TESTKIT = {'resources': ('tests/fixtures/metapad-cleanup-save',)}
 
 
 def _payload() -> dict[str, object]:
@@ -115,7 +126,102 @@ def _payload() -> dict[str, object]:
     return {**core, "work_package_sha256": canonical_sha256_v3(core)}
 
 
+def _caller_payload():
+    payload = _payload()
+    payload['operations'][0]['service_ids'] = ['cleanup']
+    payload['requirements']['service_ids'] = ['cleanup']
+    payload['requirements']['caller_definition'] = {
+        'profile': 'finite-paired-caller-v1', 'component_id': 'fixture-component',
+        'entry_rva': 0x401000, 'unit_rvas': [0x401000], 'operation_id': 'run',
+        'service_id': 'cleanup', 'required_frame': ['edi'], 'native_memory': [],
+        'boundary': {}, 'native_calls': [], 'source_services': [{'id': 'cleanup'}],
+        'witnesses': {}, 'runtime_contracts': {},
+    }
+    payload['generated_files'].append({'path': 'caller-contract.json',
+        'sha256': sha256_text(caller_definition_text(payload))})
+    payload['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in payload.items() if k != 'work_package_sha256'})
+    return payload
+
+
 class ComponentWorkPackageV6Tests(unittest.TestCase):
+    def test_multiple_checked_supplier_declarations_survive_work_package_and_start(self):
+        from spaghetti_extractor.commands.component_start import component_start_plan
+        payload = _caller_payload()
+        definition = payload['requirements']['caller_definition']
+        del definition['service_id'], definition['required_frame']
+        definition['suppliers'] = {'cleanup': {'required_frame': ['edi']}, 'initialize': {'required_frame': ['eax']}}
+        definition['source_services'].append({'id': 'initialize'})
+        payload['operations'][0]['service_ids'].append('initialize')
+        payload['requirements']['service_ids'].append('initialize')
+        document = caller_definition_text(payload)
+        next(r for r in payload['generated_files'] if r['path']=='caller-contract.json')['sha256'] = sha256_text(document)
+        payload['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in payload.items() if k!='work_package_sha256'})
+        package = ComponentWorkPackageV6.parse(payload)
+        text = '\n'.join(caller_definition_inspection(package.payload))
+        self.assertIn("supplier: cleanup; requested frame facts: ['edi']", text)
+        self.assertIn("supplier: initialize; requested frame facts: ['eax']", text)
+        plan = component_start_plan(component_id='fixture-component', package=package.payload, target_path='caller.c')
+        self.assertEqual(plan['caller_definition']['suppliers'], definition['suppliers'])
+        self.assertFalse(plan['caller_definition']['authorizes_activation'])
+        definition['suppliers']['absent'] = {'required_frame': []}
+        with self.assertRaisesRegex(ComponentWorkPackageV6Error, 'service dependencies differ'):
+            caller_definition_text(payload)
+
+    def test_derived_caller_ownership_is_explicitly_incomplete(self):
+        definition = _caller_payload()['requirements']['caller_definition']
+        inventory = [{'rva_start': 0x401000, 'unit_id': 'owned'}, {'rva_start': 0x401010, 'unit_id': 'context'}]
+        binding = caller_editing_binding(definition, inventory)
+        self.assertEqual(binding.status, 'incomplete')
+        self.assertEqual(binding.operations[0].semantics.unit_ids, ('owned',))
+        self.assertEqual(binding.operations[0].semantics.transfer_ids, ('owned',))
+        self.assertEqual(binding.blockers[0]['code'], 'caller_definition_requires_local_check')
+        for rows in (inventory[1:], inventory + [inventory[0]]):
+            with self.assertRaisesRegex(ComponentWorkPackageV6Error, 'absent or ambiguous'):
+                caller_editing_binding(definition, rows)
+
+    def test_exact_presentation_source_rejects_stale_bytes_and_plan(self):
+        fixture = Path(__file__).parents[2]/'fixtures/metapad-cleanup-save/exact'
+        manifest = json.loads((fixture/'component-exact-c-slice-v1.json').read_text())
+        plan = manifest['bindings']['executable_transfer_plan_sha256']
+        _, value, rows = caller_exact_source_map(fixture, 'cleanup-save', plan)
+        self.assertEqual(set(rows), {r['unit_id'] for r in value['source_map']})
+        with self.assertRaisesRegex(ComponentWorkPackageV6Error, 'identity differs'):
+            caller_exact_source_map(fixture, 'cleanup-save', '0'*64)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'exact';shutil.copytree(fixture,root)
+            source=root/'behavioral-fn-00005c2a.c';source.chmod(0o600)
+            source.write_text(source.read_text()+'\n/* changed */\n')
+            with self.assertRaisesRegex(ComponentWorkPackageV6Error, 'source bytes differ'):
+                caller_exact_source_map(root,'cleanup-save',plan)
+
+    def test_caller_definition_is_bound_editing_data_not_proof(self):
+        payload = _caller_payload()
+        package = ComponentWorkPackageV6.parse(payload)
+        self.assertFalse(package.payload['authority'])
+        self.assertEqual(json.loads(caller_definition_text(payload)), payload['requirements']['caller_definition'])
+        # The envelope is intentionally not enough to run the caller checker:
+        # scope association in a work package never supplies semantic authority.
+        self.assertEqual(payload['requirements']['caller_definition']['boundary'], {})
+
+    def test_caller_definition_cannot_change_scope_or_materialized_identity(self):
+        for field, value, diagnostic in (
+            ('component_id', 'other', 'operation scope'),
+            ('operation_id', 'other', 'operation scope'),
+            ('unit_rvas', [0x401000, 0x401010], 'owned units'),
+            ('source_services', [], 'service dependencies'),
+        ):
+            with self.subTest(field=field):
+                payload = _caller_payload()
+                payload['requirements']['caller_definition'][field] = value
+                payload['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in payload.items() if k != 'work_package_sha256'})
+                with self.assertRaisesRegex(ComponentWorkPackageV6Error, diagnostic):
+                    ComponentWorkPackageV6.parse(payload)
+        payload = _caller_payload()
+        payload['generated_files'][-1]['sha256'] = '0' * 64
+        payload['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in payload.items() if k != 'work_package_sha256'})
+        with self.assertRaisesRegex(ComponentWorkPackageV6Error, 'materialized caller definition'):
+            ComponentWorkPackageV6.parse(payload)
+
     def test_package_is_non_authorizing_and_owns_only_slice_definitions(self) -> None:
         package = ComponentWorkPackageV6.parse(_payload())
         self.assertFalse(package.payload["authority"])

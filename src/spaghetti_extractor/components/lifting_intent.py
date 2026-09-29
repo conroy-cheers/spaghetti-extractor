@@ -54,7 +54,7 @@ class ComponentLiftingIntentV1:
             raise BoundaryModelError("component lifting intent identities are empty or duplicated")
 
         normalized_groups = tuple(
-            _group(item, index) for index, item in enumerate(groups)
+            normalize_lifting_group(item, index) for index, item in enumerate(groups)
         )
         group_ids = tuple(str(item["id"]) for item in normalized_groups)
         if len(group_ids) != len(set(group_ids)) or set(group_ids) & set(component_ids):
@@ -207,7 +207,7 @@ def _source(value: object, index: int) -> Mapping[str, object]:
     }
 
 
-def _group(value: Mapping[str, object], index: int) -> Mapping[str, object]:
+def normalize_lifting_group(value: Mapping[str, object], index: int) -> Mapping[str, object]:
     row = object_(value, f"component lifting group {index}")
     exact(row, {"id", "label", "members"}, "component lifting group")
     members = tuple(identifier(item, "component group member") for item in array(row["members"], "group members"))

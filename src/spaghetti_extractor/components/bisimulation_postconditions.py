@@ -14,6 +14,7 @@ from .component_c_v5 import _parameter_type, _result_type
 from .interface_package_v5 import CompiledComponentInterfaceV5
 from .machine_overlay_services_v5 import _c_identifier
 from .relation_ir import BOOL_SORT, LogicalPathV1, RelationExpressionV1, RelationSortV1
+from .relation_v5 import ComponentRelationIntentV1
 
 
 def _width(bundle: CompiledComponentInterfaceV5, type_id: str) -> int:
@@ -45,6 +46,31 @@ def scalar_postcondition_candidates(bundle: CompiledComponentInterfaceV5, operat
     predicate = RelationExpressionV1("or", BOOL_SORT, (
         RelationExpressionV1("not", BOOL_SORT, (terms[0],), {}), terms[1]), {})
     return [{"id": "zero-preserving", "expression": predicate.to_payload()}]
+
+
+def scalar_postcondition_requests(bundle, intent):
+    """Select exactly the authored exports, without silently adding found facts.
+
+    This checks declarations only. Each selected predicate still requires its
+    source theorem and the enclosing complete machine/source proof.
+    """
+    intent = ComponentRelationIntentV1.parse(intent.to_payload())
+    if (intent.component_id != bundle.interface.identity or
+            intent.status != "ready_for_check" or intent.blockers):
+        raise ValueError("scalar postcondition intent is not ready for this component")
+    selected = {operation.identity: [] for operation in bundle.interface.operations}
+    for operation in intent.operations:
+        operation_id = operation["operation_id"]
+        if operation_id not in selected or len(_signature(bundle, operation_id).results) != 1:
+            raise ValueError("scalar postcondition requires a known operation with one result")
+        for requirement in operation["requirements"]:
+            if (requirement["relation"] != "normal_exit_postcondition" or
+                    re.fullmatch(r"[a-z][a-z0-9-]*", requirement["id"]) is None):
+                raise ValueError("scalar postcondition request has an unsupported relation or identity")
+            render_scalar_postcondition(requirement["expression"], bundle=bundle,
+                operation_id=operation_id, result_expression="spx_requested_result")
+            selected[operation_id].append({key: requirement[key] for key in ("id", "expression")})
+    return selected
 
 
 def render_scalar_postcondition(
@@ -145,12 +171,14 @@ def _source(bundle, operation_id, symbol, predicate):
 def check_scalar_postconditions(
     *, bundle: CompiledComponentInterfaceV5, operation_symbols: Mapping[str, str],
     output: Path, inputs: Sequence[Mapping[str, object]], goto_cc: Path, cbmc: Path,
-    checker_options: Sequence[str], timeout_seconds: int,
+    checker_options: Sequence[str], timeout_seconds: int, candidates_by_operation=None,
 ) -> list[dict[str, object]]:
     """Check candidates after the same source has passed frame and control checks."""
     facts, attempts = [], []
     for operation_id, symbol in sorted(operation_symbols.items()):
-        for candidate in scalar_postcondition_candidates(bundle, operation_id):
+        candidates = (scalar_postcondition_candidates(bundle, operation_id)
+                      if candidates_by_operation is None else candidates_by_operation[operation_id])
+        for candidate in candidates:
             source, entry = _source(bundle, operation_id, symbol, candidate["expression"])
             path = output / f"postcondition-{_c_identifier(operation_id)}-{candidate['id']}.c"
             path.write_text(source, encoding="ascii")

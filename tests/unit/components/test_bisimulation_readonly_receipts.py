@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,7 +37,7 @@ class ReadonlyReceiptTests(unittest.TestCase):
             python = True
         except ValueError:
             python = False
-        jq = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_readonly_certificate"],
+        jq = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_readonly_certificate"],
                             input=json.dumps(value), capture_output=True, text=True)
         return python, jq.returncode == 0
 
@@ -79,7 +79,7 @@ class ReadonlyReceiptTests(unittest.TestCase):
                     else:
                         with self.assertRaises(ValueError):
                             validate_contextual_refinement_v2(proof, proof_plan=value["proof_plan"], exact_c_slice=value["exact_c_slice"])
-                    jq = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
+                    jq = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
                                         input=json.dumps(value), capture_output=True, text=True)
                     self.assertEqual(jq.returncode == 0, mutation is None, jq.stderr)
 

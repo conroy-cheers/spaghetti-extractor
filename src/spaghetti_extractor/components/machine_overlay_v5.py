@@ -6,13 +6,7 @@ from dataclasses import dataclass
 import hashlib
 from typing import Callable, Mapping, Sequence
 
-from ..artifacts.artifact_set import canonical_sha256_v3
-from ..boundary._canonical import BoundaryModelError, array, object_
-from ..external.resolved import (
-    ExternalEnvironmentError,
-    ResolvedExternalEnvironmentV1,
-    resolved_interface_method_index_v1,
-)
+from ..boundary._canonical import BoundaryModelError, object_
 from ..transfer.model import _Transfer
 from ..transfer.behavioral_c_render import behavioral_c_dispatch_abi_declarations
 from ..transfer.values import _c_string
@@ -21,9 +15,8 @@ from .machine_overlay_result_views import result_view_runtime_helpers, nullable_
 from .machine_overlay_state_views import state_view_result_lines
 from .interface_package_v5 import CompiledComponentInterfaceV5
 from .machine_storage import register_relative_address
-from .machine_overlay_logical_views_v5 import VIEW_CONTEXT_DECLARATION, bounded_view_argument_lines
+from .machine_overlay_logical_views_v5 import bounded_view_argument_lines
 from .machine_overlay_external_v5 import (
-    _checked_service_argument_transducers,
     _external_service_runtime_helpers,
     _external_service_thunk,
     _service_provider_declaration,
@@ -62,6 +55,8 @@ class ComponentMachineOverlayV1:
     source: str
     entries: tuple[Mapping[str, object], ...]
 
+
+from .machine_overlay_runtime_helpers import _view_runtime_helpers, _atomic_runtime_helpers
 
 def _common_owned_boundary_exit(exits, *, owned_units, transfer_index):
     """Find one observable outgoing edge, excluding owned internal branches.
@@ -188,6 +183,7 @@ def render_component_dispatch_registry_v1(
     *,
     entries: Sequence[Mapping[str, object]],
     portable_unit_rvas: Mapping[str, int],
+    retired_function_symbols: Sequence[str] = (),
 ) -> str:
     """Render the one strong module-wide dispatcher for selected V5 overlays."""
 
@@ -195,6 +191,8 @@ def render_component_dispatch_registry_v1(
         raise BoundaryModelError(
             "portable dispatch registry requires overlays and owned units"
         )
+    if len(set(portable_unit_rvas.values())) != len(portable_unit_rvas):
+        raise BoundaryModelError("portable dispatch unit RVAs overlap")
     normalized: list[tuple[int, str, str, str]] = []
     providers: dict[tuple[str, str], Mapping[str, object]] = {}
     covered: set[str] = set()
@@ -275,10 +273,36 @@ def render_component_dispatch_registry_v1(
                 raise BoundaryModelError(
                     "portable component service provider is absent or ABI-incompatible"
                 )
-    normalized.sort()
     declarations = [
         f"extern spx_step_result {symbol}(spx_runtime *, spx_machine_state *);"
         for _rva, symbol, _component, _operation in normalized
+    ]
+    # Ownership covers the interior too. It must never silently fall through to
+    # generated code merely because no proved adapter admits this entry.
+    rejected_symbol = "spx_portable_interior_rejected"
+    for row in providers.values():
+        for unit_id in row["owned_unit_ids"]:
+            rva = portable_unit_rvas[unit_id]
+            if rva != row["entry_rva"]:
+                normalized.append((rva, rejected_symbol,
+                                   str(row["component_id"]), str(row["operation_id"])))
+    if len({rva for rva, *_ in normalized}) != len(normalized):
+        raise BoundaryModelError("portable dispatch unit RVAs overlap")
+    normalized.sort()
+    retired = sorted(set(retired_function_symbols))
+    reserved = seen_symbols | seen_logical_symbols | {rejected_symbol,
+        "spx_region_overrides", "spx_region_override_count", "spx_region_override_lookup"}
+    if any(not symbol or _c_identifier(symbol) != symbol or symbol in reserved
+           for symbol in retired):
+        raise BoundaryModelError("retired generated function symbol is invalid")
+    # The retained, qualified dispatcher still references omitted routine
+    # objects. These ABI-compatible guards supply no original implementation;
+    # only the proved overlay entry above can execute a selected replacement.
+    retired_guards = [
+        f"spx_step_result {symbol}(spx_runtime *rt, spx_machine_state *state, uint32_t rva) {{\n"
+        "  (void)rt; (void)state;\n"
+        "  return (spx_step_result){ SPX_UNIMPLEMENTED, rva, 0U };\n}"
+        for symbol in retired
     ]
     table = [
         "  { UINT32_C(%d), %s, UINT32_C(0), %s, %s },"
@@ -298,6 +322,12 @@ def render_component_dispatch_registry_v1(
             *behavioral_c_dispatch_abi_declarations(),
             "",
             *declarations,
+            "",
+            f"static spx_step_result {rejected_symbol}(spx_runtime *rt, spx_machine_state *state) {{",
+            "  (void)rt; (void)state;",
+            "  return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+            "}",
+            *retired_guards,
             "",
             "const spx_region_override spx_region_overrides[] = {",
             *table,
@@ -445,6 +475,10 @@ def render_component_machine_overlay_v5(
         "  uint32_t *memory_fault;",
         "  uint32_t *service_fault;",
         "  struct { uint32_t physical_word; uint32_t target_rva; } callback_result;",
+        *([f"  struct {{ uint32_t value, fault; }} entry_targets[{max(1, len(interface.services))}];"]
+          if any(raw.get("provider", {}).get("target_sampling") == "operation_entry"
+                 for semantics in contract.machine_semantics
+                 for raw in semantics.machine_projection.get("service_bindings", [])) else []),
         "} spx_component_service_context_v1;",
         "",
         *(
@@ -1276,83 +1310,6 @@ def _view_projection_lines(
     ]
 
 
-def _view_runtime_helpers(*, need_read: bool, need_write: bool) -> list[str]:
-    lines = [
-        *VIEW_CONTEXT_DECLARATION.splitlines(),
-        "",
-    ]
-    if need_read:
-        lines.extend(
-            [
-                "static uint32_t spx_component_view_read(",
-                "    void *opaque, uint32_t offset, uint8_t *result) {",
-                "  spx_component_view_context *view = (spx_component_view_context *)opaque;",
-                "  uint32_t fault = 0U;",
-                "  if (view == 0 || result == 0 || view->runtime == 0 ||",
-                "      view->runtime->read == 0 || (view->permissions & UINT32_C(1)) == 0U ||",
-                "      (uint64_t)offset >= view->extent || offset > UINT32_MAX - view->address)",
-                "    return UINT32_C(1);",
-                "  *result = (uint8_t)view->runtime->read(",
-                "      view->runtime->context, view->address + (uint32_t)offset, UINT32_C(1), &fault);",
-                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
-                "}",
-                "",
-                "static uint32_t spx_component_view_read_span(",
-                "    void *opaque, spx_ref_v1 base, uint64_t offset, uint32_t width,",
-                "    uint64_t *result) {",
-                "  spx_component_view_context *view = (spx_component_view_context *)opaque;",
-                "  uint32_t fault = 0U;",
-                "  (void)base;",
-                "  if (view == 0 || result == 0 || view->runtime == 0 ||",
-                "      view->runtime->read == 0 || (view->permissions & UINT32_C(1)) == 0U ||",
-                "      width == UINT32_C(0) || width > UINT32_C(4) ||",
-                "      offset > view->extent || (uint64_t)width > view->extent - offset ||",
-                "      offset > UINT32_MAX - view->address)",
-                "    return UINT32_C(1);",
-                "  *result = (uint64_t)view->runtime->read(",
-                "      view->runtime->context, view->address + (uint32_t)offset, width, &fault);",
-                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
-                "}",
-                "",
-            ]
-        )
-    if need_write:
-        lines.extend(
-            [
-                "static uint32_t spx_component_view_write(",
-                "    void *opaque, uint32_t offset, uint8_t value) {",
-                "  spx_component_view_context *view = (spx_component_view_context *)opaque;",
-                "  uint32_t fault = 0U;",
-                "  if (view == 0 || view->runtime == 0 || view->runtime->write == 0 ||",
-                "      (view->permissions & UINT32_C(2)) == 0U ||",
-                "      (uint64_t)offset >= view->extent || offset > UINT32_MAX - view->address)",
-                "    return UINT32_C(1);",
-                "  view->runtime->write(view->runtime->context,",
-                "      view->address + (uint32_t)offset, UINT32_C(1), value, &fault);",
-                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
-                "}",
-                "",
-                "static uint32_t spx_component_view_write_span(",
-                "    void *opaque, spx_ref_v1 base, uint64_t offset, uint32_t width,",
-                "    uint64_t value) {",
-                "  spx_component_view_context *view = (spx_component_view_context *)opaque;",
-                "  uint32_t fault = 0U;",
-                "  (void)base;",
-                "  if (view == 0 || view->runtime == 0 || view->runtime->write == 0 ||",
-                "      (view->permissions & UINT32_C(2)) == 0U ||",
-                "      width == UINT32_C(0) || width > UINT32_C(4) ||",
-                "      offset > view->extent || (uint64_t)width > view->extent - offset ||",
-                "      offset > UINT32_MAX - view->address)",
-                "    return UINT32_C(1);",
-                "  view->runtime->write(",
-                "      view->runtime->context, view->address + (uint32_t)offset, width,",
-                "      (uint32_t)value, &fault);",
-                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
-                "}",
-                "",
-            ]
-        )
-    return lines
 
 
 def _atomic_projection_lines(
@@ -1369,42 +1326,6 @@ def _atomic_projection_lines(
     ]
 
 
-def _atomic_runtime_helpers() -> list[str]:
-    return [
-        "struct spx_atomic_object {",
-        "  spx_runtime *runtime;",
-        "  uint32_t address;",
-        "  uint32_t width;",
-        "};",
-        "",
-        "spx_atomic_status spx_atomic_compare_exchange(",
-        "    spx_atomic_object *object, uint32_t expected, uint32_t desired,",
-        "    spx_atomic_observation *observation) {",
-        "  uint32_t fault = 0U;",
-        "  if (object == 0 || object->runtime == 0 || observation == 0)",
-        "    return SPX_ATOMIC_UNSUPPORTED;",
-        "  spx_runtime_atomic_compare_exchange(object->runtime, object->address,",
-        "      object->width, expected, desired, &observation->observed,",
-        "      &observation->exchanged, &fault);",
-        "  observation->written = observation->exchanged != 0U",
-        "      ? desired : observation->observed;",
-        "  return fault == 0U ? SPX_ATOMIC_OK : SPX_ATOMIC_FAULT;",
-        "}",
-        "",
-        "spx_atomic_status spx_atomic_exchange(",
-        "    spx_atomic_object *object, uint32_t desired,",
-        "    spx_atomic_observation *observation) {",
-        "  uint32_t fault = 0U;",
-        "  if (object == 0 || object->runtime == 0 || observation == 0)",
-        "    return SPX_ATOMIC_UNSUPPORTED;",
-        "  spx_runtime_atomic_exchange(object->runtime, object->address, object->width,",
-        "      desired, &observation->observed, &fault);",
-        "  observation->written = desired;",
-        "  observation->exchanged = fault == 0U;",
-        "  return fault == 0U ? SPX_ATOMIC_OK : SPX_ATOMIC_FAULT;",
-        "}",
-        "",
-    ]
 
 
 def _projection_result(

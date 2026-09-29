@@ -135,6 +135,12 @@ def _projection_expression(value: object, *, state: str, read: str) -> str | Non
     mask = "" if width == 32 else f" & UINT32_C({(1 << width) - 1})"
     if kind == "offset":
         return register_relative_address(row, state=state)
+    if kind == 'flag':
+        from .machine_binding import MachineProjectionV1
+        flag = MachineProjectionV1.parse(row).payload['flag']
+        # Runtime flags occupy uint32 slots. Read the complete slot: masking
+        # would hide noncanonical values from the outgoing transport check.
+        return f'({state}.{flag})'
     if kind == "register":
         register = str(row.get("register"))
         if register not in {

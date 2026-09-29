@@ -14,7 +14,7 @@ from .portable_c_common import fail
 
 def check_provider_source_contracts(
     *, bundle, symbols, source, source_root, output, cbmc, timeout_seconds,
-    workspace, connected_components, proof_models,
+    workspace, connected_components, proof_models, postcondition_intent=None,
 ):
     if scalar_summary_operations(bundle) is not None:
         package_root = source_root if source_root.is_dir() else source_root.parent
@@ -26,6 +26,7 @@ def check_provider_source_contracts(
             goto_cc=Path(cbmc).with_name("goto-cc"),
             goto_instrument=Path(cbmc).with_name("goto-instrument"),
             cbmc=Path(cbmc), timeout_seconds=timeout_seconds, workspace=workspace,
+            postcondition_intent=postcondition_intent,
         )
     try:
         dependencies = ()

@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,7 +60,7 @@ class SharedAllocationFrameTests(unittest.TestCase):
                 elif mutation == 'static-extension': allocation.update(kind='image', lifetime='image')
                 expected = mutation == 'none'
                 self.assertEqual(authority_extension(child, changed), expected)
-                query = subprocess.run([shutil.which('jq'), '-e', program + '\nspx_image_authority_extension(.child; .parent)'],
+                query = run_jq_reader([shutil.which('jq'), '-e', program + '\nspx_image_authority_extension(.child; .parent)'],
                     input=json.dumps({'child': child, 'parent': changed}), text=True, capture_output=True)
                 self.assertEqual(query.returncode == 0, expected, query.stderr)
 

@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -54,7 +55,7 @@ class MutableCompositionTests(unittest.TestCase):
             python = True
         except ValueError:
             python = False
-        result = subprocess.run([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
+        result = run_jq_reader([shutil.which("jq"), "-e", self.program + "\nspx_contextual_proof_system"],
             input=json.dumps(value), text=True, capture_output=True)
         return python, result.returncode == 0
 

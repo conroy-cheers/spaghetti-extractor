@@ -1,5 +1,423 @@
 # Portable-C Contextual Bisimulation
 
+## Complete conditional callers as suppliers
+
+The public caller reader can derive `checked-finite-caller-paired-call-v1` facts
+from a complete, currently replayable `caller-comparison` theorem. This is a
+checked composition rule, not an alias for another certificate family. It binds
+the original transfer plan and body, derives scalar argument/return transport and
+proved register preservation, and retains the transitive runtime assumptions.
+The current rule accepts unsigned scalar arguments, void or scalar results and
+a single unconditional normal return. State/view transport and terminal outcomes
+outside this rule reject explicitly.
+
+Every explicit entry predicate and every initialized entry value's definedness
+becomes an assertion at the actual call. The pushed return word, incoming stack
+arguments and current memory have separate checked bindings. The callee's private
+output region must fit the enclosing private region, and its stack writes cannot
+silently preserve initialized caller storage. Declared native access and checked
+service footprints supply a conservative readable/writable memory footprint.
+Call-scoped returned ranges conservatively include memory outside their protected
+frame; an address alone supplies no heap contents or lifetime.
+
+Universally quantified boundary values may be bound through a supplier's typed
+`bindings` map. These are proof parameters, not extra production C arguments.
+Bindings may use enclosing entry values and paired scalar call arguments; they
+cannot import one side's current heap into the other side's effects. Derived
+footprints are evaluated at each call and use the existing byte/alias comparison
+and write-frame rule. Exporting a caller whose internal footprint depends on
+changing call arguments requires a checked enclosing-operation envelope; the
+reader currently rejects that case instead of substituting entry arguments.
+
+The consumed facts omit authored C bytes and proof identities. Current evidence
+must still validate before reuse. The three-level fixture checks body absence,
+transitive premises and unchanged proofs at both caller levels after growing a
+leaf implementation. Wrong code, entry restrictions (including implicit partial
+reads), missing register guarantees and overlapping caller stack writes reject.
+All resulting caller receipts remain conditional and non-authorizing; concrete
+runtime applicability, lifecycle effects and native admission remain obligations.
+
+## Operation-entry external target capture
+
+An external service binding can explicitly select `target_sampling:
+"operation_entry"`; omission or `"service_call"` preserves current sampling.
+The ordinary generated operation context captures the projected word and read
+fault once, before invoking authored C. Every service invocation uses that saved
+value. Context storage is per invocation, so nested operations do not overwrite
+their caller's capture. Typed proof thunks use the same generated capture and
+retain target equality and fault diagnostics. Target identity still requires the
+selected import/loader authority.
+
+The public finite caller derives sampling from its explicit runtime premise.
+Its immutable entry snapshot is checked against every actual native target and
+the paired source call trace. Initial snapshot reads require the declared memory
+access and public/private separation. Returned ranges and later service effects
+may overlap the slot; neither immutability nor fresh memory is inferred. Changing
+sampling invalidates exact reuse, and authored derived-field overrides reject.
+
+A resumed contextual region cannot initialize this state from its cut's current
+memory. Until a checked cut relation transports the original capture, that path
+rejects with `proof_service_entry_target_cut_transport_unsupported`. Complete
+finite caller/property checks still execute the original operation entry. This
+restriction is explicit missing transport, not an extra target-state assumption.
+
+## Conditional call-scoped returned views
+
+The public finite caller rule now transports each actual service-returned fixed
+byte range through an explicit `current-memory` / `until-next-call` premise.
+Extent and permissions come from the typed signature. Original accesses receive
+that invocation's grant; source access hooks use opaque tokens backed by separate
+checker metadata. Each subsequent service invocation revokes the grant. Equal
+and partially overlapping return addresses still observe the same sparse current
+bytes. No memory initialization, allocation identity, freshness or persistent
+lifetime is reconstructed from an address.
+
+The result premise explicitly separates the range from the private call frame.
+Additional typed separation spans are optional and remain unverified runtime
+premises. A checked available-span witness precedes assumptions on the returned
+address, so an empty result domain is rejected. Read permission on another view
+never implies separation or immutability. The small public caller checks cover
+correct current bytes, expired views, incorrect writes, impossible result domains,
+contract invalidation and exact reuse without model/compiler/solver execution.
+
+Void operations and runtime-only callers use the same complete original-scope
+and outcome checks. Conditional receipts still set activation and whole-component
+completion to false. This rule does not discharge concrete CRT/TLS contracts,
+release effects or native adapters. Earlier retained caller receipts below are
+historical when their producer binding predates this extension.
+
+## Caller-local byte objects in paired calls
+
+The paired-call runtime now has an explicit local-object transport rule. The
+enclosing checker supplies the complete checked readable/writable view inventory.
+Each local view uses actual C storage; invocation checks establish its accessible
+extent, permissions and liveness at the call. Escapes and lifetime transitions
+require separate composition rules. Overlapping local views must alias the same
+backing bytes. Local and sparse-world storage cannot be interchanged without a
+separate representation rule. A matching address or descriptor supplies neither
+contents nor such a rule.
+
+An arbitrary view-relative byte index compares current readable contents,
+including objects inside the caller's private frame. Every readable view is
+checked at that index; physical placement and alias correspondence are separate
+obligations. Original local writes are overapproximated by
+fresh bytes; snapshots taken after all writes preserve overlapping aliases when
+transporting the post-state to the source. Shared writes use the existing sparse
+world. Readonly and unborrowed bytes remain framed. Local snapshot capacity is an
+asserted resource bound (up to 256 bytes), not a silently narrowed input domain.
+Optional properties partition observations by actual call position and view;
+checked trace/view bounds ensure complete coverage.
+
+`checked_object_call_supplier` replays the existing live-object original/source
+evidence before exposing its ABI, private frame, shared views and runtime domain.
+The consumed contract identity excludes authored implementation bytes; evidence
+still binds the exact implementation. These facts do not grant activation.
+
+The finite caller can consume a service-keyed set of these checked suppliers.
+Each fact set is replayed independently, matched to its actual call target and
+used to derive that call's ABI, private frame, footprint and initialization spans.
+One service may bind several exact native sites. Its current supported object
+footprint and typed source mapping must agree across sites, while each site's
+argument projection, event identity and stack transport are checked separately.
+Repeated invocations use distinct trace positions and fresh coupled outcomes;
+neither the first invocation nor a zero-argument signature supplies the next
+invocation's state. Missing direct-call coverage and ambiguous dispatch reject.
+Declared runtime contracts must cover exactly the other services. The proof key
+binds the consumed facts of every supplier; current implementation receipts remain
+separate. A compatible edit to one supplier can therefore reuse the caller proof
+while an incompatible change identifies or rechecks its affected obligations.
+This extension supports normal-return live-object suppliers and their checked
+conditional terminal outcomes. No authored caller field can grant an outcome,
+footprint or initialization guarantee in place of checked supplier evidence.
+
+Conditional indirect external calls reuse the typed captured-target projection.
+Register targets are sampled from operation entry; image slots are read at the
+actual call. Native dispatch checks the original event and its actual code word,
+including readable-slot and stack obligations. The paired trace compares that
+code word per invocation as well as service identity, arguments and current
+readable contents. An earlier captured target and a current slot must be proved
+equal; the projection grants no slot-preservation fact. The runtime premise
+remains unverified, and code-word equality supplies neither import authority nor
+a returned view's contents, alias or lifetime relation.
+
+The generated `portable-component-local-bytes.h` now opens scoped byte views over
+ordinary C arrays. Shared external callbacks retain their identity across source
+and model translation units. The source-service adapter checks the live descriptor,
+owner, generation, permissions, real backing bytes and metadata frame, then passes
+the object to the paired-call rule. Owner identity is an opaque host token, not an
+original address; the enclosing checker must supply and prove that correspondence.
+Closing invalidates views while the owner remains live, without making escaped
+pointers safe after the C lifetime ends.
+
+The retained Hello consumer uses the complete `_quotearg_char_mem` body, an ordinary
+C local array and generated V5 service adapters through two actual calls and the
+return, with both setter bodies absent. All conditional proof partitions pass.
+The following quoting service still assumes normal return, a preserved frame and
+no local-view escape; its applicability and native realization remain unverified.
+Current evidence is under
+`build/hello-quoting-state-2026-09-21/local-view-adapter/`; the earlier facade and
+failed attempts remain in `local-object-caller/`.
+
+The subsequent public finite caller check accepts typed original private-byte
+storage and `boundary.local_views`. It derives the checked supplier's ABI, view
+footprint and private-write frame from current original/source evidence. A callee
+private write must be disjoint from observable public words as well as byte
+objects; unused private ABI slots follow the existing initialization rule.
+Native byte storage has separate data and initialization arrays. Each access
+proves its grant, backing bounds and readable initialization before using them;
+the complete compiled assertion inventory includes every such obligation.
+
+The full symbolic-stack Hello caller passes the public partitioned checker in
+232.096s. Its retained receipt replays against current inputs and producer with
+tool execution forbidden. Explicit exact-slice summary boundaries retain both
+actual calls and return continuations while excluding both callee bodies.
+Evidence is under `build/hello-quoting-state-2026-09-21/public-object-caller/`.
+This establishes conditional public local checking, not native qualification.
+An actual compatible supplier implementation edit now preserves these checked
+facts and reuses the complete caller proof with zero caller model/compiler/solver
+work. Wrong edited C fails original equivalence; a locally checked weaker frame
+with the same signature is rejected for its missing EBX-preservation guarantee.
+The following service's outcomes, no-escape/lifetime applicability, the second
+constructor caller and native admission remain required. The complete-pair and
+whole-target obligations are unchanged.
+
+The public finite caller interface now has a separate implemented rule for fixed
+shared state views. Its single view inventory covers operation parameters and
+qualified `state.FIELD` mappings. Both use the same current physical byte world,
+so overlapping views retain aliases and dependency writes remain visible. State
+metadata and its backing runtime are checked after the operation, and supplied
+state descriptors are checked at service boundaries. This admits readable or
+read/write fixed non-null byte views with no initial-value claim, in an unchanged
+single protocol state. It establishes neither allocation/lifetime transitions nor
+caller-local storage correspondence. Existing effects and lifecycle restrictions
+remain enforced, and supplier facts still require the independent evidence reader.
+
+## Conditional original equivalence for live input objects
+
+`live-object-original-source-comparison-v1` extends the existing conditional
+original/source checker to the object-view source domain, with service-free leaves
+and the explicit conditional terminal-service rule below. It reuses
+the same evidence boundary and exact-slice checks, source certificate validation,
+compiler input inventories and retained complete CBMC query. The old borrowed
+image transition reader rejects this new policy. No qualified provider, connected
+summary or native object-authority reader is broadened.
+
+The compared leaf has one complete bound entry and no call closure or unowned
+continuation. This initial machine rule accepts unsigned 32-bit scalar arguments
+and results (or void), and distinct entry-stack or general-register inputs. Fixed shared views use unchanged
+image projections. Nullable inputs
+use their declared remaining-origin projection and minimum requested extent; raw
+arguments occupy distinct admitted entry-stack words. Current bytes and physical
+aliases are shared across the original and authored sides. An arbitrary final
+address checks post-memory equality. The original executes the retained
+Behavioral-C body with separate arbitrary private bytes, checked read/write
+ranges, a related return word and exact normal return/architectural frame.
+
+Non-null fixed parameter views also support write-only permissions. Optional
+normal-return initialization spans are checked against actual byte-write events
+on both sides; service may-write events are not witnesses. These spans are bound
+by the regenerated paired model and complete original/source evidence. A source
+frame or input-dependence certificate alone grants no initialization guarantee.
+The checked caller transports only these proved spans into its original private
+initialization map, after a successful paired invocation. Missing or weaker
+guarantees leave subsequent original reads unproved. Void source services consume
+no machine result field, and register arguments retain their checked entry ABI.
+Initialization alone grants no termination, allocation or escaping-lifetime fact.
+
+Explicit `terminal_services` in the Python source-check entry point (SDK
+`terminalServices`) admit a
+restricted conditional service rule: one operation, zero-argument void services,
+no effects or lifecycle bindings, and named `unverified` termination premises.
+Original comparison also requires exact `service_bindings` for the import events.
+A void signature does not imply termination. Every normal-return, current-memory,
+frame and progress obligation remains; initialization guarantees apply only to
+normal returns. A terminating source invocation checks the corresponding outcome
+and public memory before stopping, including when it is the first invocation of
+the dependence product. Code after that boundary is unreachable under the explicit
+premise; pre-boundary violations remain failures. The original must propagate the
+checked terminal outcome, rather than silently losing its nominal continuation.
+
+The resulting facts retain the service premises. They do not prove concrete CRT,
+signal or handler effects, private-frame irrelevance to termination observations,
+or native runtime applicability. The finite caller now carries these premises in
+the consumed supplier contract. Its original invocation chooses a normal outcome
+or one of the checked supplier's terminal service identities; the paired source
+invocation consumes the same choice after checking the call identity, arguments,
+object correspondence and current readable bytes. The choice overapproximates
+the supplier and does not export an unproved condition on its arguments.
+
+On termination, native dispatch returns `SPX_CALL_NONLOCAL` before applying any
+normal register or stack guarantees. No normal initialization span is transported.
+The source stopping callback checks the complete paired call prefix, terminal
+identity, original nonlocal result and final public memory. It also checks the
+same context, service table and backing-view frames as normal return, through
+captured pointers to the still-live source invocation objects. It then ends that
+proof path. Later calls are rejected; normal source return requires no outstanding
+terminal outcome. No source rewriting or production continuation API is used.
+
+Small tests cover both outcomes, changed public prefixes, post-termination calls,
+temporarily corrupted source contexts, weakened initialization and exact evidence
+binding. The real full constructor and character setter now compose in the complete
+`_quotearg_n_style_colon` consumer through the public SDK; their bodies are absent.
+A compatible setter edit retains identical caller proof bytes with zero caller
+model/compiler/solver work. The following quote service and concrete terminal
+runtime remain explicit unverified premises; connected native admission is open.
+
+The explicit domain assumes incoming objects remain live and visible spans are
+disjoint from private callee storage. It does not infer creation, ownership,
+expiration or escape from a pointer. Both null input and the real Hello caller's
+48-byte options object at callee ESP+20 have admission witnesses. The actual
+caller-prefix experiment separately checks the full copy and arguments at the
+setter call. The subsequent caller experiment above exercises local transport;
+the public checked caller transition and activation evidence remain unfinished.
+Native-ingress `captured_stack` rules cannot silently be
+reused for internal calls that lack the corresponding ingress frame.
+
+The existing SAT backend and optional bound SMT partitions check this domain;
+query evidence binds exact options and tools. Safety, frame, event-capacity and unwinding obligations remain
+mandatory. An incorrect scalar result and an incorrect final byte are rejected
+even when the same source passes its local frame/dependence checks.
+
+Object models may observe one arbitrary physical byte incrementally as events
+are appended. The observer and history reader use the same event update function;
+an initialization flag records only actual non-service writes covering that byte.
+Harness initialization supplies the incoming byte and a clear flag. Reads still
+use sparse current memory, including overlapping aliases. The source/original
+checks quantify over the observed address; they neither choose a convenient byte
+nor infer initialized contents from a view. Normal initialization claims apply
+to this arbitrary address only on normal return. The compiled base/append
+regression checks both observer invariants against the history definitions.
+
+When a bound SMT solver is requested, source dependence and object original/C
+comparison use the contextual engine's complete property partition policy.
+Receipts retain the compiled assertion sites, language-safety and loop inventories,
+the exact query outputs and the solver identity. The shared reader replays this
+coverage without launching a compiler or solver. A missing query or weakened
+policy cannot be replaced by a successful status field. This uses the existing
+local-contract and original-comparison artifacts; it adds no activation authority.
+
+## Local object-view source premise
+
+`object-view-source-frame-dependence-v1` is an auxiliary source theorem using the
+existing memory-contract evidence format and public source-check path. Its domain
+has fixed shared byte views, nullable remaining-origin byte parameters, one
+protocol state, no effects and scalar or void results. Services require the
+explicit restricted terminal rule above. The canonical
+interface, authored source, generated models, tools, property inventory and
+retained outputs are bound and revalidated. Existing mutable/shared connected
+summary readers reject this policy: no source-only certificate grants body
+omission, machine equivalence or activation.
+
+The two source executions share logical metadata and arbitrary initial physical
+bytes. Each retains its own sparse write history. Different logical origins may
+overlap; identical live origins must have consistent physical placement, extent
+and permissions. Reads see the most recent overlapping writes. Production
+reference accessors enforce offset, generation and permission behavior; the
+declared readable/writable union is checked separately. An arbitrary address
+checks final-memory dependence without enumerating the heap. Frame instrumentation
+protects context, view and transport metadata. Null descriptors remain all-zero,
+and a larger native origin never silently enlarges a fixed shared frame.
+
+The event capacity and source unwind limits are checked resource bounds.
+They do not restrict admitted inputs or prove an incoming object's lifetime.
+Actual caller memory, runtime authority, call/return transport and machine frames
+remain outstanding premises before this domain can support a connected summary.
+The real three-operation Hello quoting source and negative cases exercise the
+local rule in `tests/fixtures/hello-quoting-state/`.
+
+## Multiple operations in one C translation unit
+
+Each operation owns its proof markers. When a shard checks one operation,
+`SPX_PROOF_BEGIN` and `SPX_PROOF_SYNC` in neighboring operation bodies retain their
+production no-op behavior. Their ordinary C statements, calls and effects remain
+present. Reusing a cut name with different captures in another operation does not
+instrument that neighbor with the active operation's relation or terminate its
+execution at the wrong barrier. The proof plan still validates every operation's
+own marker inventory, and complete qualification still requires all operations.
+
+Preparation retains the generated source bytes in the existing proof diagnostics,
+preserves source-relative quoted headers and binds those inputs in the ordinary
+model receipt. Comments and literals do not create function definitions or markers.
+This is a local annotation transformation, not body-free composition. The real
+Hello quoting get/set component exercises both operations in one file; a small
+CBMC negative verifies that a called neighbor's incorrect result still fails the
+selected operation's cut relation.
+
+## Condition flags at internal cuts
+
+Cutpoint relations can project the current `cf`, `zf`, `sf`, `of`, `pf` and `df`
+slots with `{"kind":"flag","flag":"cf","at":"entry"}`. The projection has no
+`width` field. Unknown flags, extra fields and invalid phases reject through the
+ordinary machine-projection parser. This adds flag transport to proof cuts;
+production operation-parameter/result lowering still rejects unsupported flag
+bindings.
+
+The runtime represents each flag in a 32-bit slot. The cut reader compares the
+entire slot, without masking away high bits. A derived Boolean condition should
+therefore encode its result as `ite(condition, 1, 0)`. The outgoing predecessor
+must prove this relation before the successor can assume it. Declaring the
+relation or reconstructing the other registers does not establish the flag.
+
+The real Hello lowercase split at RVA `0x934a` needs carry to select the converted
+value. Its public split/merge proofs pass, retain the same complete operation
+coverage and produce identical production objects. A wrong carry relation fails
+at the predecessor; removing that relation lets the predecessor pass but makes
+the successor result fail. Both invalid providers remain unqualified. Small CBMC
+tests also reject a flag slot containing `3`, so its low bit cannot hide invalid
+transport. Both strong readers accept the valid real proofs. See
+`build/hello-loop-header-2026-09-20/semantic-cut-refinement/validation.json`.
+
+These are internal proof regions within one component. They introduce no
+production function boundary. The unchanged checked scalar contract permits
+the actual caller proof to reuse across the split/merge with zero model,
+compiler or solver work; the current combined native link still requires both
+complete qualifications. Ownership-changing splits and loop progress remain
+separate obligations.
+
+## Checked call-completion hints
+
+An operation's bisimulation intent may include `call_completion_lemmas` alongside
+its `syncs`. This is an optional proof optimization for unconditional, checked
+scalar body-free dependencies. It does not change the component interface, C
+implementation, admitted inputs or replacement ownership. For example:
+
+```json
+"call_completion_lemmas": [{
+  "id": "converted_pair",
+  "start_sync": "scan",
+  "target_sync": "decide",
+  "component_id": "ascii-to-lower",
+  "operation_id": "convert",
+  "completed_calls": 2
+}]
+```
+
+The hint asks the engine to prove that completing the specified number of calls
+in the exact region implies a normal successor at the named outgoing cut. It does
+not claim that the calls necessarily complete. The start and target must be
+existing cuts; the supplier operation must have an unconditional checked scalar
+summary, and the count must fit its checked transcript capacity. IDs are unique,
+sorted C identifiers. Unsupported contracts and non-outgoing targets reject.
+
+The generated helper asserts the implication immediately after exact execution
+and only then assumes it for subsequent source-side checking. Its separately
+required assertion uses SAT on the same compiled model; ordinary queries retain
+their configured backend. The model, command policy, assertion site and query
+evidence remain bound through the existing proof packet and Python/Nix readers.
+Safety, unwinding, nonvacuity and final qualification remain required. A fault
+after completed calls can falsify the implication, and incomplete calls supply
+no successor guarantee. Removing a hint removes its assertion and assumption.
+There is no automatic fallback: an unproved hint leaves the proof violated or
+incomplete; the operator may remove it and recheck the ordinary model.
+
+Small execution and reader tests cover valid implications, wrong successors,
+faults, incomplete calls, missing queries and altered evidence. Real Hello
+adoption remains pending the complete caller, compatible edit/reuse and combined
+native-admission checks tracked in [the current goal](current-goal.md). The
+retained diagnostic timings alone do not authorize this optimization in a target.
+
+## Earlier connected-network evidence
+
 The [Metapad milestone audit](baselines/2026-09-14-independent-component-milestone.md)
 records the completed small-network conditional proof/edit/refine/reuse demonstration.
 It separates trusted runtime contracts and finite validation from strong authority,
@@ -1147,7 +1565,75 @@ retain their existing entry-ESP interpretation; they do not demonstrate stable
 invocation-scope transport. Recursive or dynamically changing frames need further
 checked per-instance rules before this profile can represent them.
 
-This rule transports allocation metadata and current memory. It does not import
+A sync with an explicit ESP-relative scope can additionally declare
+`"preserved_parameter_slots": ["left", "right"]`. Names must be sorted and
+unique, referring to `parameter` captures in `machine_codec` mode whose `view`
+or `bytes_view` base is an aligned 32-bit stack slot at offset -1024 through
+4092. This is a checked physical write frame for the four pointer-storage bytes
+of each named capture. It does not establish preserved pointee contents or
+lifetime, or a general ownership/borrowing rule.
+
+In a region resumed from that sync, every exact-world store must be disjoint
+from those slots, including partial overlaps and stores of the same value.
+`spx-bisimulation-preserved-parameter-slot-writes:<sync>` checks this and
+nonwrapping slot coordinates. At a successor with the same explicit ESP-relative
+scope projection, the existing checked private-stack-scope equality establishes
+the unchanged ESP anchor. Only then may outgoing projections reuse input slot
+values, including across distinct cut markers. The frame belongs to the starting
+region; the successor need not declare a frame for its own future writes.
+Ordinary output-read validity, native metadata, extent, context, memory and
+lifetime checks still apply. A different scope offset or register uses ordinary
+projections: equal invocation scope alone would not establish equal ESP in that
+case. False frame/scope claims reject;
+neither annotation nor successful frame checks alone authorize activation.
+
+The initial implementation supports a single-function regional harness with
+unconditional `scalar-body-free-v1` dependencies. Allocation/history, memory-fact,
+mutable-summary, runtime-assurance and external-service effect paths reject
+when this frame is selected; extending it requires checked coverage of those
+effects. Both proof readers bind operation and segment metadata
+`parameter_slot_frame_policy: checked-preserved-parameter-slots-v1` and require
+the write guard on the annotated resumed obligation. The existing intent/plan
+identity binds the annotation; no separate proof authority is introduced.
+
+Outgoing scalar machine-codec encodings and roundtrip decodings can reuse a
+view address already checked at that same cut. The generated checks must still
+establish the current descriptor's metadata, extent, context and lifetime before
+the expression consumes that address; an unchecked view retains ordinary
+realization. The scalar projection and roundtrip equality remain assertions,
+including when an authored decoder is wrong. This reuse does not extend across
+cuts or implementation effects. Incoming restoration retains ordinary decoding:
+restoring another capture can modify aliased state before all descriptors have
+been revalidated.
+
+Direct view-address checks in cut macros receive distinct helper functions per
+call site. Each helper has the same validation, assertion and assumption as the
+ordinary address helper. This separates CBMC property identities when several
+calls would otherwise become one large query; it neither removes checks nor
+assumes a previous call remains valid. Runtime helpers retain their ordinary
+checks. The existing compiled-property inventory, query evidence and complete
+regional proof requirements cover every generated site. Helper splitting grants
+no separate authority, changes no component boundary and adds no production API.
+
+Cut invariants can use `{"op":"nul_extent","name":"text"}` for a canonical
+captured NUL-view parameter. This is the existing checked terminator-witness
+extent, including its zero byte, at the view's current machine address. It is
+distinct from `byte_extent`, which reports the view's readable capacity, and is
+not a new runtime `strlen` operation or a claim that this is the first zero.
+The existing view-admission checks establish a nonzero witness within the origin
+and a zero byte at its end in both worlds; outgoing cuts must preserve those
+facts. Use on an undeclared/noncanonical NUL view rejects. The new expression
+adds no assumptions or authority beyond those existing checks.
+
+For a scan that stops at zero, `offset < nul_extent(text)` retains the required
+progress fact even when the origin continues past the terminator. A marker may
+spell this proof-only annotation as `offset < SPX_PROOF_NUL_EXTENT(text)` inside
+`SPX_PROOF_SYNC`; the canonical invariant is in the intent. Marker annotations
+are erased from production C. Every predecessor still proves the invariant and
+the resumed region assumes it; coverage, nonvacuity and progress remain required.
+
+The private-stack-scope rule transports allocation metadata and current memory.
+It does not import
 an arbitrary logical-origin registry, reconstruct an arbitrary source-local view,
 or establish a real caller's ownership premise. Existing checked reference
 decoders and capture rules still apply. Unsupported local descriptors remain
@@ -1772,15 +2258,16 @@ does not establish a restricted read footprint. Existing
 ABI-only string profiles are unchanged; a proposed relation is not evidence
 about the external implementation or a selected native environment.
 
-Typed external adapters admit `captured_target_projection` only for the existing
-32-bit `static_slot` projection with `at: "entry"`. The semantic entry guard
-retains its entry projection meaning; generated native and proof adapters read
-the current image slot when called. Checked address arithmetic, readable public
-memory and a nonnull word precede dispatch. The paired call-target assertion
-must prove that this current word equals the original call target, including
-when the original loaded it earlier into a register. Equal final memory alone
-cannot discharge that assertion. Both readers bind the target renderer and
-projection parser. Register and stack recipes remain rejected with
+Typed external adapters admit `captured_target_projection` for complete 32-bit
+`static_slot` or general-register projections with `at: "entry"`. The semantic
+entry guard retains its entry projection meaning. Generated native and proof
+adapters default to their existing service-context register/current image-slot
+reads; explicit operation-entry sampling uses the saved word described above.
+Checked address arithmetic, readable memory and a nonnull word precede dispatch.
+The paired call-target assertion must prove that the selected word equals the
+actual original target. Equal final memory alone cannot discharge that assertion.
+Both readers bind sampling, the target renderer and projection parser. Stack
+recipes remain rejected by the typed proof rule with
 `proof_service_captured_target_unsupported`; interface methods retain their
 separate rule. Native import identity still requires the selected dispatcher
 capability check; a slot word does not authorize a DLL implementation.
@@ -2273,6 +2760,13 @@ in the exact compiler frame. The assumption does not prescribe any object or
 target value, and target identity is still compared against the exact recorded
 indirect call. It records
 `external_interface_storage_disjoint_private_stack` in the authority receipt.
+Native interface registration enforces the declared image/stack separation for
+both returned object and vtable spans before registering either. Generated-C
+regressions cover partial overlaps, wrapping spans, nullability and the actual
+private-stack counterexample. This runtime geometry check does not itself prove
+backing, preserved contents or lifetime. The current native-module provider still
+has an unresolved response-domain mismatch; the receipt policy flag alone does
+not discharge that obligation. See the [current validation audit](practical-lifting-validation.md).
 The proof-world renderer also supports explicit shared spans within a stack
 window. The ordinary harness derives each non-null parameter view span from its
 canonical machine projection and resolved full reference extent, including

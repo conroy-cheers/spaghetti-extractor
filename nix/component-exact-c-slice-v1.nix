@@ -7,9 +7,12 @@
   bindingIntent,
   dependencyBindingIntents ? { },
   bisimulationIntent ? null,
+  summaryEntryRvas ? [ ],
   namePrefix,
 }:
 
+assert builtins.isList summaryEntryRvas && builtins.all
+  (rva: builtins.isInt rva && rva >= 0 && rva < 4294967296) summaryEntryRvas;
 let
   dependencyIds = builtins.sort builtins.lessThan (
     builtins.attrNames dependencyBindingIntents
@@ -50,6 +53,7 @@ let
               for component_id in ${builtins.toJSON dependencyIds}
           },
           bisimulation_intent=inputs.get("bisimulation_intent"),
+          summary_entry_rvas=${builtins.toJSON summaryEntryRvas},
           out=output.parent,
       )
     '';

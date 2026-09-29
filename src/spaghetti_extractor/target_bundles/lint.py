@@ -28,6 +28,7 @@ TARGET_ASSET_ROLES = frozenset(
         "component_machine_binding",
         "component_induction",
         "component_bisimulation_intent",
+        "component_caller_definition",
         "component_relation",
         "component_relation_intent",
         "call_intent",

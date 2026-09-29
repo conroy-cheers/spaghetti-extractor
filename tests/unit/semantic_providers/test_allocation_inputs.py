@@ -20,7 +20,7 @@ from spaghetti_extractor.semantic_providers.allocation_inputs import allocation_
 from spaghetti_extractor.semantic_providers import portable_c_work_package as provider
 from spaghetti_extractor.transfer.model import _Action, _Call, _Transfer, TransferPlanError
 from tests.unit.candidate.test_runtime_contract_identity import selected_row
-from tests.unit.components.test_machine_overlay_v5 import _resolved_environment
+from tests.unit.components.machine_overlay_fixture import _resolved_environment
 
 TESTKIT = {"fixtures": (), "resources": ("profiles/pe32-kernel32-runtime-v1.json",)}
 

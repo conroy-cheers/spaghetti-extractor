@@ -6,6 +6,12 @@ lifting workflow. Its stages require evidence of implementation and do not autho
 
 Implementation sequencing now follows the [independent lifting plan](independent-portable-lifting-plan.md). Its decomposition and proof-reuse experiments preserve the outcomes and retained milestones in this roadmap.
 
+The 2026-09-15 [practical lifting design](practical-independent-lifting-design.md)
+further separates useful independent development from strong qualification. It
+proposes local differential validation, optional focused proofs and an explicit
+experimental execution route. The existing qualified route remains unchanged;
+the new route is design work, not a currently available execution permission.
+
 ## Outcome and scope
 
 An operator can import an unfamiliar native IA-32 PE32 application, inspect a

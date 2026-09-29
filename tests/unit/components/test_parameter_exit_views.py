@@ -2,6 +2,7 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
 import subprocess
 import tempfile
@@ -190,7 +191,7 @@ class ParameterExitViewTests(unittest.TestCase):
             if missing:changed['required_assertion_descriptions']=[]
             if missing:
                 with self.assertRaisesRegex(ValueError,'checked machine output'):validate_parameter_exit_model(exits,changed)
-            checked=subprocess.run([shutil.which('jq'),'-e',jq+'\n.model | spx_parameter_exit_model('+json.dumps(exits)+')'],
+            checked=run_jq_reader([shutil.which('jq'),'-e',jq+'\n.model | spx_parameter_exit_model('+json.dumps(exits)+')'],
                 input=json.dumps({'model':changed}),text=True,capture_output=True)
             self.assertEqual(checked.returncode,1 if missing else 0,checked.stderr)
 

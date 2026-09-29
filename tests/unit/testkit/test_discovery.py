@@ -322,6 +322,26 @@ list(PROFILES.glob(\"*.json\"))
             with self.assertRaises(TestkitError):
                 build_impact_index(root)
 
+    def test_caller_definition_labels_are_not_filesystem_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            document = {"profile": "finite-paired-caller-v1", "component_id": "example", "operation_id": "run",
+                        "entry_rva": 16, "unit_rvas": [16], "service_id": "dependency", "required_frame": [],
+                        "boundary": {}, "native_calls": [], "source_services": [], "witnesses": {},
+                        "runtime_contracts": {}, "native_memory": [{"storage": "private"}]}
+            _write(root, "caller.json", json.dumps(document))
+            _write(root, "private/unrelated.bin", "before")
+            _write(root, "tests/unit/config/test_caller.py", 'TESTKIT = {"resources": ["caller.json"]}\n')
+            before = build_impact_index(root).tests[0]
+            self.assertEqual(before.resources, ("caller.json",))
+            _write(root, "private/unrelated.bin", "after")
+            self.assertEqual(before.input_sha256, build_impact_index(root).tests[0].input_sha256)
+            document["input_path"] = "private/unrelated.bin"
+            _write(root, "caller.json", json.dumps(document))
+            with self.assertRaises(TestkitError) as failure:
+                build_impact_index(root)
+            self.assertEqual(failure.exception.diagnostics[0].code, "invalid_caller_definition")
+
     def test_transitive_module_owned_resources_are_discovered_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))

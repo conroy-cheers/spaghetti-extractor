@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 from ..errors import ToolkitInputError
@@ -21,6 +22,7 @@ _PROJECT_PRODUCTS = {
 _COMPONENT_PRODUCTS = {
     "interface", "bindingIntent", "sourcePackage", "semanticSlice",
     "workPackage", "qualification", "sourceCheck", "sourceContractCheck", "sourceEditCheck", "conditionalCheck", "conditionalCheckFor",
+    "proofCheckFor",
 }
 _BOUNDARY_PRODUCTS = {"source", "intent", "check"}
 _BOUNDARY_KINDS = {"checked_protocol", "checked_schema", "component"}
@@ -28,7 +30,7 @@ _LIBRARY_PRODUCTS = {
     "status", "check", "catalogSearchIndex", "targetSignatureGraph",
     "releaseHypotheses",
 }
-_CANDIDATE_PRODUCTS = {"selection", "realization"}
+_CANDIDATE_PRODUCTS = {"selection", "realization", "selectionFor", "realizationFor"}
 _CANDIDATE_MODES = {"faithful", "hybrid", "portable"}
 
 
@@ -90,7 +92,17 @@ def parse_operator_index_v1(value: object) -> dict[str, Any]:
     _products(project["products"], _PROJECT_PRODUCTS, "operator project index")
 
     components = _object(payload["components"], "operator component index")
-    _exact(components, {"products", "units"}, "operator component index")
+    _exact(components, {"products", "units"} | ({"authoringPaths"} & set(components)), "operator component index")
+    if components.get('authoringPaths') is not None:
+        paths = _object(components['authoringPaths'], 'component authoring paths')
+        _exact(paths, {'intent', 'interface_index', 'binding_index'}, 'component authoring paths')
+        for name, value in paths.items():
+            _string(value, f'component authoring path {name}')
+            path = PurePosixPath(value)
+            if not path.parts or path.is_absolute() or path.as_posix() != value or any(part in {'.', '..'} for part in path.parts):
+                raise ToolkitInputError('component authoring paths must be canonical relative paths')
+        if len(set(paths.values())) != len(paths):
+            raise ToolkitInputError('component authoring paths must be distinct')
     _products(components["products"], {"proposals"}, "operator component index")
     units = _identifier_map(components["units"], "operator component units")
     rva_owners: dict[int, str] = {}

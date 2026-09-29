@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -76,7 +76,7 @@ class SourceLoopTests(unittest.TestCase):
                 changed["property_checker_command"]["assertion_arguments"].remove("--no-self-loops-to-assumptions")
             elif mutation == "coverage":
                 changed["nonvacuity_checker_command"]["queries"][0]["arguments"].remove("--no-self-loops-to-assumptions")
-            checked = subprocess.run([shutil.which("jq"), "-e", module.read_text()+"\nspx_source_unwind_commands"],
+            checked = run_jq_reader([shutil.which("jq"), "-e", module.read_text()+"\nspx_source_unwind_commands"],
                 input=json.dumps(value), text=True, capture_output=True)
             self.assertEqual(checked.returncode, 0 if mutation is None else 1, checked.stderr)
 

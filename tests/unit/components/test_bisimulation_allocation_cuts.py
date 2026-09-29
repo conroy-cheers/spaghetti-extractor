@@ -2,8 +2,8 @@
 
 import copy
 import json
+from .jq_reader import run as run_jq_reader
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -238,6 +238,6 @@ void main(void) {
             value = copy.deepcopy(document)
             if bad:
                 value["proof"]["models"]["operation_models"][0]["obligation_models"][0]["required_assertion_descriptions"] = []
-            result = subprocess.run([shutil.which("jq"), "-e", module.read_text()+"\nspx_cut_capture_codecs"],
+            result = run_jq_reader([shutil.which("jq"), "-e", module.read_text()+"\nspx_cut_capture_codecs"],
                 input=json.dumps(value), text=True, capture_output=True)
             self.assertEqual(result.returncode, 1 if bad else 0, result.stderr)

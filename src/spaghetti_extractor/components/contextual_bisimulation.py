@@ -17,6 +17,7 @@ from .bisimulation import (
     COMPONENT_PROOF_PLAN_V1_FORMAT,
     CONTEXTUAL_REFINEMENT_V2_FORMAT,
     ComponentBisimulationError,
+    _mask_comments_and_literals,
 )
 from .bisimulation_support import (
     assertion_policy_option,
@@ -42,24 +43,67 @@ from .formats import (
 )
 
 
-def operation_source_text(source: str, symbol: str) -> str:
-    """Return one C function definition for proof-marker validation."""
-
+def _operation_source_ranges(source: str, symbol: str) -> list[tuple[int, int]]:
+    """Locate definitions in the restricted profile without scanning literals."""
+    clean = _mask_comments_and_literals(source)
     pattern = re.compile(rf"\b{re.escape(symbol)}\s*\(")
     candidates = []
-    for match in pattern.finditer(source):
-        opening = source.find("(", match.start())
-        closing = _balanced(source, opening, "(", ")")
+    for match in pattern.finditer(clean):
+        opening = clean.find("(", match.start())
+        closing = _balanced(clean, opening, "(", ")")
         body = closing + 1
-        while body < len(source) and source[body].isspace():
+        while body < len(clean) and clean[body].isspace():
             body += 1
-        if body < len(source) and source[body] == "{":
-            candidates.append(source[match.start() : _balanced(source, body, "{", "}") + 1])
+        if body < len(clean) and clean[body] == "{":
+            candidates.append((match.start(), _balanced(clean, body, "{", "}") + 1))
+    return candidates
+
+
+def operation_source_text(source: str, symbol: str) -> str:
+    """Return one C function definition for proof-marker validation."""
+    candidates = _operation_source_ranges(source, symbol)
     if len(candidates) != 1:
         raise ComponentBisimulationError(
             f"operation symbol {symbol!r} has {len(candidates)} source definitions"
         )
-    return candidates[0]
+    start, end = candidates[0]
+    return source[start:end]
+
+
+def operation_proof_source(source: str, *, active_operation: str,
+                           symbols: Mapping[str, str]) -> str:
+    """Keep proof barriers local to their operation, including shared cut names.
+
+    Every operation's own marker inventory is validated by the proof plan.
+    While checking one operation, markers in its neighbors have their ordinary
+    production no-op meaning. Their bodies, calls and side effects remain intact.
+    This is not body-independent composition or permission to omit a neighbor.
+    """
+    if active_operation not in symbols:
+        raise ComponentBisimulationError("source proof names an unknown operation")
+    clean = _mask_comments_and_literals(source)
+    result = list(source)
+    for operation, symbol in symbols.items():
+        if operation == active_operation:
+            continue
+        ranges = _operation_source_ranges(source, symbol)
+        if len(ranges) > 1:
+            raise ComponentBisimulationError(f"operation symbol {symbol!r} has multiple source definitions")
+        for start, end in ranges:
+            for marker in re.finditer(r"\bSPX_PROOF_(?:BEGIN|SYNC)\s*\(", clean[start:end]):
+                first = start + marker.start()
+                opening = clean.find("(", first)
+                last = _balanced(clean, opening, "(", ")") + 1
+                if last > end:
+                    raise ComponentBisimulationError("source proof marker escapes its operation")
+                # Keep line numbers and offsets stable. Production proof markers
+                # do not evaluate their invariant or capture arguments either.
+                replacement = "((void)0)" + "".join(
+                    "\n" if character == "\n" else " "
+                    for character in source[first + len("((void)0)"):last]
+                )
+                result[first:last] = replacement
+    return "".join(result)
 
 
 def operation_sources_from_package(
@@ -234,6 +278,7 @@ def _build_contextual_refinement(
         if (
             statuses
             and set(statuses) == {"satisfied"}
+            and 'diagnostic_selection' not in models_core
             and obligation_local_exact_c_slices
             and reference_authority_bound(models_core, world)
         )
@@ -529,6 +574,13 @@ def _validate_contextual_refinement(
         "operation_models",
         "connected_components",
     }
+    if "reusable_inputs" in models:
+        from .bisimulation_proof_reuse import validate_record
+        try:
+            validate_record(models, checker)
+        except (ValueError, KeyError, TypeError) as error:
+            raise ComponentBisimulationError(str(error)) from error
+        expected_model_fields.add("reusable_inputs")
     if runtime_assurance is not None:
         expected_model_fields.update({"assurance", "authorizing"})
         _conditional_policy(expected_policy, runtime_assurance)
@@ -593,7 +645,7 @@ def _validate_contextual_refinement(
         or not isinstance(exact_c_slice.get("bindings"), Mapping)
         or exact_c_slice["bindings"].get("bisimulation_intent_sha256")
         != plan_bindings.get("bisimulation_intent_sha256")
-        or set(models) not in tuple(expected_model_fields | optional for optional in (
+        or set(models) not in tuple(expected_model_fields | ({'diagnostic_selection'} & set(models)) | optional for optional in (
             set(), {"source_summary_contracts"},
             {"reference_allocation_requirements", "reference_allocation_requirements_sha256"},
             {"source_summary_contracts", "reference_allocation_requirements", "reference_allocation_requirements_sha256"}))
@@ -683,7 +735,7 @@ def _validate_contextual_refinement(
         "violated"
         if "violated" in statuses
         else "satisfied"
-        if statuses == {"satisfied"} and obligation_local_exact_c_slices
+        if statuses == {"satisfied"} and obligation_local_exact_c_slices and 'diagnostic_selection' not in models
         else "incomplete"
     )
     if (

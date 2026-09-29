@@ -9,7 +9,7 @@ from .bisimulation_mutable_memory import sparse_mutable_memory_runtime, MAX_MUTA
 from .component_c_v5 import _parameter_type, _result_type
 from .interface_package_v5 import ComponentInterfaceIntentV1, compile_component_interface_v5
 from .machine_overlay_services_v5 import _c_identifier
-from .machine_overlay_v5 import _view_runtime_helpers
+from .machine_overlay_runtime_helpers import _view_runtime_helpers
 from .normal_exit_postconditions import shared_result_postcondition
 from .relation_v5 import ComponentRelationIntentV1
 from .bisimulation_shared_services import shared_service_contract_index, shared_service_admission_lines

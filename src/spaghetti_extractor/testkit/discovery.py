@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+
 from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
+
+from ..components.caller_definition_document import PROFILE as CALLER_DEFINITION_PROFILE, checked_caller_document
 
 from ..build_support.python_module_index import (
     build_python_module_index,
@@ -611,6 +614,18 @@ def _resource_dependency_closure(
                 raise TestkitError(Diagnostic(
                     "error", "invalid_fixture_catalog", str(error), location=relative,
                     remediation="Repair the fixture catalog through its declared schema.",
+                )) from error
+            continue
+        if isinstance(payload, Mapping) and payload.get("profile") == CALLER_DEFINITION_PROFILE:
+            # IDs, storage labels and relation operands are semantic data. This
+            # document has no file-reference fields; its artifacts are separate
+            # checker inputs. Do not resolve a label such as "private" as a path.
+            try:
+                checked_caller_document(payload)
+            except ValueError as error:
+                raise TestkitError(Diagnostic(
+                    "error", "invalid_caller_definition", str(error), location=relative,
+                    remediation="Repair the caller definition document envelope.",
                 )) from error
             continue
         strings: list[str] = []

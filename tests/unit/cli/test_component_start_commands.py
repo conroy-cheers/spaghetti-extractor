@@ -11,10 +11,88 @@ from unittest.mock import patch
 from spaghetti_extractor.cli import main
 
 
-TESTKIT = {"commands": ("component start",)}
+TESTKIT = {"commands": ("component start", "boundary inspect", "boundary propose", "boundary adopt"),
+           "fixtures": ("compiler",)}
 
 
 class ComponentStartCommandTests(unittest.TestCase):
+    def test_caller_definition_is_inspected_copied_and_checked_for_staleness(self):
+        from tests.unit.components.test_work_package_v6 import _caller_payload
+        from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+        from spaghetti_extractor.components.work_package_v6 import caller_definition_text
+        from spaghetti_extractor.util import sha256_text
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); package = _caller_payload()
+            files = {'include/component.h': 'void fixture_run(void);\n',
+                     'src/component.c': '#include "component.h"\n#error "implement me"\n',
+                     'caller-contract.json': caller_definition_text(package),
+                     'baseline/behavioral-fn-00401000.c': '/* original slice */\n'}
+            for name, text in files.items():
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text)
+            for row in package['generated_files']:
+                row['sha256'] = sha256_text(files[row['path']])
+            package['faithful_c_slices'][0]['source_sha256'] = sha256_text(files['baseline/behavioral-fn-00401000.c'])
+            package['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in package.items() if k != 'work_package_sha256'})
+            (root/'semantic-slice-v2.json').write_text(json.dumps(package['semantic_slice']))
+            artifact = root/'component-work-package-v6.json'; artifact.write_text(json.dumps(package))
+            index = {'components': {'units': {'fixture-component': {'products': ['workPackage']}}},
+                     'boundaries': {'subjects': {'component:fixture-component': {'kind': 'component', 'products': ['source']}}}}
+            with patch('spaghetti_extractor.commands.workflows._operator_index', return_value=index), patch(
+                'spaghetti_extractor.commands.workflows._realize_artifact', return_value=(artifact,package)):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(main(['boundary','inspect','fixture','component:fixture-component']),0)
+                self.assertIn('declared; local proof required',stdout.getvalue())
+                self.assertIn('requested frame facts:',stdout.getvalue())
+                output = root.parent/(root.name+'-writable')
+                proposed = root.parent/(root.name+'-boundary')
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(['component','start','fixture','fixture-component','--output',str(output)]),0)
+                    self.assertEqual((output/'caller-contract.json').read_text(),files['caller-contract.json'])
+                    self.assertTrue((output/'caller-contract.json').stat().st_mode & 0o200)
+                    plan = json.loads((output/'component-start-plan.json').read_text())
+                    self.assertEqual(plan['caller_definition']['requested_frame_facts'],['edi'])
+                    self.assertFalse(plan['caller_definition']['authorizes_activation'])
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(['boundary','propose','fixture','component:fixture-component',
+                                               '--output',str(proposed)]),0)
+                    definition = json.loads((proposed/'caller-contract.json').read_text())
+                    definition['required_frame'] = []
+                    (proposed/'caller-contract.json').write_text(json.dumps(definition))
+                    adopted = root/'adopted.json'
+                    arguments = ['boundary','adopt','fixture','component:fixture-component',
+                                 '--input',str(proposed),'--output',str(adopted)]
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        self.assertEqual(main(arguments),0)
+                    self.assertIn('authority=no',stdout.getvalue())
+                    self.assertEqual(json.loads(adopted.read_text()),definition)
+                    preserved = adopted.read_bytes()
+                    definition['unit_rvas'].append(0x401010)
+                    (proposed/'caller-contract.json').write_text(json.dumps(definition))
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(main(arguments),2)
+                    self.assertEqual(adopted.read_bytes(),preserved)
+                    stale = json.loads((proposed/'component-work-package-v6.json').read_text())
+                    stale['blockers'].append({'code':'another-reviewed-package'})
+                    stale['work_package_sha256'] = canonical_sha256_v3({k:v for k,v in stale.items() if k != 'work_package_sha256'})
+                    (proposed/'component-work-package-v6.json').write_text(json.dumps(stale))
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        self.assertEqual(main(arguments),2)
+                    self.assertIn('editing baseline is stale',stderr.getvalue())
+                    self.assertEqual(adopted.read_bytes(),preserved)
+                    (root/'caller-contract.json').write_text('{}\n')
+                    stderr=io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        self.assertEqual(main(['component','start','fixture','fixture-component','--output',str(root/'unused')]),2)
+                    self.assertIn('stale',stderr.getvalue())
+                finally:
+                    __import__('shutil').rmtree(output,ignore_errors=True)
+                    __import__('shutil').rmtree(proposed,ignore_errors=True)
+
     def test_materializes_a_writable_checked_package(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -66,6 +144,16 @@ class ComponentStartCommandTests(unittest.TestCase):
                 plan["source_transition"]["target_path"], "components/leaf.c"
             )
             self.assertTrue((output / "src/component.c").stat().st_mode & 0o200)
+            guidance = (output / "AUTHORING.md").read_text()
+            self.assertIn("portable-component-c11-cbmc-v1", guidance)
+            self.assertIn("no qualification or execution authority", guidance)
+            command = json.loads((output / "compile_commands.json").read_text())[0]
+            (output / "src/component.c").write_text(
+                '#include "component.h"\nvoid fixture_run(void) {}\n')
+            import subprocess
+            compiled = subprocess.run(command["arguments"], cwd=command["directory"],
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
 
     def test_apply_rolls_back_then_adds_source_and_rehashes_intent(self) -> None:
         from spaghetti_extractor.components.lifting_intent import (

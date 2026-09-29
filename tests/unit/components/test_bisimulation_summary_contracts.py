@@ -13,14 +13,19 @@ from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.bisimulation_summary_contracts import (
     check_scalar_summary_contracts, checked_scalar_summary_certificate,
     validate_scalar_summary_contracts,
+    consumed_scalar_summary_contract,
 )
 from spaghetti_extractor.components.component_c_v5 import render_component_c_headers_v5
 from spaghetti_extractor.components.inductive_refinement import _write_cbmc_stdint
 from spaghetti_extractor.components.interface_package_v5 import ComponentInterfaceIntentV1, compile_component_interface_v5
 from spaghetti_extractor.components.bisimulation_connected import _connected_replay_source, render_connected_summary_wrapper
+from spaghetti_extractor.components.bisimulation_proof_reuse import consumed_dependency
 from spaghetti_extractor.components.bisimulation_world import _world_source
 from spaghetti_extractor.components.cbmc_backend import run_cbmc_properties
 from spaghetti_extractor.transfer.runtime_abi import exact_runtime_header
+from spaghetti_extractor.components.relation_v5 import ComponentRelationIntentV1
+from spaghetti_extractor.components.bisimulation_postconditions import scalar_postcondition_requests
+from spaghetti_extractor.semantic_providers.portable_c_postconditions import normal_exit_intent
 
 
 TESTKIT = {
@@ -122,6 +127,85 @@ void main(void) {
         self.assertEqual(result["postconditions"], [])
         validate_scalar_summary_contracts(result)
 
+    def test_authored_weaker_export_keeps_correct_supplier_but_invalidates_consumer(self) -> None:
+        intent = ComponentRelationIntentV1.create(component_id='ascii-to-lower', blockers=[], operations=[{
+            'operation_id': 'convert', 'requirements': [{'id': 'normal-return',
+                'relation': 'normal_exit_postcondition', 'expression': {
+                    'op': 'true', 'sort': {'kind': 'bool'}, 'args': [], 'attributes': {}}}]}])
+        body = '(void)context; return value >= 65U && value <= 90U ? value + 32U : value;'
+        original = self._check(body)
+        weaker = self._check(body, postcondition_intent=intent)
+        self.assertEqual(original['inputs'], weaker['inputs'])
+        self.assertEqual(weaker['status'], 'satisfied')
+        validate_scalar_summary_contracts(weaker)
+        self.assertEqual([f['id'] for f in weaker['postconditions']], ['normal-return'])
+        self.assertNotEqual(consumed_scalar_summary_contract(original), consumed_scalar_summary_contract(weaker))
+        self.assertEqual(self._pair(0, first_value=0, facts=original['postconditions'], expect_zero=True)['status'], 'satisfied')
+        rejected = self._pair(0, first_value=0, facts=weaker['postconditions'], expect_zero=True)
+        self.assertEqual(rejected['status'], 'violated')
+
+    def test_scalar_requests_reject_foreign_operation_and_unchecked_false_guarantee(self) -> None:
+        interface = Path(__file__).resolve().parents[3] / TESTKIT['resources'][0]
+        bundle = compile_component_interface_v5(ComponentInterfaceIntentV1.parse(json.loads(interface.read_text())))
+        def request(operation, expression):
+            return ComponentRelationIntentV1.create(component_id='ascii-to-lower', blockers=[], operations=[{
+                'operation_id': operation, 'requirements': [{'id': 'authored',
+                    'relation': 'normal_exit_postcondition', 'expression': expression}]}])
+        false = {'op': 'false', 'sort': {'kind': 'bool'}, 'args': [], 'attributes': {}}
+        with self.assertRaisesRegex(ValueError, 'known operation'):
+            scalar_postcondition_requests(bundle, request('missing', false))
+        intent = request('convert', false)
+        self.assertEqual(normal_exit_intent(intent.to_payload(), bundle=bundle), intent)
+        result = self._check('(void)context; return value;', postcondition_intent=intent)
+        self.assertEqual(result['postconditions'], [])
+        # The empty-frame theorem remains valid, but it supplies none of the
+        # explicitly requested export; provider admission checks exact coverage.
+        validate_scalar_summary_contracts(result)
+
+    def test_compatible_edit_preserves_consumed_contract_and_wrapper(self) -> None:
+        old = self._check('(void)context; return value >= 65U && value <= 90U ? value + 32U : value;')
+        new = self._check('(void)context; return value >= 65U && value <= 90U ? value | 32U : value;')
+        self.assertNotEqual(old['inputs'], new['inputs'])
+        self.assertNotEqual(old['receipt_sha256'], new['receipt_sha256'])
+        self.assertEqual(consumed_scalar_summary_contract(old), consumed_scalar_summary_contract(new))
+        dependency = {'component_id': 'ascii-to-lower', 'binding_intent_sha256': 'a' * 64,
+            'summary_strategy': 'scalar-body-free-v1', 'entry_contract': None,
+            'readable_transport_policy': None, 'machine_overlay_sha256': 'b' * 64,
+            'proof_overlay_sha256': 'b' * 64, 'trusted_adapter_lowering_receipt_sha256': None,
+            'machine_overlay_entries_sha256': 'c' * 64, 'source_summary_certificate': old}
+        consumed = consumed_dependency(dependency)
+        self.assertEqual(consumed, consumed_dependency({**dependency, 'source_summary_certificate': new,
+            'implementation_sha256': 'd' * 64, 'qualification_sha256': 'e' * 64}))
+        for field in ('binding_intent_sha256', 'machine_overlay_sha256', 'proof_overlay_sha256',
+                      'machine_overlay_entries_sha256'):
+            self.assertNotEqual(consumed, consumed_dependency({**dependency, field: 'f' * 64}))
+        with self.assertRaisesRegex(ValueError, 'unconditional scalar'):
+            consumed_dependency({**dependency, 'summary_strategy': 'connected-replay-v1'})
+        interface = Path(__file__).resolve().parents[3] / TESTKIT['resources'][0]
+        bundle = compile_component_interface_v5(ComponentInterfaceIntentV1.parse(json.loads(interface.read_text())))
+        for certificate in (old, new):
+            arguments = dict(bundle=bundle, operation_symbols={'convert': 'test_convert'},
+                             summary_ids={'convert': 0}, body_free_scalar=True)
+            self.assertEqual(render_connected_summary_wrapper(**arguments, scalar_postconditions=certificate['postconditions']),
+                render_connected_summary_wrapper(**arguments,
+                    scalar_postconditions=consumed_scalar_summary_contract(certificate)['postconditions']))
+
+    def test_same_signature_does_not_hide_lost_guarantee(self) -> None:
+        old = self._check('(void)context; return value;')
+        new = self._check('(void)context; return value + 1U;')
+        self.assertEqual(old['interface_sha256'], new['interface_sha256'])
+        self.assertEqual(old['operation_symbols'], new['operation_symbols'])
+        self.assertNotEqual(consumed_scalar_summary_contract(old), consumed_scalar_summary_contract(new))
+
+    def test_consumed_contract_rejects_unproved_frame_or_stale_evidence(self) -> None:
+        invalid = self._check('context->protocol_state = 7U; return value;')
+        with self.assertRaisesRegex(ValueError, 'requires satisfied'):
+            consumed_scalar_summary_contract(invalid)
+        stale = self._check('(void)context; return value;')
+        stale['postconditions'] = []
+        with self.assertRaisesRegex(ValueError, 'digest are stale'):
+            consumed_scalar_summary_contract(stale)
+
     def test_callee_body_growth_does_not_grow_the_paired_parent_model(self) -> None:
         measurements = []
         for size in (0, 256):
@@ -134,7 +218,8 @@ void main(void) {
         self.assertGreater(measurements[1][0], measurements[0][0])
         self.assertEqual(measurements[0][1], measurements[1][1])
 
-    def _check(self, body: str, declarations: str = "", *, measurements=None, staged=False) -> dict[str, object]:
+    def _check(self, body: str, declarations: str = "", *, measurements=None, staged=False,
+               postcondition_intent=None) -> dict[str, object]:
         commands = {name: shutil.which(name) for name in ("cbmc", "goto-cc", "goto-instrument")}
         if not all(commands.values()):
             self.skipTest("CBMC contract tools are unavailable")
@@ -157,6 +242,7 @@ uint32_t test_convert(spx_ascii_to_lower_context_v5 *context, uint32_t value) {
                 goto_instrument=Path(commands["goto-instrument"]), cbmc=Path(commands["cbmc"]),
                 timeout_seconds=30,
                 workspace=root / "workspace" if staged else None,
+                postcondition_intent=postcondition_intent,
             )
             if staged:
                 for model in result["models"]:
