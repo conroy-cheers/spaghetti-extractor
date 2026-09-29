@@ -1,0 +1,24 @@
+wait 3000
+message 256 113 0
+message 257 113 0
+wait 3000
+message 256 17 0
+message 256 112 0
+message 257 112 0
+wait 1500
+message 257 17 0
+snapshot editor-start.png
+message 256 8 0
+message 257 8 0
+wait 300
+message 256 83 0
+message 257 83 0
+wait 500
+snapshot editor-cleared.png
+message 256 78 0
+message 257 78 0
+wait 300
+message 256 80 0
+message 257 80 0
+wait 300
+snapshot editor-return.png

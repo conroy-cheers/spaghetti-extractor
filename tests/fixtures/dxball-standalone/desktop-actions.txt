@@ -1,0 +1,14 @@
+wait 3000
+message 256 113 0
+message 257 113 0
+wait 3000
+move 320 240
+message 513 1 15728960
+wait 200
+message 514 0 15728960
+wait 3000
+message 513 1 15728960
+wait 1500
+message 514 0 15728960
+wait 2500
+capture playing.bmp
