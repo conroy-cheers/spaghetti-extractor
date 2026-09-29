@@ -1,0 +1,76 @@
+#ifndef SPX_WINE_TEST_INTERNAL_H
+#define SPX_WINE_TEST_INTERNAL_H
+#include "spx-wine-test.h"
+enum { SPX_WINE_OBJECTS=512, SPX_WINE_EVENTS=8192, SPX_WINE_RULES=256 };
+struct spx_wine_object {
+    const void *vtable;
+    spx_wine_env *owner;
+    uint32_t id;
+    enum spx_wine_kind kind;
+    void *native;
+    spx_wine_object_state state;
+    unsigned char *bytes;
+    uint32_t size;
+    void *surface;
+    uint32_t input_identity;
+};
+struct spx_wine_env {
+    enum spx_wine_mode mode;
+    spx_wine_hooks hooks;
+    spx_wine_object objects[SPX_WINE_OBJECTS];
+    spx_wine_event events[SPX_WINE_EVENTS];
+    spx_wine_rule rules[SPX_WINE_RULES];
+    uint32_t object_count,event_count,rule_count,calls[SPX_WINE_API_COUNT];
+    uintptr_t windows[128];
+    uint32_t window_ids[128];
+    unsigned window_count;
+    uint32_t thread;
+    uint32_t last_error;
+    void *native_hooks;
+    void *files;
+    void *memory;
+    void *midi,*guard;
+    void *draw;
+};
+spx_wine_object *spx_wine_new_object(spx_wine_env *,enum spx_wine_kind,void *);
+void spx_wine_native_object(spx_wine_object *);
+uint32_t spx_wine_native_call(spx_wine_env *,spx_wine_call *,spx_wine_event *);
+void spx_wine_store_object(void *,spx_wine_object *);
+void spx_wine_thread_check(spx_wine_env *);
+spx_wine_rule spx_wine_select_rule(spx_wine_env *,enum spx_wine_api,uint32_t,uint32_t);
+void spx_wine_file_validate_rule(const spx_wine_rule *);
+uint32_t spx_wine_file_invoke(spx_wine_env *,spx_wine_call);
+uint32_t spx_wine_file_candidate_call(spx_wine_env *,spx_wine_call);
+void spx_wine_files_destroy(spx_wine_env *);
+void spx_wine_files_observe(spx_wine_env *,spx_observer *);
+void spx_wine_set_last_error(spx_wine_env *,uint32_t);
+void spx_wine_memory_validate_rule(const spx_wine_rule *);
+uint32_t spx_wine_memory_invoke(spx_wine_env *,spx_wine_call);
+uint32_t spx_wine_memory_candidate_call(spx_wine_env *,spx_wine_call);
+int spx_wine_uninstall_memory(spx_wine_env *);
+void spx_wine_memory_destroy(spx_wine_env *);
+void spx_wine_memory_observe(spx_wine_env *,spx_observer *);
+void spx_wine_midi_validate_rule(const spx_wine_rule *);
+uint32_t spx_wine_midi_invoke(spx_wine_env *,spx_wine_call);
+uint32_t spx_wine_midi_candidate_call(spx_wine_env *,spx_wine_call);
+int spx_wine_uninstall_midi(spx_wine_env *);
+void spx_wine_midi_destroy(spx_wine_env *);
+void spx_wine_midi_observe(spx_wine_env *,spx_observer *);
+void spx_wine_midi_retire_memory(spx_wine_env *,const void *,size_t,int committed);
+void spx_wine_enter(spx_wine_env *);
+void spx_wine_leave(spx_wine_env *);
+unsigned spx_wine_suspend(spx_wine_env *);
+void spx_wine_resume(spx_wine_env *,unsigned);
+void spx_wine_guard_destroy(spx_wine_env *);
+spx_wine_env *spx_wine_callback_enter(spx_wine_env *);
+void spx_wine_callback_leave(spx_wine_env *,spx_wine_env *);
+uint32_t spx_wine_window_identity(spx_wine_env *,uintptr_t);
+void spx_wine_draw_object(spx_wine_object *);
+void spx_wine_draw_validate_rule(const spx_wine_rule *);
+uint32_t spx_wine_draw_invoke(spx_wine_env *,spx_wine_call);
+uint32_t spx_wine_draw_candidate_call(spx_wine_env *,spx_wine_call);
+void spx_wine_draw_destroy(spx_wine_env *);
+void spx_wine_draw_observe(spx_wine_env *,spx_observer *);
+void *spx_wine_initial_output(spx_wine_env *,void *);
+void spx_wine_publish_output(spx_wine_env *,spx_wine_call *,spx_wine_event *,void *,void *,uint32_t,enum spx_wine_kind);
+#endif
